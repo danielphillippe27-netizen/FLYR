@@ -1,0 +1,50 @@
+{
+  "version": 8,
+  "name": "FLYR Campaign 3D",
+  "metadata": {
+    "mapbox:autocomposite": true
+  },
+  "sources": {
+    "mapbox": {
+      "type": "vector",
+      "url": "mapbox://mapbox.mapbox-streets-v8"
+    },
+    "composite": {
+      "type": "vector",
+      "url": "mapbox://mapbox.mapbox-streets-v8"
+    }
+  },
+  "sprite": "mapbox://sprites/mapbox/dark-v11",
+  "glyphs": "mapbox://fonts/mapbox/{fontstack}/{range}.pbf",
+  "layers": [
+    {
+      "id": "background",
+      "type": "background",
+      "paint": {
+        "background-color": "#1a1a1a"
+      }
+    },
+    {
+      "id": "land",
+      "type": "fill",
+      "source": "mapbox",
+      "source-layer": "landcover",
+      "paint": {
+        "fill-color": "#2a2a2a"
+      }
+    },
+    {
+      "id": "roads",
+      "type": "line",
+      "source": "mapbox",
+      "source-layer": "road",
+      "paint": {
+        "line-color": "#444444",
+        "line-width": 1
+      }
+    }
+  ]
+}
+
+
+

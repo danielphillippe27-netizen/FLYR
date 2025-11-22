@@ -1,0 +1,399 @@
+
+Showing All Errors Only
+
+Build target FLYR of project FLYR with configuration Debug
+
+SwiftCompile normal arm64 Compiling\ DesignerPreview.swift,\ LandingPagePickerSheet.swift,\ HeroMediaPicker.swift /Users/danielphillippe/Desktop/FLYR/FLYR/Features/LandingPages/Components/DesignerPreview.swift /Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift /Users/danielphillippe/Desktop/FLYR/FLYR/Features/LandingPages/Components/designer/HeroMediaPicker.swift (in target 'FLYR' from project 'FLYR')
+
+Failed frontend command:
+/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swift-frontend -frontend -c -filelist /Users/danielphillippe/Library/Developer/Xcode/DerivedData/FLYR-gguntaoxhhzankecfrbmpxulqxrd/Build/Intermediates.noindex/FLYR.build/Debug-iphoneos/FLYR.build/Objects-normal/arm64/sources-71 -primary-file /Users/danielphillippe/Desktop/FLYR/FLYR/Features/LandingPages/Components/DesignerPreview.swift -primary-file /Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift -primary-file /Users/danielphillippe/Desktop/FLYR/FLYR/Features/LandingPages/Components/designer/HeroMediaPicker.swift -supplementary-output-file-map /Users/danielphillippe/Library/Developer/Xcode/DerivedData/FLYR-gguntaoxhhzankecfrbmpxulqxrd/Build/Intermediates.noindex/FLYR.build/Debug-iphoneos/FLYR.build/Objects-normal/arm64/supplementaryOutputs-736 -emit-localized-strings -emit-localized-strings-path /Users/danielphillippe/Library/Developer/Xcode/DerivedData/FLYR-gguntaoxhhzankecfrbmpxulqxrd/Build/Intermediates.noindex/FLYR.build/Debug-iphoneos/FLYR.build/Objects-normal/arm64 -target arm64-apple-ios26.0 -module-can-import-version DeveloperToolsSupport 23.0.4 23.0.4 -module-can-import-version SwiftUI 7.0.84.1 7.0.84 -module-can-import-version UIKit 9088.1.113 9088.1.113 -disable-cross-import-overlay-search -swift-module-cross-import AuthenticationServices /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk/System/Cryptexes/OS/System/Library/Frameworks/AuthenticationServices.framework/Modules/AuthenticationServices.swiftcrossimport/SwiftUI.swiftoverlay -swift-module-cross-import AuthenticationServices /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS26.0.sdk/System/Library/Frameworks/AuthenticationServices.framework/Modules/AuthenticationServices.swiftcrossimport/SwiftUI.swiftoverlay -swift-module-cross-import PhotosUI /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk/System/Library/Frameworks/PhotosUI.framework/Modules/PhotosUI.swiftcrossimport/SwiftUI.swiftoverlay -swift-module-cross-import PhotosUI /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk/System/Library/Frameworks/PhotosUI.framework/Modules/PhotosUI.swiftcrossimport/WidgetKit.swiftoverlay -swift-module-cross-import PhotosUI /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS26.0.sdk/System/Library/Frameworks/PhotosUI.framework/Modules/PhotosUI.swiftcrossimport/SwiftUI.swiftoverlay -swift-module-cross-import PhotosUI /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS26.0.sdk/System/Library/Frameworks/PhotosUI.framework/Modules/PhotosUI.swiftcrossimport/WidgetKit.swiftoverlay -swift-module-cross-import WebKit /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk/System/Cryptexes/OS/System/Library/Frameworks/WebKit.framework/Modules/WebKit.swiftcrossimport/SwiftUI.swiftoverlay -swift-module-cross-import WebKit /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS26.0.sdk/System/Library/Frameworks/WebKit.framework/Modules/WebKit.swiftcrossimport/SwiftUI.swiftoverlay -load-resolved-plugin /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/usr/lib/swift/host/plugins/libFoundationMacros.dylib\#/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/usr/bin/swift-plugin-server\#FoundationMacros -load-resolved-plugin /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/usr/lib/swift/host/plugins/libObservationMacros.dylib\#/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/usr/bin/swift-plugin-server\#ObservationMacros -load-resolved-plugin /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/usr/lib/swift/host/plugins/libPreviewsMacros.dylib\#/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/usr/bin/swift-plugin-server\#PreviewsMacros -load-resolved-plugin /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/usr/lib/swift/host/plugins/libSwiftMacros.dylib\#/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/usr/bin/swift-plugin-server\#SwiftMacros -load-resolved-plugin /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/usr/lib/swift/host/plugins/libSwiftUIMacros.dylib\#/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/usr/bin/swift-plugin-server\#SwiftUIMacros -disable-implicit-swift-modules -Xcc -fno-implicit-modules -Xcc -fno-implicit-module-maps -explicit-swift-module-map-file /Users/danielphillippe/Library/Developer/Xcode/DerivedData/FLYR-gguntaoxhhzankecfrbmpxulqxrd/Build/Intermediates.noindex/FLYR.build/Debug-iphoneos/FLYR.build/Objects-normal/arm64/FLYR-dependencies-49.json -Xllvm -aarch64-use-tbi -enable-objc-interop -stack-check -sdk /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS26.0.sdk -I /Users/danielphillippe/Library/Developer/Xcode/DerivedData/FLYR-gguntaoxhhzankecfrbmpxulqxrd/Build/Products/Debug-iphoneos -F /Users/danielphillippe/Library/Developer/Xcode/DerivedData/FLYR-gguntaoxhhzankecfrbmpxulqxrd/Build/Products/Debug-iphoneos/PackageFrameworks -F /Users/danielphillippe/Library/Developer/Xcode/DerivedData/FLYR-gguntaoxhhzankecfrbmpxulqxrd/Build/Products/Debug-iphoneos/PackageFrameworks -F /Users/danielphillippe/Library/Developer/Xcode/DerivedData/FLYR-gguntaoxhhzankecfrbmpxulqxrd/Build/Products/Debug-iphoneos/PackageFrameworks -F /Users/danielphillippe/Library/Developer/Xcode/DerivedData/FLYR-gguntaoxhhzankecfrbmpxulqxrd/Build/Products/Debug-iphoneos/PackageFrameworks -F /Users/danielphillippe/Library/Developer/Xcode/DerivedData/FLYR-gguntaoxhhzankecfrbmpxulqxrd/Build/Products/Debug-iphoneos/PackageFrameworks -F /Users/danielphillippe/Library/Developer/Xcode/DerivedData/FLYR-gguntaoxhhzankecfrbmpxulqxrd/Build/Products/Debug-iphoneos/PackageFrameworks -F /Users/danielphillippe/Library/Developer/Xcode/DerivedData/FLYR-gguntaoxhhzankecfrbmpxulqxrd/Build/Products/Debug-iphoneos/PackageFrameworks -F /Users/danielphillippe/Library/Developer/Xcode/DerivedData/FLYR-gguntaoxhhzankecfrbmpxulqxrd/Build/Products/Debug-iphoneos/PackageFrameworks -F /Users/danielphillippe/Library/Developer/Xcode/DerivedData/FLYR-gguntaoxhhzankecfrbmpxulqxrd/Build/Products/Debug-iphoneos/PackageFrameworks -F /Users/danielphillippe/Library/Developer/Xcode/DerivedData/FLYR-gguntaoxhhzankecfrbmpxulqxrd/Build/Products/Debug-iphoneos/PackageFrameworks -F /Users/danielphillippe/Library/Developer/Xcode/DerivedData/FLYR-gguntaoxhhzankecfrbmpxulqxrd/Build/Products/Debug-iphoneos/PackageFrameworks -F /Users/danielphillippe/Library/Developer/Xcode/DerivedData/FLYR-gguntaoxhhzankecfrbmpxulqxrd/Build/Products/Debug-iphoneos/PackageFrameworks -F /Users/danielphillippe/Library/Developer/Xcode/DerivedData/FLYR-gguntaoxhhzankecfrbmpxulqxrd/Build/Products/Debug-iphoneos/PackageFrameworks -F /Users/danielphillippe/Library/Developer/Xcode/DerivedData/FLYR-gguntaoxhhzankecfrbmpxulqxrd/Build/Products/Debug-iphoneos/PackageFrameworks -F /Users/danielphillippe/Library/Developer/Xcode/DerivedData/FLYR-gguntaoxhhzankecfrbmpxulqxrd/Build/Products/Debug-iphoneos/PackageFrameworks -F /Users/danielphillippe/Library/Developer/Xcode/DerivedData/FLYR-gguntaoxhhzankecfrbmpxulqxrd/Build/Products/Debug-iphoneos/PackageFrameworks -F /Users/danielphillippe/Library/Developer/Xcode/DerivedData/FLYR-gguntaoxhhzankecfrbmpxulqxrd/Build/Products/Debug-iphoneos/PackageFrameworks -F /Users/danielphillippe/Library/Developer/Xcode/DerivedData/FLYR-gguntaoxhhzankecfrbmpxulqxrd/Build/Products/Debug-iphoneos -no-color-diagnostics -Xcc -fno-color-diagnostics -enable-testing -g -debug-info-format\=dwarf -dwarf-version\=5 -module-cache-path /Users/danielphillippe/Library/Developer/Xcode/DerivedData/FLYR-gguntaoxhhzankecfrbmpxulqxrd/Build/Intermediates.noindex/SwiftExplicitPrecompiledModules -profile-generate -profile-coverage-mapping -swift-version 5 -enforce-exclusivity\=checked -Onone -D DEBUG -serialize-debugging-options -const-gather-protocols-file /Users/danielphillippe/Library/Developer/Xcode/DerivedData/FLYR-gguntaoxhhzankecfrbmpxulqxrd/Build/Intermediates.noindex/FLYR.build/Debug-iphoneos/FLYR.build/Objects-normal/arm64/FLYR_const_extract_protocols.json -enable-upcoming-feature DisableOutwardActorInference -enable-upcoming-feature InferSendableFromCaptures -enable-upcoming-feature GlobalActorIsolatedTypesUsability -enable-upcoming-feature MemberImportVisibility -enable-upcoming-feature InferIsolatedConformances -enable-upcoming-feature NonisolatedNonsendingByDefault -enable-experimental-feature DebugDescriptionMacro -enable-bare-slash-regex -default-isolation\=MainActor -empty-abi-descriptor -validate-clang-modules-once -clang-build-session-file /Users/danielphillippe/Library/Developer/Xcode/DerivedData/ModuleCache.noindex/Session.modulevalidation -Xcc -working-directory -Xcc /Users/danielphillippe/Desktop/FLYR -enable-anonymous-context-mangled-names -file-compilation-dir /Users/danielphillippe/Desktop/FLYR -Xcc -D_LIBCPP_HARDENING_MODE\=_LIBCPP_HARDENING_MODE_DEBUG -Xcc -ivfsstatcache -Xcc /Users/danielphillippe/Library/Developer/Xcode/DerivedData/SDKStatCaches.noindex/iphoneos26.0-23A339-3885c01c3e6b6a337905948deab2002e81ce72e5b06c9602b9d30b56f2eed08a.sdkstatcache -Xcc -I/Users/danielphillippe/Library/Developer/Xcode/DerivedData/FLYR-gguntaoxhhzankecfrbmpxulqxrd/Build/Intermediates.noindex/FLYR.build/Debug-iphoneos/FLYR.build/swift-overrides.hmap -Xcc -iquote -Xcc /Users/danielphillippe/Library/Developer/Xcode/DerivedData/FLYR-gguntaoxhhzankecfrbmpxulqxrd/Build/Intermediates.noindex/FLYR.build/Debug-iphoneos/FLYR.build/FLYR-generated-files.hmap -Xcc -I/Users/danielphillippe/Library/Developer/Xcode/DerivedData/FLYR-gguntaoxhhzankecfrbmpxulqxrd/Build/Intermediates.noindex/FLYR.build/Debug-iphoneos/FLYR.build/FLYR-own-target-headers.hmap -Xcc -I/Users/danielphillippe/Library/Developer/Xcode/DerivedData/FLYR-gguntaoxhhzankecfrbmpxulqxrd/Build/Intermediates.noindex/FLYR.build/Debug-iphoneos/FLYR.build/FLYR-all-non-framework-target-headers.hmap -Xcc -ivfsoverlay -Xcc /Users/danielphillippe/Library/Developer/Xcode/DerivedData/FLYR-gguntaoxhhzankecfrbmpxulqxrd/Build/Intermediates.noindex/FLYR.build/Debug-iphoneos/FLYR-d864917bbadd29fe6755da9c5d52c90b-VFS-iphoneos/all-product-headers.yaml -Xcc -iquote -Xcc /Users/danielphillippe/Library/Developer/Xcode/DerivedData/FLYR-gguntaoxhhzankecfrbmpxulqxrd/Build/Intermediates.noindex/FLYR.build/Debug-iphoneos/FLYR.build/FLYR-project-headers.hmap -Xcc -I/Users/danielphillippe/Library/Developer/Xcode/DerivedData/FLYR-gguntaoxhhzankecfrbmpxulqxrd/Build/Products/Debug-iphoneos/include -Xcc -I/Users/danielphillippe/Library/Developer/Xcode/DerivedData/FLYR-gguntaoxhhzankecfrbmpxulqxrd/Build/Intermediates.noindex/FLYR.build/Debug-iphoneos/FLYR.build/DerivedSources-normal/arm64 -Xcc -I/Users/danielphillippe/Library/Developer/Xcode/DerivedData/FLYR-gguntaoxhhzankecfrbmpxulqxrd/Build/Intermediates.noindex/FLYR.build/Debug-iphoneos/FLYR.build/DerivedSources/arm64 -Xcc -I/Users/danielphillippe/Library/Developer/Xcode/DerivedData/FLYR-gguntaoxhhzankecfrbmpxulqxrd/Build/Intermediates.noindex/FLYR.build/Debug-iphoneos/FLYR.build/DerivedSources -Xcc -DDEBUG\=1 -no-auto-bridging-header-chaining -module-name FLYR -frontend-parseable-output -disable-clang-spi -target-sdk-version 26.0 -target-sdk-name iphoneos26.0 -clang-target arm64-apple-ios26.0 -in-process-plugin-server-path /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/libSwiftInProcPluginServer.dylib -o /Users/danielphillippe/Library/Developer/Xcode/DerivedData/FLYR-gguntaoxhhzankecfrbmpxulqxrd/Build/Intermediates.noindex/FLYR.build/Debug-iphoneos/FLYR.build/Objects-normal/arm64/DesignerPreview.o -o /Users/danielphillippe/Library/Developer/Xcode/DerivedData/FLYR-gguntaoxhhzankecfrbmpxulqxrd/Build/Intermediates.noindex/FLYR.build/Debug-iphoneos/FLYR.build/Objects-normal/arm64/LandingPagePickerSheet.o -o /Users/danielphillippe/Library/Developer/Xcode/DerivedData/FLYR-gguntaoxhhzankecfrbmpxulqxrd/Build/Intermediates.noindex/FLYR.build/Debug-iphoneos/FLYR.build/Objects-normal/arm64/HeroMediaPicker.o -index-unit-output-path /FLYR.build/Debug-iphoneos/FLYR.build/Objects-normal/arm64/DesignerPreview.o -index-unit-output-path /FLYR.build/Debug-iphoneos/FLYR.build/Objects-normal/arm64/LandingPagePickerSheet.o -index-unit-output-path /FLYR.build/Debug-iphoneos/FLYR.build/Objects-normal/arm64/HeroMediaPicker.o -index-store-path /Users/danielphillippe/Library/Developer/Xcode/DerivedData/FLYR-gguntaoxhhzankecfrbmpxulqxrd/Index.noindex/DataStore -index-system-modules
+
+SwiftCompile normal arm64 /Users/danielphillippe/Desktop/FLYR/FLYR/Features/LandingPages/Components/DesignerPreview.swift (in target 'FLYR' from project 'FLYR')
+    cd /Users/danielphillippe/Desktop/FLYR
+    
+
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/LandingPages/Components/DesignerPreview.swift:178:20: warning: value 'videoURL' was defined but never used; consider replacing with boolean test
+            if let videoURL = metadata.wallpaperVideoURL {
+               ~~~~^~~~~~~~~~~
+                                                         != nil
+<unknown>:0: error: static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:2:1: note: add import of module 'Combine'
+
+^
+<unknown>:0: error: static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:2:1: note: add import of module 'Combine'
+
+^
+<unknown>:0: error: static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:2:1: note: add import of module 'Combine'
+
+^
+<unknown>:0: error: static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:2:1: note: add import of module 'Combine'
+
+^
+<unknown>:0: error: static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:2:1: note: add import of module 'Combine'
+
+^
+<unknown>:0: error: static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:2:1: note: add import of module 'Combine'
+
+^
+<unknown>:0: error: static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:2:1: note: add import of module 'Combine'
+
+^
+<unknown>:0: error: static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:2:1: note: add import of module 'Combine'
+
+^
+<unknown>:0: error: static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:2:1: note: add import of module 'Combine'
+
+^
+<unknown>:0: error: static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:2:1: note: add import of module 'Combine'
+
+^
+<unknown>:0: error: static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:2:1: note: add import of module 'Combine'
+
+^
+<unknown>:0: error: static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:2:1: note: add import of module 'Combine'
+
+^
+<unknown>:0: error: static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:2:1: note: add import of module 'Combine'
+
+^
+<unknown>:0: error: static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:2:1: note: add import of module 'Combine'
+
+^
+<unknown>:0: error: static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:2:1: note: add import of module 'Combine'
+
+^
+<unknown>:0: error: static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:2:1: note: add import of module 'Combine'
+
+^
+<unknown>:0: error: static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:2:1: note: add import of module 'Combine'
+
+^
+<unknown>:0: error: static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:2:1: note: add import of module 'Combine'
+
+^
+
+Static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+
+Static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+
+Static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+
+Static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+
+Static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+
+Static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+
+Static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+
+Static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+
+Static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+
+Static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+
+Static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+
+Static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+
+Static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+
+Static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+
+Static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+
+Static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+
+Static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+
+Static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+
+SwiftCompile normal arm64 /Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift (in target 'FLYR' from project 'FLYR')
+    cd /Users/danielphillippe/Desktop/FLYR
+    
+
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:128:7: error: type 'LandingPagePickerSheetViewModel' does not conform to protocol 'ObservableObject'
+class LandingPagePickerSheetViewModel: ObservableObject {
+      ^
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:128:7: note: add stubs for conformance
+class LandingPagePickerSheetViewModel: ObservableObject {
+      ^
+Combine.ObservableObject.objectWillChange:2:5: note: protocol requires property 'objectWillChange' with type 'Self.ObjectWillChangePublisher'
+var objectWillChange: Self.ObjectWillChangePublisher { get }}
+    ^
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:140:27: error: cannot find type 'PostgrestResponse' in scope
+            let response: PostgrestResponse<[CampaignLandingPage]> = try await SupabaseManager.shared.client
+                          ^~~~~~~~~~~~~~~~~
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:129:6: error: initializer 'init(wrappedValue:)' is not available due to missing import of defining module 'Combine'
+    @Published var allLandingPages: [CampaignLandingPage] = []
+     ^
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:2:1: note: add import of module 'Combine'
+
+^
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:130:6: error: initializer 'init(wrappedValue:)' is not available due to missing import of defining module 'Combine'
+    @Published var campaignNames: [UUID: String] = [:]
+     ^
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:2:1: note: add import of module 'Combine'
+
+^
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:131:6: error: initializer 'init(wrappedValue:)' is not available due to missing import of defining module 'Combine'
+    @Published var isLoading = false
+     ^
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:2:1: note: add import of module 'Combine'
+
+^
+<unknown>:0: error: static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:2:1: note: add import of module 'Combine'
+
+^
+<unknown>:0: error: static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:2:1: note: add import of module 'Combine'
+
+^
+<unknown>:0: error: static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:2:1: note: add import of module 'Combine'
+
+^
+<unknown>:0: error: static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:2:1: note: add import of module 'Combine'
+
+^
+<unknown>:0: error: static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:2:1: note: add import of module 'Combine'
+
+^
+<unknown>:0: error: static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:2:1: note: add import of module 'Combine'
+
+^
+<unknown>:0: error: static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:2:1: note: add import of module 'Combine'
+
+^
+<unknown>:0: error: static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:2:1: note: add import of module 'Combine'
+
+^
+<unknown>:0: error: static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:2:1: note: add import of module 'Combine'
+
+^
+<unknown>:0: error: static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:2:1: note: add import of module 'Combine'
+
+^
+<unknown>:0: error: static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:2:1: note: add import of module 'Combine'
+
+^
+<unknown>:0: error: static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:2:1: note: add import of module 'Combine'
+
+^
+<unknown>:0: error: static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:2:1: note: add import of module 'Combine'
+
+^
+<unknown>:0: error: static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:2:1: note: add import of module 'Combine'
+
+^
+<unknown>:0: error: static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:2:1: note: add import of module 'Combine'
+
+^
+<unknown>:0: error: static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:2:1: note: add import of module 'Combine'
+
+^
+<unknown>:0: error: static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:2:1: note: add import of module 'Combine'
+
+^
+<unknown>:0: error: static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:2:1: note: add import of module 'Combine'
+
+^
+
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:128:7: Type 'LandingPagePickerSheetViewModel' does not conform to protocol 'ObservableObject'
+
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:140:27: Cannot find type 'PostgrestResponse' in scope
+
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:129:6: Initializer 'init(wrappedValue:)' is not available due to missing import of defining module 'Combine'
+
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:130:6: Initializer 'init(wrappedValue:)' is not available due to missing import of defining module 'Combine'
+
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:131:6: Initializer 'init(wrappedValue:)' is not available due to missing import of defining module 'Combine'
+
+Static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+
+Static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+
+Static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+
+Static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+
+Static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+
+Static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+
+Static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+
+Static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+
+Static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+
+Static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+
+Static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+
+Static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+
+Static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+
+Static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+
+Static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+
+Static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+
+Static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+
+Static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+
+SwiftCompile normal arm64 /Users/danielphillippe/Desktop/FLYR/FLYR/Features/LandingPages/Components/designer/HeroMediaPicker.swift (in target 'FLYR' from project 'FLYR')
+    cd /Users/danielphillippe/Desktop/FLYR
+    
+
+<unknown>:0: error: static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:2:1: note: add import of module 'Combine'
+
+^
+<unknown>:0: error: static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:2:1: note: add import of module 'Combine'
+
+^
+<unknown>:0: error: static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:2:1: note: add import of module 'Combine'
+
+^
+<unknown>:0: error: static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:2:1: note: add import of module 'Combine'
+
+^
+<unknown>:0: error: static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:2:1: note: add import of module 'Combine'
+
+^
+<unknown>:0: error: static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:2:1: note: add import of module 'Combine'
+
+^
+<unknown>:0: error: static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:2:1: note: add import of module 'Combine'
+
+^
+<unknown>:0: error: static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:2:1: note: add import of module 'Combine'
+
+^
+<unknown>:0: error: static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:2:1: note: add import of module 'Combine'
+
+^
+<unknown>:0: error: static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:2:1: note: add import of module 'Combine'
+
+^
+<unknown>:0: error: static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:2:1: note: add import of module 'Combine'
+
+^
+<unknown>:0: error: static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:2:1: note: add import of module 'Combine'
+
+^
+<unknown>:0: error: static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:2:1: note: add import of module 'Combine'
+
+^
+<unknown>:0: error: static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:2:1: note: add import of module 'Combine'
+
+^
+<unknown>:0: error: static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:2:1: note: add import of module 'Combine'
+
+^
+<unknown>:0: error: static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:2:1: note: add import of module 'Combine'
+
+^
+<unknown>:0: error: static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:2:1: note: add import of module 'Combine'
+
+^
+<unknown>:0: error: static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/QRCodes/Components/LandingPagePickerSheet.swift:2:1: note: add import of module 'Combine'
+
+^
+/Users/danielphillippe/Desktop/FLYR/FLYR/Features/LandingPages/Components/designer/HeroMediaPicker.swift:121:10: warning: 'onChange(of:perform:)' was deprecated in iOS 17.0: Use `onChange` with a two or zero parameter action closure instead.
+        .onChange(of: selectedPhoto) { newItem in
+         ^
+
+Static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+
+Static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+
+Static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+
+Static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+
+Static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+
+Static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+
+Static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+
+Static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+
+Static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+
+Static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+
+Static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+
+Static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+
+Static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+
+Static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+
+Static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+
+Static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+
+Static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+
+Static subscript 'subscript(_enclosingInstance:wrapped:storage:)' is not available due to missing import of defining module 'Combine'
+
+
+
+Build failed    2025-11-17, 1:52 PM    4.0 seconds
