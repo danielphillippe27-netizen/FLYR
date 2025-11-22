@@ -1,0 +1,20 @@
+{
+  "applinks": {
+    "details": [
+      {
+        "appIDs": ["2AR5T8ZYAS.com.danielphillippe.FLYR"],
+        "components": [
+          { "/": "/auth/callback", "comment": "Supabase auth redirect" }
+        ]
+      }
+    ]
+  }
+}
+
+
+
+
+
+
+
+

@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleExecutable</key>
+	<string>FLYR</string>
+	<key>SUPABASE_URL</key>
+	<string>https://kfnsnwqylsdsbgnwgxva.supabase.co</string>
+	<key>SUPABASE_ANON_KEY</key>
+	<string>eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtmbnNud3F5bHNkc2JnbndneHZhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA5MjY3MzEsImV4cCI6MjA3NjUwMjczMX0.k2TZKPi3VxAVpEGggLiROYvfVu2nV_oSqBt2GM4jX-Y</string>
+	<key>CFBundleDisplayName</key>
+	<string>FLYR</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.danielphillippe.FLYR</string>
+	<key>CFBundleName</key>
+	<string>FLYR</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSRequiresIPhoneOS</key>
+	<true/>
+	<key>UILaunchScreen</key>
+	<dict/>
+	<key>UIRequiredDeviceCapabilities</key>
+	<array>
+		<string>armv7</string>
+	</array>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<key>MBXAccessToken</key>
+	<string>YOUR_MAPBOX_PUBLIC_TOKEN</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>FLYR needs your location to track your session path and distance while you're walking.</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.danielphillippe.FLYR</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>flyr</string>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>

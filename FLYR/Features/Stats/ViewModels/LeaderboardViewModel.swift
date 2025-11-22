@@ -1,0 +1,233 @@
+import SwiftUI
+import Combine
+import Supabase
+
+@MainActor
+final class LeaderboardViewModel: ObservableObject {
+    @Published var entries: [LeaderboardEntry] = []
+    @Published var isLoading = false
+    @Published var errorMessage: String?
+    @Published var selectedSort: LeaderboardSortBy = .flyers
+    @Published var isRealTimeEnabled = false
+    @Published var currentUserRank: Int?
+    
+    // New API properties
+    @Published var users: [LeaderboardUser] = []
+    @Published var selectedMetric: String = "conversations"
+    @Published var selectedTimeframe: String = "weekly"
+    
+    // V3 Properties
+    @Published var selectedTab: Int = 0 // 0 = Leaderboard, 1 = You
+    @Published var metric: MetricType = .flyers
+    @Published var timeRange: TimeRange = .monthly
+    
+    private let leaderboardService = LeaderboardService.shared
+    private var cancellables = Set<AnyCancellable>()
+    
+    func loadLeaderboard() async {
+        isLoading = true
+        errorMessage = nil
+        defer { isLoading = false }
+        
+        do {
+            // Check authentication - leaderboard requires authenticated users
+            // But we can still try to load it even if not authenticated (might work with anon key)
+            // The error will be more descriptive if auth is the issue
+            
+            entries = try await leaderboardService.fetchLeaderboard(sortBy: selectedSort)
+            
+            // Get current user rank if logged in
+            if let user = AuthManager.shared.user {
+                let userID = user.id
+                currentUserRank = try await leaderboardService.getUserRank(
+                    userID: userID,
+                    sortBy: selectedSort
+                )
+            }
+        } catch {
+            // Provide more detailed error information
+            var errorDetails = "Failed to load leaderboard"
+            
+            // Check for specific error types
+            let errorString = String(describing: error)
+            let errorDescription = error.localizedDescription
+            
+            // Check for authentication errors
+            if errorString.contains("401") || errorString.contains("Unauthorized") || 
+               errorString.contains("not authenticated") || errorString.contains("JWT") {
+                errorDetails = "Please sign in to view the leaderboard"
+            } else if errorString.contains("404") || errorString.contains("not found") ||
+                      errorString.contains("function") || errorString.contains("get_leaderboard") {
+                errorDetails = "Leaderboard service unavailable. Please try again later."
+            } else if errorString.contains("network") || errorString.contains("connection") ||
+                      errorString.contains("timeout") {
+                errorDetails = "Network error. Please check your connection and try again."
+            } else if !errorDescription.isEmpty && errorDescription != errorString {
+                errorDetails = "Failed to load leaderboard: \(errorDescription)"
+            } else {
+                errorDetails = "Failed to load leaderboard: \(errorDescription)"
+            }
+            
+            errorMessage = errorDetails
+            
+            // Enhanced logging for debugging
+            print("❌ Error loading leaderboard:")
+            print("   Error type: \(type(of: error))")
+            print("   Error description: \(errorDescription)")
+            print("   Error string: \(errorString)")
+            if let nsError = error as NSError? {
+                print("   NSError domain: \(nsError.domain)")
+                print("   NSError code: \(nsError.code)")
+                print("   NSError userInfo: \(nsError.userInfo)")
+            }
+        }
+    }
+    
+    func enableRealTimeUpdates() async {
+        guard !isRealTimeEnabled else { return }
+        
+        isRealTimeEnabled = true
+        
+        do {
+            try await leaderboardService.subscribeToLeaderboardUpdates(
+                sortBy: selectedSort
+            ) { [weak self] updatedEntries in
+                Task { @MainActor in
+                    self?.entries = updatedEntries
+                }
+            }
+        } catch {
+            errorMessage = "Failed to enable real-time updates: \(error.localizedDescription)"
+            isRealTimeEnabled = false
+            print("❌ Error subscribing to leaderboard: \(error)")
+        }
+    }
+    
+    func disableRealTimeUpdates() async {
+        guard isRealTimeEnabled else { return }
+        
+        await leaderboardService.unsubscribeFromLeaderboard()
+        isRealTimeEnabled = false
+    }
+    
+    func changeSort(_ newSort: LeaderboardSortBy) async {
+        selectedSort = newSort
+        await disableRealTimeUpdates()
+        await loadLeaderboard()
+        if isRealTimeEnabled {
+            await enableRealTimeUpdates()
+        }
+    }
+    
+    // Cleanup method to be called when view disappears
+    func cleanup() {
+        Task { @MainActor [weak self] in
+            await self?.disableRealTimeUpdates()
+        }
+    }
+    
+    // MARK: - New API Methods
+    
+    func load() async {
+        isLoading = true
+        errorMessage = nil
+        defer { isLoading = false }
+        
+        do {
+            let result = try await leaderboardService.fetchLeaderboard(
+                metric: selectedMetric,
+                timeframe: selectedTimeframe
+            )
+            
+            withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+                self.users = result
+            }
+            
+            // Update current user rank if logged in
+            if let user = AuthManager.shared.user {
+                let userIDString = user.id.uuidString
+                currentUserRank = result.firstIndex(where: { $0.id == userIDString }).map { $0 + 1 }
+            }
+        } catch {
+            var errorDetails = "Failed to load leaderboard"
+            
+            let errorString = String(describing: error)
+            let errorDescription = error.localizedDescription
+            
+            if errorString.contains("401") || errorString.contains("Unauthorized") || 
+               errorString.contains("not authenticated") || errorString.contains("JWT") {
+                errorDetails = "Please sign in to view the leaderboard"
+            } else if errorString.contains("404") || errorString.contains("not found") ||
+                      errorString.contains("function") || errorString.contains("get_leaderboard") {
+                errorDetails = "Leaderboard service unavailable. Please try again later."
+            } else if errorString.contains("network") || errorString.contains("connection") ||
+                      errorString.contains("timeout") {
+                errorDetails = "Network error. Please check your connection and try again."
+            } else if !errorDescription.isEmpty && errorDescription != errorString {
+                errorDetails = "Failed to load leaderboard: \(errorDescription)"
+            } else {
+                errorDetails = "Failed to load leaderboard: \(errorDescription)"
+            }
+            
+            errorMessage = errorDetails
+            
+            print("❌ Error loading leaderboard:")
+            print("   Error type: \(type(of: error))")
+            print("   Error description: \(errorDescription)")
+            print("   Error string: \(errorString)")
+        }
+    }
+    
+    // MARK: - V3 API Methods
+    
+    func fetchLeaderboard() async {
+        isLoading = true
+        errorMessage = nil
+        defer { isLoading = false }
+        
+        do {
+            let result = try await leaderboardService.fetchLeaderboard(
+                metric: metric.rawValue,
+                timeframe: timeRange.rawValue
+            )
+            
+            withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+                self.users = result
+            }
+            
+            // Update current user rank if logged in
+            if let user = AuthManager.shared.user {
+                let userIDString = user.id.uuidString
+                currentUserRank = result.firstIndex(where: { $0.id == userIDString }).map { $0 + 1 }
+            }
+        } catch {
+            var errorDetails = "Failed to load leaderboard"
+            
+            let errorString = String(describing: error)
+            let errorDescription = error.localizedDescription
+            
+            if errorString.contains("401") || errorString.contains("Unauthorized") || 
+               errorString.contains("not authenticated") || errorString.contains("JWT") {
+                errorDetails = "Please sign in to view the leaderboard"
+            } else if errorString.contains("404") || errorString.contains("not found") ||
+                      errorString.contains("function") || errorString.contains("get_leaderboard") {
+                errorDetails = "Leaderboard service unavailable. Please try again later."
+            } else if errorString.contains("network") || errorString.contains("connection") ||
+                      errorString.contains("timeout") {
+                errorDetails = "Network error. Please check your connection and try again."
+            } else if !errorDescription.isEmpty && errorDescription != errorString {
+                errorDetails = "Failed to load leaderboard: \(errorDescription)"
+            } else {
+                errorDetails = "Failed to load leaderboard: \(errorDescription)"
+            }
+            
+            errorMessage = errorDetails
+            
+            print("❌ Error loading leaderboard:")
+            print("   Error type: \(type(of: error))")
+            print("   Error description: \(errorDescription)")
+            print("   Error string: \(errorString)")
+        }
+    }
+}
+
