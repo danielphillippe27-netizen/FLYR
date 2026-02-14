@@ -6,15 +6,19 @@ struct NewCampaignDetailView: View {
     let campaignID: UUID
     @ObservedObject var store: CampaignV2Store
     @StateObject private var hook = UseCampaignV2()
-    @StateObject private var mapVM = UseCampaignMap()
     @State private var mapCenter: CLLocationCoordinate2D = CLLocationCoordinate2D(latitude: 43.65, longitude: -79.38) // Toronto default
     @State private var isMapFullscreen = false
-    @State private var isDrawingPolygon = false
-    @State private var showCreateQR = false
+    @State private var addressStatuses: [String: AddressStatus] = [:]
     @State private var showSessionStart = false
     @State private var selectedAddressId: String? = nil
     @State private var selectedAddressLabel: String = ""
     @State private var isStatusSheetPresented = false
+    @State private var isAddressesExpanded = false
+    @State private var showFullAddressesSheet = false
+    @State private var isLeadsExpanded = false
+    @State private var campaignLeadsCount: Int = 0
+    @State private var campaignLeads: [FieldLead] = []
+    @State private var leadsLoaded = false
     @Namespace private var mapNamespace
     
     // Pro Mode: Campaign markers for map
@@ -63,7 +67,7 @@ struct NewCampaignDetailView: View {
                     
                     if let campaign = hook.item {
                         Text("Created \(campaign.createdAt, formatter: dateFormatter)")
-                            .font(.caption)
+                            .font(.flyrCaption)
                             .foregroundColor(.muted)
                     }
                 }
@@ -93,219 +97,49 @@ struct NewCampaignDetailView: View {
                 .background(Color.bgSecondary)
                 .cornerRadius(12)
                 
-                // Map Section - Interactive Campaign Map
+                // Map Section - 3D Campaign Map (MapFeaturesService + MapLayerManager)
                 VStack(alignment: .leading, spacing: 12) {
-                    HStack {
-                        Text("Campaign Area")
-                            .font(.subheading)
-                            .foregroundColor(.text)
-                        
-                        Spacer()
-                        
-                        // Draw Area button
-                        Button(action: {
-                            let impactFeedback = UIImpactFeedbackGenerator(style: .light)
-                            impactFeedback.impactOccurred()
-                            if isDrawingPolygon {
-                                // Exiting draw mode - polygon will be finalized in updateUIView
-                                isDrawingPolygon = false
-                            } else {
-                                // Entering draw mode
-                                isDrawingPolygon = true
-                            }
-                        }) {
-                            Text(isDrawingPolygon ? "Done" : "Draw Area")
-                                .font(.caption)
-                                .fontWeight(.medium)
-                                .foregroundColor(isDrawingPolygon ? .white : .accent)
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 6)
-                                .background(isDrawingPolygon ? Color.accent : Color.accent.opacity(0.1))
-                                .cornerRadius(8)
-                        }
-                    }
+                    Text("Campaign Area")
+                        .font(.subheading)
+                        .foregroundColor(.text)
                     
                     ZStack {
-                        CampaignMapView(
-                            vm: mapVM,
-                            centerCoordinate: mapCenter,
-                            isDrawingPolygon: $isDrawingPolygon,
-                            onPolygonComplete: { vertices in
-                                Task {
-                                    await mapVM.loadAddressesInPolygon(polygon: vertices, campaignId: campaignID)
-                                    let count = mapVM.homes.count
-                                    print("✅ [POLYGON] Total addresses after polygon query: \(count)")
-                                }
-                                isDrawingPolygon = false
-                            },
-                            onAddressTapped: { addressId in
-                                handleAddressTapped(addressId: addressId)
-                            }
-                        )
-                        .frame(height: 260)
-                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                        .matchedGeometryEffect(id: "map", in: mapNamespace)
+                        CampaignMapView(campaignId: campaignID.uuidString)
+                            .frame(height: 260)
+                            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                            .matchedGeometryEffect(id: "map", in: mapNamespace, isSource: !isMapFullscreen)
                         
-                        // Overlay button for fullscreen (only when not drawing)
-                        if !isDrawingPolygon {
-                            Button(action: {
-                                // Haptic feedback
-                                let impactFeedback = UIImpactFeedbackGenerator(style: .medium)
-                                impactFeedback.impactOccurred()
-                                isMapFullscreen = true
-                            }) {
-                                Color.clear
-                                    .contentShape(Rectangle())
-                            }
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        // Fullscreen trigger
+                        Button(action: {
+                            HapticManager.medium()
+                            isMapFullscreen = true
+                        }) {
+                            Color.clear
+                                .contentShape(Rectangle())
                         }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                         
-                        // Overlays: fetching ribbon + footnote
                         VStack {
-                            // Fetching buildings ribbon
-                            if mapVM.isFetchingBuildings {
-                                HStack {
-                                    ProgressView()
-                                        .tint(.white)
-                                    Text("Fetching buildings…")
-                                        .font(.footnote)
-                                        .foregroundColor(.white)
-                                }
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 8)
-                                .background(Color.black.opacity(0.75))
-                                .cornerRadius(10)
-                                .padding(.top, 8)
-                            }
-                            
                             Spacer()
-                            
-                            // Buildings X/Y footnote
                             HStack {
-                                Text(mapVM.buildingStats.isEmpty ? "Buildings: 0/0" : mapVM.buildingStats)
-                                    .font(.footnote)
-                                    .foregroundColor(.secondary)
-                                    .padding(.horizontal, 10)
-                                    .padding(.vertical, 6)
-                                    .background(Color.black.opacity(0.55))
-                                    .cornerRadius(8)
                                 Spacer()
-                            }
-                            .padding(.leading, 8)
-                            .padding(.bottom, 8)
-                        }
-                        
-                        // Tap indicator overlay (only show when not drawing)
-                        if !isDrawingPolygon {
-                            VStack {
-                                HStack {
-                                    Spacer()
-                                    Image(systemName: "arrow.up.left.and.arrow.down.right")
-                                        .font(.caption)
-                                        .foregroundColor(.white)
-                                        .padding(8)
-                                        .background(Color.black.opacity(0.5))
-                                        .clipShape(Circle())
-                                }
-                                .padding(8)
-                                Spacer()
-                            }
-                        }
-                        
-                        // Drawing mode indicator
-                        if isDrawingPolygon {
-                            VStack {
-                                HStack {
-                                    Spacer()
-                                    VStack(spacing: 4) {
-                                        Image(systemName: "hand.tap.fill")
-                                            .font(.caption)
-                                        Text("Tap to add points")
-                                            .font(.caption2)
-                                    }
+                                Image(systemName: "arrow.up.left.and.arrow.down.right")
+                                    .font(.flyrCaption)
                                     .foregroundColor(.white)
                                     .padding(8)
-                                    .background(Color.accent.opacity(0.8))
-                                    .cornerRadius(8)
-                                }
-                                .padding(8)
-                                Spacer()
+                                    .background(Color.black.opacity(0.5))
+                                    .clipShape(Circle())
                             }
+                            .padding(8)
                         }
                     }
                 }
                 .fullScreenCover(isPresented: $isMapFullscreen) {
                     FullscreenMapView(
                         campaignID: campaignID,
-                        store: store,
-                        mapVM: mapVM,
-                        mapCenter: mapCenter,
                         namespace: mapNamespace,
-                        isDrawingPolygon: $isDrawingPolygon,
-                        onClose: {
-                            isMapFullscreen = false
-                        }
+                        onClose: { isMapFullscreen = false }
                     )
-                }
-                
-                // Addresses Section
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack {
-                        Text("Addresses")
-                            .font(.subheading)
-                            .foregroundColor(.text)
-                        
-                        Spacer()
-                        
-                        if let campaign = hook.item {
-                            Text("\(campaign.addresses.count) total")
-                                .font(.label)
-                                .foregroundColor(.muted)
-                        }
-                    }
-                    
-                    if let campaign = hook.item, !campaign.addresses.isEmpty {
-                        VStack(alignment: .leading, spacing: 8) {
-                            ForEach(Array(campaign.addresses.prefix(5).enumerated()), id: \.offset) { index, address in
-                                HStack {
-                                    Text("\(index + 1).")
-                                        .font(.caption)
-                                        .foregroundColor(.muted)
-                                        .frame(width: 20, alignment: .leading)
-                                    
-                                    Text(address.address)
-                                        .font(.body)
-                                        .foregroundColor(.text)
-                                    
-                                    Spacer()
-                                }
-                            }
-                            
-                            if campaign.addresses.count > 5 {
-                                Button("See all \(campaign.addresses.count) addresses") {
-                                    // TODO: Show full address list
-                                }
-                                .font(.label)
-                                .foregroundColor(.accent)
-                            }
-                        }
-                        .padding(12)
-                        .background(Color.bgTertiary)
-                        .cornerRadius(8)
-                    } else {
-                        Text("No addresses added yet")
-                            .font(.body)
-                            .foregroundColor(.muted)
-                            .frame(maxWidth: .infinity, alignment: .center)
-                            .padding(20)
-                            .background(Color.bgTertiary)
-                            .cornerRadius(8)
-                    }
-                }
-                
-                // Landing Pages Section
-                if let campaign = hook.item {
-                    LandingPagesSection(campaignId: campaignID, campaign: campaign)
                 }
                 
                 // Analytics Section
@@ -340,6 +174,189 @@ struct NewCampaignDetailView: View {
                     }
                 }
                 
+                // Leads Section (collapsible, same style as Addresses)
+                VStack(alignment: .leading, spacing: 0) {
+                    Button(action: {
+                        HapticManager.light()
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            isLeadsExpanded.toggle()
+                        }
+                    }) {
+                        HStack {
+                            Image(systemName: "tray.full.fill")
+                                .font(.subheadline)
+                                .foregroundColor(.accent)
+                            Text("Leads")
+                                .font(.subheading)
+                                .foregroundColor(.text)
+                            Spacer()
+                            Text("\(campaignLeadsCount) total")
+                                .font(.label)
+                                .foregroundColor(.muted)
+                            Image(systemName: isLeadsExpanded ? "chevron.up" : "chevron.down")
+                                .font(.caption)
+                                .fontWeight(.medium)
+                                .foregroundColor(.muted)
+                        }
+                        .padding(16)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .onChange(of: isLeadsExpanded) { _, expanded in
+                        if expanded && !leadsLoaded, let userId = AuthManager.shared.user?.id {
+                            Task {
+                                do {
+                                    let leads = try await FieldLeadsService.shared.fetchLeads(userId: userId, campaignId: campaignID)
+                                    await MainActor.run {
+                                        campaignLeads = leads
+                                        campaignLeadsCount = leads.count
+                                        leadsLoaded = true
+                                    }
+                                } catch {
+                                    await MainActor.run {
+                                        campaignLeads = []
+                                        leadsLoaded = true
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if isLeadsExpanded {
+                        if !campaignLeads.isEmpty {
+                            VStack(alignment: .leading, spacing: 8) {
+                                ForEach(Array(campaignLeads.prefix(5).enumerated()), id: \.element.id) { index, lead in
+                                    HStack {
+                                        Text("\(index + 1).")
+                                            .font(.flyrCaption)
+                                            .foregroundColor(.muted)
+                                            .frame(width: 20, alignment: .leading)
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text(lead.address)
+                                                .font(.body)
+                                                .foregroundColor(.text)
+                                            if let name = lead.name, !name.isEmpty {
+                                                Text(name)
+                                                    .font(.flyrCaption)
+                                                    .foregroundColor(.muted)
+                                            }
+                                        }
+                                        Spacer()
+                                    }
+                                }
+                                if campaignLeads.count > 5 {
+                                    Button("See all \(campaignLeads.count) leads") {
+                                        // TODO: Show full leads list
+                                    }
+                                    .font(.label)
+                                    .foregroundColor(.accent)
+                                }
+                            }
+                            .padding(12)
+                            .background(Color.bgTertiary)
+                            .cornerRadius(8)
+                            .padding(.horizontal, 16)
+                            .padding(.bottom, 16)
+                        } else if leadsLoaded {
+                            Text("No leads yet")
+                                .font(.body)
+                                .foregroundColor(.muted)
+                                .frame(maxWidth: .infinity, alignment: .center)
+                                .padding(20)
+                                .background(Color.bgTertiary)
+                                .cornerRadius(8)
+                                .padding(.horizontal, 16)
+                                .padding(.bottom, 16)
+                        } else {
+                            ProgressView()
+                                .frame(maxWidth: .infinity)
+                                .padding(20)
+                                .background(Color.bgTertiary)
+                                .cornerRadius(8)
+                                .padding(.horizontal, 16)
+                                .padding(.bottom, 16)
+                        }
+                    }
+                }
+                .background(Color.bgSecondary)
+                .cornerRadius(12)
+
+                // Addresses Section (collapsible, at bottom, hidden by default)
+                VStack(alignment: .leading, spacing: 0) {
+                    Button(action: {
+                        HapticManager.light()
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            isAddressesExpanded.toggle()
+                        }
+                    }) {
+                        HStack {
+                            Image(systemName: "house.fill")
+                                .font(.subheadline)
+                                .foregroundColor(.accent)
+                            Text("Addresses")
+                                .font(.subheading)
+                                .foregroundColor(.text)
+                            Spacer()
+                            if let campaign = hook.item {
+                                Text("\(campaign.addresses.count) total")
+                                    .font(.label)
+                                    .foregroundColor(.muted)
+                            }
+                            Image(systemName: isAddressesExpanded ? "chevron.up" : "chevron.down")
+                                .font(.caption)
+                                .fontWeight(.medium)
+                                .foregroundColor(.muted)
+                        }
+                        .padding(16)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    
+                    if isAddressesExpanded {
+                        if let campaign = hook.item, !campaign.addresses.isEmpty {
+                            VStack(alignment: .leading, spacing: 8) {
+                                ForEach(Array(campaign.addresses.prefix(5).enumerated()), id: \.offset) { index, address in
+                                    HStack {
+                                        Text("\(index + 1).")
+                                            .font(.flyrCaption)
+                                            .foregroundColor(.muted)
+                                            .frame(width: 20, alignment: .leading)
+                                        Text(address.address)
+                                            .font(.body)
+                                            .foregroundColor(.text)
+                                        Spacer()
+                                    }
+                                }
+                                if campaign.addresses.count > 5 {
+                                    Button("See all \(campaign.addresses.count) addresses") {
+                                        HapticManager.light()
+                                        showFullAddressesSheet = true
+                                    }
+                                    .font(.label)
+                                    .foregroundColor(.accent)
+                                }
+                            }
+                            .padding(12)
+                            .background(Color.bgTertiary)
+                            .cornerRadius(8)
+                            .padding(.horizontal, 16)
+                            .padding(.bottom, 16)
+                        } else {
+                            Text("No addresses added yet")
+                                .font(.body)
+                                .foregroundColor(.muted)
+                                .frame(maxWidth: .infinity, alignment: .center)
+                                .padding(20)
+                                .background(Color.bgTertiary)
+                                .cornerRadius(8)
+                                .padding(.horizontal, 16)
+                                .padding(.bottom, 16)
+                        }
+                    }
+                }
+                .background(Color.bgSecondary)
+                .cornerRadius(12)
+                
                 Spacer(minLength: 100) // Space for button
             }
             .padding()
@@ -347,60 +364,38 @@ struct NewCampaignDetailView: View {
         .navigationTitle("Campaign Details")
         .navigationBarTitleDisplayMode(.inline)
         .safeAreaInset(edge: .bottom) {
-            // Action Buttons
             VStack(spacing: 0) {
                 Divider()
                 
-                HStack(spacing: 12) {
-                    // Create QR Code Button
-                    Button(action: {
-                        showCreateQR = true
-                    }) {
-                        HStack {
-                            Image(systemName: "qrcode")
-                                .font(.system(size: 16, weight: .medium))
-                            Text("Create QR Code")
-                                .font(.label)
-                                .fontWeight(.medium)
-                        }
-                        .foregroundColor(.accent)
+                Button(action: {
+                    showSessionStart = true
+                }) {
+                    Text("Start Session")
+                        .font(.label)
+                        .fontWeight(.medium)
+                        .foregroundColor(.white)
                         .frame(maxWidth: .infinity)
                         .frame(height: 50)
-                        .background(Color.accent.opacity(0.1))
+                        .background(Color.accent)
                         .cornerRadius(12)
-                    }
-                    
-                    // Start Session Button
-                    Button(action: {
-                        showSessionStart = true
-                    }) {
-                        Text("Start Session")
-                            .font(.label)
-                            .fontWeight(.medium)
-                            .foregroundColor(.white)
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 50)
-                            .background(Color.accent)
-                            .cornerRadius(12)
-                    }
                 }
                 .padding()
             }
             .background(Color.bg)
         }
-        .sheet(isPresented: $showCreateQR) {
-            NavigationStack {
-                CreateQRView(selectedCampaignId: campaignID)
-            }
-        }
         .sheet(isPresented: $showSessionStart) {
-            SessionStartView()
+            SessionStartView(preselectedCampaign: hook.item)
+        }
+        .sheet(isPresented: $showFullAddressesSheet) {
+            if let campaign = hook.item {
+                FullAddressesSheet(addresses: campaign.addresses)
+            }
         }
         .sheet(isPresented: $isStatusSheetPresented) {
             if let addressId = selectedAddressId {
                 StatusPickerSheet(
                     addressLabel: selectedAddressLabel,
-                    currentStatus: mapVM.addressStatuses[addressId] ?? .none,
+                    currentStatus: addressStatuses[addressId] ?? .none,
                     onSelect: { status in
                         handleStatusSelected(addressId: addressId, newStatus: status)
                     }
@@ -418,13 +413,28 @@ struct NewCampaignDetailView: View {
                 print("📱 [DETAIL DEBUG] Campaign addresses: \(campaign.addresses.count)")
                 updateMapCenter(for: campaign)
                 
-                // Always reload map when campaign loads (ensures it shows)
+                // Load address statuses for status sheet
                 Task {
-                    print("🗺️ [MAP] Loading map with \(campaign.addresses.count) addresses")
-                    await mapVM.loadHomes(campaignId: campaignID, campaign: campaign)
-                    print("🗺️ [MAP] Map loaded with \(mapVM.homes.count) home points")
-                    // Load footprints after homes are loaded
-                    await mapVM.loadFootprints()
+                    do {
+                        let statusRows = try await VisitsAPI.shared.fetchStatuses(campaignId: campaignID)
+                        let dict = Dictionary(uniqueKeysWithValues: statusRows.map { ($0.key.uuidString, $0.value.status) })
+                        await MainActor.run { addressStatuses = dict }
+                    } catch {
+                        print("⚠️ [DETAIL] Failed to fetch address statuses: \(error)")
+                    }
+                }
+                // Load leads count for this campaign
+                if let userId = AuthManager.shared.user?.id {
+                    Task {
+                        do {
+                            let leads = try await FieldLeadsService.shared.fetchLeads(userId: userId, campaignId: campaignID)
+                            await MainActor.run { campaignLeadsCount = leads.count }
+                        } catch {
+                            await MainActor.run { campaignLeadsCount = 0 }
+                        }
+                    }
+                } else {
+                    campaignLeadsCount = 0
                 }
             }
         }
@@ -462,14 +472,13 @@ struct NewCampaignDetailView: View {
     // MARK: - Status Picker Handlers
     
     private func handleAddressTapped(addressId: String) {
-        // Look up address label from mapVM.homes
-        if let home = mapVM.homes.first(where: { $0.id.uuidString == addressId }) {
+        if let address = hook.item?.addresses.first(where: { $0.id.uuidString == addressId }) {
             selectedAddressId = addressId
-            selectedAddressLabel = home.address
+            selectedAddressLabel = address.address
             isStatusSheetPresented = true
-            print("📋 [STATUS] Address tapped: \(home.address) (ID: \(addressId))")
+            print("📋 [STATUS] Address tapped: \(address.address) (ID: \(addressId))")
         } else {
-            print("⚠️ [STATUS] Address not found in homes: \(addressId)")
+            print("⚠️ [STATUS] Address not found: \(addressId)")
         }
     }
     
@@ -481,31 +490,15 @@ struct NewCampaignDetailView: View {
         
         Task {
             do {
-                // Update Supabase
                 try await VisitsAPI.shared.updateStatus(
                     addressId: addressUUID,
                     campaignId: campaignID,
                     status: newStatus,
                     notes: nil
                 )
-                
-                // Update view model on main thread
                 await MainActor.run {
-                    mapVM.addressStatuses[addressId] = newStatus
+                    addressStatuses[addressId] = newStatus
                 }
-                
-                // Update Mapbox feature-state if MapView is available
-                if let mapView = mapVM.mapView {
-                    await MainActor.run {
-                        MapController.shared.applyStatusFeatureState(
-                            statuses: [addressId: newStatus],
-                            mapView: mapView
-                        )
-                    }
-                } else {
-                    print("⚠️ [STATUS] MapView not available for feature-state update")
-                }
-                
                 print("✅ [STATUS] Status updated: \(addressId) -> \(newStatus.rawValue)")
             } catch {
                 print("❌ [STATUS] Error updating status: \(error)")
@@ -516,36 +509,28 @@ struct NewCampaignDetailView: View {
     // MARK: - Analytics Helpers
     
     private func generalAnalyticsStats(for campaign: CampaignV2) -> [StatPill] {
-        // Calculate distance traveled (placeholder - would need to track actual route)
-        // For now, estimate based on addresses count (rough estimate: 0.1 km per address)
-        let estimatedDistance = Double(campaign.addresses.count) * 0.1
-        
-        // Calculate time (placeholder - would need to track actual time)
-        // Estimate: 2 minutes per address
-        let estimatedTimeMinutes = campaign.addresses.count * 2
-        let hours = estimatedTimeMinutes / 60
-        let minutes = estimatedTimeMinutes % 60
-        let timeString = hours > 0 ? "\(hours)h \(minutes)m" : "\(minutes)m"
-        
-        // Calculate flyers per hour
-        let flyersPerHour = estimatedTimeMinutes > 0 ? Double(campaign.scans) / (Double(estimatedTimeMinutes) / 60.0) : 0.0
-        
+        // New campaigns show 0.0 km and 0m time; real values when we have session/stats API
+        let distanceKm: Double = 0.0   // TODO: from session/stats when available
+        let _: Int = 0     // TODO: time from session/stats when available
+        let timeString = "0m"
+        let flyersPerHour = 0.0
+
         return [
-            StatPill(
-                value: String(format: "%.1f", estimatedDistance),
-                label: "KM Traveled"
-            ),
             StatPill(
                 value: "\(campaign.scans)",
                 label: "Flyers Delivered"
+            ),
+            StatPill(
+                value: String(format: "%.1f", flyersPerHour),
+                label: "Flyers/Hour"
             ),
             StatPill(
                 value: timeString,
                 label: "Time"
             ),
             StatPill(
-                value: String(format: "%.1f", flyersPerHour),
-                label: "Flyers/Hour"
+                value: String(format: "%.1f", distanceKm),
+                label: "KM Traveled"
             )
         ]
     }
@@ -580,211 +565,87 @@ struct NewCampaignDetailView: View {
     // Pro Mode: No need for building outlines rendering - using static map API
 }
 
+// MARK: - Full Addresses Sheet
+
+private struct FullAddressesSheet: View {
+    let addresses: [CampaignAddress]
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List {
+                ForEach(Array(addresses.enumerated()), id: \.element.id) { index, address in
+                    HStack(alignment: .top, spacing: 12) {
+                        Text("\(index + 1).")
+                            .font(.flyrCaption)
+                            .foregroundColor(.muted)
+                            .frame(width: 24, alignment: .leading)
+                        Text(address.address)
+                            .font(.body)
+                            .foregroundColor(.text)
+                        Spacer(minLength: 0)
+                    }
+                    .listRowBackground(Color.bgTertiary)
+                    .listRowSeparatorTint(.muted.opacity(0.3))
+                }
+            }
+            .listStyle(.plain)
+            .background(Color.bg)
+            .navigationTitle("\(addresses.count) Addresses")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") {
+                        HapticManager.light()
+                        dismiss()
+                    }
+                    .font(.label)
+                    .foregroundColor(.accent)
+                }
+            }
+        }
+    }
+}
+
 // MARK: - Fullscreen Map View
 
 struct FullscreenMapView: View {
     let campaignID: UUID
-    let store: CampaignV2Store
-    @ObservedObject var mapVM: UseCampaignMap
-    let mapCenter: CLLocationCoordinate2D
     let namespace: Namespace.ID
-    @Binding var isDrawingPolygon: Bool
     let onClose: () -> Void
-    @State private var selectedAddressId: String? = nil
-    @State private var selectedAddressLabel: String = ""
-    @State private var isStatusSheetPresented = false
-    
+    @ObservedObject private var sessionManager = SessionManager.shared
+
     var body: some View {
         ZStack(alignment: .topTrailing) {
-            CampaignMapView(
-                vm: mapVM,
-                centerCoordinate: mapCenter,
-                isDrawingPolygon: $isDrawingPolygon,
-                onPolygonComplete: { vertices in
-                    Task {
-                        await mapVM.loadAddressesInPolygon(polygon: vertices, campaignId: campaignID)
-                        let count = mapVM.homes.count
-                        print("✅ [POLYGON] Total addresses after polygon query: \(count)")
-                    }
-                    isDrawingPolygon = false
-                },
-                onAddressTapped: { addressId in
-                    handleAddressTapped(addressId: addressId)
-                }
-            )
-            .ignoresSafeArea()
-            .matchedGeometryEffect(id: "map", in: namespace)
-            
-            // Top controls
-            VStack {
-                HStack {
-                    // Draw Area button
-                    Button(action: {
-                        let impactFeedback = UIImpactFeedbackGenerator(style: .light)
-                        impactFeedback.impactOccurred()
-                        if isDrawingPolygon {
-                            // Exiting draw mode - polygon will be finalized in updateUIView
-                            isDrawingPolygon = false
-                        } else {
-                            // Entering draw mode
-                            isDrawingPolygon = true
-                        }
-                    }) {
-                        Text(isDrawingPolygon ? "Done" : "Draw Area")
-                            .font(.subheadline)
-                            .fontWeight(.medium)
-                            .foregroundColor(isDrawingPolygon ? .white : .accent)
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 8)
-                            .background(isDrawingPolygon ? Color.accent : Color.accent.opacity(0.1))
-                            .cornerRadius(10)
-                    }
-                    
-                    Spacer()
-                    
-                    // Close button
-                    Button(action: {
-                        // Haptic feedback
-                        let impactFeedback = UIImpactFeedbackGenerator(style: .light)
-                        impactFeedback.impactOccurred()
-                        onClose()
-                    }) {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 30))
-                            .foregroundColor(.white)
-                            .padding(8)
-                            .background(Color.black.opacity(0.4))
-                            .clipShape(Circle())
-                    }
-                }
-                .padding()
-                
-                Spacer()
-            }
-            
-            // Overlays: fetching ribbon + footnote
-            VStack {
-                // Fetching buildings ribbon
-                if mapVM.isFetchingBuildings {
+            CampaignMapView(campaignId: campaignID.uuidString)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .ignoresSafeArea()
+                .matchedGeometryEffect(id: "map", in: namespace, isSource: true)
+
+            // X close button only when no active session (Finish is in map overlay when session active)
+            // Top-right, aligned with building toggle (same insets as map overlayUI)
+            if sessionManager.sessionId == nil {
+                VStack {
                     HStack {
-                        ProgressView()
-                            .tint(.white)
-                        Text("Fetching buildings…")
-                            .font(.footnote)
-                            .foregroundColor(.white)
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(Color.black.opacity(0.75))
-                    .cornerRadius(10)
-                    .padding(.top, 100) // Account for top controls
-                }
-                
-                Spacer()
-                
-                // Drawing mode indicator
-                if isDrawingPolygon {
-                    VStack {
-                        HStack {
-                            VStack(alignment: .leading, spacing: 4) {
-                                HStack {
-                                    Image(systemName: "hand.tap.fill")
-                                        .font(.caption)
-                                    Text("Tap map to add polygon points")
-                                        .font(.caption)
-                                }
-                                Text("Tap 'Done' when finished")
-                                    .font(.caption2)
-                            }
-                            .foregroundColor(.white)
-                            .padding(12)
-                            .background(Color.accent.opacity(0.9))
-                            .cornerRadius(10)
-                            Spacer()
+                        Spacer()
+                        Button(action: {
+                            let impactFeedback = UIImpactFeedbackGenerator(style: .light)
+                            impactFeedback.impactOccurred()
+                            onClose()
+                        }) {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.system(size: 30))
+                                .foregroundColor(.white)
+                                .padding(8)
+                                .background(Color.black.opacity(0.4))
+                                .clipShape(Circle())
                         }
-                        .padding(.leading, 8)
-                        .padding(.bottom, 8)
+                        .padding(.trailing, 8)
                     }
-                }
-                
-                // Buildings X/Y footnote
-                HStack {
-                    Text(mapVM.buildingStats.isEmpty ? "Buildings: 0/0" : mapVM.buildingStats)
-                        .font(.footnote)
-                        .foregroundColor(.secondary)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(Color.black.opacity(0.55))
-                        .cornerRadius(8)
+                    .padding(.top, 52)
                     Spacer()
                 }
-                .padding(.leading, 8)
-                .padding(.bottom, 8)
-            }
-        }
-        .sheet(isPresented: $isStatusSheetPresented) {
-            if let addressId = selectedAddressId {
-                StatusPickerSheet(
-                    addressLabel: selectedAddressLabel,
-                    currentStatus: mapVM.addressStatuses[addressId] ?? .none,
-                    onSelect: { status in
-                        handleStatusSelected(addressId: addressId, newStatus: status)
-                    }
-                )
-            }
-        }
-    }
-    
-    // MARK: - Status Picker Handlers
-    
-    private func handleAddressTapped(addressId: String) {
-        // Look up address label from mapVM.homes
-        if let home = mapVM.homes.first(where: { $0.id.uuidString == addressId }) {
-            selectedAddressId = addressId
-            selectedAddressLabel = home.address
-            isStatusSheetPresented = true
-            print("📋 [STATUS] Address tapped: \(home.address) (ID: \(addressId))")
-        } else {
-            print("⚠️ [STATUS] Address not found in homes: \(addressId)")
-        }
-    }
-    
-    private func handleStatusSelected(addressId: String, newStatus: AddressStatus) {
-        guard let addressUUID = UUID(uuidString: addressId) else {
-            print("❌ [STATUS] Invalid address ID: \(addressId)")
-            return
-        }
-        
-        Task {
-            do {
-                // Update Supabase
-                try await VisitsAPI.shared.updateStatus(
-                    addressId: addressUUID,
-                    campaignId: campaignID,
-                    status: newStatus,
-                    notes: nil
-                )
-                
-                // Update view model on main thread
-                await MainActor.run {
-                    mapVM.addressStatuses[addressId] = newStatus
-                }
-                
-                // Update Mapbox feature-state if MapView is available
-                if let mapView = mapVM.mapView {
-                    await MainActor.run {
-                        MapController.shared.applyStatusFeatureState(
-                            statuses: [addressId: newStatus],
-                            mapView: mapView
-                        )
-                    }
-                } else {
-                    print("⚠️ [STATUS] MapView not available for feature-state update")
-                }
-                
-                print("✅ [STATUS] Status updated: \(addressId) -> \(newStatus.rawValue)")
-            } catch {
-                print("❌ [STATUS] Error updating status: \(error)")
+                .ignoresSafeArea(edges: .top)
             }
         }
     }
@@ -801,3 +662,6 @@ struct FullscreenMapView: View {
         NewCampaignDetailView(campaignID: mockCampaign.id, store: store)
     }
 }
+
+
+

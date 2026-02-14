@@ -8,7 +8,7 @@ set -euo pipefail
 # Notes:
 # - Disables statement_timeout for this session.
 # - Imports Durham CSV into staging, then UPSERTs into addresses_master.
-# - If addresses_master is empty, seeds it from oda_addresses once.
+# - Upserts Durham rows into addresses_master.
 
 CSV_PATH="${1:-}"
 DB_URL="${DATABASE_URL:-}"
@@ -34,7 +34,7 @@ create extension if not exists citext;
 -- Unified master table (source-agnostic)
 create table if not exists public.addresses_master (
   id            bigserial primary key,
-  source        text not null,                    -- 'oda','durham_open','osm','user','fallback'
+  source        text not null,                    -- 'durham_open','osm','user','fallback'
   source_id     text,
   full_address  text not null,
   street_number citext,
@@ -43,7 +43,7 @@ create table if not exists public.addresses_master (
   province      text not null,
   postal_code     citext,
   geom          geometry(Point,4326),
-  confidence    real default 0.90,                -- ODA ~0.90, Durham ~0.95, fallback ~0.70
+  confidence    real default 0.90,                -- Durham ~0.95, fallback ~0.70
   updated_at    timestamptz default now(),
   norm_key      citext generated always as
     (trim(both from upper(
@@ -75,31 +75,6 @@ SQL
 
 echo "⬆️  COPY Durham CSV -> staging"
 ${PSQL} -c "\copy public.stage_durham from '${CSV_PATH}' with (format csv, header true)";
-
-echo "🌱 Seed master from ODA (one-time) if empty…"
-${PSQL} <<'SQL'
-do $$
-begin
-  if (select count(*) from public.addresses_master) = 0 then
-    if exists (select 1 from information_schema.tables where table_name='oda_addresses') then
-      insert into public.addresses_master
-        (source, source_id, full_address, street_number, street_name, city, province, postal_code, geom, confidence)
-      select
-        'oda' as source,
-        null as source_id,
-        oa.full_address,
-        oa.street_number,
-        oa.street_name,
-        oa.city,
-        coalesce(oa.province,'ON'),
-        oa.postal_code,
-        oa.geom,
-        0.90
-      from public.oda_addresses oa;
-    end if;
-  end if;
-end $$;
-SQL
 
 echo "🔀 Upsert Durham -> master with confidence precedence…"
 ${PSQL} <<'SQL'

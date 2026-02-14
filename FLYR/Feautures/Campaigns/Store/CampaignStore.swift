@@ -25,6 +25,7 @@ final class CampaignStore: ObservableObject {
         do {
             campaigns = try await CampaignsAPI.shared.fetchCampaigns()
         } catch {
+            if (error as NSError).code == NSURLErrorCancelled { isLoading = false; return }
             self.error = "Failed to load campaigns: \(error.localizedDescription)"
         }
         
@@ -44,6 +45,7 @@ final class CampaignStore: ObservableObject {
         do {
             campaignsV2 = try await CampaignsAPI.shared.fetchCampaignsV2()
         } catch {
+            if (error as NSError).code == NSURLErrorCancelled { isLoading = false; return }
             self.error = "Failed to load V2 campaigns: \(error.localizedDescription)"
         }
         

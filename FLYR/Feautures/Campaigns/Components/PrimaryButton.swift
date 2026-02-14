@@ -3,6 +3,7 @@ import SwiftUI
 struct PrimaryButton: View {
     let title: String
     var enabled: Bool = true
+    var isLoading: Bool = false
     var style: ButtonStyle = .primary
     var action: () -> Void
     
@@ -11,13 +12,30 @@ struct PrimaryButton: View {
         case success
     }
     
+    private var effectiveEnabled: Bool { enabled && !isLoading }
+    
     var body: some View {
         Button(action: action) {
-            Text(title)
-                .frame(maxWidth: .infinity)
+            Group {
+                if isLoading {
+                    HStack(spacing: 10) {
+                        ProgressView()
+                            .tint(.white)
+                            .scaleEffect(0.9)
+                        Text("Creating…")
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundStyle(.white)
+                    }
+                    .frame(maxWidth: .infinity)
+                } else {
+                    Text(title)
+                        .frame(maxWidth: .infinity)
+                }
+            }
         }
         .buttonStyle(.plain)
-        .modifier(ButtonStyleModifier(enabled: enabled, style: style))
+        .disabled(isLoading)
+        .modifier(ButtonStyleModifier(enabled: effectiveEnabled, style: style))
     }
 }
 

@@ -6,6 +6,11 @@ import SwiftUI
 final class AppUIState: ObservableObject {
     @Published var showTabBar: Bool = true
     @Published var colorScheme: ColorScheme? = nil // nil = system default
+    /// Selected main tab: 0 Campaigns, 1 Map, 2 Record, 3 Leads, 4 Stats, 5 Settings.
+    @Published var selectedTabIndex: Int = 0
+    /// Campaign selected on Map tab; Record tab turns red and tapping Record opens this campaign.
+    @Published var selectedMapCampaignId: UUID?
+    @Published var selectedMapCampaignName: String?
     
     private let settingsService = SettingsService.shared
     

@@ -48,12 +48,61 @@ actor ContactsService {
         return try await fetchContacts(userID: userID, filter: ContactFilter(farmId: farmID))
     }
     
+    /// Fetches contacts for a specific address using FK relationship
+    /// - Parameter addressId: The campaign_addresses.id to fetch contacts for
+    /// - Returns: Array of contacts linked to this address
+    func fetchContactsForAddress(addressId: UUID) async throws -> [Contact] {
+        let response: [Contact] = try await client
+            .from("contacts")
+            .select()
+            .eq("address_id", value: addressId)
+            .order("created_at", ascending: false)
+            .execute()
+            .value
+        
+        return response
+    }
+    
+    /// Fetches contacts for an address using text matching (fallback for legacy data)
+    /// - Parameters:
+    ///   - addressText: The address text to search for
+    ///   - campaignId: The campaign ID to filter by
+    /// - Returns: Array of contacts that match the address text
+    func fetchContactsForAddressText(addressText: String, campaignId: UUID) async throws -> [Contact] {
+        let response: [Contact] = try await client
+            .from("contacts")
+            .select()
+            .ilike("address", pattern: "%\(addressText)%")
+            .eq("campaign_id", value: campaignId)
+            .order("created_at", ascending: false)
+            .execute()
+            .value
+        
+        return response
+    }
+    
+    /// Links a contact to an address via FK
+    /// - Parameters:
+    ///   - contactId: The contact ID to link
+    ///   - addressId: The campaign_addresses.id to link to
+    func linkContactToAddress(contactId: UUID, addressId: UUID) async throws {
+        let updateData: [String: AnyCodable] = [
+            "address_id": AnyCodable(addressId)
+        ]
+        
+        try await client
+            .from("contacts")
+            .update(updateData)
+            .eq("id", value: contactId)
+            .execute()
+    }
+    
     // MARK: - Contact CRUD
     
-    func addContact(_ contact: Contact, userID: UUID) async throws -> Contact {
+    func addContact(_ contact: Contact, userID: UUID, addressId: UUID? = nil) async throws -> Contact {
         var contactToInsert = contact
         // Ensure user_id is set
-        let insertData: [String: AnyCodable] = [
+        var insertData: [String: AnyCodable] = [
             "id": AnyCodable(contactToInsert.id),
             "user_id": AnyCodable(userID),
             "full_name": AnyCodable(contactToInsert.fullName),
@@ -67,6 +116,11 @@ actor ContactsService {
             "notes": AnyCodable(contactToInsert.notes),
             "reminder_date": AnyCodable(contactToInsert.reminderDate)
         ]
+        
+        // Add address_id if provided
+        if let addressId = addressId {
+            insertData["address_id"] = AnyCodable(addressId)
+        }
         
         let response: [Contact] = try await client
             .from("contacts")
@@ -88,8 +142,8 @@ actor ContactsService {
         return inserted
     }
     
-    func updateContact(_ contact: Contact) async throws -> Contact {
-        let updateData: [String: AnyCodable] = [
+    func updateContact(_ contact: Contact, addressId: UUID? = nil) async throws -> Contact {
+        var updateData: [String: AnyCodable] = [
             "full_name": AnyCodable(contact.fullName),
             "phone": AnyCodable(contact.phone),
             "email": AnyCodable(contact.email),
@@ -101,6 +155,11 @@ actor ContactsService {
             "notes": AnyCodable(contact.notes),
             "reminder_date": AnyCodable(contact.reminderDate)
         ]
+        
+        // Add address_id if provided
+        if let addressId = addressId {
+            updateData["address_id"] = AnyCodable(addressId)
+        }
         
         let response: [Contact] = try await client
             .from("contacts")

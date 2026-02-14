@@ -5,11 +5,10 @@ import Combine
 import CoreLocation
 
 // MARK: - Display Mode
-/// Controls what's visible on the campaign map
+/// Controls what's visible on the campaign map (cubes only or pins only — never both)
 enum DisplayMode: String, CaseIterable, Identifiable {
     case buildings = "Buildings"
     case addresses = "Addresses"
-    case both = "Both"
     
     var id: String { rawValue }
     
@@ -17,7 +16,6 @@ enum DisplayMode: String, CaseIterable, Identifiable {
         switch self {
         case .buildings: return "building.2"
         case .addresses: return "mappin"
-        case .both: return "square.stack.3d.up"
         }
     }
     
@@ -25,18 +23,18 @@ enum DisplayMode: String, CaseIterable, Identifiable {
         switch self {
         case .buildings: return "3D building footprints"
         case .addresses: return "Address pin locations"
-        case .both: return "Buildings and addresses"
         }
     }
 }
 
-// MARK: - Display Mode Toggle
+// MARK: - Display Mode Toggle (legacy segmented)
 struct DisplayModeToggle: View {
     @Binding var mode: DisplayMode
+    var compact: Bool = false
     var onChange: ((DisplayMode) -> Void)?
     
     var body: some View {
-        VStack(spacing: 4) {
+        VStack(spacing: compact ? 0 : 4) {
             Picker("Display Mode", selection: $mode) {
                 ForEach(DisplayMode.allCases) { displayMode in
                     Label(displayMode.rawValue, systemImage: displayMode.icon)
@@ -48,17 +46,129 @@ struct DisplayModeToggle: View {
                 onChange?(newMode)
             }
             
-            Text(mode.description)
-                .font(.caption)
-                .foregroundColor(.secondary)
+            if !compact {
+                Text(mode.description)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
+        .padding(.horizontal, compact ? 8 : 16)
+        .padding(.vertical, compact ? 6 : 8)
         .background(
             RoundedRectangle(cornerRadius: 12)
                 .fill(Color(.systemBackground))
                 .shadow(color: .black.opacity(0.1), radius: 4, x: 0, y: 2)
         )
+    }
+}
+
+// MARK: - Map layer toggle: Buildings or Pins only (never both); icons only, no labels
+struct BuildingCircleToggle: View {
+    @Binding var mode: DisplayMode
+    var onChange: ((DisplayMode) -> Void)?
+    
+    private func option(_ displayMode: DisplayMode, icon: String) -> some View {
+        let isSelected = mode == displayMode
+        return Button {
+            HapticManager.light()
+            mode = displayMode
+            onChange?(displayMode)
+        } label: {
+            Image(systemName: icon)
+                .font(.system(size: 18, weight: .medium))
+                .foregroundColor(isSelected ? .black : .gray)
+                .frame(width: 44, height: 36)
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(isSelected ? Color.red : Color.black)
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+    
+    var body: some View {
+        HStack(spacing: 4) {
+            option(.buildings, icon: "cube.fill")
+            option(.addresses, icon: "circle.fill")
+        }
+        .padding(4)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color.black)
+                .shadow(color: .black.opacity(0.2), radius: 6, x: 0, y: 2)
+        )
+        .fixedSize(horizontal: true, vertical: true)
+    }
+}
+
+// MARK: - Session Progress Pill (black bg, red text; tap for minimal dropdown)
+struct SessionProgressPill: View {
+    @ObservedObject var sessionManager: SessionManager
+    @Binding var isExpanded: Bool
+    
+    var body: some View {
+        Button {
+            HapticManager.light()
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+                isExpanded.toggle()
+            }
+        } label: {
+            Text("Progress")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundColor(.red)
+                .padding(.horizontal, 20)
+                .padding(.vertical, 12)
+                .background(
+                    RoundedRectangle(cornerRadius: 12)
+                        .fill(Color.black)
+                        .shadow(color: .black.opacity(0.3), radius: 4, x: 0, y: 2)
+                )
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Minimal Progress Dropdown (time / distance / doors + progress bar only)
+struct SessionProgressDropdown: View {
+    @ObservedObject var sessionManager: SessionManager
+    @Binding var isExpanded: Bool
+    
+    var body: some View {
+        VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 16) {
+                    Text(sessionManager.formattedElapsedTime)
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundColor(.primary)
+                    Text(sessionManager.formattedDistance)
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundColor(.primary)
+                    Text("\(sessionManager.completedCount)/\(sessionManager.targetCount) doors")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundColor(.primary)
+                }
+                GeometryReader { geometry in
+                    ZStack(alignment: .leading) {
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(Color.gray.opacity(0.25))
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(Color.green)
+                            .frame(width: max(0, geometry.size.width * sessionManager.progressPercentage))
+                    }
+                }
+                .frame(height: 6)
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(Color(.systemBackground))
+                    .shadow(color: .black.opacity(0.2), radius: 8, x: 0, y: 4)
+            )
+            .padding(.horizontal, 8)
+        }
+        .padding(.top, 4)
     }
 }
 
@@ -75,6 +185,7 @@ struct CampaignMapView: View {
     @State private var mapView: MapView?
     @State private var layerManager: MapLayerManager?
     @State private var selectedBuilding: BuildingProperties?
+    @State private var selectedAddress: MapLayerManager.AddressTapResult?
     @State private var showLocationCard = false
     @State private var showLeadCaptureSheet = false
     @State private var hasFlownToCampaign = false
@@ -90,18 +201,21 @@ struct CampaignMapView: View {
     @State private var showConversations = true
     @State private var showTouched = true
     @State private var showUntouched = true
-    @State private var showGestureInfoSheet = false
-    
-    // Display mode (Buildings/Addresses/Both)
-    @State private var displayMode: DisplayMode = .both
+    // Display mode: Buildings only or Pins only (never both)
+    @State private var displayMode: DisplayMode = .buildings
+    @State private var showEndSessionConfirmation = false
+    @State private var keyboardHeight: CGFloat = 0
 
     var body: some View {
+        campaignMapContent
+    }
+
+    private var campaignMapContent: some View {
         GeometryReader { geometry in
             ZStack {
                 mapLayer(geometry: geometry)
                 sessionStatsOverlay
                 overlayUI
-                legendAndInfoOverlay
                 locationCardOverlay
                 loadingOverlay
             }
@@ -114,6 +228,16 @@ struct CampaignMapView: View {
                     )
                 }
             }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .ignoresSafeArea(sessionManager.sessionId != nil ? .all : [])  // Force full screen in session mode
+        .alert("Are you sure?", isPresented: $showEndSessionConfirmation) {
+            Button("Cancel", role: .cancel) {}
+            Button("End", role: .destructive) {
+                SessionManager.shared.stop()
+            }
+        } message: {
+            Text("This will end your session. You’ll see your summary and can share the transparent card.")
         }
         .onAppear {
             loadCampaignData()
@@ -136,8 +260,16 @@ struct CampaignMapView: View {
         .onChange(of: sessionManager.pathCoordinates.count) { _, _ in
             updateSessionPathOnMap()
         }
-        .sheet(isPresented: $showGestureInfoSheet) {
-            MapGestureInfoSheet()
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { notification in
+            guard let frame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
+            withAnimation(.easeOut(duration: 0.25)) {
+                keyboardHeight = frame.height
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+            withAnimation(.easeOut(duration: 0.25)) {
+                keyboardHeight = 0
+            }
         }
         .sheet(isPresented: $showTargetsSheet) {
             NextTargetsSheet(
@@ -223,49 +355,71 @@ struct CampaignMapView: View {
 
     @ViewBuilder
     private var sessionStatsOverlay: some View {
-        if sessionManager.sessionId != nil {
-            VStack(spacing: 0) {
-                StatsCardView(
-                    sessionManager: sessionManager,
-                    isExpanded: $statsExpanded,
-                    dragOffset: $dragOffset
-                )
-                .padding(.top, 8)
-                .offset(y: dragOffset)
-                .gesture(
-                    DragGesture()
-                        .onChanged { value in
-                            if value.translation.height > 0 {
-                                dragOffset = value.translation.height
-                            }
-                        }
-                        .onEnded { value in
-                            if value.translation.height > 100 {
-                                withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
-                                    statsExpanded = false
-                                    dragOffset = 0
-                                }
-                            } else {
-                                withAnimation(.spring(response: 0.3, dampingFraction: 0.9)) {
-                                    dragOffset = 0
-                                }
-                            }
-                        }
-                )
-                Spacer()
-            }
-            .transition(.move(edge: .top))
+        if sessionManager.sessionId != nil, statsExpanded {
+            Color.clear
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+                        statsExpanded = false
+                    }
+                }
+                .overlay(alignment: .topTrailing) {
+                    VStack(alignment: .trailing, spacing: 0) {
+                        SessionProgressDropdown(sessionManager: sessionManager, isExpanded: $statsExpanded)
+                            .frame(maxWidth: 320, alignment: .trailing)
+                        Spacer()
+                    }
+                    .padding(.top, 56 + 44)
+                    .padding(.trailing, 8)
+                }
+                .transition(.opacity)
         }
     }
 
     @ViewBuilder
     private var overlayUI: some View {
         VStack {
-            // Display mode toggle at top
-            DisplayModeToggle(mode: $displayMode) { newMode in
-                updateLayerVisibility(for: newMode)
+            if sessionManager.sessionId != nil {
+                // Session: building/circle toggle, Progress pill, End button top right
+                HStack(alignment: .top, spacing: 12) {
+                    BuildingCircleToggle(mode: $displayMode) { newMode in
+                        updateLayerVisibility(for: newMode)
+                    }
+                    Spacer(minLength: 8)
+                    SessionProgressPill(sessionManager: sessionManager, isExpanded: $statsExpanded)
+                    Button {
+                        HapticManager.light()
+                        showEndSessionConfirmation = true
+                    } label: {
+                        Text("End")
+                            .font(.flyrSubheadline)
+                            .fontWeight(.semibold)
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 10)
+                            .background(Color.red)
+                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.top, 8)
+                .padding(.horizontal, 12)
+                .safeAreaPadding(.top, 48)
+                .safeAreaPadding(.leading, 4)
+                .safeAreaPadding(.trailing, 4)
+            } else {
+                // Pre-session: building/circle toggle brought down, Start session at bottom
+                HStack(alignment: .top, spacing: 0) {
+                    BuildingCircleToggle(mode: $displayMode) { newMode in
+                        updateLayerVisibility(for: newMode)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(.top, 8)
+                .padding(.horizontal, 12)
+                .safeAreaPadding(.top, 48)
+                .safeAreaPadding(.leading, 4)
             }
-            .padding(.top, 8)
             
             Spacer()
             
@@ -286,57 +440,51 @@ struct CampaignMapView: View {
         }
     }
     
-    /// Update layer visibility based on display mode
+    /// Update layer visibility based on display mode (cubes only or pins only)
     private func updateLayerVisibility(for mode: DisplayMode) {
         guard let manager = layerManager else { return }
+        guard let map = mapView?.mapboxMap else { return }
+        
+        let hasBuildingsLayer = map.allLayerIdentifiers.contains(where: { $0.id == MapLayerManager.buildingsLayerId })
+        let hasAddressesLayer = map.allLayerIdentifiers.contains(where: { $0.id == MapLayerManager.addressesLayerId })
+        if !hasBuildingsLayer || !hasAddressesLayer {
+            print("🔍 [CampaignMap] Layers not in style yet (buildings=\(hasBuildingsLayer) addresses=\(hasAddressesLayer)); visibility will apply after style load")
+        }
         
         switch mode {
         case .buildings:
             manager.includeBuildingsLayer = true
             manager.includeAddressesLayer = false
-            try? mapView?.mapboxMap.updateLayer(withId: MapLayerManager.buildingsLayerId, type: FillExtrusionLayer.self) { $0.visibility = .constant(.visible) }
-            try? mapView?.mapboxMap.updateLayer(withId: MapLayerManager.addressesLayerId, type: CircleLayer.self) { $0.visibility = .constant(.none) }
+            if hasBuildingsLayer {
+                try? map.updateLayer(withId: MapLayerManager.buildingsLayerId, type: FillExtrusionLayer.self) { $0.visibility = .constant(.visible) }
+            }
+            if hasAddressesLayer {
+                try? map.updateLayer(withId: MapLayerManager.addressesLayerId, type: FillExtrusionLayer.self) { $0.visibility = .constant(.none) }
+            }
         case .addresses:
             manager.includeBuildingsLayer = false
             manager.includeAddressesLayer = true
-            try? mapView?.mapboxMap.updateLayer(withId: MapLayerManager.buildingsLayerId, type: FillExtrusionLayer.self) { $0.visibility = .constant(.none) }
-            try? mapView?.mapboxMap.updateLayer(withId: MapLayerManager.addressesLayerId, type: CircleLayer.self) { $0.visibility = .constant(.visible) }
-        case .both:
-            manager.includeBuildingsLayer = true
-            manager.includeAddressesLayer = true
-            try? mapView?.mapboxMap.updateLayer(withId: MapLayerManager.buildingsLayerId, type: FillExtrusionLayer.self) { $0.visibility = .constant(.visible) }
-            try? mapView?.mapboxMap.updateLayer(withId: MapLayerManager.addressesLayerId, type: CircleLayer.self) { $0.visibility = .constant(.visible) }
+            // Update addresses source first so circles have data when layer becomes visible
+            let addressCount = featuresService.addresses?.features.count ?? 0
+            let buildingCount = featuresService.buildings?.features.count ?? 0
+            let hasAddressPoints = addressCount > 0
+            print("🔍 [CampaignMap] addresses=\(addressCount) buildings=\(buildingCount) hasAddressPoints=\(hasAddressPoints)")
+            if hasAddressPoints, let addressesData = featuresService.addressesAsGeoJSONData() {
+                manager.updateAddresses(addressesData)
+            } else if let buildingsData = featuresService.buildingsAsGeoJSONData() {
+                manager.updateAddressesFromBuildingCentroids(buildingGeoJSONData: buildingsData)
+            } else {
+                print("⚠️ [CampaignMap] No address or building data for circle extrusions")
+            }
+            if hasBuildingsLayer {
+                try? map.updateLayer(withId: MapLayerManager.buildingsLayerId, type: FillExtrusionLayer.self) { $0.visibility = .constant(.none) }
+            }
+            if hasAddressesLayer {
+                try? map.updateLayer(withId: MapLayerManager.addressesLayerId, type: FillExtrusionLayer.self) { $0.visibility = .constant(.visible) }
+            }
         }
         
         print("🗺️ [CampaignMap] Display mode changed to: \(mode)")
-    }
-
-    @ViewBuilder
-    private var legendAndInfoOverlay: some View {
-        if sessionManager.sessionId == nil {
-            VStack(alignment: .trailing, spacing: 8) {
-                MapLegendView(
-                    showQrScanned: $showQrScanned,
-                    showConversations: $showConversations,
-                    showTouched: $showTouched,
-                    showUntouched: $showUntouched,
-                    onFilterChanged: updateFilters
-                )
-                Button {
-                    showGestureInfoSheet = true
-                } label: {
-                    Image(systemName: "info.circle")
-                        .font(.system(size: 22))
-                        .foregroundColor(.primary)
-                        .frame(width: 44, height: 44)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            }
-            .padding(.top, 8)
-            .padding(.trailing, 8)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-        }
     }
 
     @ViewBuilder
@@ -356,6 +504,7 @@ struct CampaignMapView: View {
                     onClose: {
                         showLocationCard = false
                         selectedBuilding = nil
+                        selectedAddress = nil
                     },
                     onStatusUpdated: { addressId, status in
                         if let map = mapView {
@@ -363,10 +512,42 @@ struct CampaignMapView: View {
                         }
                         let layerStatus: String = (status == .talked || status == .appointment) ? "hot" : "visited"
                         layerManager?.updateBuildingState(gersId: gersIdString, status: layerStatus, scansTotal: 0)
+                        layerManager?.updateAddressState(addressId: addressId.uuidString, status: layerStatus, scansTotal: 0)
                     }
                 )
                 .padding()
             }
+            .padding(.bottom, keyboardHeight)
+            .transition(.move(edge: .bottom))
+        } else if showLocationCard,
+                  let address = selectedAddress,
+                  let campId = UUID(uuidString: campaignId) {
+            let gersId = (address.buildingGersId ?? address.gersId).flatMap({ UUID(uuidString: $0) })
+                ?? UUID(uuidString: "00000000-0000-0000-0000-000000000000")!
+            VStack {
+                Spacer()
+                LocationCardView(
+                    gersId: gersId,
+                    campaignId: campId,
+                    addressId: address.addressId,
+                    addressText: address.formatted,
+                    onClose: {
+                        showLocationCard = false
+                        selectedBuilding = nil
+                        selectedAddress = nil
+                    },
+                    onStatusUpdated: { addressId, status in
+                        if let map = mapView {
+                            MapController.shared.applyStatusFeatureState(statuses: [addressId.uuidString: status], mapView: map)
+                        }
+                        let layerStatus: String = (status == .talked || status == .appointment) ? "hot" : "visited"
+                        layerManager?.updateBuildingState(gersId: gersId.uuidString, status: layerStatus, scansTotal: 0)
+                        layerManager?.updateAddressState(addressId: addressId.uuidString, status: layerStatus, scansTotal: 0)
+                    }
+                )
+                .padding()
+            }
+            .padding(.bottom, keyboardHeight)
             .transition(.move(edge: .bottom))
         }
     }
@@ -385,8 +566,13 @@ struct CampaignMapView: View {
     
     private func setupMap(_ map: MapView) {
         let manager = MapLayerManager(mapView: map)
-        manager.includeAddressesLayer = false  // Hide purple pins; keep buildings and address data/logic
+        manager.includeBuildingsLayer = true
+        manager.includeAddressesLayer = true  // Add both layers; visibility controlled by toggle (buildings vs circle extrusions)
         self.layerManager = manager
+
+        // Hide map zoom/scale bar/compass ornaments
+        map.ornaments.options.scaleBar.visibility = .hidden
+        map.ornaments.options.compass.visibility = .hidden
 
         // Wait for style to load
         map.mapboxMap.onStyleLoaded.observe { _ in
@@ -407,6 +593,8 @@ struct CampaignMapView: View {
             updateMapData()
             flyToCampaignCenterIfNeeded(map: map)
             updateSessionPathOnMap()
+            // Apply current display mode so buildings vs circle extrusions match toggle
+            updateLayerVisibility(for: displayMode)
         }.store(in: &cancellables)
     }
     
@@ -421,8 +609,11 @@ struct CampaignMapView: View {
         
         manager.updateBuildings(featuresService.buildingsAsGeoJSONData())
         
-        if let addressesData = featuresService.addressesAsGeoJSONData() {
+        let hasAddressPoints = (featuresService.addresses?.features.isEmpty ?? true) == false
+        if hasAddressPoints, let addressesData = featuresService.addressesAsGeoJSONData() {
             manager.updateAddresses(addressesData)
+        } else if let buildingsData = featuresService.buildingsAsGeoJSONData() {
+            manager.updateAddressesFromBuildingCentroids(buildingGeoJSONData: buildingsData)
         }
         
         if let roadsData = featuresService.roadsAsGeoJSONData() {
@@ -509,12 +700,17 @@ struct CampaignMapView: View {
     private func handleTap(at point: CGPoint) {
         guard let manager = layerManager else { return }
 
-        manager.getBuildingAt(point: point) { building in
-            guard let building = building else { return }
-
-            selectedBuilding = building
-            withAnimation {
-                showLocationCard = true
+        manager.getBuildingOrAddressAt(point: point) { result in
+            guard let result = result else { return }
+            switch result {
+            case .building(let building):
+                selectedBuilding = building
+                selectedAddress = nil
+                withAnimation { showLocationCard = true }
+            case .address(let address):
+                selectedBuilding = nil
+                selectedAddress = address
+                withAnimation { showLocationCard = true }
             }
         }
     }
@@ -754,6 +950,10 @@ struct LocationCardView: View {
     @StateObject private var dataService: BuildingDataService
     @StateObject private var voiceRecorder = VoiceRecorderManager()
     @State private var nameText: String = ""
+    @State private var firstName: String = ""
+    @State private var lastName: String = ""
+    @State private var phoneText: String = ""
+    @State private var emailText: String = ""
     @State private var notesText: String = ""
     @State private var showAddResidentSheet = false
     @State private var addResidentAddress: ResolvedAddress?
@@ -770,48 +970,58 @@ struct LocationCardView: View {
         _dataService = StateObject(wrappedValue: BuildingDataService(supabase: SupabaseManager.shared.client))
     }
     
+    private var cardBackground: Color { .black }
+    private var cardFieldBorder: Color { Color(white: 0.28) }
+    private var cardPlaceholder: Color { Color(white: 0.5) }
+    
+    /// Street number/name only from a full address string (e.g. "74 MADDEN PL , BOWMANVILLE, ON" -> "74 MADDEN PL")
+    private func streetOnly(from full: String) -> String {
+        if let idx = full.range(of: " , ")?.lowerBound {
+            return String(full[..<idx]).trimmingCharacters(in: .whitespaces)
+        }
+        return full.trimmingCharacters(in: .whitespaces)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Close button at top
-            HStack {
+            // Save + Close buttons top right
+            HStack(spacing: 4) {
                 Spacer()
+                Button("Save") {
+                    onSaveForm()
+                }
+                .font(.system(size: 14, weight: .medium))
+                .foregroundColor(.red)
                 Button(action: onClose) {
                     Image(systemName: "xmark")
-                        .foregroundColor(.gray)
-                        .padding(8)
-                        .background(Color.gray.opacity(0.1))
-                        .clipShape(Circle())
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundColor(.white)
+                        .frame(width: 32, height: 32)
                 }
-                .padding(.horizontal)
-                .padding(.top, 8)
-                .padding(.bottom, 4)
             }
+            .padding(.trailing, 12)
+            .padding(.top, 12)
             
-            // Address from tap (shown immediately until we have resolved content)
-            if let address = addressText, !address.isEmpty,
-               dataService.buildingData.isLoading || dataService.buildingData.error != nil || !dataService.buildingData.addressLinked {
-                Text(address)
-                    .font(.flyrSubheadline)
-                    .foregroundColor(.primary)
-                    .lineLimit(3)
-                    .padding(.horizontal)
-                    .padding(.bottom, 8)
+            ScrollView {
+                if dataService.buildingData.isLoading {
+                    loadingView
+                } else if let error = dataService.buildingData.error {
+                    errorView(error: error)
+                } else if !dataService.buildingData.addressLinked {
+                    unlinkedBuildingView
+                } else if let address = dataService.buildingData.address {
+                    mainContentView(address: address)
+                } else if let addressText = addressText, !addressText.isEmpty {
+                    universalCardContent(displayAddress: addressText, address: nil)
+                }
             }
-            
-            if dataService.buildingData.isLoading {
-                loadingView
-            } else if let error = dataService.buildingData.error {
-                errorView(error: error)
-            } else if !dataService.buildingData.addressLinked {
-                unlinkedBuildingView
-            } else if let address = dataService.buildingData.address {
-                mainContentView(address: address)
-            }
+            .scrollDismissesKeyboard(.interactively)
+            .frame(maxHeight: 420)
         }
-        .frame(width: 320)
-        .background(Color(UIColor.systemBackground))
+        .frame(maxWidth: 400)
+        .background(cardBackground)
         .cornerRadius(16)
-        .shadow(color: .black.opacity(0.2), radius: 20)
+        .shadow(color: .black.opacity(0.4), radius: 20)
         .task {
             await dataService.fetchBuildingData(gersId: gersId, campaignId: campaignId, addressId: addressId)
         }
@@ -842,13 +1052,22 @@ struct LocationCardView: View {
     // MARK: - Loading State
     
     private var loadingView: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 14) {
+            if let addr = addressText, !addr.isEmpty {
+                Text(streetOnly(from: addr).uppercased())
+                    .font(.system(size: 17, weight: .bold))
+                    .foregroundColor(.white)
+                    .lineLimit(2)
+            }
             ProgressView()
+                .tint(.white)
             Text("Loading...")
-                .foregroundColor(.gray)
-            nameRow
+                .foregroundColor(cardPlaceholder)
+            universalFormFields
         }
-        .frame(minHeight: 200)
+        .padding(.horizontal, 16)
+        .padding(.bottom, 20)
+        .frame(minHeight: 180)
         .frame(maxWidth: .infinity)
     }
     
@@ -856,61 +1075,154 @@ struct LocationCardView: View {
     
     private func errorView(error: Error) -> some View {
         VStack(alignment: .leading, spacing: 12) {
+            if let addr = addressText, !addr.isEmpty {
+                Text(streetOnly(from: addr).uppercased())
+                    .font(.system(size: 17, weight: .bold))
+                    .foregroundColor(.white)
+                    .lineLimit(2)
+            }
             HStack(spacing: 12) {
                 Image(systemName: "exclamationmark.triangle")
                     .foregroundColor(.red)
-                    .font(.flyrTitle2)
                 VStack(alignment: .leading) {
                     Text("Error loading data")
                         .fontWeight(.semibold)
+                        .foregroundColor(.white)
                     Text(error.localizedDescription)
-                        .font(.flyrCaption)
-                        .foregroundColor(.red.opacity(0.8))
+                        .font(.system(size: 12))
+                        .foregroundColor(cardPlaceholder)
                 }
             }
-            
-            nameRow
-            
+            universalFormFields
             Button("Retry") {
                 Task {
                     await dataService.fetchBuildingData(gersId: gersId, campaignId: campaignId, addressId: addressId)
                 }
             }
-            .buttonStyle(.borderedProminent)
+            .foregroundColor(.white)
+            .padding(.vertical, 10)
             .frame(maxWidth: .infinity)
+            .background(Color.red)
+            .cornerRadius(8)
         }
-        .padding()
+        .padding(.horizontal, 16)
+        .padding(.bottom, 20)
     }
     
     // MARK: - Unlinked Building State
     
     private var unlinkedBuildingView: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 12) {
-                Image(systemName: "mappin.slash")
-                    .foregroundColor(.gray)
-                    .font(.flyrTitle2)
-                VStack(alignment: .leading) {
-                    Text("Unlinked Building")
-                        .fontWeight(.semibold)
-                    Text("No address data found for this building")
-                        .font(.flyrCaption)
-                        .foregroundColor(.gray)
-                }
+        VStack(alignment: .leading, spacing: 14) {
+            if let addr = addressText, !addr.isEmpty {
+                Text(streetOnly(from: addr).uppercased())
+                    .font(.system(size: 17, weight: .bold))
+                    .foregroundColor(.white)
+                    .lineLimit(2)
             }
-            
-            Text("GERS: \(gersId.uuidString)")
-                .font(.system(.caption, design: .monospaced))
-                .foregroundColor(.gray)
-                .lineLimit(1)
-                .truncationMode(.middle)
-            
-            nameRow
+            Text("No address data for this building")
+                .font(.system(size: 12))
+                .foregroundColor(cardPlaceholder)
+            universalFormFields
         }
-        .padding()
+        .padding(.horizontal, 16)
+        .padding(.bottom, 20)
     }
     
-    // MARK: - Name Row (spot to add a name)
+    // MARK: - Universal card content (dark layout like screenshot)
+    
+    private func universalCardContent(displayAddress: String, address: ResolvedAddress?) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(streetOnly(from: displayAddress).uppercased())
+                .font(.system(size: 17, weight: .bold))
+                .foregroundColor(.white)
+                .lineLimit(2)
+            universalFormFields
+            if let address = address {
+                universalActionButtons(address: address)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.bottom, 20)
+    }
+
+    private var universalFormFields: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                HStack(spacing: 8) {
+                    Image(systemName: "person")
+                        .foregroundColor(cardPlaceholder)
+                        .frame(width: 20)
+                    universalTextField(placeholder: "First name", text: $firstName)
+                }
+                universalTextField(placeholder: "Last name", text: $lastName)
+            }
+            HStack(spacing: 8) {
+                Image(systemName: "phone")
+                    .foregroundColor(cardPlaceholder)
+                    .frame(width: 20)
+                universalTextField(placeholder: "Phone", text: $phoneText)
+            }
+            HStack(spacing: 8) {
+                Image(systemName: "envelope")
+                    .foregroundColor(cardPlaceholder)
+                    .frame(width: 20)
+                universalTextField(placeholder: "Email", text: $emailText)
+            }
+            Text("Add notes")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(.white)
+            TextField("Add notes", text: $notesText, axis: .vertical)
+                .lineLimit(3...5)
+                .padding(10)
+                .foregroundColor(.white)
+                .background(Color.black)
+                .cornerRadius(8)
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(cardFieldBorder, lineWidth: 1))
+        }
+    }
+
+    private func universalTextField(placeholder: String, text: Binding<String>) -> some View {
+        TextField(placeholder, text: text)
+            .padding(10)
+            .foregroundColor(.white)
+            .background(Color.black)
+            .cornerRadius(8)
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(cardFieldBorder, lineWidth: 1))
+    }
+
+    private var actionButtonPillStyle: some View {
+        RoundedRectangle(cornerRadius: 20)
+            .fill(Color.red)
+    }
+
+    private func universalActionButtons(address: ResolvedAddress) -> some View {
+        HStack(spacing: 8) {
+            Button(action: { onClose(); logVisitStatus(address, status: .delivered) }) {
+                Image(systemName: "door.left.hand.closed")
+                    .font(.system(size: 18))
+                    .foregroundColor(.black)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                    .background(actionButtonPillStyle)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Knocked")
+            Button(action: { onClose(); logVisitStatus(address, status: .talked) }) {
+                Image(systemName: "person.wave.2.fill")
+                    .font(.system(size: 18))
+                    .foregroundColor(.black)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                    .background(actionButtonPillStyle)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Conversation")
+            voiceNoteButton(address: address)
+        }
+        .padding(.top, 8)
+    }
+
+    // MARK: - Name Row (legacy / compatibility)
     
     private var nameRow: some View {
         HStack(spacing: 12) {
@@ -927,88 +1239,47 @@ struct LocationCardView: View {
     // MARK: - Main Content
     
     private func mainContentView(address: ResolvedAddress) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // Header
-            VStack(alignment: .leading, spacing: 4) {
-                Text(address.displayStreet)
-                    .font(.flyrHeadline)
-                    .lineLimit(1)
-                
-                Text([address.locality, address.region, address.postalCode]
-                    .filter { !$0.isEmpty }
-                    .joined(separator: ", "))
-                    .font(.flyrCaption)
-                    .foregroundColor(.gray)
-                    .lineLimit(1)
-                
-                statusBadge
-                if let lead = dataService.buildingData.leadStatus, !lead.isEmpty {
-                    Text(leadStatusDisplay(lead))
-                        .font(.flyrCaption)
-                        .foregroundColor(.secondary)
-                }
+        VStack(alignment: .leading, spacing: 14) {
+            Text(address.displayStreet.uppercased())
+                .font(.system(size: 17, weight: .bold))
+                .foregroundColor(.white)
+                .lineLimit(2)
+            if getStatusText() == "Scanned" {
+                statusBadgeUniversal
             }
-            .padding(.horizontal)
-            .padding(.top, 4)
-            .padding(.bottom, 12)
-            
-            // Content Rows
-            VStack(spacing: 12) {
-                nameRow
-                    .onAppear {
-                        if nameText.isEmpty {
-                            if let resident = dataService.buildingData.primaryResident {
-                                nameText = resident.displayName
-                            } else if let contact = dataService.buildingData.contactName, !contact.isEmpty {
-                                nameText = contact
-                            }
+            if let lead = dataService.buildingData.leadStatus, !lead.isEmpty, leadStatusDisplay(lead).lowercased() != "new" {
+                Text(leadStatusDisplay(lead))
+                    .font(.system(size: 12))
+                    .foregroundColor(cardPlaceholder)
+            }
+            universalFormFields
+                .onAppear {
+                    if firstName.isEmpty, lastName.isEmpty {
+                        if let resident = dataService.buildingData.primaryResident {
+                            let parts = resident.displayName.split(separator: " ", maxSplits: 1)
+                            firstName = String(parts.first ?? "")
+                            lastName = parts.count > 1 ? String(parts[1]) : ""
+                        } else if let contact = dataService.buildingData.contactName, !contact.isEmpty {
+                            let parts = contact.split(separator: " ", maxSplits: 1)
+                            firstName = String(parts.first ?? "")
+                            lastName = parts.count > 1 ? String(parts[1]) : ""
                         }
                     }
-                residentsRow(address: address)
-                
-                addNotesSection
-                
-                if let notes = dataService.buildingData.firstNotes {
-                    notesSection(notes: notes)
                 }
-                
-                qrStatusRow
-            }
-            .padding(.horizontal)
-            
-            // Action Footer
-            Divider()
-                .padding(.top)
-            
-            HStack(spacing: 8) {
-                Button(action: { onClose(); logVisitStatus(address, status: .delivered) }) {
-                    Image(systemName: "door.left.hand.closed")
-                        .font(.flyrSubheadline)
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.bordered)
-                .accessibilityLabel("Knocked")
-                
-                Button(action: { onClose(); logVisitStatus(address, status: .talked) }) {
-                    Image(systemName: "person.wave.2.fill")
-                        .font(.flyrSubheadline)
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.bordered)
-                .accessibilityLabel("Conversation")
-                
-                Button(action: { onClose(); logVisitStatus(address, status: .appointment) }) {
-                    Image(systemName: "calendar")
-                        .font(.flyrSubheadline)
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .accessibilityLabel("Appointment")
-                
-                voiceNoteButton(address: address)
-            }
-            .padding()
+            universalActionButtons(address: address)
         }
+        .padding(.horizontal, 16)
+        .padding(.bottom, 20)
+    }
+
+    private var statusBadgeUniversal: some View {
+        Text(getStatusText())
+            .font(.system(size: 12, weight: .medium))
+            .foregroundColor(.white)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+            .background(Color(white: 0.35))
+            .cornerRadius(12)
     }
     
     private func voiceNoteButton(address: ResolvedAddress) -> some View {
@@ -1017,23 +1288,29 @@ struct LocationCardView: View {
                 Button(action: { stopAndUploadVoiceNote(address: address) }) {
                     HStack(spacing: 4) {
                         Image(systemName: "stop.circle.fill")
-                            .foregroundColor(.red)
+                            .font(.system(size: 18))
+                            .foregroundColor(.black)
                         Text("\(Int(voiceRecorder.recordingDuration))s")
-                            .font(.flyrCaption)
-                            .foregroundColor(.red)
+                            .font(.system(size: 12))
+                            .foregroundColor(.black)
                     }
                     .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                    .background(actionButtonPillStyle)
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(.plain)
                 .disabled(isUploadingVoiceNote)
                 .accessibilityLabel("Stop and save voice note")
             } else {
                 Button(action: { startVoiceNote() }) {
                     Image(systemName: "mic.fill")
-                        .font(.flyrSubheadline)
+                        .font(.system(size: 18))
+                        .foregroundColor(.black)
                         .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                        .background(actionButtonPillStyle)
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(.plain)
                 .disabled(isUploadingVoiceNote)
                 .accessibilityLabel("Record voice note")
             }
@@ -1269,6 +1546,14 @@ struct LocationCardView: View {
     private func addContact(_ address: ResolvedAddress) {
         showAddResidentSheet = true
         addResidentAddress = address
+    }
+
+    /// Save form and close. If we have a linked address, persist notes/status then close; otherwise just close.
+    private func onSaveForm() {
+        if let address = dataService.buildingData.address {
+            logVisitStatus(address, status: .delivered)
+        }
+        onClose()
     }
 }
 

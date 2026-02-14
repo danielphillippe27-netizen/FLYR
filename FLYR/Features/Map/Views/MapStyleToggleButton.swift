@@ -8,7 +8,7 @@ struct MapStyleToggleButton: View {
             cycleMapStyle()
         } label: {
             Image(systemName: mapStyleMode.iconName)
-                .font(.title2)
+                .font(.flyrTitle2)
                 .foregroundColor(.white)
                 .padding(12)
                 .background(.ultraThinMaterial)

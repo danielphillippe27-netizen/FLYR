@@ -1,18 +1,16 @@
 import SwiftUI
 
-/// Main QR Workflow view with 4-tab bottom navigation
+/// Main QR Workflow view with 3-tab bottom navigation
 struct QRWorkflowView: View {
-    @State private var selectedTab: QRWorkflowTab = .landingPages
+    @State private var selectedTab: QRWorkflowTab = .createQR
     
     enum QRWorkflowTab: Int {
-        case landingPages = 0
-        case createQR = 1
-        case print = 2
-        case moreTools = 3
+        case createQR = 0
+        case print = 1
+        case moreTools = 2
         
         var title: String {
             switch self {
-            case .landingPages: return "Landing Pages"
             case .createQR: return "Create QR"
             case .print: return "Print"
             case .moreTools: return "More Tools"
@@ -21,7 +19,6 @@ struct QRWorkflowView: View {
         
         var icon: String {
             switch self {
-            case .landingPages: return "doc.text.fill"
             case .createQR: return "qrcode"
             case .print: return "printer.fill"
             case .moreTools: return "ellipsis.circle.fill"
@@ -31,15 +28,6 @@ struct QRWorkflowView: View {
     
     var body: some View {
         TabView(selection: $selectedTab) {
-            NavigationStack {
-                LandingPagesView()
-                    .navigationTitle("Landing Pages")
-            }
-            .tag(QRWorkflowTab.landingPages)
-            .tabItem {
-                Label("Landing Pages", systemImage: QRWorkflowTab.landingPages.icon)
-            }
-            
             NavigationStack {
                 CreateQRView()
                     .navigationTitle("Create QR Code")

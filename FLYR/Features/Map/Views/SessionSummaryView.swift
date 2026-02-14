@@ -41,7 +41,7 @@ struct SessionSummaryView: View {
                     dismiss()
                 } label: {
                     Text("Done")
-                        .font(.headline)
+                        .font(.flyrHeadline)
                         .frame(maxWidth: .infinity)
                         .padding()
                         .background(Color.blue)
@@ -78,17 +78,17 @@ struct SummaryStat: View {
     var body: some View {
         HStack(spacing: 16) {
             Image(systemName: icon)
-                .font(.title2)
+                .font(.flyrTitle2)
                 .foregroundColor(.blue)
                 .frame(width: 40)
             
             VStack(alignment: .leading, spacing: 4) {
                 Text(title)
-                    .font(.subheadline)
+                    .font(.flyrSubheadline)
                     .foregroundColor(.secondary)
                 
                 Text(value)
-                    .font(.title2.bold())
+                    .font(.flyrTitle2Bold)
                     .foregroundColor(.primary)
             }
             

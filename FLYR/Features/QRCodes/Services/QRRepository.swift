@@ -29,23 +29,10 @@ actor QRRepository {
     ) async throws -> QRCode {
         let deviceUUID = UIDevice.current.identifierForVendor?.uuidString ?? UUID().uuidString
         
-        // Check if landing page exists for this address
-        var qrUrl: String
+        let qrUrl: String
         if let campaignId = campaignId {
-            // Try to fetch landing page
-            if let landingPage = try? await LandingPagesAPI.shared.fetchLandingPageForAddress(
-                campaignId: campaignId,
-                addressId: addressId
-            ), let slug = landingPage.slug {
-                // Use landing page slug URL
-                qrUrl = "https://flyr.ai\(slug)?device=\(deviceUUID)"
-                print("✅ [QR Repository] Using landing page URL: \(qrUrl)")
-            } else {
-                // Fallback to address URL
-                qrUrl = "https://flyrpro.app/address/\(addressId.uuidString)?device=\(deviceUUID)"
-            }
+            qrUrl = "https://flyrpro.app/address/\(addressId.uuidString)?device=\(deviceUUID)&campaign=\(campaignId.uuidString)"
         } else {
-            // No campaign ID, use address URL
             qrUrl = "https://flyrpro.app/address/\(addressId.uuidString)?device=\(deviceUUID)"
         }
         
@@ -230,6 +217,62 @@ actor QRRepository {
         }
         
         print("✅ [QR Repository] QR code created with ID: \(dbRow.id)")
+        return dbRow.toQRCode()
+    }
+    
+    /// Create a new QR code with explicit URL and image (for Create QR flow)
+    func createQRCodeWithSlug(
+        campaignId: UUID? = nil,
+        farmId: UUID? = nil,
+        landingPageId: UUID? = nil,
+        slug: String? = nil,
+        qrUrl: String,
+        qrImage: String,
+        variant: String? = nil,
+        metadata: [String: AnyCodable]? = nil
+    ) async throws -> QRCode {
+        var insertData: [String: AnyCodable] = [
+            "qr_url": AnyCodable(qrUrl),
+            "qr_image": AnyCodable(qrImage)
+        ]
+        
+        if let campaignId = campaignId {
+            insertData["campaign_id"] = AnyCodable(campaignId.uuidString)
+        }
+        
+        if let farmId = farmId {
+            insertData["farm_id"] = AnyCodable(farmId.uuidString)
+        }
+        
+        if let landingPageId = landingPageId {
+            insertData["landing_page_id"] = AnyCodable(landingPageId.uuidString)
+        }
+        
+        if let slug = slug, !slug.isEmpty {
+            insertData["slug"] = AnyCodable(slug)
+        }
+        
+        if let variant = variant, !variant.isEmpty {
+            insertData["qr_variant"] = AnyCodable(variant)
+        }
+        
+        if let metadata = metadata, !metadata.isEmpty {
+            insertData["metadata"] = AnyCodable(metadata)
+        }
+        
+        let response = try await client
+            .from("qr_codes")
+            .insert(insertData)
+            .select()
+            .execute()
+        
+        let decoder = createSupabaseDecoder()
+        let dbRows: [QRCodeDBRow] = try decoder.decode([QRCodeDBRow].self, from: response.data)
+        
+        guard let dbRow = dbRows.first else {
+            throw QRRepositoryError.insertFailed("No data returned from insert")
+        }
+        
         return dbRow.toQRCode()
     }
     

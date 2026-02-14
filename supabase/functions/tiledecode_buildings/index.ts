@@ -44,7 +44,8 @@ const MAPBOX_TOKEN = Deno.env.get("MAPBOX_ACCESS_TOKEN")!;
 
 // REQUIRED: set your style here (Mapbox Studio → Styles → your style)
 // Example: mapbox://styles/<username>/<style_id>
-const STYLE_URL = Deno.env.get("MAPBOX_STYLE_URL") ?? "mapbox://styles/mapbox/streets-v11";
+// Using custom light style as default
+const STYLE_URL = Deno.env.get("MAPBOX_STYLE_URL") ?? "mapbox://styles/fliper27/cml6z0dhg002301qo9xxc08k4";
 
 // Source layer name used for buildings in Streets styles (usually "building")
 const BUILDING_LAYER = "building";

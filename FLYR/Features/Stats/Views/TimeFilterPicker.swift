@@ -45,7 +45,7 @@ struct TimeChip: View {
     var body: some View {
         Button(action: action) {
             Text(title)
-                .font(.system(.subheadline, weight: .medium))
+                .font(.flyrSubheadline)
                 .foregroundColor(isSelected ? .white : .muted)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 6)

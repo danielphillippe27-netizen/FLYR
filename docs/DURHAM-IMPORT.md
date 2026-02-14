@@ -11,8 +11,7 @@ export DATABASE_URL="postgresql://postgres:<PW>@db.<ref>.supabase.co:5432/postgr
 ```
 
 - Imports into `stage_durham`
-- Seeds `addresses_master` from `oda_addresses` once (if empty)
-- UPSERTs Durham rows with confidence=0.95
+- UPSERTs Durham rows into `addresses_master` with confidence=0.95
 - Dedupes via `norm_key` (street_no|street_name|city|province|postal_code)
 
 ## Query

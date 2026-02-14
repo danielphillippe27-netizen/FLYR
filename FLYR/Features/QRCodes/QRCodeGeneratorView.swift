@@ -70,7 +70,7 @@ struct QRCodeGeneratorView: View {
     private var campaignSelector: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Select Campaign")
-                .font(.headline)
+                .font(.flyrHeadline)
                 .padding(.horizontal)
             
             if viewModel.isLoadingCampaigns {
@@ -110,7 +110,7 @@ struct QRCodeGeneratorView: View {
     private var farmSelector: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Select Farm")
-                .font(.headline)
+                .font(.flyrHeadline)
                 .padding(.horizontal)
             
             Text("Farm selection coming soon")
@@ -129,11 +129,11 @@ struct QRCodeGeneratorView: View {
                 .foregroundStyle(.secondary)
             
             Text("No QR Codes Generated")
-                .font(.title3)
+                .font(.flyrTitle3)
                 .fontWeight(.semibold)
             
             Text("Select a campaign to generate QR codes for its addresses")
-                .font(.subheadline)
+                .font(.flyrSubheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal)
@@ -171,16 +171,16 @@ struct QRCodeCampaignCard: View {
         Button(action: action) {
             VStack(alignment: .leading, spacing: 4) {
                 Text(campaign.name)
-                    .font(.headline)
+                    .font(.flyrHeadline)
                     .foregroundStyle(isSelected ? .white : .primary)
                 
                 if let count = campaign.addressCount {
                     Text("\(count) addresses")
-                        .font(.caption)
+                        .font(.flyrCaption)
                         .foregroundStyle(isSelected ? .white.opacity(0.8) : .secondary)
                 } else {
                     Text("Tap to load")
-                        .font(.caption)
+                        .font(.flyrCaption)
                         .foregroundStyle(isSelected ? .white.opacity(0.8) : .secondary)
                 }
             }

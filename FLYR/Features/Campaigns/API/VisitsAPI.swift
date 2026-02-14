@@ -83,18 +83,24 @@ final class VisitsAPI {
     func fetchStatuses(campaignId: UUID) async throws -> [UUID: AddressStatusRow] {
         print("📊 [VisitsAPI] Fetching statuses for campaign: \(campaignId)")
         
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        
-        let res: PostgrestResponse<[AddressStatusRow]> = try await client
+        let response = try await client
             .from("address_statuses")
             .select()
             .eq("campaign_id", value: campaignId.uuidString)
             .execute()
         
-        // Convert array to dictionary keyed by address_id
+        #if DEBUG
+        let raw = String(data: response.data, encoding: .utf8) ?? ""
+        let preview = String(raw.prefix(2048))
+        print("[VisitsAPI DEBUG] address_statuses raw JSON (first 2KB): \(preview)\(raw.count > 2048 ? "…" : "")")
+        #endif
+        
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let rows: [AddressStatusRow] = try decoder.decode([AddressStatusRow].self, from: response.data)
+        
         var statuses: [UUID: AddressStatusRow] = [:]
-        for statusRow in res.value {
+        for statusRow in rows {
             statuses[statusRow.addressId] = statusRow
         }
         

@@ -29,13 +29,13 @@ struct YouStickyCard: View {
             // Rank
             if let rank = rank {
                 Text("Your Rank: #\(rank) of \(totalUsers)")
-                    .font(.system(.headline, weight: .semibold))
+                    .font(.flyrHeadline)
                     .foregroundColor(.text)
             }
             
             // Weekly metric
             Text("\(weeklyConversations) conversations this week")
-                .font(.system(.body, weight: .medium))
+                .font(.flyrSystem(size: 17, weight: .medium))
                 .foregroundColor(.muted)
             
             // Progress ring
@@ -46,11 +46,11 @@ struct YouStickyCard: View {
             ) {
                 VStack(spacing: 4) {
                     Text("\(weeklyConversations)")
-                        .font(.title2)
+                        .font(.flyrTitle2)
                         .fontWeight(.bold)
                         .foregroundColor(.text)
                     Text("of \(weeklyGoal)")
-                        .font(.caption)
+                        .font(.flyrCaption)
                         .foregroundColor(.muted)
                 }
             }
@@ -58,11 +58,11 @@ struct YouStickyCard: View {
             // Goal tracker
             if remaining > 0 {
                 Text("\(remaining) left to hit your weekly goal.")
-                    .font(.system(.subheadline))
+                    .font(.flyrSubheadline)
                     .foregroundColor(.muted)
             } else {
                 Text("🎉 You've reached your weekly goal!")
-                    .font(.system(.subheadline, weight: .semibold))
+                    .font(.flyrSystem(size: 15, weight: .semibold))
                     .foregroundColor(.accentDefault)
             }
         }

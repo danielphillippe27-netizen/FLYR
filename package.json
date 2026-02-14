@@ -4,6 +4,11 @@
   "dependencies": {
     "apple-signin-auth": "^2.0.0"
   },
+  "devDependencies": {
+    "dotenv": "^16.4.5",
+    "duckdb-async": "^1.0.2",
+    "tsx": "^4.19.2"
+  },
   "scripts": {
     "apple:secret": "node scripts/generate-apple-secret.js"
   }

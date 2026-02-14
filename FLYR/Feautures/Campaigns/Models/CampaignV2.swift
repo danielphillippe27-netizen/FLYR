@@ -27,16 +27,9 @@ public enum CampaignType: String, CaseIterable, Identifiable, Codable {
 
   public var label: String { title }
 
+  /// Picker options: Flyer and Door Knock only.
   public static var ordered: [CampaignType] {
-    [
-      .flyer,
-      .doorKnock,
-      .event,
-      .survey,
-      .gift,
-      .popBy,
-      .openHouse
-    ]
+    [.flyer, .doorKnock]
   }
 }
 
@@ -89,6 +82,7 @@ enum CampaignStatus: String, Codable {
     case active = "active"
     case completed = "completed"
     case paused = "paused"
+    case archived = "archived"
 }
 
 // MARK: - Campaign V2

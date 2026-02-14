@@ -21,7 +21,7 @@ struct MapSnapshotView: View {
                             ProgressView()
                                 .scaleEffect(0.8)
                             Text("Loading map...")
-                                .font(.caption)
+                                .font(.flyrCaption)
                                 .foregroundColor(.secondary)
                         }
                     )
@@ -40,10 +40,10 @@ struct MapSnapshotView: View {
                     .overlay(
                         VStack(spacing: 8) {
                             Image(systemName: "exclamationmark.triangle")
-                                .font(.title2)
+                                .font(.flyrTitle2)
                                 .foregroundColor(.red)
                             Text("Map unavailable")
-                                .font(.caption)
+                                .font(.flyrCaption)
                                 .foregroundColor(.secondary)
                         }
                     )

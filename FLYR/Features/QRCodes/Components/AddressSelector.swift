@@ -10,7 +10,7 @@ struct AddressSelector: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Select Address")
-                .font(.headline)
+                .font(.flyrHeadline)
                 .padding(.horizontal)
             
             if isLoading {
@@ -24,7 +24,7 @@ struct AddressSelector: View {
                                 onSelect(address.id)
                             } label: {
                                 Text(address.formatted)
-                                    .font(.subheadline)
+                                    .font(.flyrSubheadline)
                                     .foregroundStyle(selectedId == address.id ? .white : .primary)
                                     .padding()
                                     .background(selectedId == address.id ? Color.accentColor : Color(.systemGray6))

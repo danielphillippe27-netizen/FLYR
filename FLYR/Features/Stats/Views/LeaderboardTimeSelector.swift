@@ -47,7 +47,7 @@ struct TimePill: View {
     var body: some View {
         Button(action: action) {
             Text(title)
-                .font(.system(size: 13, weight: isSelected ? .semibold : .regular))
+                .font(.flyrSystem(size: 13, weight: isSelected ? .semibold : .regular))
                 .foregroundColor(isSelected ? .white : .text)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 7)

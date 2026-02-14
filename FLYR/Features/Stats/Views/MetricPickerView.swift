@@ -31,7 +31,7 @@ struct MetricChip: View {
     var body: some View {
         Button(action: action) {
             Text(title)
-                .font(.system(.body, weight: .semibold))
+                .font(AppFont.heading(17))
                 .foregroundColor(isSelected ? .white : .primary)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 8)

@@ -21,7 +21,7 @@ struct ProfileAvatarView: View {
         // Generate a consistent color based on the name
         let hash = name.hashValue
         let colors: [Color] = [
-            .blue, .green, .orange, .purple, .pink, .red, .teal, .indigo
+            .blue, .green, .flyrPrimary, .purple, .pink, .red, .teal, .indigo
         ]
         return colors[abs(hash) % colors.count].opacity(0.7)
     }
@@ -57,7 +57,7 @@ struct ProfileAvatarView: View {
                 .fill(backgroundColor)
             
             Text(initials)
-                .font(.system(size: size * 0.4, weight: .semibold))
+                .font(.flyrSystem(size: size * 0.4, weight: .semibold))
                 .foregroundColor(.white)
         }
     }

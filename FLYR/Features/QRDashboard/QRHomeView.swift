@@ -1,19 +1,12 @@
 import SwiftUI
-import Supabase
-import Foundation
 
 /// Modern QR Tab Home Screen with 3x2 tile grid (6 squares)
 struct QRHomeView: View {
-    @State private var showLandingPages = false
     @State private var showCreateQR = false
     @State private var showPrintQR = false
     @State private var showQRMap = false
     @State private var showAnalytics = false
     @State private var showQRCodesList = false
-    @State private var showCreateLandingPage = false
-    @State private var showNoLandingPagesAlert = false
-    @State private var hasLandingPages = false
-    @State private var isLoadingLandingPages = false
     
     let columns = [
         GridItem(.flexible(), spacing: 20),
@@ -48,15 +41,7 @@ struct QRHomeView: View {
                         title: "Create QR Code",
                         icon: "qrcode.viewfinder"
                     ) {
-                        handleCreateQR()
-                    }
-                    
-                    // Landing Pages Tile
-                    QRHomeTile(
-                        title: "Landing Pages",
-                        icon: "doc.text"
-                    ) {
-                        showLandingPages = true
+                        showCreateQR = true
                     }
                     
                     // Print QR Codes Tile
@@ -98,12 +83,6 @@ struct QRHomeView: View {
             }
         }
         .navigationBarHidden(true)
-        .task {
-            await checkLandingPages()
-        }
-        .navigationDestination(isPresented: $showLandingPages) {
-            LandingPagesView()
-        }
         .navigationDestination(isPresented: $showCreateQR) {
             CreateQRView()
         }
@@ -118,49 +97,6 @@ struct QRHomeView: View {
         }
         .navigationDestination(isPresented: $showQRCodesList) {
             QRCodeManageView()
-        }
-        .sheet(isPresented: $showCreateLandingPage) {
-            NavigationStack {
-                QRWorkflowLandingPageCreateWrapper(onSave: { _ in
-                    Task {
-                        await checkLandingPages()
-                    }
-                })
-            }
-        }
-        .alert("No Landing Pages", isPresented: $showNoLandingPagesAlert) {
-            Button("Cancel", role: .cancel) {}
-            Button("Create One") {
-                showCreateLandingPage = true
-            }
-        } message: {
-            Text("You don't have any landing pages yet. Create one first?")
-        }
-    }
-    
-    private func handleCreateQR() {
-        if hasLandingPages {
-            showCreateQR = true
-        } else {
-            showNoLandingPagesAlert = true
-        }
-    }
-    
-    private func checkLandingPages() async {
-        isLoadingLandingPages = true
-        defer { isLoadingLandingPages = false }
-        
-        do {
-            let response: PostgrestResponse<[CampaignLandingPage]> = try await SupabaseManager.shared.client
-                .from("campaign_landing_pages")
-                .select()
-                .limit(1)
-                .execute()
-            
-            hasLandingPages = !response.value.isEmpty
-        } catch {
-            print("❌ [QRHomeView] Error checking landing pages: \(error)")
-            hasLandingPages = false
         }
     }
 }

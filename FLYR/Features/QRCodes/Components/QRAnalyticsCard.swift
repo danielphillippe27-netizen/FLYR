@@ -8,7 +8,7 @@ struct QRAnalyticsCard: View {
         Card {
             VStack(alignment: .leading, spacing: 12) {
                 Text("Summary")
-                    .font(.title2)
+                    .font(.flyrTitle2)
                     .fontWeight(.semibold)
                 
                 HStack(spacing: 20) {
@@ -17,7 +17,7 @@ struct QRAnalyticsCard: View {
                             .font(.system(size: 32, weight: .bold))
                             .foregroundColor(.accent)
                         Text("Total Scans")
-                            .font(.caption)
+                            .font(.flyrCaption)
                             .foregroundColor(.secondary)
                     }
                     
@@ -28,7 +28,7 @@ struct QRAnalyticsCard: View {
                             .font(.system(size: 32, weight: .bold))
                             .foregroundColor(.accent)
                         Text("Addresses")
-                            .font(.caption)
+                            .font(.flyrCaption)
                             .foregroundColor(.secondary)
                     }
                 }

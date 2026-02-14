@@ -50,7 +50,7 @@ struct QRCard: View {
         self.campaignName = campaignName
         self.qrUrl = qr.qrUrl
         self.qrVariant = qr.qrVariant
-        self.isLinked = qr.landingPageId != nil
+        self.isLinked = false
         self.onLink = onLink
         self.onUnlink = onUnlink
         self.onPrint = onPrint
@@ -106,7 +106,7 @@ struct QRCard: View {
                     // Campaign Name
                     if let campaignName = campaignName {
                         Text(campaignName)
-                            .font(.caption)
+                            .font(.flyrCaption)
                             .foregroundColor(.secondary)
                             .opacity(0.6)
                     }
@@ -270,7 +270,7 @@ private struct VariantBadge: View {
             .frame(height: 26)
             .overlay(
                 Text("Variant \(variant)")
-                    .font(.caption)
+                    .font(.flyrCaption)
                     .fontWeight(.bold)
                     .foregroundColor(.red)
                     .padding(.horizontal, 10)
@@ -287,7 +287,7 @@ private struct LinkedBadge: View {
             .frame(height: 26)
             .overlay(
                 Text("Linked")
-                    .font(.caption)
+                    .font(.flyrCaption)
                     .fontWeight(.bold)
                     .foregroundColor(.green)
                     .padding(.horizontal, 10)

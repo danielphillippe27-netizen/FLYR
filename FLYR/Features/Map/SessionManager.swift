@@ -2,11 +2,17 @@ import Foundation
 import CoreLocation
 import Combine
 import Supabase
+import UIKit
 
 @MainActor
 class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
     static let shared = SessionManager()
-    
+    /// Snapshot for end-session summary (building session); consumed by MapView then cleared.
+    static var lastEndedSummary: SessionSummaryData?
+
+    /// Set when a session ends so the UI can show the summary sheet. Observed by RecordHomeView.
+    @Published var pendingSessionSummary: SessionSummaryData?
+
     @Published var isActive = false
     @Published var pathCoordinates: [CLLocationCoordinate2D] = []
     @Published var distanceMeters: Double = 0
@@ -16,10 +22,54 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
     @Published var goalAmount: Int = 0
     @Published var currentLocation: CLLocation?
     @Published var currentHeading: CLLocationDirection = 0
+    @Published var flyersDelivered: Int = 0
+    @Published var conversationsHad: Int = 0
     
+    // Route-based session properties
+    @Published var optimizedRoute: OptimizedRoute?
+    @Published var currentWaypointIndex: Int = 0
+    @Published var completedWaypoints: Set<UUID> = []
+    @Published var campaignId: UUID?
+    /// Notes for the current session (set at start, saved to Supabase)
+    @Published var sessionNotes: String?
+
+    // MARK: - Building session (session recording)
+    @Published var sessionId: UUID?
+    @Published var targetBuildings: [String] = [] // gers_ids
+    @Published var completedBuildings: Set<String> = []
+    @Published var autoCompleteEnabled = false
+    @Published var isPaused = false
+    /// GPS/location error state for UI (e.g. "Searching for GPS...", "Location denied")
+    @Published var locationError: String?
+
+    /// Centroids for auto-complete: gers_id -> location. Set when starting building session.
+    var buildingCentroids: [String: CLLocation] = [:]
+
+    var targetCount: Int { targetBuildings.count }
+    /// When restored from server without event replay, use server value; else use local set count
+    private var serverCompletedCount: Int?
+    var completedCount: Int { serverCompletedCount ?? completedBuildings.count }
+    var remainingCount: Int { max(0, targetCount - completedCount) }
+    var progressPercentage: Double {
+        targetCount > 0 ? Double(completedCount) / Double(targetCount) : 0
+    }
+
+    var autoCompleteThresholdMeters: Double = 15.0
+    var autoCompleteDwellSeconds: Double = 8.0
+    var autoCompleteMaxSpeedMPS: Double = 2.5
+    private var dwellTracker: [String: DwellState] = [:]
+    private var lastAutoCompleteTime: Date?
+    private let autoCompleteDebounceSeconds: Double = 3.0
+
     private var timer: Timer?
     private var locationManager = CLLocationManager()
     private var lastLocation: CLLocation?
+    /// Ignore GPS jitter when stationary: only add a path point if moved at least this many meters from last recorded point.
+    private let minPathMovementMeters: Double = 6.0
+    private let waypointReachedThresholdMeters: Double = 10.0
+    private var activeSecondsAccumulator: TimeInterval = 0
+    private var pauseStartTime: Date?
+    private var pendingEventQueue: [PendingSessionEvent] = []
     
     private override init() {
         super.init()
@@ -36,6 +86,12 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         self.distanceMeters = 0
         self.elapsedTime = 0
         self.lastLocation = nil
+        self.optimizedRoute = nil
+        self.currentWaypointIndex = 0
+        self.completedWaypoints = []
+        self.campaignId = nil
+        self.flyersDelivered = 0
+        self.conversationsHad = 0
         
         isActive = true
         
@@ -57,17 +113,414 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         }
     }
     
-    func stop() {
+    /// Start a route-based session with optimized waypoints
+    func start(goalType: GoalType, goalAmount: Int? = nil, route: OptimizedRoute, campaignId: UUID?) {
+        self.goalType = goalType
+        self.goalAmount = goalAmount ?? route.stopCount
+        self.startTime = Date()
+        self.pathCoordinates = []
+        self.distanceMeters = 0
+        self.elapsedTime = 0
+        self.lastLocation = nil
+        self.optimizedRoute = route
+        self.currentWaypointIndex = 0
+        self.completedWaypoints = []
+        self.campaignId = campaignId
+        self.flyersDelivered = 0
+        self.conversationsHad = 0
+        
+        isActive = true
+        
+        // Request location permissions
+        let status = locationManager.authorizationStatus
+        if status == .notDetermined {
+            locationManager.requestWhenInUseAuthorization()
+        } else if status == .authorizedWhenInUse || status == .authorizedAlways {
+            locationManager.startUpdatingLocation()
+            locationManager.startUpdatingHeading()
+        }
+        
+        // Start timer for elapsed time
+        timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self = self, let startTime = self.startTime else { return }
+                self.elapsedTime = Date().timeIntervalSince(startTime)
+            }
+        }
+        
+        print("✅ [SessionManager] Started route-based session with \(route.stopCount) waypoints")
+    }
+
+    // MARK: - Building session (session recording)
+
+    /// Start a door-knocking session with target buildings. Call with centroids from map features for auto-complete.
+    /// Session is only marked active (sessionId, timer, location) after createSession succeeds so time/distance/path work.
+    func startBuildingSession(
+        campaignId: UUID,
+        targetBuildings: [String],
+        autoCompleteEnabled: Bool = false,
+        centroids: [String: CLLocationCoordinate2D] = [:],
+        notes: String? = nil
+    ) async throws {
+        guard let userId = AuthManager.shared.user?.id else {
+            print("⚠️ [SessionManager] Cannot start building session: not authenticated")
+            return
+        }
+        let newSessionId = UUID()
+
+        // Create session in DB first; only then start timer and location so UI never shows "active" without tracking
+        try await SessionsAPI.shared.createSession(
+            id: newSessionId,
+            userId: userId,
+            campaignId: campaignId,
+            targetBuildingIds: targetBuildings,
+            autoCompleteEnabled: autoCompleteEnabled,
+            thresholdMeters: autoCompleteThresholdMeters,
+            dwellSeconds: Int(autoCompleteDwellSeconds),
+            notes: notes
+        )
+
+        // Now set state and start tracking (timer + location)
+        sessionId = newSessionId
+        self.campaignId = campaignId
+        self.targetBuildings = targetBuildings
+        completedBuildings = []
+        serverCompletedCount = nil
+        self.autoCompleteEnabled = autoCompleteEnabled
+        self.sessionNotes = notes
+        buildingCentroids = centroids.mapValues { CLLocation(latitude: $0.latitude, longitude: $0.longitude) }
+        dwellTracker = [:]
+        lastAutoCompleteTime = nil
+        startTime = Date()
+        pathCoordinates = []
+        distanceMeters = 0
+        elapsedTime = 0
+        lastLocation = nil
+        activeSecondsAccumulator = 0
+        isPaused = false
+        optimizedRoute = nil
+        goalType = .knocks
+        goalAmount = targetBuildings.count
+        locationError = currentLocation == nil ? "Searching for GPS..." : nil
+
+        let status = locationManager.authorizationStatus
+        if status == .notDetermined {
+            locationManager.requestWhenInUseAuthorization()
+        } else if status == .authorizedWhenInUse || status == .authorizedAlways {
+            locationManager.startUpdatingLocation()
+            locationManager.startUpdatingHeading()
+        }
+
+        // Timer must run on main run loop (and .common mode so it fires during scroll/tracking)
+        let t = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self = self, let startTime = self.startTime else { return }
+                if self.isPaused {
+                    return
+                }
+                self.elapsedTime = Date().timeIntervalSince(startTime)
+            }
+        }
+        RunLoop.main.add(t, forMode: .common)
+        timer = t
+        isActive = true
+
+        try await SessionEventsAPI.shared.logLifecycleEvent(
+            sessionId: newSessionId,
+            eventType: .sessionStarted,
+            lat: currentLocation?.coordinate.latitude,
+            lon: currentLocation?.coordinate.longitude
+        )
+        print("✅ [SessionManager] Started building session with \(targetBuildings.count) targets")
+    }
+
+    /// Mark a building complete (manual tap). Idempotent. Queues event if offline.
+    func completeBuilding(_ buildingId: String) async throws {
+        guard !completedBuildings.contains(buildingId) else { return }
+        completedBuildings.insert(buildingId)
+        serverCompletedCount = nil
+        let generator = UINotificationFeedbackGenerator()
+        generator.notificationOccurred(.success)
+        guard let sid = sessionId, let loc = currentLocation else { return }
+        await flushPendingEvents()
+        do {
+            try await SessionEventsAPI.shared.logEvent(
+                sessionId: sid,
+                buildingId: buildingId,
+                eventType: .completedManual,
+                lat: loc.coordinate.latitude,
+                lon: loc.coordinate.longitude,
+                metadata: [:]
+            )
+            try? await SessionsAPI.shared.updateSession(id: sid, completedCount: completedCount)
+        } catch {
+            pendingEventQueue.append(PendingSessionEvent(
+                sessionId: sid,
+                buildingId: buildingId,
+                eventType: .completedManual,
+                lat: loc.coordinate.latitude,
+                lon: loc.coordinate.longitude,
+                metadata: [:]
+            ))
+        }
+    }
+
+    /// Undo a completion. Idempotent. Queues event if offline.
+    func undoCompletion(_ buildingId: String) async throws {
+        guard completedBuildings.contains(buildingId) else { return }
+        completedBuildings.remove(buildingId)
+        serverCompletedCount = nil
+        guard let sid = sessionId, let loc = currentLocation else { return }
+        do {
+            try await SessionEventsAPI.shared.logEvent(
+                sessionId: sid,
+                buildingId: buildingId,
+                eventType: .completionUndone,
+                lat: loc.coordinate.latitude,
+                lon: loc.coordinate.longitude,
+                metadata: [:]
+            )
+            try? await SessionsAPI.shared.updateSession(id: sid, completedCount: completedCount)
+        } catch {
+            pendingEventQueue.append(PendingSessionEvent(
+                sessionId: sid,
+                buildingId: buildingId,
+                eventType: .completionUndone,
+                lat: loc.coordinate.latitude,
+                lon: loc.coordinate.longitude,
+                metadata: [:]
+            ))
+        }
+    }
+
+    /// Flush queued events when back online. Call on app become active or after successful API call.
+    func flushPendingEvents() async {
+        while let first = pendingEventQueue.first {
+            do {
+                try await SessionEventsAPI.shared.logEvent(
+                    sessionId: first.sessionId,
+                    buildingId: first.buildingId,
+                    eventType: first.eventType,
+                    lat: first.lat,
+                    lon: first.lon,
+                    metadata: first.metadata
+                )
+                pendingEventQueue.removeFirst()
+                if let sid = sessionId {
+                    try? await SessionsAPI.shared.updateSession(id: sid, completedCount: completedCount)
+                }
+            } catch {
+                break
+            }
+        }
+    }
+
+    /// Restore active (unended) session after app kill. Call from app launch / main view onAppear.
+    func restoreActiveSessionIfNeeded() async {
+        guard let userId = AuthManager.shared.user?.id else { return }
+        guard sessionId == nil else { return }
+        do {
+            guard let session = try await SessionsAPI.shared.fetchActiveSession(userId: userId) else { return }
+            guard let sid = session.id else { return }
+            sessionId = sid
+            campaignId = session.campaign_id
+            targetBuildings = session.target_building_ids ?? []
+            completedBuildings = [] // event replay would repopulate; for now leave empty
+            serverCompletedCount = session.completed_count
+            startTime = session.start_time
+            pathCoordinates = []
+            distanceMeters = session.distance_meters ?? 0
+            elapsedTime = Date().timeIntervalSince(session.start_time)
+            isActive = true
+            isPaused = session.is_paused ?? false
+            autoCompleteEnabled = session.auto_complete_enabled ?? false
+            buildingCentroids = [:]
+            await flushPendingEvents()
+            print("✅ [SessionManager] Restored active session \(sid)")
+        } catch {
+            print("⚠️ [SessionManager] Could not restore session: \(error)")
+        }
+    }
+
+    /// Pause building session (stops timer and location updates for elapsed time)
+    func pause() async {
+        guard isActive, sessionId != nil else { return }
+        isPaused = true
+        pauseStartTime = Date()
+        locationManager.stopUpdatingLocation()
+        locationManager.stopUpdatingHeading()
+        guard let sid = sessionId else { return }
+        try? await SessionEventsAPI.shared.logLifecycleEvent(
+            sessionId: sid,
+            eventType: .sessionPaused,
+            lat: currentLocation?.coordinate.latitude,
+            lon: currentLocation?.coordinate.longitude
+        )
+    }
+
+    /// Resume building session
+    func resume() async {
+        guard isActive, sessionId != nil else { return }
+        isPaused = false
+        pauseStartTime = nil
+        if locationManager.authorizationStatus == .authorizedWhenInUse || locationManager.authorizationStatus == .authorizedAlways {
+            locationManager.startUpdatingLocation()
+            locationManager.startUpdatingHeading()
+        }
+        guard let sid = sessionId else { return }
+        try? await SessionEventsAPI.shared.logLifecycleEvent(
+            sessionId: sid,
+            eventType: .sessionResumed,
+            lat: currentLocation?.coordinate.latitude,
+            lon: currentLocation?.coordinate.longitude
+        )
+    }
+
+    /// Stop building session and persist (update existing session row, then update user stats)
+    func stopBuildingSession() async {
+        guard let sid = sessionId else { return }
         locationManager.stopUpdatingLocation()
         locationManager.stopUpdatingHeading()
         timer?.invalidate()
         timer = nil
         isActive = false
-        
-        // Trigger summary
+        isPaused = false
+
+        try? await SessionEventsAPI.shared.logLifecycleEvent(
+            sessionId: sid,
+            eventType: .sessionEnded,
+            lat: currentLocation?.coordinate.latitude,
+            lon: currentLocation?.coordinate.longitude
+        )
+        let pathGeoJSON = coordinatesToGeoJSON(pathCoordinates)
+        let activeSecs = Int(elapsedTime)
+        try? await SessionsAPI.shared.updateSession(
+            id: sid,
+            completedCount: completedCount,
+            distanceM: distanceMeters,
+            activeSeconds: activeSecs,
+            pathGeoJSON: pathGeoJSON,
+            endTime: Date()
+        )
+        if let userId = AuthManager.shared.user?.id {
+            await updateUserStats(userId: userId)
+        }
+        // Capture summary for end-session sheet before clearing (Strava-style summary)
+        let snapshot = SessionSummaryData(
+            distance: distanceMeters,
+            time: elapsedTime,
+            goalType: goalType,
+            goalAmount: goalAmount,
+            pathCoordinates: pathCoordinates,
+            completedCount: completedCount,
+            startTime: startTime
+        )
+        SessionManager.lastEndedSummary = snapshot
+        // Clear session state first so MainTabView can clear campaign selection and leave CampaignMapView
+        // (avoid "only presenting a single sheet" by not presenting summary while a sheet may be up)
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            sessionId = nil
+            campaignId = nil
+            sessionNotes = nil
+            targetBuildings = []
+            completedBuildings = []
+            buildingCentroids = [:]
+
+            print("✅ [SessionManager] Building session ended and saved")
+            // Present summary on next run loop so we're no longer on campaign map (no sheet conflict)
+            DispatchQueue.main.async { [weak self] in
+                self?.pendingSessionSummary = snapshot
+                NotificationCenter.default.post(name: .sessionEnded, object: nil)
+            }
+        }
+    }
+
+    private func checkAutoComplete(location: CLLocation) async {
+        guard autoCompleteEnabled, sessionId != nil, isActive, !isPaused else { return }
+        if let lastTime = lastAutoCompleteTime, Date().timeIntervalSince(lastTime) < autoCompleteDebounceSeconds {
+            return
+        }
+        guard let nearest = findNearestIncompleteBuilding(from: location) else {
+            return
+        }
+        let distance = location.distance(from: nearest.centroid)
+        guard distance <= autoCompleteThresholdMeters else {
+            dwellTracker[nearest.buildingId] = nil
+            return
+        }
+        guard location.speed >= 0 && location.speed < autoCompleteMaxSpeedMPS else { return }
+        let now = Date()
+        if var dwellState = dwellTracker[nearest.buildingId] {
+            let dwellTime = now.timeIntervalSince(dwellState.enteredAt)
+            if dwellTime >= autoCompleteDwellSeconds {
+                lastAutoCompleteTime = now
+                dwellTracker[nearest.buildingId] = nil
+                completedBuildings.insert(nearest.buildingId)
+                let generator = UINotificationFeedbackGenerator()
+                generator.notificationOccurred(.success)
+                guard let sid = sessionId else { return }
+                try? await SessionEventsAPI.shared.logEvent(
+                    sessionId: sid,
+                    buildingId: nearest.buildingId,
+                    eventType: .completedAuto,
+                    lat: location.coordinate.latitude,
+                    lon: location.coordinate.longitude,
+                    metadata: [
+                        "distance_m": distance,
+                        "dwell_seconds": dwellTime,
+                        "speed_mps": location.speed,
+                        "threshold_m": autoCompleteThresholdMeters,
+                    ] as [String: Any]
+                )
+                try? await SessionsAPI.shared.updateSession(id: sid, completedCount: completedCount)
+            }
+        } else {
+            dwellTracker[nearest.buildingId] = DwellState(buildingId: nearest.buildingId, enteredAt: now, location: location)
+        }
+    }
+
+    private func findNearestIncompleteBuilding(from location: CLLocation) -> (buildingId: String, centroid: CLLocation)? {
+        let incomplete = targetBuildings.filter { !completedBuildings.contains($0) }
+        guard !incomplete.isEmpty else { return nil }
+        var best: (String, CLLocation)?
+        var bestDistance: Double = .infinity
+        for gersId in incomplete {
+            guard let centroid = buildingCentroids[gersId] else { continue }
+            let d = location.distance(from: centroid)
+            if d < bestDistance {
+                bestDistance = d
+                best = (gersId, centroid)
+            }
+        }
+        return best
+    }
+
+    func stop() {
+        if sessionId != nil {
+            Task {
+                await stopBuildingSession()
+            }
+            return
+        }
+        locationManager.stopUpdatingLocation()
+        locationManager.stopUpdatingHeading()
+        timer?.invalidate()
+        timer = nil
+        isActive = false
+
+        let snapshot = SessionSummaryData(
+            distance: distanceMeters,
+            time: elapsedTime,
+            goalType: goalType,
+            goalAmount: goalAmount,
+            pathCoordinates: pathCoordinates,
+            completedCount: nil,
+            startTime: startTime
+        )
+        SessionManager.lastEndedSummary = snapshot
+        pendingSessionSummary = snapshot
         NotificationCenter.default.post(name: .sessionEnded, object: nil)
-        
-        // Save to Supabase
         Task {
             await saveToSupabase()
         }
@@ -77,17 +530,95 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
     
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard let location = locations.last else { return }
-        
-        currentLocation = location
-        pathCoordinates.append(location.coordinate)
-        
-        // Calculate distance
-        if let lastLocation = lastLocation {
-            let segmentDistance = location.distance(from: lastLocation)
-            distanceMeters += segmentDistance
+        // Delegate can be called on a background thread; push all @Published updates onto MainActor so UI and map update
+        Task { @MainActor in
+            locationError = nil
+            currentLocation = location
+
+            // Only record path and distance when a building session is active (red line + stats).
+            // Require minimum movement so GPS jitter when standing still doesn't draw a crazy path.
+            if sessionId != nil {
+                let shouldRecord: Bool
+                if let last = lastLocation {
+                    let segmentDistance = location.distance(from: last)
+                    shouldRecord = segmentDistance >= minPathMovementMeters
+                    if shouldRecord {
+                        pathCoordinates.append(location.coordinate)
+                        distanceMeters += segmentDistance
+                        lastLocation = location
+                    }
+                } else {
+                    pathCoordinates.append(location.coordinate)
+                    lastLocation = location
+                    shouldRecord = true
+                }
+                if shouldRecord {
+                    await checkAutoComplete(location: location)
+                }
+            } else if optimizedRoute != nil {
+                if let last = lastLocation {
+                    let segmentDistance = location.distance(from: last)
+                    if segmentDistance >= minPathMovementMeters {
+                        pathCoordinates.append(location.coordinate)
+                        distanceMeters += segmentDistance
+                        lastLocation = location
+                    }
+                } else {
+                    pathCoordinates.append(location.coordinate)
+                    lastLocation = location
+                }
+            } else {
+                lastLocation = location
+            }
+
+            if let route = optimizedRoute {
+                checkWaypointProximity(location: location, route: route)
+            }
         }
+    }
+    
+    /// Check if user is near the next waypoint and mark as reached
+    private func checkWaypointProximity(location: CLLocation, route: OptimizedRoute) {
+        guard currentWaypointIndex < route.waypoints.count else { return }
         
-        lastLocation = location
+        let waypoint = route.waypoints[currentWaypointIndex]
+        let waypointLocation = CLLocation(
+            latitude: waypoint.coordinate.latitude,
+            longitude: waypoint.coordinate.longitude
+        )
+        
+        let distance = location.distance(from: waypointLocation)
+        
+        if distance <= waypointReachedThresholdMeters {
+            // Mark waypoint as completed
+            completedWaypoints.insert(waypoint.id)
+            print("✅ [SessionManager] Reached waypoint \(currentWaypointIndex + 1): \(waypoint.address)")
+            
+            // Move to next waypoint
+            if currentWaypointIndex < route.waypoints.count - 1 {
+                currentWaypointIndex += 1
+                print("🗺️ [SessionManager] Moving to waypoint \(currentWaypointIndex + 1)")
+            } else {
+                print("🎉 [SessionManager] All waypoints completed!")
+            }
+        }
+    }
+    
+    /// Get the next waypoint
+    var nextWaypoint: RouteWaypoint? {
+        guard let route = optimizedRoute,
+              currentWaypointIndex < route.waypoints.count else {
+            return nil
+        }
+        return route.waypoints[currentWaypointIndex]
+    }
+    
+    /// Get progress through route (0.0 - 1.0)
+    var routeProgress: Double {
+        guard let route = optimizedRoute, !route.waypoints.isEmpty else {
+            return 0.0
+        }
+        return Double(completedWaypoints.count) / Double(route.waypoints.count)
     }
     
     func locationManager(_ manager: CLLocationManager, didUpdateHeading newHeading: CLHeading) {
@@ -97,11 +628,29 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
         let status = manager.authorizationStatus
         if isActive && (status == .authorizedWhenInUse || status == .authorizedAlways) {
+            locationError = nil
             locationManager.startUpdatingLocation()
             locationManager.startUpdatingHeading()
         } else if status == .denied || status == .restricted {
-            // Handle denied permissions
+            locationError = "Location access denied"
             print("⚠️ [SessionManager] Location permissions denied")
+        }
+    }
+
+    func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+        if let clError = error as? CLError {
+            switch clError.code {
+            case .denied:
+                locationError = "Location access denied"
+            case .locationUnknown:
+                locationError = "Searching for GPS..."
+            case .network:
+                locationError = "Network unavailable for location"
+            default:
+                locationError = error.localizedDescription
+            }
+        } else {
+            locationError = error.localizedDescription
         }
     }
     
@@ -117,15 +666,30 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         let endTime = Date()
         let pathGeoJSON = coordinatesToGeoJSON(pathCoordinates)
         
-        let sessionData: [String: Any] = [
+        var sessionData: [String: Any] = [
             "user_id": userId.uuidString,
             "start_time": ISO8601DateFormatter().string(from: startTime),
             "end_time": ISO8601DateFormatter().string(from: endTime),
             "distance_meters": distanceMeters,
+            "flyers_delivered": flyersDelivered,
+            "conversations": conversationsHad,
             "goal_type": goalType.rawValue,
             "goal_amount": goalAmount,
             "path_geojson": pathGeoJSON
         ]
+        
+        // Add campaign ID if present
+        if let campaignId = campaignId {
+            sessionData["campaign_id"] = campaignId.uuidString
+        }
+        
+        // Add route data if present
+        if let route = optimizedRoute {
+            sessionData["route_data"] = route.toJSON()
+        }
+        if let notes = sessionNotes, !notes.isEmpty {
+            sessionData["notes"] = notes
+        }
         
         do {
             // Save session to Supabase
@@ -136,6 +700,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
                 .execute()
             
             print("✅ [SessionManager] Session saved to Supabase")
+            sessionNotes = nil
             
             // Update user_stats after successful session save
             await updateUserStats(userId: userId)
@@ -147,32 +712,29 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
     
     // MARK: - Update User Stats
     
+    /// Updates user_stats with ALL session metrics (flyers, conversations, distance, time)
     private func updateUserStats(userId: UUID) async {
-        let statsService = StatsService.shared
-        
         do {
-            // Fetch current stats
-            guard let currentStats = try await statsService.fetchUserStats(userID: userId) else {
-                print("⚠️ [SessionManager] User stats not found, skipping stats update")
-                return
-            }
-            
-            // Calculate increments
-            // distance_walked is stored in km, distanceMeters is in meters
             let distanceKm = distanceMeters / 1000.0
-            let newDistance = currentStats.distance_walked + distanceKm
-            
-            // time_tracked is stored in minutes, elapsedTime is in seconds
             let timeMinutes = Int(elapsedTime / 60.0)
-            let newTime = currentStats.time_tracked + timeMinutes
             
-            // Update distance_walked
-            try await statsService.updateStat(userID: userId, field: "distance_walked", value: newDistance)
+            print("📊 [SessionManager] Updating stats: \(flyersDelivered) flyers, \(conversationsHad) conversations, \(String(format: "%.2f", distanceKm)) km, \(timeMinutes) min")
             
-            // Update time_tracked
-            try await statsService.updateStat(userID: userId, field: "time_tracked", value: newTime)
+            // Use RPC for atomic stats update
+            let params: [String: AnyCodable] = [
+                "p_user_id": AnyCodable(userId.uuidString),
+                "p_flyers": AnyCodable(flyersDelivered),
+                "p_conversations": AnyCodable(conversationsHad),
+                "p_leads": AnyCodable(0),
+                "p_distance_km": AnyCodable(distanceKm),
+                "p_time_minutes": AnyCodable(timeMinutes)
+            ]
             
-            print("✅ [SessionManager] Updated user stats: +\(String(format: "%.2f", distanceKm)) km, +\(timeMinutes) min")
+            _ = try await SupabaseManager.shared.client
+                .rpc("increment_user_stats", params: params)
+                .execute()
+            
+            print("✅ [SessionManager] User stats updated successfully")
             
         } catch {
             print("❌ [SessionManager] Failed to update user stats: \(error)")
@@ -205,3 +767,65 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
     }
 }
 
+// MARK: - Redesign Computed Properties
+extension SessionManager {
+    var formattedElapsedTime: String {
+        let hours = Int(elapsedTime) / 3600
+        let minutes = Int(elapsedTime) / 60 % 60
+        let seconds = Int(elapsedTime) % 60
+        if hours > 0 {
+            return String(format: "%d:%02d:%02d", hours, minutes, seconds)
+        }
+        return String(format: "%d:%02d", minutes, seconds)
+    }
+
+    var formattedDistance: String {
+        let km = distanceMeters / 1000.0
+        return String(format: "%.2f km", km)
+    }
+
+    var formattedPace: String {
+        guard elapsedTime > 0, completedCount > 0 else { return "0.0/hr" }
+        let hoursElapsed = elapsedTime / 3600.0
+        let doorsPerHour = Double(completedCount) / hoursElapsed
+        return String(format: "%.1f/hr", doorsPerHour)
+    }
+
+    /// Goal progress (0.0 to 1.0) for count-based goals (building session).
+    var countProgress: Double? {
+        guard goalAmount > 0 else { return nil }
+        return min(Double(completedCount) / Double(goalAmount), 1.0)
+    }
+
+    /// Incomplete building IDs sorted by distance from current location, limited to 20.
+    var nextTargetBuildingIds: [(buildingId: String, distance: Double)] {
+        let incomplete = targetBuildings.filter { !completedBuildings.contains($0) }
+        guard !incomplete.isEmpty else { return [] }
+        guard let userLocation = currentLocation else {
+            return incomplete.prefix(20).map { ($0, Double.infinity) }
+        }
+        return incomplete
+            .compactMap { id -> (String, Double)? in
+                guard let centroid = buildingCentroids[id] else { return nil }
+                return (id, userLocation.distance(from: centroid))
+            }
+            .sorted { $0.1 < $1.1 }
+            .prefix(20)
+            .map { ($0.0, $0.1) }
+    }
+}
+
+// MARK: - Dwell state for auto-complete
+private struct DwellState {
+    let buildingId: String
+    let enteredAt: Date
+    let location: CLLocation
+}// MARK: - Pending event for offline queue
+private struct PendingSessionEvent {
+    let sessionId: UUID
+    let buildingId: String
+    let eventType: SessionEventType
+    let lat: Double
+    let lon: Double
+    let metadata: [String: Any]
+}

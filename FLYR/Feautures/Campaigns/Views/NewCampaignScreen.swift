@@ -10,34 +10,26 @@ struct NewCampaignScreen: View {
     @State private var description = ""
     @State private var type: CampaignType = .flyer
     @State private var tags = ""
-    @State private var source: AddressSource = .closestHome
+    @State private var source: AddressSource = .map
     @State private var count: AddressCountOption = .c100
-    
-    // closest-home state
-    @State private var seedQuery = ""
-    @StateObject private var addressHook = UseAddresses()
-    @StateObject private var outlinesHook = UseBuildingOutlines()
+
     @StateObject private var auto = UseAddressAutocomplete()
-    
-    // map picker state
     @State private var showMapSeed = false
     @State private var seedLabel: String = ""
     @State private var selectedCenter: CLLocationCoordinate2D? = nil
-    
+    @State private var drawnPolygon: [CLLocationCoordinate2D]? = nil
+
     @StateObject private var createHook = UseCreateCampaign()
-    
+    @StateObject private var locationManager = LocationManager()
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var mapPreviewCenter: CLLocationCoordinate2D {
+        selectedCenter ?? locationManager.currentLocation?.coordinate ?? CLLocationCoordinate2D(latitude: 43.65, longitude: -79.38)
+    }
+
     private var canCreate: Bool {
         guard !name.trimmingCharacters(in: .whitespaces).isEmpty else { return false }
-        switch source {
-        case .closestHome: 
-            return !addressHook.items.isEmpty
-        case .map:
-            return !addressHook.items.isEmpty
-        case .sameStreet:
-            return !addressHook.items.isEmpty
-        case .importList:
-            return false // Removed from UI
-        }
+        return drawnPolygon != nil && drawnPolygon!.count >= 3
     }
     
     var body: some View {
@@ -45,9 +37,9 @@ struct NewCampaignScreen: View {
             VStack(spacing: 28) {
                 
                 FormSection("Campaign") {
-                    // Name field with consistent styling
+                    // Title field — user enters manually; not auto-filled from Type
                     HStack {
-                        TextField("Name", text: $name)
+                        TextField("Title", text: $name)
                             .textInputAutocapitalization(.words)
                             .font(.system(size: 16))
                         Spacer()
@@ -73,187 +65,55 @@ struct NewCampaignScreen: View {
                 }
                 .formContainerPadding()
                 
+                // Territory: starting address + map preview + draw polygon
                 VStack(alignment: .leading, spacing: 16) {
-                    Text("Address")
-                        .font(.headline)
-                    
-                    Text("How do you want to get addresses?")
-                        .font(.subheadline)
+                    Text("Territory")
+                        .font(.flyrHeadline)
+
+                    Text("Starting address (optional)")
+                        .font(.flyrSubheadline)
                         .foregroundStyle(.secondary)
-                    
-                    SourceSegment(selected: $source)
-                    
-                    Group {
-                        if source == .closestHome {
-                            // AddressSearchField without the Map button
-                            AddressSearchField(auto: auto) { suggestion in
-                                selectedCenter = suggestion.coordinate
-                                seedLabel = auto.query
-                                auto.clear()   // ensure list is hidden after parent handles selection
-                            }
-                            
-                            // Show current chosen seed (from text or map)
-                            if !seedLabel.isEmpty {
-                                Text(seedLabel)
-                                    .font(.footnote)
-                                    .foregroundStyle(.secondary)
-                            }
-                            
-                            // Count selection picker
-                            FormRowMenuPicker("How many addresses?",
-                                               options: AddressCountOption.allCases,
-                                               selection: $count)
-                            
-                            // Source indicator
-                            if !addressHook.items.isEmpty {
-                                HStack {
-                                    Image(systemName: "building.2")
-                                        .foregroundStyle(.blue)
-                                    Text("Address Database")
-                                        .font(.footnote)
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
-                            
-                            PrimaryButton(
-                                title: addressHook.isLoading ? "Searching…" : 
-                                       (!addressHook.items.isEmpty ? "Found \(addressHook.items.count) Homes" : "Find \(count.rawValue) Nearby"),
-                                enabled: (!auto.query.isEmpty || selectedCenter != nil) && !addressHook.isLoading,
-                                style: !addressHook.items.isEmpty ? .success : .primary
-                            ) {
-                                if let c = selectedCenter {
-                                    addressHook.fetchNearest(center: c, target: count.rawValue)
-                                } else {
-                                    // Forward geocode the query first
-                                    Task {
-                                        let geoAPI = GeoAPI.shared
-                                        let seed = try await geoAPI.forwardGeocodeSeed(auto.query)
-                                        addressHook.fetchNearest(center: seed.coordinate, target: count.rawValue)
-                                    }
-                                }
-                            }
-                            
-                            if let err = addressHook.error {
-                                Text(err)
-                                    .font(.footnote)
-                                    .foregroundStyle(.red)
-                            }
-                        } else if source == .map {
-                            // Map picker interface
-                            Button {
-                                showMapSeed = true
-                            } label: {
-                                HStack {
-                                    Image(systemName: "map")
-                                    Text(seedLabel.isEmpty ? "Select location on map" : seedLabel)
-                                    Spacer()
-                                    Image(systemName: "chevron.right")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                                .padding()
-                                .background(Color(.systemGray6))
-                                .clipShape(RoundedRectangle(cornerRadius: 8))
-                            }
-                            .buttonStyle(.plain)
-                            
-                            if !seedLabel.isEmpty {
-                                // Count selection picker
-                                FormRowMenuPicker("How many addresses?",
-                                                   options: AddressCountOption.allCases,
-                                                   selection: $count)
-                                
-                                // Source indicator
-                                if !addressHook.items.isEmpty {
-                                    HStack {
-                                        Image(systemName: "building.2")
-                                            .foregroundStyle(.blue)
-                                        Text("Address Database")
-                                            .font(.footnote)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                }
-                                
-                                PrimaryButton(
-                                    title: addressHook.isLoading ? "Searching…" : 
-                                           (!addressHook.items.isEmpty ? "Found \(addressHook.items.count) Homes" : "Find \(count.rawValue) Nearby"),
-                                    enabled: selectedCenter != nil && !addressHook.isLoading,
-                                    style: !addressHook.items.isEmpty ? .success : .primary
-                                ) {
-                                    Task {
-                                        if let c = selectedCenter {
-                                            addressHook.fetchNearest(center: c, target: count.rawValue)
-                                        }
-                                    }
-                                }
-                                
-                                if let err = addressHook.error {
-                                    Text(err)
-                                        .font(.footnote)
-                                        .foregroundStyle(.red)
-                                }
-                            }
-                        } else if source == .sameStreet {
-                            // Same street interface - similar to closestHome
-                            AddressSearchField(auto: auto) { suggestion in
-                                selectedCenter = suggestion.coordinate
-                                seedLabel = auto.query
-                                auto.clear()   // ensure list is hidden after parent handles selection
-                            }
-                            
-                            // Show current chosen seed (from text or map)
-                            if !seedLabel.isEmpty {
-                                Text(seedLabel)
-                                    .font(.footnote)
-                                    .foregroundStyle(.secondary)
-                            }
-                            
-                            // Count selection picker
-                            FormRowMenuPicker("How many addresses?",
-                                               options: AddressCountOption.allCases,
-                                               selection: $count)
-                            
-                            // Source indicator
-                            if !addressHook.items.isEmpty {
-                                HStack {
-                                    Image(systemName: "building.2")
-                                        .foregroundStyle(.blue)
-                                    Text("Address Database")
-                                        .font(.footnote)
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
-                            
-                            PrimaryButton(
-                                title: addressHook.isLoading ? "Searching…" : 
-                                       (!addressHook.items.isEmpty ? "Found \(addressHook.items.count) Homes" : "Find \(count.rawValue) on Street"),
-                                enabled: (!auto.query.isEmpty || selectedCenter != nil) && !addressHook.isLoading,
-                                style: !addressHook.items.isEmpty ? .success : .primary
-                            ) {
-                                if let c = selectedCenter {
-                                    addressHook.fetchSameStreet(seed: c, target: count.rawValue)
-                                } else {
-                                    // Forward geocode the query first
-                                    Task {
-                                        let geoAPI = GeoAPI.shared
-                                        let seed = try await geoAPI.forwardGeocodeSeed(auto.query)
-                                        addressHook.fetchSameStreet(seed: seed.coordinate, target: count.rawValue)
-                                    }
-                                }
-                            }
-                            
-                            if let err = addressHook.error {
-                                Text(err)
-                                    .font(.footnote)
-                                    .foregroundStyle(.red)
-                            }
-                        }
+
+                    AddressSearchField(auto: auto) { suggestion in
+                        selectedCenter = suggestion.coordinate
+                        seedLabel = auto.query
+                        auto.clear()
                     }
-                    .transition(.opacity.combined(with: .move(edge: .top)))
+
+                    // Map preview: tap to open draw polygon workflow
+                    TerritoryPreviewMapView(center: selectedCenter ?? locationManager.currentLocation?.coordinate, polygon: drawnPolygon, useDarkStyle: colorScheme == .dark, height: 220)
+                        .frame(height: 220)
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            showMapSeed = true
+                        }
+
+                    Button {
+                        showMapSeed = true
+                    } label: {
+                        HStack {
+                            Image(systemName: "map")
+                            Text(seedLabel.isEmpty ? "Draw polygon on map" : seedLabel)
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.flyrCaption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding()
+                        .background(Color(.systemGray6))
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                    }
+                    .buttonStyle(.plain)
+
+                    if !seedLabel.isEmpty {
+                        Text("Create Campaign will save the territory and provision addresses from the area.")
+                            .font(.flyrFootnote)
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 .formContainerPadding()
-                
-                // Spacer to reveal CTA above tab bar
+
                 Rectangle()
                     .fill(.clear)
                     .frame(height: 8)
@@ -266,9 +126,13 @@ struct NewCampaignScreen: View {
                 if let err = createHook.error { 
                     Text(err)
                         .foregroundStyle(.red)
-                        .font(.footnote) 
+                        .font(.flyrFootnote) 
                 }
-                PrimaryButton(title: "Create Campaign", enabled: canCreate) {
+                PrimaryButton(
+                    title: "Create Campaign",
+                    enabled: canCreate && !createHook.isCreating,
+                    isLoading: createHook.isCreating
+                ) {
                     Task { await createCampaignTapped() }
                 }
                 .padding(.horizontal, 20)
@@ -276,19 +140,44 @@ struct NewCampaignScreen: View {
             }
             .background(.ultraThinMaterial)
         }
+                .onAppear {
+                    locationManager.requestLocation()
+                    if name.isEmpty {
+                        name = type.title
+                    }
+                }
                 .sheet(isPresented: $showMapSeed) {
-                    MapDrawingView(initialCenter: selectedCenter, initialCount: count.rawValue) { coord, chosenCount, label in
-                        self.selectedCenter = coord
-                        self.count = AddressCountOption(rawValue: chosenCount) ?? .c100
-                        self.seedLabel = label
-                        self.auto.query = label
-                        self.auto.selected = AddressSuggestion(id: UUID().uuidString, title: label, subtitle: nil, coordinate: coord)
+                    MapDrawingView(
+                        initialCenter: selectedCenter ?? locationManager.currentLocation?.coordinate,
+                        onPolygonDone: { vertices in
+                            self.drawnPolygon = vertices
+                            self.selectedCenter = nil
+                            self.seedLabel = "Polygon (\(vertices.count) points)"
+                            self.showMapSeed = false
+                        },
+                        onCreateCampaign: { vertices in
+                            self.drawnPolygon = vertices
+                            self.selectedCenter = nil
+                            self.seedLabel = "Polygon (\(vertices.count) points)"
+                            self.showMapSeed = false
+                            Task { await self.createCampaignTapped() }
+                        }
+                    )
+                }
+                .overlay {
+                    if createHook.isCreating {
+                        CampaignCreatingOverlayView(useDarkStyle: colorScheme == .dark)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .ignoresSafeArea()
                     }
                 }
                 .hidesTabBar()
     }
     
     private func createCampaignTapped() async {
+        guard !createHook.isCreating else { return }
+        createHook.isCreating = true
+        defer { createHook.isCreating = false }
         print("🚀 [CAMPAIGN DEBUG] Starting campaign creation workflow")
         print("🚀 [CAMPAIGN DEBUG] Campaign name: '\(name)'")
         print("🚀 [CAMPAIGN DEBUG] Campaign type: \(type.rawValue)")
@@ -302,147 +191,117 @@ struct NewCampaignScreen: View {
         
         switch source {
         case .closestHome:
-            print("🏠 [CAMPAIGN DEBUG] Creating campaign with closest home source")
-            print("🏠 [CAMPAIGN DEBUG] Seed query: '\(seedQuery)'")
-            print("🏠 [CAMPAIGN DEBUG] Target count: \(count.rawValue)")
-            print("🏠 [CAMPAIGN DEBUG] Found \(addressHook.items.count) addresses")
-            if let center = selectedCenter {
-                print("🏠 [CAMPAIGN DEBUG] Seed center: (\(center.latitude), \(center.longitude))")
-            } else {
-                print("🏠 [CAMPAIGN DEBUG] Seed center: nil")
+            print("🏠 [CAMPAIGN DEBUG] Creating campaign with closest home source (create first, then address backend)")
+            var center: CLLocationCoordinate2D?
+            if let c = selectedCenter {
+                center = c
+            } else if !auto.query.isEmpty {
+                do {
+                    let seed = try await GeoAPI.shared.forwardGeocodeSeed(auto.query)
+                    center = seed.coordinate
+                } catch {
+                    print("❌ [CAMPAIGN DEBUG] Geocode failed: \(error)")
+                    createHook.error = "Could not find location for \"\(auto.query)\""
+                    return
+                }
             }
-            
-            // Use new payload structure for closest home
-            let addresses = addressHook.items.map { candidate in
-                CampaignAddress(
-                    address: candidate.address,
-                    coordinate: candidate.coordinate
-                )
+            guard let center else {
+                createHook.error = "Select an address or enter a location"
+                return
             }
-            print("🏠 [CAMPAIGN DEBUG] Addresses: \(addresses.count) records")
-            
+            print("🏠 [CAMPAIGN DEBUG] Seed center: (\(center.latitude), \(center.longitude)), target count: \(count.rawValue)")
+
             let payload = CampaignCreatePayloadV2(
                 name: name,
                 description: description.isEmpty ? "Campaign created from \(source.displayName)" : description,
                 type: type,
                 addressSource: source,
                 addressTargetCount: count.rawValue,
-                seedQuery: seedQuery.isEmpty ? nil : seedQuery,
-                seedLon: selectedCenter?.longitude,
-                seedLat: selectedCenter?.latitude,
-                addressesJSON: addresses
+                seedQuery: auto.query.isEmpty ? nil : auto.query,
+                seedLon: center.longitude,
+                seedLat: center.latitude,
+                tags: tags.trimmingCharacters(in: .whitespaces).isEmpty ? nil : tags.trimmingCharacters(in: .whitespaces),
+                addressesJSON: []
             )
-            
-            print("🏠 [CAMPAIGN DEBUG] Payload created, calling createV2...")
+
             if let created = await createHook.createV2(payload: payload, store: store) {
-                print("✅ [CAMPAIGN DEBUG] Campaign created successfully with ID: \(created.id)")
-                // Dismiss the sheet first, then navigate
-                dismiss()
-                // Small delay to ensure sheet is dismissed before navigation
-                try? await Task.sleep(nanoseconds: 300_000_000) // 0.3 seconds
-                await MainActor.run {
-                    store.routeToV2Detail?(created.id)
+                print("✅ [CAMPAIGN DEBUG] Campaign created with ID: \(created.id), calling generate-address-list...")
+                do {
+                    _ = try await OvertureAddressService.shared.getAddressesNearest(center: center, limit: count.rawValue, campaignId: created.id, startingAddress: auto.query.isEmpty ? nil : auto.query)
+                    print("✅ [CAMPAIGN DEBUG] Address list generated")
+                } catch {
+                    print("⚠️ [CAMPAIGN DEBUG] generate-address-list failed: \(error)")
+                    createHook.error = "Campaign created. Address list is still loading or failed; check the campaign in a moment."
                 }
+                dismiss()
+                try? await Task.sleep(nanoseconds: 300_000_000)
+                await MainActor.run { store.routeToV2Detail?(created.id) }
             } else {
                 print("❌ [CAMPAIGN DEBUG] Campaign creation failed")
             }
             
         case .map:
             print("🗺️ [CAMPAIGN DEBUG] Creating campaign with map source")
-            print("🗺️ [CAMPAIGN DEBUG] Seed label: '\(seedLabel)'")
-            print("🗺️ [CAMPAIGN DEBUG] Target count: \(count.rawValue)")
-            print("🗺️ [CAMPAIGN DEBUG] Found \(addressHook.items.count) addresses")
-            if let center = selectedCenter {
-                print("🗺️ [CAMPAIGN DEBUG] Seed center: (\(center.latitude), \(center.longitude))")
-            } else {
-                print("🗺️ [CAMPAIGN DEBUG] Seed center: nil")
-            }
-            
-            // Use new payload structure for map
-            let addresses = addressHook.items.map { candidate in
-                CampaignAddress(
-                    address: candidate.address,
-                    coordinate: candidate.coordinate
+            if let polygon = drawnPolygon, polygon.count >= 3 {
+                // Polygon flow: create campaign (minimal addresses), then provision (backend Lambda/S3)
+                print("🗺️ [CAMPAIGN DEBUG] Using drawn polygon (\(polygon.count) points) – will provision after create")
+                let payload = CampaignCreatePayloadV2(
+                    name: name,
+                    description: description.isEmpty ? "Campaign created from polygon" : description,
+                    type: type,
+                    addressSource: source,
+                    addressTargetCount: 0,
+                    // Do not persist polygon summary labels (e.g. "Polygon (9 points)") into campaigns.region.
+                    // Polygon geometry is stored in territory_boundary and is the only source used for provision.
+                    seedQuery: nil,
+                    seedLon: nil,
+                    seedLat: nil,
+                    tags: tags.trimmingCharacters(in: .whitespaces).isEmpty ? nil : tags.trimmingCharacters(in: .whitespaces),
+                    addressesJSON: []
                 )
-            }
-            print("🗺️ [CAMPAIGN DEBUG] Addresses: \(addresses.count) records")
-            
-            let payload = CampaignCreatePayloadV2(
-                name: name,
-                description: description.isEmpty ? "Campaign created from \(source.displayName)" : description,
-                type: type,
-                addressSource: source,
-                addressTargetCount: count.rawValue,
-                seedQuery: seedLabel.isEmpty ? nil : seedLabel,
-                seedLon: selectedCenter?.longitude,
-                seedLat: selectedCenter?.latitude,
-                addressesJSON: addresses
-            )
-            
-            print("🗺️ [CAMPAIGN DEBUG] Payload created, calling createV2...")
-            if let created = await createHook.createV2(payload: payload, store: store) {
-                print("✅ [CAMPAIGN DEBUG] Campaign created successfully with ID: \(created.id)")
-                // Dismiss the sheet first, then navigate
-                dismiss()
-                // Small delay to ensure sheet is dismissed before navigation
-                try? await Task.sleep(nanoseconds: 300_000_000) // 0.3 seconds
-                await MainActor.run {
-                    store.routeToV2Detail?(created.id)
+                if let created = await createHook.createV2(payload: payload, store: store) {
+                    let geoJSON = polygonToGeoJSON(polygon)
+                    do {
+                        try await CampaignsAPI.shared.updateTerritoryBoundary(campaignId: created.id, polygonGeoJSON: geoJSON)
+                        try await CampaignsAPI.shared.provisionCampaign(campaignId: created.id)
+                        let provisionState = try await CampaignsAPI.shared.waitForProvisionReady(campaignId: created.id)
+                        if provisionState.provisionStatus != "ready" {
+                            createHook.error = "Campaign created but provisioning did not complete (status: \(provisionState.provisionStatus ?? "unknown")). Please retry from campaign details."
+                            return
+                        }
+                    } catch {
+                        print("❌ [CAMPAIGN DEBUG] Provision failed: \(error)")
+                        createHook.error = "Campaign created but provisioning failed: \(error.localizedDescription)"
+                        return
+                    }
+                    dismiss()
+                    try? await Task.sleep(nanoseconds: 300_000_000)
+                    await MainActor.run { store.routeToV2Detail?(created.id) }
+                } else {
+                    print("❌ [CAMPAIGN DEBUG] Campaign creation failed")
                 }
             } else {
-                print("❌ [CAMPAIGN DEBUG] Campaign creation failed")
+                createHook.error = "Draw a polygon on the map"
             }
             
-        case .sameStreet:
-            print("🛣️ [CAMPAIGN DEBUG] Creating campaign with same street source")
-            print("🛣️ [CAMPAIGN DEBUG] Seed label: '\(seedLabel)'")
-            print("🛣️ [CAMPAIGN DEBUG] Target count: \(count.rawValue)")
-            print("🛣️ [CAMPAIGN DEBUG] Found \(addressHook.items.count) addresses")
-            if let center = selectedCenter {
-                print("🛣️ [CAMPAIGN DEBUG] Seed center: (\(center.latitude), \(center.longitude))")
-            } else {
-                print("🛣️ [CAMPAIGN DEBUG] Seed center: nil")
-            }
-            
-            // Use new payload structure for same street
-            let addresses = addressHook.items.map { candidate in
-                CampaignAddress(
-                    address: candidate.address,
-                    coordinate: candidate.coordinate
-                )
-            }
-            print("🛣️ [CAMPAIGN DEBUG] Addresses: \(addresses.count) records")
-            
-            let payload = CampaignCreatePayloadV2(
-                name: name,
-                description: description.isEmpty ? "Campaign created from \(source.displayName)" : description,
-                type: type,
-                addressSource: source,
-                addressTargetCount: count.rawValue,
-                seedQuery: seedLabel.isEmpty ? nil : seedLabel,
-                seedLon: selectedCenter?.longitude,
-                seedLat: selectedCenter?.latitude,
-                addressesJSON: addresses
-            )
-            
-            print("🛣️ [CAMPAIGN DEBUG] Payload created, calling createV2...")
-            if let created = await createHook.createV2(payload: payload, store: store) {
-                print("✅ [CAMPAIGN DEBUG] Campaign created successfully with ID: \(created.id)")
-                // Dismiss the sheet first, then navigate
-                dismiss()
-                // Small delay to ensure sheet is dismissed before navigation
-                try? await Task.sleep(nanoseconds: 300_000_000) // 0.3 seconds
-                await MainActor.run {
-                    store.routeToV2Detail?(created.id)
-                }
-            } else {
-                print("❌ [CAMPAIGN DEBUG] Campaign creation failed")
-            }
-            
-        case .importList:
+        case .sameStreet, .importList:
             print("📋 [CAMPAIGN DEBUG] Import list functionality not implemented")
             // TODO: Implement import list functionality if needed
         }
+    }
+
+    /// Build GeoJSON Polygon for territory_boundary (matches web: draw_polygon → getAll() → geometry).
+    /// Ring is closed (first point = last point), coordinates [longitude, latitude], at least 4 points.
+    private func polygonToGeoJSON(_ polygon: [CLLocationCoordinate2D]) -> String {
+        var coords = polygon
+        if coords.first != coords.last, let first = coords.first {
+            coords.append(first)
+        }
+        // GeoJSON: [lng, lat] per point; ring must have ≥4 points (closed = 3 vertices + repeat first).
+        let coordinateArray = coords.map { [$0.longitude, $0.latitude] }
+        let geoJSON: [String: Any] = ["type": "Polygon", "coordinates": [coordinateArray]]
+        let data = (try? JSONSerialization.data(withJSONObject: geoJSON)) ?? Data()
+        return String(data: data, encoding: .utf8) ?? "{}"
     }
 }
 

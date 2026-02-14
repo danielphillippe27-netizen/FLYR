@@ -14,7 +14,7 @@ public struct FormSection<Content: View>: View {
     public var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title)
-                .font(.system(.headline, design: .rounded))
+                .font(.flyrHeadline)
                 .foregroundStyle(.primary)
             VStack(spacing: 10) { 
                 content 

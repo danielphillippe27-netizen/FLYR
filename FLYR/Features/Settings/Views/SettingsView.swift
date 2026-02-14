@@ -1,6 +1,4 @@
 import SwiftUI
-import Supabase
-import Auth
 
 struct SettingsView: View {
     @StateObject private var vm = SettingsViewModel()
@@ -27,9 +25,16 @@ struct SettingsView: View {
                     
                     // Appearance
                     appearanceSection
+
+                    // Apple Health
+                    appleHealthSection
                     
                     // App Info
                     appInfoSection
+
+                    #if DEBUG
+                    debugSection
+                    #endif
                 } else {
                     Section {
                         Text("Please sign in to view settings")
@@ -39,13 +44,6 @@ struct SettingsView: View {
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Done") {
-                        dismiss()
-                    }
-                }
-            }
             .task {
                 if let userID = auth.user?.id {
                     await vm.loadSettings(for: userID)
@@ -55,6 +53,7 @@ struct SettingsView: View {
                         excludeWeekends = settings.exclude_weekends
                         darkMode = settings.dark_mode
                     }
+                    vm.refreshStepsIfEnabled()
                 }
             }
             .onChange(of: vm.settings) { newSettings in
@@ -64,33 +63,61 @@ struct SettingsView: View {
                     darkMode = settings.dark_mode
                 }
             }
+            .onAppear {
+                if let userID = auth.user?.id {
+                    Task { await vm.loadProfile(userID: userID) }
+                }
+            }
         }
     }
     
     // MARK: - Profile Section
-    
-    private func profileSection(user: User) -> some View {
+
+    private func profileSection(user: AppUser) -> some View {
         Section {
             NavigationLink(destination: ProfileView()) {
                 HStack(spacing: 16) {
-                    Circle()
-                        .fill(Color.bgSecondary)
-                        .frame(width: 60, height: 60)
-                        .overlay(
-                            Image(systemName: "person.circle.fill")
-                                .font(.system(size: 50))
-                                .foregroundColor(.muted)
-                        )
-                    
+                    Group {
+                        if let photoURL = user.photoURL {
+                            AsyncImage(url: photoURL) { phase in
+                                switch phase {
+                                case .success(let image):
+                                    image
+                                        .resizable()
+                                        .scaledToFill()
+                                case .failure, .empty:
+                                    Image(systemName: "person.circle.fill")
+                                        .font(.system(size: 50))
+                                        .foregroundColor(.muted)
+                                @unknown default:
+                                    Image(systemName: "person.circle.fill")
+                                        .font(.system(size: 50))
+                                        .foregroundColor(.muted)
+                                }
+                            }
+                            .frame(width: 60, height: 60)
+                            .clipShape(Circle())
+                        } else {
+                            Circle()
+                                .fill(Color.bgSecondary)
+                                .frame(width: 60, height: 60)
+                                .overlay(
+                                    Image(systemName: "person.circle.fill")
+                                        .font(.system(size: 50))
+                                        .foregroundColor(.muted)
+                                )
+                        }
+                    }
+
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(user.email ?? "User")
+                        Text(vm.profile?.displayName ?? user.displayName ?? user.email)
                             .font(.system(size: 17, weight: .semibold))
                             .foregroundColor(.text)
-                        
+
                         Text("FLYR™ Pro")
                             .font(.system(size: 13))
                             .foregroundColor(.info)
-                        
+
                         if let settings = vm.settings,
                            let memberSince = settings.formattedMemberSince {
                             Text("Member for \(memberSince)")
@@ -98,7 +125,7 @@ struct SettingsView: View {
                                 .foregroundColor(.muted)
                         }
                     }
-                    
+
                     Spacer()
                 }
                 .padding(.vertical, 8)
@@ -152,6 +179,55 @@ struct SettingsView: View {
             Text("Appearance")
         }
     }
+
+    // MARK: - Apple Health Section
+
+    private var appleHealthSection: some View {
+        Section {
+            Toggle(isOn: Binding(
+                get: { vm.syncSteps },
+                set: { newValue in
+                    vm.syncSteps = newValue
+                    vm.toggleHealthSync(newValue)
+                }
+            )) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Sync Steps")
+                    Text("Show today's steps in the app.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            if vm.syncSteps {
+                HStack {
+                    Text("Today")
+                    Spacer()
+                    if vm.isLoadingSteps {
+                        ProgressView()
+                    } else if let steps = vm.todaySteps {
+                        Text("\(steps)")
+                            .monospacedDigit()
+                    } else {
+                        Text("—")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                Button("Refresh Steps") {
+                    vm.refreshStepsIfEnabled()
+                }
+            }
+
+            if let err = vm.healthError {
+                Text(err)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+        } header: {
+            Text("Apple Health")
+        }
+    }
     
     // MARK: - App Info Section
     
@@ -176,6 +252,19 @@ struct SettingsView: View {
             Text("App Info")
         }
     }
+
+    #if DEBUG
+    private var debugSection: some View {
+        Section {
+            Button("Reset Onboarding") {
+                LocalStorage.shared.hasCompletedOnboarding = false
+                dismiss()
+            }
+        } header: {
+            Text("Developer")
+        }
+    }
+    #endif
     
     // MARK: - Save Methods
     

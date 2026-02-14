@@ -100,9 +100,10 @@ actor LeaderboardService {
         metric: String,
         timeframe: String
     ) async throws -> [LeaderboardUser] {
+        // Must match DB function param names: get_leaderboard(p_metric, p_timeframe)
         let params: [String: AnyCodable] = [
-            "metric": AnyCodable(metric),
-            "timeframe": AnyCodable(timeframe)
+            "p_metric": AnyCodable(metric),
+            "p_timeframe": AnyCodable(timeframe)
         ]
         
         print("📊 [LeaderboardService] Fetching leaderboard with params: metric=\(metric), timeframe=\(timeframe)")

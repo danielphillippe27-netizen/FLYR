@@ -40,7 +40,7 @@ struct FunnelCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Funnel")
-                .font(.headline)
+                .font(.flyrHeadline)
             
             FunnelRow(label: "Touches", value: data.touches)
             FunnelRow(label: "Completed", value: data.completedTouches)
@@ -77,7 +77,7 @@ struct TouchEffectivenessCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Touch Effectiveness")
-                .font(.headline)
+                .font(.flyrHeadline)
             
             ForEach(data, id: \.type) { item in
                 VStack(alignment: .leading, spacing: 4) {

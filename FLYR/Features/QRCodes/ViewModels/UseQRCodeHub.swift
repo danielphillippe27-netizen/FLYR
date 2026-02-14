@@ -11,7 +11,6 @@ class UseQRCodeHub: ObservableObject {
     enum QRCodeDestination: Identifiable {
         case create
         case print
-        case landing
         case analytics
         case mapView
         
@@ -19,7 +18,6 @@ class UseQRCodeHub: ObservableObject {
             switch self {
             case .create: return "create"
             case .print: return "print"
-            case .landing: return "landing"
             case .analytics: return "analytics"
             case .mapView: return "mapView"
             }

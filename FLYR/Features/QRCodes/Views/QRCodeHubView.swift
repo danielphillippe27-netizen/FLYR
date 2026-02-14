@@ -34,14 +34,6 @@ struct QRCodeHubView: View {
                         }
                         
                         QRHubSquare(
-                            title: "Landing Pages",
-                            icon: "globe",
-                            color: .orange
-                        ) {
-                            hook.navigateTo(.landing)
-                        }
-                        
-                        QRHubSquare(
                             title: "Analytics",
                             icon: "chart.bar.fill",
                             color: .purple
@@ -70,8 +62,6 @@ struct QRCodeHubView: View {
                     QRCodeCreateView()
                 case .print:
                     QRPrintViewV2()
-                case .landing:
-                    QRCodeLandingView()
                 case .analytics:
                     QRCodeAnalyticsView()
                 case .mapView:

@@ -68,7 +68,7 @@ struct QRCodeAnalyticsView: View {
                             if !summary.recentScans.isEmpty {
                                 VStack(alignment: .leading, spacing: 12) {
                                     Text("Recent Scans")
-                                        .font(.title2)
+                                        .font(.flyrTitle2)
                                         .fontWeight(.semibold)
                                         .padding(.horizontal)
                                     

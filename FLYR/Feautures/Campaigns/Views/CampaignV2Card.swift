@@ -15,7 +15,7 @@ struct CampaignV2Card: View {
                         .lineLimit(2)
                     
                     Text("Created \(campaign.createdAt, formatter: dateFormatter)")
-                        .font(.caption)
+                        .font(.flyrCaption)
                         .foregroundColor(.muted)
                 }
                 
@@ -46,21 +46,21 @@ struct CampaignV2Card: View {
             HStack {
                 Image(systemName: "location.fill")
                     .foregroundColor(.muted)
-                    .font(.caption)
+                    .font(.flyrCaption)
                 
                 Text("\(campaign.addresses.count) addresses")
-                    .font(.caption)
+                    .font(.flyrCaption)
                     .foregroundColor(.muted)
                 
                 Spacer()
                 
                 if campaign.addressSource == .closestHome {
                     Text("Closest Home")
-                        .font(.caption)
+                        .font(.flyrCaption)
                         .foregroundColor(.muted)
                 } else {
                     Text("Imported List")
-                        .font(.caption)
+                        .font(.flyrCaption)
                         .foregroundColor(.muted)
                 }
             }

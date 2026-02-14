@@ -1,13 +1,11 @@
 import SwiftUI
-import Auth
-
 struct FLYRProfileCard: View {
     let stats: UserStats?
     let profile: UserProfile?
     @StateObject private var auth = AuthManager.shared
     
     private var displayName: String {
-        profile?.displayName ?? auth.user?.email?.components(separatedBy: "@").first?.capitalized ?? "User"
+        profile?.displayName ?? (auth.user?.email).flatMap { $0.components(separatedBy: "@").first?.capitalized } ?? auth.user?.email ?? "User"
     }
     
     private var avatarUrl: String? {
@@ -37,16 +35,16 @@ struct FLYRProfileCard: View {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 12) {
                     Text(displayName)
-                        .font(.system(.title2, weight: .bold))
+                        .font(.flyrTitle2Bold)
                         .foregroundColor(.text)
                     
                     // Streaks metric
                     HStack(spacing: 4) {
                         Image(systemName: "flame.fill")
-                            .foregroundColor(.orange)
+                            .foregroundColor(.flyrPrimary)
                             .font(.system(size: 14))
                         Text("\(dayStreak)")
-                            .font(.system(.subheadline, weight: .medium))
+                            .font(.flyrSubheadline)
                             .foregroundColor(.text)
                     }
                     
@@ -56,7 +54,7 @@ struct FLYRProfileCard: View {
                             .foregroundColor(.accentDefault)
                             .font(.system(size: 14))
                         Text(formattedDistance)
-                            .font(.system(.subheadline, weight: .medium))
+                            .font(.flyrSubheadline)
                             .foregroundColor(.text)
                     }
                 }
@@ -90,11 +88,11 @@ struct ProfileStatItem: View {
                 .foregroundColor(.accentDefault)
             
             Text(value)
-                .font(.system(.headline, weight: .bold))
+                .font(AppFont.title(17))
                 .foregroundColor(.text)
             
             Text(label)
-                .font(.system(.caption))
+                .font(.flyrCaption)
                 .foregroundColor(.muted)
         }
         .frame(maxWidth: .infinity)

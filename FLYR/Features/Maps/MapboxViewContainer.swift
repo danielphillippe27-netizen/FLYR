@@ -31,8 +31,8 @@ struct MapboxViewContainer: UIViewRepresentable {
         // Register with bridge
         MapboxBridge.shared.mapView = mapView
         
-        // Use simple online style to reduce warnings
-        try? mapView.mapboxMap.loadStyleURI(StyleURI.streets)
+        // Use custom light style
+        try? mapView.mapboxMap.loadStyleURI(StyleURI(rawValue: "mapbox://styles/fliper27/cml6z0dhg002301qo9xxc08k4")!)
         
         // Set camera position when map loads
         if let center = centerCoordinate {

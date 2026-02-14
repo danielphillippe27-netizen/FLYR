@@ -85,7 +85,12 @@ struct QRCodeMapView: View {
     private func initializeMap() {
         // Initialize map view
         let options = MapInitOptions()
-        mapView = MapView(frame: .zero, mapInitOptions: options)
+        let mv = MapView(frame: .zero, mapInitOptions: options)
+        
+        // Load custom light style
+        mv.mapboxMap.loadStyle(StyleURI(rawValue: "mapbox://styles/fliper27/cml6z0dhg002301qo9xxc08k4")!)
+        
+        mapView = mv
     }
     
     private func updateMapMarkers() {

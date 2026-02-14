@@ -32,7 +32,7 @@ struct GeoJSONFeature: Codable, Equatable {
             id = stringId
         } else if let numberId = try? container.decode(Int.self, forKey: .id) {
             id = String(numberId)
-        } else if let doubleId = try? container.decode(Double.self, forKey: .id) {
+        } else if let doubleId = try? container.decode(Double.self, forKey: .id), doubleId.isFinite {
             id = String(Int(doubleId))
         } else {
             id = nil

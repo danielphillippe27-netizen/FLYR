@@ -9,7 +9,7 @@ struct CampaignSelector: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Select Campaign")
-                .font(.headline)
+                .font(.flyrHeadline)
                 .padding(.horizontal)
             
             ScrollView(.horizontal, showsIndicators: false) {
@@ -20,12 +20,12 @@ struct CampaignSelector: View {
                         } label: {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(campaign.name)
-                                    .font(.headline)
+                                    .font(.flyrHeadline)
                                     .foregroundStyle(selectedId == campaign.id ? .white : .primary)
                                 
                                 if let count = campaign.addressCount {
                                     Text("\(count) addresses")
-                                        .font(.caption)
+                                        .font(.flyrCaption)
                                         .foregroundStyle(selectedId == campaign.id ? .white.opacity(0.8) : .secondary)
                                 }
                             }

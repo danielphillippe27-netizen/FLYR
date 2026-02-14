@@ -27,7 +27,7 @@ struct QRCodeDetailView: View {
                     Card {
                         VStack(alignment: .leading, spacing: 8) {
                             Text("Address")
-                                .font(.headline)
+                                .font(.flyrHeadline)
                             Text(qrCode.formatted)
                                 .font(.body)
                                 .foregroundStyle(.secondary)
@@ -37,7 +37,7 @@ struct QRCodeDetailView: View {
                     Card {
                         VStack(alignment: .leading, spacing: 12) {
                             Text("Links")
-                                .font(.headline)
+                                .font(.flyrHeadline)
                             LinkRow(title: "Web URL", url: qrCode.webURL)
                             LinkRow(title: "Deep Link", url: qrCode.deepLinkURL)
                         }
@@ -100,11 +100,11 @@ struct LinkRow: View {
     var body: some View {
         HStack {
             Text(title)
-                .font(.subheadline)
+                .font(.flyrSubheadline)
                 .foregroundStyle(.secondary)
             Spacer()
             Text(url)
-                .font(.caption)
+                .font(.flyrCaption)
                 .foregroundStyle(.blue)
                 .lineLimit(1)
                 .truncationMode(.middle)

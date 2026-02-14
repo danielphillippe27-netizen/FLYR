@@ -9,16 +9,17 @@ struct CampaignDBRow: Codable {
     let id: UUID
     let title: String
     let description: String?
-    // total_flyers removed - computed automatically from addresses
     let scans: Int
     let conversions: Int
     let region: String?
+    let tags: String?
+    let status: CampaignStatus?
     let createdAt: Date
     let updatedAt: Date
     let ownerId: UUID
-    
+
     enum CodingKeys: String, CodingKey {
-        case id, title, description, scans, conversions, region
+        case id, title, description, scans, conversions, region, tags, status
         case createdAt = "created_at"
         case updatedAt = "updated_at"
         case ownerId = "owner_id"
@@ -99,6 +100,7 @@ struct CampaignAddressViewRow: Codable {
 /// Visit/door status enum for campaign addresses
 enum AddressStatus: String, Codable, CaseIterable {
     case none = "none"
+    case untouched = "untouched"
     case noAnswer = "no_answer"
     case delivered = "delivered"
     case talked = "talked"
@@ -106,11 +108,12 @@ enum AddressStatus: String, Codable, CaseIterable {
     case doNotKnock = "do_not_knock"
     case futureSeller = "future_seller"
     case hotLead = "hot_lead"
-    
+
     /// Display name for UI
     var displayName: String {
         switch self {
         case .none: return "None"
+        case .untouched: return "Untouched"
         case .noAnswer: return "No Answer"
         case .delivered: return "Delivered"
         case .talked: return "Talked"
@@ -120,11 +123,12 @@ enum AddressStatus: String, Codable, CaseIterable {
         case .hotLead: return "Hot Lead"
         }
     }
-    
+
     /// Short description for UI
     var description: String {
         switch self {
         case .none: return "No status set"
+        case .untouched: return "Not yet visited"
         case .noAnswer: return "No one answered"
         case .delivered: return "Flyer delivered"
         case .talked: return "Spoke with resident"
@@ -134,11 +138,12 @@ enum AddressStatus: String, Codable, CaseIterable {
         case .hotLead: return "Hot lead"
         }
     }
-    
+
     /// SF Symbol name for UI
     var iconName: String {
         switch self {
         case .none: return "circle"
+        case .untouched: return "circle"
         case .noAnswer: return "door.left.hand.closed"
         case .delivered: return "envelope.fill"
         case .talked: return "person.wave.2.fill"
@@ -148,12 +153,13 @@ enum AddressStatus: String, Codable, CaseIterable {
         case .hotLead: return "flame.fill"
         }
     }
-    
+
     /// SwiftUI Color for UI
     var tintColor: Color {
         switch self {
         case .none: return .gray
-        case .noAnswer: return .orange
+        case .untouched: return .gray
+        case .noAnswer: return .flyrPrimary
         case .delivered: return .blue
         case .talked: return .green
         case .appointment: return .purple
@@ -164,7 +170,8 @@ enum AddressStatus: String, Codable, CaseIterable {
     }
 }
 
-/// Address status row from address_statuses table
+/// Address status row from address_statuses table.
+/// Decodes `id` from "id" or falls back to "address_id" so the app always has a stable UUID for Identifiable.
 struct AddressStatusRow: Codable, Identifiable {
     let id: UUID
     let addressId: UUID
@@ -186,6 +193,24 @@ struct AddressStatusRow: Codable, Identifiable {
         case visitCount = "visit_count"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
+    }
+    
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        addressId = try c.decode(UUID.self, forKey: .addressId)
+        // Use "id" if present, otherwise use address_id as the stable id (e.g. view or older DB without id)
+        if let decodedId = try? c.decode(UUID.self, forKey: .id) {
+            id = decodedId
+        } else {
+            id = addressId
+        }
+        campaignId = try c.decode(UUID.self, forKey: .campaignId)
+        status = try c.decode(AddressStatus.self, forKey: .status)
+        lastVisitedAt = try c.decodeIfPresent(Date.self, forKey: .lastVisitedAt)
+        notes = try c.decodeIfPresent(String.self, forKey: .notes)
+        visitCount = try c.decodeIfPresent(Int.self, forKey: .visitCount) ?? 0
+        updatedAt = try c.decode(Date.self, forKey: .updatedAt)
+        createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt) ?? updatedAt
     }
 }
 

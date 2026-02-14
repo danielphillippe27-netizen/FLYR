@@ -97,7 +97,7 @@ struct FarmPhase: Identifiable, Codable, Equatable {
         guard let value = results?[key]?.value else { return nil }
         if let int = value as? Int {
             return int
-        } else if let double = value as? Double {
+        } else if let double = value as? Double, double.isFinite {
             return Int(double)
         } else if let string = value as? String, let int = Int(string) {
             return int

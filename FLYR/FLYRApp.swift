@@ -1,17 +1,38 @@
 import SwiftUI
+import UIKit
 import MapboxMaps
 import Supabase
-import Auth
-
 @main
 struct FLYRApp: App {
     @StateObject private var auth = AuthManager.shared
     @StateObject private var uiState = AppUIState()
-    
+
     init() {
         MapboxOptions.accessToken = Config.mapboxAccessToken
+        #if DEBUG
+        Self.verifyInterFonts()
+        #endif
     }
-    
+
+    #if DEBUG
+    private static func verifyInterFonts() {
+        let names = ["Inter-Regular", "Inter-Medium", "Inter-SemiBold", "Inter-Bold"]
+        let available = UIFont.familyNames.flatMap { UIFont.fontNames(forFamilyName: $0) }
+        print("🔤 Loaded font names (Inter): \(available.filter { $0.contains("Inter") })")
+        var allFound = true
+        for name in names {
+            if UIFont(name: name, size: 17) == nil {
+                print("⚠️ Inter font missing: \(name)")
+                allFound = false
+            }
+        }
+        if !allFound {
+            AppFont.isInterEnabled = false
+            print("⚠️ Inter disabled; using system fonts.")
+        }
+    }
+    #endif
+
     var body: some Scene {
         WindowGroup {
             AuthGate()
@@ -26,17 +47,13 @@ struct FLYRApp: App {
                     }
                 }
                 .onOpenURL { url in
-                    Task { 
+                    Task {
                         #if DEBUG
                         print("🔗 Received URL: \(url)")
                         #endif
-                        
-                        // Handle OAuth redirects for CRM integrations
+                        // Handle OAuth redirects for CRM integrations only
                         if url.scheme == "flyr" && url.host == "oauth" {
                             await handleOAuthRedirect(url: url)
-                        } else {
-                            // Handle auth URLs (magic link, etc.)
-                            await auth.handleAuthURL(url)
                         }
                     }
                 }
@@ -81,47 +98,43 @@ struct FLYRApp: App {
 struct AuthGate: View {
     @StateObject private var auth = AuthManager.shared
     @EnvironmentObject var uiState: AppUIState
-    
+
+    private var showMainApp: Bool {
+        auth.user != nil
+    }
+
     var body: some View {
         Group {
-            if auth.user != nil {
+            if showMainApp {
                 MainTabView()
             } else {
                 SignInView()
             }
         }
-        .preferredColorScheme(uiState.colorScheme) // Apply color scheme
+        .preferredColorScheme(uiState.colorScheme)
         .onAppear {
-            // Detect system appearance immediately on app launch
             if uiState.colorScheme == nil {
                 uiState.detectSystemAppearance()
             }
         }
-        // Session loads in background - UI already rendered above
         .task {
-            // Non-blocking: UI already rendered, this just updates state when ready
             #if DEBUG
             print("🔍 Loading session in background...")
             #endif
             await auth.loadSession()
-            
-            // Load appearance preference when user is logged in
+
             if let userId = auth.user?.id {
                 await uiState.loadAppearancePreference(userID: userId)
-            } else {
-                // No user logged in, ensure system appearance is detected
-                if uiState.colorScheme == nil {
-                    uiState.detectSystemAppearance()
-                }
+            } else if uiState.colorScheme == nil {
+                uiState.detectSystemAppearance()
             }
         }
-        .onChange(of: auth.user?.id) { newUserId in
+        .onChange(of: auth.user?.id) { _, newUserId in
             if let userId = newUserId {
                 Task {
                     await uiState.loadAppearancePreference(userID: userId)
                 }
             } else {
-                // User logged out, detect system appearance
                 uiState.detectSystemAppearance()
             }
         }

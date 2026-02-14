@@ -27,10 +27,6 @@ actor BatchRepository {
             "export_format": AnyCodable(batch.exportFormat.rawValue)
         ]
         
-        if let landingPageId = batch.landingPageId {
-            batchData["landing_page_id"] = AnyCodable(landingPageId.uuidString)
-        }
-        
         if let customURL = batch.customURL {
             batchData["custom_url"] = AnyCodable(customURL)
         }
@@ -100,12 +96,6 @@ actor BatchRepository {
             "qr_type": AnyCodable(batch.qrType.rawValue),
             "export_format": AnyCodable(batch.exportFormat.rawValue)
         ]
-        
-        if let landingPageId = batch.landingPageId {
-            updateData["landing_page_id"] = AnyCodable(landingPageId.uuidString)
-        } else {
-            updateData["landing_page_id"] = AnyCodable(nil as String?)
-        }
         
         if let customURL = batch.customURL {
             updateData["custom_url"] = AnyCodable(customURL)

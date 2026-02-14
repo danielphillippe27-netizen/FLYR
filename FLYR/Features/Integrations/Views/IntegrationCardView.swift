@@ -1,16 +1,27 @@
 import SwiftUI
 
-/// Card view for displaying a CRM integration with connect/disconnect functionality
+/// Card view for displaying a CRM integration with connect/disconnect functionality.
+/// For FUB, pass crmConnection from CRMConnectionStore; for others use integration from user_integrations.
 struct IntegrationCardView: View {
     let provider: IntegrationProvider
     let integration: UserIntegration?
+    /// For FUB, use CRMConnectionStore.shared.fubConnection so "Connected ●" comes from crm_connections.
+    let crmConnection: CRMConnection?
     let onConnect: () -> Void
     let onDisconnect: () -> Void
     
     @State private var isConnecting = false
     
     private var isConnected: Bool {
-        integration?.isConnected ?? false
+        if provider == .fub, let crm = crmConnection {
+            return crm.isConnected
+        }
+        return integration?.isConnected ?? false
+    }
+
+    private var connectionStatusText: String {
+        if provider == .fub, crmConnection?.isConnected == true { return "Connected ●" }
+        return integration?.connectionStatusText ?? "Connected"
     }
     
     var body: some View {
@@ -27,11 +38,11 @@ struct IntegrationCardView: View {
                 // Name and Description
                 VStack(alignment: .leading, spacing: 4) {
                     Text(provider.displayName)
-                        .font(.headline)
+                        .font(.flyrHeadline)
                         .foregroundColor(.text)
                     
                     Text(provider.description)
-                        .font(.subheadline)
+                        .font(.flyrSubheadline)
                         .foregroundColor(.secondary)
                 }
                 
@@ -67,7 +78,7 @@ struct IntegrationCardView: View {
                         .font(.system(size: 12))
                         .foregroundColor(.success)
                     
-                    Text(integration?.connectionStatusText ?? "Connected")
+                    Text(connectionStatusText)
                         .font(.system(size: 13))
                         .foregroundColor(.muted)
                     
@@ -107,6 +118,7 @@ struct IntegrationCardView: View {
                 accessToken: "token123",
                 expiresAt: Int(Date().addingTimeInterval(86400).timeIntervalSince1970)
             ),
+            crmConnection: nil,
             onConnect: {},
             onDisconnect: {}
         )
@@ -114,6 +126,7 @@ struct IntegrationCardView: View {
         IntegrationCardView(
             provider: .fub,
             integration: nil,
+            crmConnection: nil,
             onConnect: {},
             onDisconnect: {}
         )

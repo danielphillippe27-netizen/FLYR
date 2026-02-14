@@ -7,7 +7,6 @@ struct SourceSegment: View {
         HStack(spacing: 4) {
             segment("Nearby", .closestHome)
             segment("Map", .map)
-            segment("Street", .sameStreet)
         }
         .padding(4)
         .background(Color(.systemGray6))

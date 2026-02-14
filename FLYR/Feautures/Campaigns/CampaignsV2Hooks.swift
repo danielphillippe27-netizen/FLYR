@@ -32,6 +32,10 @@ final class UseCampaignsV2: ObservableObject {
             store.set(campaigns)
             items = campaigns
         } catch {
+            if (error as NSError).code == NSURLErrorCancelled {
+                isLoading = false
+                return
+            }
             self.error = error.localizedDescription
         }
         

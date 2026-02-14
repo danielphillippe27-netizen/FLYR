@@ -37,8 +37,9 @@ class MapboxMapAPI: MapAPIType {
                          width: Int = 400, 
                          height: Int = 240) async throws -> Data {
         
+        // Use custom light style: fliper27/cml6z0dhg002301qo9xxc08k4
         let urlString = """
-        https://api.mapbox.com/styles/v1/mapbox/streets-v11/static/\(center.longitude),\(center.latitude),\(zoom)/\(width)x\(height)@2x?access_token=\(accessToken)
+        https://api.mapbox.com/styles/v1/fliper27/cml6z0dhg002301qo9xxc08k4/static/\(center.longitude),\(center.latitude),\(zoom)/\(width)x\(height)@2x?access_token=\(accessToken)
         """
         
         guard let url = URL(string: urlString) else {
@@ -57,8 +58,9 @@ class MapboxMapAPI: MapAPIType {
     
     func getMapSnapshot(center: CLLocationCoordinate2D, 
                        markers: [MapMarker]) async throws -> Data {
+        // Use custom light style: fliper27/cml6z0dhg002301qo9xxc08k4
         var urlString = """
-        https://api.mapbox.com/styles/v1/mapbox/streets-v11/static/\(center.longitude),\(center.latitude),15/400x240@2x?access_token=\(accessToken)
+        https://api.mapbox.com/styles/v1/fliper27/cml6z0dhg002301qo9xxc08k4/static/\(center.longitude),\(center.latitude),15/400x240@2x?access_token=\(accessToken)
         """
         
         // Add markers to URL

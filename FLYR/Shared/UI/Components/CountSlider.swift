@@ -9,7 +9,7 @@ public struct CountSlider: View {
   public var body: some View {
     VStack(alignment: .leading, spacing: 8) {
       HStack {
-        Text("How many homes?").font(.headline)
+        Text("How many homes?").font(.flyrHeadline)
         Spacer()
         Text("\(value)").foregroundStyle(.secondary)
       }

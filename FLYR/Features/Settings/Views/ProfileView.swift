@@ -68,7 +68,7 @@ struct ProfileView: View {
                     // First Name
                     VStack(alignment: .leading, spacing: 8) {
                         Text("First Name")
-                            .font(.system(.subheadline, weight: .medium))
+                            .font(.flyrSubheadline)
                             .foregroundColor(.text)
                         TextField("First Name", text: $viewModel.firstName)
                             .textFieldStyle(.roundedBorder)
@@ -79,7 +79,7 @@ struct ProfileView: View {
                     // Last Name
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Last Name")
-                            .font(.system(.subheadline, weight: .medium))
+                            .font(.flyrSubheadline)
                             .foregroundColor(.text)
                         TextField("Last Name", text: $viewModel.lastName)
                             .textFieldStyle(.roundedBorder)
@@ -91,10 +91,10 @@ struct ProfileView: View {
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
                             Text("Nickname")
-                                .font(.system(.subheadline, weight: .medium))
+                                .font(.flyrSubheadline)
                                 .foregroundColor(.text)
                             Text("(optional)")
-                                .font(.system(.caption))
+                                .font(.flyrCaption)
                                 .foregroundColor(.muted)
                         }
                         TextField("Nickname (overrides display name)", text: $viewModel.nickname)
@@ -106,7 +106,7 @@ struct ProfileView: View {
                     // Quote
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Profile Quote")
-                            .font(.system(.subheadline, weight: .medium))
+                            .font(.flyrSubheadline)
                             .foregroundColor(.text)
                         TextField("Your quote", text: $viewModel.quote, axis: .vertical)
                             .textFieldStyle(.roundedBorder)
@@ -128,7 +128,7 @@ struct ProfileView: View {
                         ProgressView()
                             .scaleEffect(0.8)
                         Text(viewModel.isLoading ? "Loading..." : "Saving...")
-                            .font(.caption)
+                            .font(.flyrCaption)
                             .foregroundColor(.muted)
                     }
                     .padding(.top, 8)
@@ -137,7 +137,7 @@ struct ProfileView: View {
                 // Error message
                 if let errorMessage = viewModel.errorMessage {
                     Text(errorMessage)
-                        .font(.caption)
+                        .font(.flyrCaption)
                         .foregroundColor(.red)
                         .padding(.horizontal, 20)
                         .padding(.top, 8)

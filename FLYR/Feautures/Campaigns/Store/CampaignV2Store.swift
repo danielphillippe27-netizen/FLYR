@@ -56,6 +56,13 @@ final class CampaignV2Store: ObservableObject {
             print("📦 [STORE DEBUG] Updated campaign '\(campaign.name)'")
         }
     }
+
+    /// Mark campaign as archived (updates in-memory only; call API separately to persist).
+    func setStatus(id: UUID, status: CampaignStatus) {
+        guard let index = campaigns.firstIndex(where: { $0.id == id }) else { return }
+        campaigns[index].status = status
+        print("📦 [STORE DEBUG] Campaign \(id) status set to \(status.rawValue)")
+    }
     
     /// Get campaign by ID
     func campaign(id: UUID) -> CampaignV2? {

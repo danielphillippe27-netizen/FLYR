@@ -261,7 +261,8 @@ final class MapLayerManager {
             return
         }
         
-        guard includeAddressesLayer else { return }
+        // Always add the layer so it exists for visibility toggling (includeAddressesLayer is only for default visibility;
+        // if we skip adding when false, the layer can be missing if updateLayerVisibility ran before style loaded).
         
         // Create fill-extrusion layer for address points (small 3D pillars); color by feature-state (status / scans_total)
         // Support both normalized layer status (hot, visited, not_visited) and raw API status (talked, no_answer, etc.)
@@ -372,7 +373,7 @@ final class MapLayerManager {
         layer.fillExtrusionBase = .constant(0)
         layer.fillExtrusionOpacity = .constant(1.0)
         layer.fillExtrusionVerticalGradient = .constant(true)
-        layer.minZoom = 12
+        layer.minZoom = 8
         layer.filter = Exp(.match) {
             Exp(.geometryType)
             "Polygon"
@@ -423,9 +424,10 @@ final class MapLayerManager {
     // MARK: - Update Data
     
     /// Update buildings source with new GeoJSON data (polygon-only or empty to avoid FillBucket LineString errors).
-    /// When `data` is nil, clears the source with an empty FeatureCollection. No-op when buildings layer is disabled.
+    /// When `data` is nil, clears the source with an empty FeatureCollection.
+    /// Always updates the source when map is available so switching display mode shows correct data.
     func updateBuildings(_ data: Data?) {
-        guard includeBuildingsLayer, let mapView = mapView else { return }
+        guard let mapView = mapView else { return }
         
         let dataToUse: Data
         if let data = data {
@@ -464,12 +466,143 @@ final class MapLayerManager {
         guard let mapView = mapView else { return }
         
         do {
+            let pointCount = (try? JSONSerialization.jsonObject(with: data) as? [String: Any]).flatMap { $0["features"] as? [[String: Any]] }?.count ?? 0
             let polygonData = try Self.convertAddressPointsToCirclePolygons(data, radiusMeters: 2.5, height: 8, segments: 20)
+            let polygonCount = (try? JSONSerialization.jsonObject(with: polygonData) as? [String: Any]).flatMap { $0["features"] as? [[String: Any]] }?.count ?? 0
+            print("🔍 [MapLayer] Address circles: \(pointCount) points → \(polygonCount) extrusion polygons")
+            if polygonCount == 0 {
+                print("⚠️ [MapLayer] No circle polygons produced; check Point geometry in address GeoJSON")
+            }
             let geoJSON = try JSONDecoder().decode(GeoJSONObject.self, from: polygonData)
             try mapView.mapboxMap.updateGeoJSONSource(withId: Self.addressesSourceId, geoJSON: geoJSON)
-            print("✅ [MapLayer] Updated addresses source (\(Self.addressesSourceId))")
+            if polygonCount > 0 {
+                print("✅ [MapLayer] Updated addresses source (\(Self.addressesSourceId)) features=\(polygonCount) (layer minZoom=8)")
+            } else {
+                print("✅ [MapLayer] Updated addresses source (\(Self.addressesSourceId)) features=0")
+            }
         } catch {
             print("❌ [MapLayer] Error updating addresses: \(error)")
+        }
+    }
+    
+    /// Extract centroid [lon, lat] from Polygon or MultiPolygon geometry coordinates (handles NSArray/NSNumber from JSONSerialization).
+    private static func centroidFromGeometryCoordinates(_ coordsAny: Any?, geomType: String) -> [Double]? {
+        guard let coordsAny = coordsAny else { return nil }
+        let ring: [[Double]]?
+        if geomType == "Polygon" {
+            ring = firstRingFromPolygonCoords(coordsAny)
+        } else if geomType == "MultiPolygon" {
+            ring = firstRingFromMultiPolygonCoords(coordsAny)
+        } else {
+            return nil
+        }
+        guard let firstRing = ring, !firstRing.isEmpty else { return nil }
+        var sumLon = 0.0, sumLat = 0.0
+        for pt in firstRing {
+            if pt.count >= 2 {
+                sumLon += pt[0]
+                sumLat += pt[1]
+            }
+        }
+        let n = Double(firstRing.count)
+        return [sumLon / n, sumLat / n]
+    }
+    
+    private static func firstRingFromPolygonCoords(_ any: Any) -> [[Double]]? {
+        guard let arr = any as? [Any], let first = arr.first else { return nil }
+        return arrayOfDoublePairs(from: first)
+    }
+    
+    private static func firstRingFromMultiPolygonCoords(_ any: Any) -> [[Double]]? {
+        guard let polys = any as? [Any], let firstPoly = polys.first else { return nil }
+        return firstRingFromPolygonCoords(firstPoly)
+    }
+    
+    private static func arrayOfDoublePairs(from any: Any) -> [[Double]]? {
+        guard let arr = any as? [Any] else { return nil }
+        var out: [[Double]] = []
+        for item in arr {
+            if let pair = doublePair(from: item) { out.append(pair) }
+        }
+        return out.isEmpty ? nil : out
+    }
+    
+    private static func doublePair(from any: Any) -> [Double]? {
+        guard let arr = any as? [Any], arr.count >= 2 else { return nil }
+        let a = numberToDouble(arr[0])
+        let b = numberToDouble(arr[1])
+        guard let x = a, let y = b else { return nil }
+        return [x, y]
+    }
+    
+    private static func numberToDouble(_ any: Any) -> Double? {
+        if let d = any as? Double { return d }
+        if let n = any as? NSNumber { return n.doubleValue }
+        if let i = any as? Int { return Double(i) }
+        return nil
+    }
+    
+    /// Extract [lon, lat] from Point geometry coordinates (handles NSArray/NSNumber from JSONSerialization).
+    private static func pointCoordinatesFromAny(_ any: Any) -> [Double]? {
+        guard let arr = any as? [Any], arr.count >= 2,
+              let lon = numberToDouble(arr[0]), let lat = numberToDouble(arr[1]) else { return nil }
+        return [lon, lat]
+    }
+    
+    /// Build a Point FeatureCollection from building polygon centroids (fallback when campaign has no address points).
+    /// Circle extrusions can then be drawn at each building center.
+    private static func pointFeatureCollectionFromBuildingCentroids(_ buildingGeoJSONData: Data) throws -> Data {
+        guard let json = try JSONSerialization.jsonObject(with: buildingGeoJSONData) as? [String: Any],
+              let features = json["features"] as? [[String: Any]] else {
+            return try JSONSerialization.data(withJSONObject: ["type": "FeatureCollection", "features": [] as [[String: Any]]])
+        }
+        var pointFeatures: [[String: Any]] = []
+        for feature in features {
+            guard let geom = feature["geometry"] as? [String: Any],
+                  let geomType = geom["type"] as? String else { continue }
+            guard let coords = centroidFromGeometryCoordinates(geom["coordinates"], geomType: geomType),
+                  coords[0].isFinite, coords[1].isFinite, abs(coords[1]) < 89 else { continue }
+            var props = (feature["properties"] as? [String: Any]) ?? [:]
+            var idStr = (props["gers_id"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+                ?? (props["id"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+                ?? (feature["id"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            if idStr == nil, let idInt = feature["id"] as? Int { idStr = String(idInt) }
+            if idStr == nil, let idNum = feature["id"] as? NSNumber { idStr = idNum.stringValue }
+            if let id = idStr { props["id"] = id.contains("-") ? id.lowercased() : id }
+            var pointFeature: [String: Any] = [
+                "type": "Feature",
+                "geometry": ["type": "Point", "coordinates": coords],
+                "properties": props
+            ]
+            if let id = idStr { pointFeature["id"] = id }
+            pointFeatures.append(pointFeature)
+        }
+        let collection: [String: Any] = ["type": "FeatureCollection", "features": pointFeatures]
+        return try JSONSerialization.data(withJSONObject: collection)
+    }
+    
+    /// When campaign has buildings but no address points (e.g. snapshot-only), show circle extrusions at building centroids.
+    func updateAddressesFromBuildingCentroids(buildingGeoJSONData: Data?) {
+        guard let data = buildingGeoJSONData else {
+            print("🔍 [MapLayer] updateAddressesFromBuildingCentroids: no building data")
+            return
+        }
+        guard let mapView = mapView else { return }
+        do {
+            let pointData = try Self.pointFeatureCollectionFromBuildingCentroids(data)
+            guard let parsed = try? JSONSerialization.jsonObject(with: pointData) as? [String: Any],
+                  let feats = parsed["features"] as? [[String: Any]] else {
+                print("🔍 [MapLayer] updateAddressesFromBuildingCentroids: centroid extraction produced no features")
+                return
+            }
+            if feats.isEmpty {
+                print("🔍 [MapLayer] updateAddressesFromBuildingCentroids: 0 centroids (building geometry may not be Polygon/MultiPolygon)")
+                return
+            }
+            updateAddresses(pointData)
+            print("✅ [MapLayer] Updated addresses from \(feats.count) building centroids (circle extrusions fallback)")
+        } catch {
+            print("❌ [MapLayer] Error building centroid points: \(error)")
         }
     }
     
@@ -477,16 +610,24 @@ final class MapLayerManager {
     private static func convertAddressPointsToCirclePolygons(_ pointGeoJSONData: Data, radiusMeters: Double = 2.5, height: Double = 8, segments: Int = 20) throws -> Data {
         guard let json = try JSONSerialization.jsonObject(with: pointGeoJSONData) as? [String: Any],
               let features = json["features"] as? [[String: Any]] else {
+            print("🔍 [MapLayer] convertAddressPointsToCirclePolygons: no features array in GeoJSON")
             return pointGeoJSONData
         }
-        
+        if features.isEmpty {
+            print("🔍 [MapLayer] convertAddressPointsToCirclePolygons: input has 0 features")
+        }
         let earth = 6_378_137.0
         var polygonFeatures: [[String: Any]] = []
+        var skipped = 0
         
         for feature in features {
-            guard let geom = feature["geometry"] as? [String: Any],
-                  geom["type"] as? String == "Point",
-                  let coords = geom["coordinates"] as? [Double], coords.count >= 2 else { continue }
+            guard let geom = feature["geometry"] as? [String: Any] else { skipped += 1; continue }
+            guard geom["type"] as? String == "Point" else { skipped += 1; continue }
+            guard let coordsAny = geom["coordinates"],
+                  let coords = pointCoordinatesFromAny(coordsAny), coords.count >= 2 else {
+                skipped += 1
+                continue
+            }
             let lon = coords[0]
             let lat = coords[1]
             guard lon.isFinite, lat.isFinite, abs(lat) < 89 else { continue }
@@ -534,7 +675,9 @@ final class MapLayerManager {
             }
             polygonFeatures.append(polygonFeature)
         }
-        
+        if skipped > 0 {
+            print("🔍 [MapLayer] convertAddressPointsToCirclePolygons: skipped \(skipped) features (not Point or bad coords)")
+        }
         let collection: [String: Any] = [
             "type": "FeatureCollection",
             "features": polygonFeatures
@@ -697,7 +840,7 @@ final class MapLayerManager {
     // MARK: - Address Tap Result
     
     /// Result of tapping the addresses layer (3D circles). Decodes from feature properties.
-    struct AddressTapResult: Codable {
+    struct AddressTapResult: Decodable {
         let addressId: UUID
         let formatted: String
         let gersId: String?
@@ -707,6 +850,7 @@ final class MapLayerManager {
         
         enum CodingKeys: String, CodingKey {
             case addressId = "id"
+            case addressIdAlt = "address_id"
             case formatted
             case gersId = "gers_id"
             case buildingGersId = "building_gers_id"
@@ -716,9 +860,11 @@ final class MapLayerManager {
         
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
-            let idString = try c.decode(String.self, forKey: .addressId)
+            let idFromId = try c.decodeIfPresent(String.self, forKey: .addressId)
+            let idFromAddressId = try c.decodeIfPresent(String.self, forKey: .addressIdAlt)
+            let idString = idFromId ?? idFromAddressId ?? ""
             guard let uuid = UUID(uuidString: idString) else {
-                throw DecodingError.dataCorruptedError(forKey: .addressId, in: c, debugDescription: "Invalid UUID string")
+                throw DecodingError.dataCorruptedError(forKey: .addressId, in: c, debugDescription: "Invalid UUID string: \(idString)")
             }
             addressId = uuid
             formatted = try c.decodeIfPresent(String.self, forKey: .formatted) ?? ""
@@ -754,10 +900,52 @@ final class MapLayerManager {
         }
     }
     
+    /// Result of tapping either the buildings or addresses layer
+    enum BuildingOrAddressTapResult {
+        case building(BuildingProperties)
+        case address(AddressTapResult)
+    }
+
+    /// Get building or address at tap location by querying both layers (so circles always show the card).
+    func getBuildingOrAddressAt(point: CGPoint, completion: @escaping (BuildingOrAddressTapResult?) -> Void) {
+        guard let mapView = mapView else { completion(nil); return }
+
+        let options = RenderedQueryOptions(layerIds: [Self.buildingsLayerId, Self.addressesLayerId], filter: nil)
+        mapView.mapboxMap.queryRenderedFeatures(with: point, options: options) { [weak self] result in
+            guard let self = self else { return }
+            switch result {
+            case .success(let features):
+                guard let first = features.first, let properties = first.queriedFeature.feature.properties else {
+                    DispatchQueue.main.async { completion(nil) }
+                    return
+                }
+                let converted = self.unwrapTurfProperties(properties)
+                let sanitized = SafeJSON.sanitize(converted)
+                guard JSONSerialization.isValidJSONObject(sanitized), let data = SafeJSON.data(from: sanitized) else {
+                    DispatchQueue.main.async { completion(nil) }
+                    return
+                }
+                // Try building first (has gers_id), then address (has id/address_id + formatted)
+                if let building = try? JSONDecoder().decode(BuildingProperties.self, from: data) {
+                    DispatchQueue.main.async { completion(.building(building)) }
+                    return
+                }
+                if let addressResult = try? JSONDecoder().decode(AddressTapResult.self, from: data) {
+                    DispatchQueue.main.async { completion(.address(addressResult)) }
+                    return
+                }
+                DispatchQueue.main.async { completion(nil) }
+            case .failure(let error):
+                print("❌ [MapLayer] Error querying features: \(error)")
+                DispatchQueue.main.async { completion(nil) }
+            }
+        }
+    }
+
     /// Get building at tap location (async via completion)
     func getBuildingAt(point: CGPoint, completion: @escaping (BuildingProperties?) -> Void) {
         guard let mapView = mapView else { completion(nil); return }
-        
+
         let options = RenderedQueryOptions(layerIds: [Self.buildingsLayerId], filter: nil)
         mapView.mapboxMap.queryRenderedFeatures(with: point, options: options) { result in
             switch result {

@@ -17,30 +17,30 @@ final class MapController {
     private let sourceCampaignGeo = "campaign-geo"
     private let sourceCampaignBuildings = "campaign-buildings"
     
-    /// Apply a map mode to the map view
-    func applyMode(_ mode: MapMode, to mapView: MapView, campaignPolygon: [CLLocationCoordinate2D]? = nil, campaignId: UUID? = nil) {
+    /// Apply a map mode to the map view. When mode is campaign3D, pass preferLightStyle: true to keep light base in light view.
+    func applyMode(_ mode: MapMode, to mapView: MapView, campaignPolygon: [CLLocationCoordinate2D]? = nil, campaignId: UUID? = nil, preferLightStyle: Bool = false) {
         guard let map = mapView.mapboxMap else { return }
         
         // Wait for map to be loaded before applying changes
         map.onMapLoaded.observeNext { [weak self] _ in
             Task { @MainActor in
-                await self?.applyModeInternal(mode, to: mapView, campaignPolygon: campaignPolygon, campaignId: campaignId)
+                await self?.applyModeInternal(mode, to: mapView, campaignPolygon: campaignPolygon, campaignId: campaignId, preferLightStyle: preferLightStyle)
             }
         }
         
         // If map is already loaded, apply immediately
         if map.isStyleLoaded {
             Task { @MainActor in
-                await applyModeInternal(mode, to: mapView, campaignPolygon: campaignPolygon, campaignId: campaignId)
+                await applyModeInternal(mode, to: mapView, campaignPolygon: campaignPolygon, campaignId: campaignId, preferLightStyle: preferLightStyle)
             }
         }
     }
     
-    private func applyModeInternal(_ mode: MapMode, to mapView: MapView, campaignPolygon: [CLLocationCoordinate2D]?, campaignId: UUID?) async {
+    private func applyModeInternal(_ mode: MapMode, to mapView: MapView, campaignPolygon: [CLLocationCoordinate2D]?, campaignId: UUID?, preferLightStyle: Bool = false) async {
         guard let map = mapView.mapboxMap else { return }
         
-        // Load style first
-        await loadStyle(for: mode, to: mapView)
+        // Load style first (campaign3D uses light base when preferLightStyle is true)
+        await loadStyle(for: mode, to: mapView, preferLightStyle: preferLightStyle)
         
         // Wait a bit for style to load
         try? await Task.sleep(nanoseconds: 100_000_000) // 0.1 seconds
@@ -58,16 +58,10 @@ final class MapController {
             add3DBuildings(to: mapView)
             
         case .campaign3D:
-            // Priority: campaignId (address-based) > campaignPolygon (polygon-based)
+            // Only show campaign (my) buildings — no Mapbox base 3D buildings layer
             if let campaignId = campaignId {
-                // Add black buildings layer first (all buildings in black)
-                crushSurroundings(to: mapView)
-                // Then fetch and add white buildings for campaign addresses
                 await addCampaignAddressBuildings(to: mapView, campaignId: campaignId)
             } else if let polygon = campaignPolygon {
-                // Add black buildings layer first (all buildings in black)
-                crushSurroundings(to: mapView)
-                // Then query and add white buildings inside polygon on top
                 await addCampaignExtrusions(to: mapView, polygon: polygon)
             } else {
                 // Fallback to regular 3D if no campaign data
@@ -79,15 +73,13 @@ final class MapController {
         applyCamera(for: mode, to: mapView)
     }
     
-    /// Load style JSON for a map mode
-    private func loadStyle(for mode: MapMode, to mapView: MapView) async {
+    /// Load style JSON for a map mode (campaign3D uses light base when preferLightStyle is true)
+    private func loadStyle(for mode: MapMode, to mapView: MapView, preferLightStyle: Bool = false) async {
         guard let map = mapView.mapboxMap else { return }
         
-        // Get style URI (will use built-in styles if JSON not found)
-        let styleURI = MapTheme.styleURI(for: mode)
-        
+        let styleURI = MapTheme.styleURI(for: mode, preferLightStyle: preferLightStyle)
         map.loadStyle(styleURI)
-        print("✅ [MapController] Loading style: \(mode.rawValue)")
+        print("✅ [MapController] Loading style: \(mode.rawValue) preferLight: \(preferLightStyle)")
     }
     
     /// Add 3D building extrusions (all buildings, black in dark mode, white in light mode)
@@ -147,8 +139,8 @@ final class MapController {
         guard let map = mapView.mapboxMap else { return }
         
         do {
-            // Fetch building polygons for campaign addresses from database
-            let geoJSONCollection = try await AddressesAPI.shared.fetchCampaignBuildingsGeoJSON(campaignId: campaignId)
+            // Fetch building polygons from buildings + building_address_links (rpc_get_campaign_full_features)
+            let geoJSONCollection = try await BuildingsAPI.shared.fetchBuildingPolygons(campaignId: campaignId)
             
             // Filter to only polygon geometries
             let polygonFeatures = geoJSONCollection.features.filter { feature in
@@ -166,21 +158,32 @@ final class MapController {
             
             // Convert GeoJSON features to Mapbox features
             var mapboxFeatures: [Feature] = []
+            var gersIdByAddressId: [String: String] = [:]
             for geoFeature in polygonFeatures {
                 guard let geometry = convertGeoJSONToMapboxGeometry(geoFeature.geometry) else {
                     continue
                 }
                 
-                // Extract address_id from properties to use as featureId
+                // Extract gers_id for feature-state identity; map address_id -> gers_id for status hydration.
+                var gersIdString: String? = nil
+                if let gersIdValue = geoFeature.properties["gers_id"]?.value as? String, !gersIdValue.isEmpty {
+                    gersIdString = gersIdValue
+                } else if let idValue = geoFeature.id, !idValue.isEmpty {
+                    gersIdString = idValue
+                }
+
                 var addressIdString: String? = nil
                 if let addressIdValue = geoFeature.properties["address_id"] {
                     addressIdString = addressIdValue.value as? String
                 }
+                if let addressIdString, let gersIdString {
+                    gersIdByAddressId[addressIdString] = gersIdString
+                }
                 
                 var mapboxFeature = Feature(geometry: geometry)
-                // Set featureId to address_id for feature-state keying
-                if let addressIdStr = addressIdString {
-                    mapboxFeature.identifier = .string(addressIdStr)
+                // Feature state is keyed by gers_id.
+                if let gersIdString {
+                    mapboxFeature.identifier = .string(gersIdString)
                 }
                 
                 // Convert properties
@@ -203,6 +206,9 @@ final class MapController {
                 if props["min_height"] == nil {
                     props["min_height"] = .number(0.0)
                 }
+                if let gersIdString {
+                    props["gers_id"] = .string(gersIdString)
+                }
                 mapboxFeature.properties = props
                 mapboxFeatures.append(mapboxFeature)
             }
@@ -214,6 +220,7 @@ final class MapController {
             
             var buildingsSource = GeoJSONSource(id: sourceCampaignBuildings)
             buildingsSource.data = .featureCollection(FeatureCollection(features: mapboxFeatures))
+            buildingsSource.promoteId2 = .constant("gers_id")
             try map.addSource(buildingsSource)
             
             // Add white buildings layer (only buildings for campaign addresses)
@@ -233,12 +240,12 @@ final class MapController {
             let selectedColor: UIColor = .systemRed
             let defaultColor: UIColor = .white // Campaign buildings default to white
             
-            // Status color mapping
+            // Status color mapping (knock → green, conversation → blue)
             let statusColors: [String: UIColor] = [
                 "none": .white,
                 "no_answer": .gray,
                 "delivered": .systemGreen,
-                "talked": .systemYellow,
+                "talked": .systemBlue,
                 "appointment": .systemBlue,
                 "do_not_knock": .systemPurple,
                 "future_seller": .systemOrange,
@@ -282,16 +289,16 @@ final class MapController {
                 }
             )
             
-            // Add above black/dimmed layer so white campaign buildings appear on top
-            // This ensures campaign buildings are always visible above dimmed surroundings
-            try map.addLayer(layer, layerPosition: .above(layerCrushedBuildings))
+            try map.addLayer(layer)
             print("✅ [MapController] Added white buildings layer with feature-state support (\(mapboxFeatures.count) buildings) for campaign \(campaignId)")
             
             // Apply feature-state for each building based on status
             if let statuses = statuses {
-                // Convert [UUID: AddressStatusRow] to [String: AddressStatus] for applyStatusFeatureState
-                let statusesDict = Dictionary(uniqueKeysWithValues: statuses.map { 
-                    ($0.key.uuidString, $0.value.status) 
+                // Convert [address_id: status] to [gers_id: status] to match feature IDs/promoteId.
+                let statusesDict: [String: AddressStatus] = Dictionary(uniqueKeysWithValues: statuses.compactMap {
+                    let addressId = $0.key.uuidString
+                    guard let gersId = gersIdByAddressId[addressId] else { return nil }
+                    return (gersId, $0.value.status)
                 })
                 applyStatusFeatureState(statuses: statusesDict, mapView: mapView)
             }
@@ -403,8 +410,7 @@ final class MapController {
                 }
             )
             
-            // Add above black layer so white buildings appear on top
-            try map.addLayer(layer, layerPosition: .above(layerCrushedBuildings))
+            try map.addLayer(layer)
             print("✅ [MapController] Added white buildings layer with feature-state support (\(buildingsInPolygon.features.count) buildings)")
         } catch {
             print("❌ [MapController] Failed to add campaign extrusions: \(error)")
@@ -445,9 +451,10 @@ final class MapController {
         // Query buildings at each sample point
         for point in samplePoints {
             do {
+                let radiusMeters = spacing.isFinite ? Int(spacing) : 50
                 if let (buildingId, geometry) = try await MapboxBuildingsAPI.shared.fetchBestBuildingPolygon(
                     coord: point,
-                    radiusMeters: Int(spacing),
+                    radiusMeters: radiusMeters,
                     token: token
                 ) {
                     // Check if building centroid is inside polygon
@@ -671,6 +678,10 @@ final class MapController {
         mapView: MapView
     ) {
         guard let map = mapView.mapboxMap else { return }
+        guard map.allSourceIdentifiers.contains(where: { $0.id == sourceCampaignBuildings }) else {
+            // Session/campaign map may use MapLayerManager (campaign-address-points), not campaign-buildings
+            return
+        }
         
         for (addressId, status) in statuses {
             let state: [String: Any] = [

@@ -11,7 +11,7 @@ public struct AddressCandidate: Identifiable, Equatable, Hashable {
     public let number: String
     public let street: String
     public let houseKey: String // "5900 MAIN STREET" for strong deduplication
-    public let source: String? // "oda", "durham", "mapbox" for UI display
+    public let source: String? // "overture" (backend), "mapbox" for UI display
     
     public init(
         id: UUID = .init(),
@@ -54,44 +54,7 @@ public struct SeedGeocode {
     }
 }
 
-// MARK: - Campaign Address (persistent model)
-
-public struct CampaignAddress: Identifiable, Equatable, Codable {
-    public let id: UUID
-    public let address: String
-    public let coordinate: CLLocationCoordinate2D?
-    public let buildingOutline: [[CLLocationCoordinate2D]]? // polygon rings
-    
-    public init(
-        id: UUID = .init(),
-        address: String,
-        coordinate: CLLocationCoordinate2D? = nil,
-        buildingOutline: [[CLLocationCoordinate2D]]? = nil
-    ) {
-        self.id = id
-        self.address = address
-        self.coordinate = coordinate
-        self.buildingOutline = buildingOutline
-    }
-    
-    public static func == (lhs: CampaignAddress, rhs: CampaignAddress) -> Bool {
-        return lhs.id == rhs.id
-    }
-}
-
-// MARK: - CampaignAddress Coordinate Helpers
-
-extension CampaignAddress {
-    var hasCoord: Bool { coordinate != nil }
-    var lat: Double? { coordinate?.latitude }
-    var lon: Double? { coordinate?.longitude }
-    
-    /// Extract house number from address string
-    /// Supports formats like "123 Main St", "123A Main St", etc.
-    var houseNumber: String? {
-        return address.extractHouseNumber()
-    }
-}
+// CampaignAddress lives in BuildingLinkModels.swift (single source of truth)
 
 // MARK: - String House Number Extraction
 

@@ -45,34 +45,6 @@ extension View {
     }
 }
 
-// MARK: - Haptic Feedback
-
-struct HapticManager {
-    /// Light impact for key commits (Save, Start Route, Mark Delivered)
-    static func lightImpact() {
-        let impactFeedback = UIImpactFeedbackGenerator(style: .light)
-        impactFeedback.impactOccurred()
-    }
-    
-    /// Success feedback for positive actions
-    static func success() {
-        let notificationFeedback = UINotificationFeedbackGenerator()
-        notificationFeedback.notificationOccurred(.success)
-    }
-    
-    /// Error feedback for failed actions
-    static func error() {
-        let notificationFeedback = UINotificationFeedbackGenerator()
-        notificationFeedback.notificationOccurred(.error)
-    }
-    
-    /// Warning feedback for cautionary actions
-    static func warning() {
-        let notificationFeedback = UINotificationFeedbackGenerator()
-        notificationFeedback.notificationOccurred(.warning)
-    }
-}
-
 // MARK: - Animation Environment
 
 struct AnimationEnvironmentKey: EnvironmentKey {

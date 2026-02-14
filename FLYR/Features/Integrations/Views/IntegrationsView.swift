@@ -1,9 +1,8 @@
 import SwiftUI
-import Auth
-
 /// Main view for managing CRM integrations
 struct IntegrationsView: View {
     @StateObject private var auth = AuthManager.shared
+    @ObservedObject private var crmStore = CRMConnectionStore.shared
     @State private var integrations: [UserIntegration] = []
     @State private var isLoading = false
     @State private var errorMessage: String?
@@ -11,6 +10,7 @@ struct IntegrationsView: View {
     @State private var oauthProvider: IntegrationProvider?
     @State private var showAPIKeySheet = false
     @State private var showWebhookSheet = false
+    @State private var showConnectFUB = false
     @State private var apiKeyProvider: IntegrationProvider?
     @State private var webhookProvider: IntegrationProvider?
     @State private var apiKeyText = ""
@@ -38,16 +38,13 @@ struct IntegrationsView: View {
                                 VStack(spacing: 12) {
                                     ForEach(IntegrationProvider.allCases) { provider in
                                         let integration = integrations.first { $0.provider == provider }
-                                        
+                                        let crmConnection = provider == .fub ? crmStore.fubConnection : nil
                                         IntegrationCardView(
                                             provider: provider,
                                             integration: integration,
-                                            onConnect: {
-                                                handleConnect(provider: provider)
-                                            },
-                                            onDisconnect: {
-                                                handleDisconnect(provider: provider)
-                                            }
+                                            crmConnection: crmConnection,
+                                            onConnect: { handleConnect(provider: provider) },
+                                            onDisconnect: { handleDisconnect(provider: provider) }
                                         )
                                     }
                                 }
@@ -107,6 +104,7 @@ struct IntegrationsView: View {
             .navigationBarTitleDisplayMode(.large)
             .refreshable {
                 await loadIntegrations()
+                HapticManager.rigid()
             }
             .task {
                 await loadIntegrations()
@@ -131,6 +129,19 @@ struct IntegrationsView: View {
             .sheet(isPresented: $showWebhookSheet) {
                 webhookInputSheet
             }
+            .sheet(isPresented: $showConnectFUB) {
+                ConnectFUBView(
+                    onSuccess: {
+                        showConnectFUB = false
+                        guard let userId = auth.user?.id else { return }
+                        Task {
+                            await CRMConnectionStore.shared.refresh(userId: userId)
+                            await loadIntegrations()
+                        }
+                    },
+                    onCancel: { showConnectFUB = false }
+                )
+            }
             .alert("Test Lead Sent", isPresented: $showTestLeadAlert) {
                 Button("OK", role: .cancel) {}
             } message: {
@@ -154,8 +165,11 @@ struct IntegrationsView: View {
     // MARK: - Actions
     
     private func handleConnect(provider: IntegrationProvider) {
-        guard let userId = auth.user?.id else { return }
-        
+        guard auth.user?.id != nil else { return }
+        if provider == .fub {
+            showConnectFUB = true
+            return
+        }
         switch provider.connectionType {
         case .oauth:
             oauthProvider = provider
@@ -175,7 +189,18 @@ struct IntegrationsView: View {
     
     private func handleDisconnect(provider: IntegrationProvider) {
         guard let userId = auth.user?.id else { return }
-        
+        if provider == .fub {
+            Task {
+                do {
+                    try await FUBConnectAPI.shared.disconnect()
+                    await CRMConnectionStore.shared.refresh(userId: userId)
+                    await loadIntegrations()
+                } catch {
+                    errorMessage = "Failed to disconnect: \(error.localizedDescription)"
+                }
+            }
+            return
+        }
         Task {
             do {
                 try await CRMIntegrationManager.shared.disconnect(userId: userId, provider: provider)
@@ -188,15 +213,23 @@ struct IntegrationsView: View {
     
     private func loadIntegrations() async {
         guard let userId = auth.user?.id else { return }
-        
         isLoading = true
         errorMessage = nil
         defer { isLoading = false }
-        
         do {
-            integrations = try await CRMIntegrationManager.shared.fetchIntegrations(userId: userId)
+            async let integrationsTask = CRMIntegrationManager.shared.fetchIntegrations(userId: userId)
+            async let crmTask = CRMConnectionStore.shared.refresh(userId: userId)
+            integrations = try await integrationsTask
+            await crmTask
         } catch {
-            errorMessage = "Failed to load integrations: \(error.localizedDescription)"
+            let msg = error.localizedDescription
+            // Table missing (migration not applied): show as no integrations instead of blocking error
+            if msg.contains("user_integrations") && (msg.contains("schema cache") || msg.contains("does not exist")) {
+                integrations = []
+                await CRMConnectionStore.shared.refresh(userId: userId)
+                return
+            }
+            errorMessage = "Failed to load integrations: \(msg)"
             print("❌ Error loading integrations: \(error)")
         }
     }

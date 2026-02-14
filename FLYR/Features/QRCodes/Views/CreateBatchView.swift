@@ -11,8 +11,7 @@ struct CreateBatchView: View {
     let onBatchCreated: (Batch) -> Void
     
     @State private var name: String = ""
-    @State private var qrType: QRType = .landingPage
-    @State private var landingPageId: UUID? = nil
+    @State private var qrType: QRType = .directLink
     @State private var customURL: String = ""
     @State private var exportFormat: ExportFormat = .pdf
     
@@ -35,10 +34,6 @@ struct CreateBatchView: View {
                         
                         // QR Type Selection
                         QRTypeSelector(selectedType: $qrType) { newType in
-                            // Reset dependent fields when type changes
-                            if newType != .landingPage {
-                                landingPageId = nil
-                            }
                             if newType != .customURL {
                                 customURL = ""
                             }
@@ -88,7 +83,6 @@ struct CreateBatchView: View {
                 }
             }
             .task {
-                await viewModel.loadLandingPages()
                 await viewModel.loadUserDefaultWebsite()
             }
             .alert("Error", isPresented: .constant(viewModel.errorMessage != nil)) {
@@ -137,15 +131,7 @@ struct CreateBatchView: View {
     
     @ViewBuilder
     private var conditionalFieldsSection: some View {
-        if qrType == .landingPage {
-            LandingPagePicker(
-                pages: viewModel.landingPages,
-                selectedId: $landingPageId
-            ) { selectedId in
-                landingPageId = selectedId
-            }
-            .padding(.horizontal, 16)
-        } else if qrType == .customURL {
+        if qrType == .customURL {
             CustomUrlInput(url: $customURL)
                 .padding(.horizontal, 16)
         }
@@ -187,8 +173,6 @@ struct CreateBatchView: View {
         }
         
         switch qrType {
-        case .landingPage:
-            return landingPageId != nil
         case .customURL:
             return !customURL.trimmingCharacters(in: .whitespaces).isEmpty &&
                    URL(string: customURL) != nil
@@ -211,7 +195,7 @@ struct CreateBatchView: View {
             userId: userId,
             name: name.trimmingCharacters(in: .whitespaces),
             qrType: qrType,
-            landingPageId: qrType == .landingPage ? landingPageId : nil,
+            landingPageId: nil,
             customURL: qrType == .customURL ? customURL.trimmingCharacters(in: .whitespaces) : nil,
             exportFormat: exportFormat
         )
@@ -248,18 +232,9 @@ struct CreateBatchView: View {
 
 @MainActor
 class CreateBatchViewModel: ObservableObject {
-    @Published var landingPages: [LandingPage] = []
     @Published var userDefaultWebsite: String?
     @Published var isCreating = false
     @Published var errorMessage: String?
-    
-    func loadLandingPages() async {
-        do {
-            landingPages = try await LandingPagesAPI.shared.fetchLandingPages()
-        } catch {
-            print("⚠️ [Create Batch] Failed to load landing pages: \(error)")
-        }
-    }
     
     func loadUserDefaultWebsite() async {
         do {

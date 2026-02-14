@@ -30,7 +30,7 @@ struct PrintQRView: View {
                         Card {
                             VStack(spacing: 16) {
                                 Text("QR Code Preview")
-                                    .font(.headline)
+                                    .font(.flyrHeadline)
                                     .foregroundColor(.text)
                                 
                                 Image(uiImage: uiImage)
@@ -41,11 +41,11 @@ struct PrintQRView: View {
                                 
                                 if let address = viewModel.address {
                                     Text(address)
-                                        .font(.caption)
+                                        .font(.flyrCaption)
                                         .foregroundColor(.muted)
                                 } else if let slug = qrCode.slug {
                                     Text("Slug: \(slug)")
-                                        .font(.caption)
+                                        .font(.flyrCaption)
                                         .foregroundColor(.muted)
                                 }
                             }
@@ -66,7 +66,7 @@ struct PrintQRView: View {
                         .foregroundColor(.muted)
                     
                     Text("QR Code Not Found")
-                        .font(.headline)
+                        .font(.flyrHeadline)
                         .foregroundColor(.text)
                 }
             }
@@ -93,7 +93,7 @@ struct PrintQRView: View {
         Card {
             VStack(alignment: .leading, spacing: 16) {
                 Text("Export Options")
-                    .font(.headline)
+                    .font(.flyrHeadline)
                     .foregroundColor(.text)
                 
                 VStack(spacing: 12) {

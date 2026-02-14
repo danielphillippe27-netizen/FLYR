@@ -4,7 +4,6 @@ import SwiftUI
 struct MoreToolsSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var showQRCodesList = false
-    @State private var showLandingPagePreview = false
     @State private var showQRMap = false
     @State private var showExportAnalytics = false
     @State private var showEdgeFunctionDebug = false
@@ -18,15 +17,6 @@ struct MoreToolsSheet: View {
                     icon: "list.bullet",
                     action: {
                         showQRCodesList = true
-                    }
-                )
-                
-                // Landing Page Preview
-                MoreToolsRow(
-                    title: "Landing Page Preview",
-                    icon: "eye",
-                    action: {
-                        showLandingPagePreview = true
                     }
                 )
                 
@@ -69,9 +59,6 @@ struct MoreToolsSheet: View {
             }
             .navigationDestination(isPresented: $showQRCodesList) {
                 QRCodeManageView()
-            }
-            .navigationDestination(isPresented: $showLandingPagePreview) {
-                LandingPageMainView()
             }
             .navigationDestination(isPresented: $showQRMap) {
                 QRCodeMapView()

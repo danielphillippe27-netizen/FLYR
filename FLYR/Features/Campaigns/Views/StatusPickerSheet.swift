@@ -21,11 +21,11 @@ struct StatusPickerSheet: View {
                 // Header
                 VStack(alignment: .leading, spacing: 8) {
                     Text(addressLabel)
-                        .font(.headline)
+                        .font(.flyrHeadline)
                         .foregroundColor(.primary)
                     
                     Text("Update door status")
-                        .font(.subheadline)
+                        .font(.flyrSubheadline)
                         .foregroundColor(.secondary)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)

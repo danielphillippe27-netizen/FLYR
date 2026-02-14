@@ -1,72 +1,69 @@
 import SwiftUI
 
-/// Apple Wallet-style card component for displaying CampaignV2 in lists
+/// Minimal grey-box list row for CampaignV2: name + house/door count (matches Start Session style).
 struct CampaignRowView: View {
     let campaign: CampaignV2
-    
-    private var dateFormatter: DateFormatter {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .short
-        formatter.timeStyle = .none
-        return formatter
+    /// When set (e.g. duplicate names), show this instead of campaign.name in the title.
+    var displayName: String?
+    var onPlayTapped: (() -> Void)?
+
+    private var titleText: String {
+        displayName ?? campaign.name
     }
-    
-    private var progressPercentage: Int {
-        Int(campaign.progress * 100)
+
+    private var progressPct: Int {
+        campaign.progressPct
     }
-    
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            // Header: Name and Badge
-            HStack {
-                Text(campaign.name)
-                    .font(.system(.title3, weight: .semibold))
-                    .foregroundColor(.text)
-                    .lineLimit(2)
-                
-                Spacer()
-                
-                Badge(text: campaign.type.title)
-            }
-            
-            // Progress section
+        HStack(alignment: .center, spacing: 8) {
             VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    Spacer()
-                    
-                    Text("\(progressPercentage)%")
-                        .font(.subheadline)
-                        .fontWeight(.semibold)
-                        .foregroundColor(.text)
+                Text(titleText)
+                    .font(.flyrHeadline)
+                    .foregroundColor(.primary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+
+                Label("\(campaign.totalFlyers)", systemImage: "house.fill")
+                    .font(.flyrCaption)
+                    .foregroundColor(.secondary)
+            }
+
+            Spacer(minLength: 8)
+
+            if campaign.status != .completed, onPlayTapped != nil {
+                Button {
+                    onPlayTapped?()
+                } label: {
+                    Image(systemName: "play.circle.fill")
+                        .font(.system(size: 24))
+                        .foregroundColor(.red)
                 }
-                
-                ProgressView(value: campaign.progress)
-                    .tint(.red)
+                .buttonStyle(.plain)
+            } else {
+                Text("\(progressPct)%")
+                    .font(.flyrCaption)
+                    .foregroundColor(.secondary)
             }
         }
-        .padding(16)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(
-            RoundedRectangle(cornerRadius: 24)
-                .fill(.ultraThinMaterial)
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color(.systemGray6))
         )
-        .shadow(
-            color: Color.black.opacity(0.1),
-            radius: 4,
-            x: 0,
-            y: 2
-        )
+        .contentShape(Rectangle())
     }
 }
 
 // MARK: - Preview
 
 #Preview {
-    VStack(spacing: 16) {
-        CampaignRowView(campaign: CampaignV2.mockCampaigns[0])
-        CampaignRowView(campaign: CampaignV2.mockCampaigns[1])
-        CampaignRowView(campaign: CampaignV2.mockCampaigns[2])
+    List {
+        CampaignRowView(campaign: CampaignV2.mockCampaigns[0], onPlayTapped: {})
+        CampaignRowView(campaign: CampaignV2.mockCampaigns[1], onPlayTapped: {})
+        CampaignRowView(campaign: CampaignV2.mockCampaigns[2], onPlayTapped: nil)
     }
-    .padding()
-    .background(Color.bgSecondary)
+    .listStyle(.plain)
 }
-

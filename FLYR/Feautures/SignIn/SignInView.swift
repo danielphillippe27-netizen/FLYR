@@ -1,185 +1,99 @@
 import SwiftUI
+import UIKit
 import AuthenticationServices
+import Lottie
 
 struct SignInView: View {
+    @Environment(\.colorScheme) private var colorScheme
     @StateObject private var auth = AuthManager.shared
     @State private var isSigningIn = false
     @State private var showToast = false
     @State private var toastMessage = ""
     @State private var toastType: ToastType = .success
-    
-    // Email/Password form state
-    @State private var email = ""
-    @State private var password = ""
-    @State private var isSignUpMode = false
-    @State private var showPassword = false
 
     enum ToastType {
         case success, error
     }
 
+    /// On white/light background use black buttons with white text for contrast.
+    private var isLightBackground: Bool { colorScheme == .light }
+    private var signInButtonBackground: Color { isLightBackground ? .black : Color.white }
+    private var signInButtonForeground: Color { isLightBackground ? .white : .black }
+    private var signInProgressTint: Color { isLightBackground ? .white : .black }
+
     var body: some View {
         NavigationStack {
             ZStack {
-                // Background
                 Color(.systemBackground)
                     .ignoresSafeArea()
-                
+
                 ScrollView {
                     VStack(spacing: 32) {
                         Spacer()
                             .frame(height: 60)
-                        
-                        // FLYR Branding
+
                         VStack(spacing: 8) {
-                            Text("FLYR")
-                                .font(.system(size: 48, weight: .bold, design: .rounded))
-                                .foregroundColor(.primary)
+                            LoopingLottieView(name: "splash")
+                                .frame(width: 180, height: 120)
+                                .clipped()
                         }
                         .padding(.top, 40)
-                        
-                        // Email/Password Form
-                        VStack(spacing: 20) {
-                            // Email Field
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text("Email")
-                                    .font(.system(size: 14, weight: .medium))
-                                    .foregroundColor(.secondary)
-                                
-                                TextField("Enter your email", text: $email)
-                                    .textContentType(.emailAddress)
-                                    .keyboardType(.emailAddress)
-                                    .autocapitalization(.none)
-                                    .textFieldStyle(.plain)
-                                    .padding(16)
-                                    .background(Color(.secondarySystemBackground))
-                                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                            }
-                            
-                            // Password Field
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text("Password")
-                                    .font(.system(size: 14, weight: .medium))
-                                    .foregroundColor(.secondary)
-                                
-                                HStack {
-                                    if showPassword {
-                                        TextField("Enter your password", text: $password)
-                                            .textContentType(isSignUpMode ? .newPassword : .password)
-                                            .autocapitalization(.none)
-                                    } else {
-                                        SecureField("Enter your password", text: $password)
-                                            .textContentType(isSignUpMode ? .newPassword : .password)
-                                    }
-                                    
-                                    Button {
-                                        showPassword.toggle()
-                                    } label: {
-                                        Image(systemName: showPassword ? "eye.slash.fill" : "eye.fill")
-                                            .foregroundColor(.secondary)
-                                    }
-                                }
-                                .textFieldStyle(.plain)
-                                .padding(16)
-                                .background(Color(.secondarySystemBackground))
-                                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                            }
-                            
-                            // Sign In/Up Button
-                            Button {
-                                Task { await handleEmailAuth() }
-                            } label: {
-                                HStack {
-                                    if isSigningIn {
-                                        ProgressView()
-                                            .progressViewStyle(CircularProgressViewStyle(tint: .white))
-                                            .scaleEffect(0.8)
-                                    } else {
-                                        Text(isSignUpMode ? "Sign Up" : "Sign In")
-                                            .font(.system(size: 17, weight: .semibold))
-                                    }
-                                }
-                                .foregroundColor(.white)
-                                .frame(maxWidth: .infinity)
-                                .frame(height: 50)
-                                .background(isFormValid ? Color.accentColor : Color.gray)
-                                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                            }
-                            .disabled(isSigningIn || !isFormValid)
-                            .scaleEffect(isSigningIn ? 0.98 : 1.0)
-                            .animation(.spring(response: 0.3, dampingFraction: 0.6), value: isSigningIn)
-                            
-                            // Toggle Sign In/Sign Up
-                            Button {
-                                withAnimation {
-                                    isSignUpMode.toggle()
-                                    password = ""
-                                }
-                            } label: {
-                                Text(isSignUpMode ? "Already have an account? Sign In" : "Don't have an account? Sign Up")
-                                    .font(.system(size: 14, weight: .regular))
-                                    .foregroundColor(.accentColor)
-                            }
-                        }
-                        .padding(.horizontal, 32)
-                        
-                        // Divider
-                        HStack {
-                            Rectangle()
-                                .fill(Color(.separator))
-                                .frame(height: 1)
-                            
-                            Text("OR")
-                                .font(.system(size: 14, weight: .medium))
-                                .foregroundColor(.secondary)
-                                .padding(.horizontal, 16)
-                            
-                            Rectangle()
-                                .fill(Color(.separator))
-                                .frame(height: 1)
-                        }
-                        .padding(.horizontal, 32)
-                        
-                        // Apple Sign-In Button
+
                         Button {
-                            Task { await signInWithApple() }
+                            Task { await signInWithGoogle() }
                         } label: {
-                            HStack {
+                            HStack(spacing: 12) {
                                 if isSigningIn {
                                     ProgressView()
-                                        .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                                        .progressViewStyle(CircularProgressViewStyle(tint: signInProgressTint))
                                         .scaleEffect(0.8)
                                 } else {
-                                    Image(systemName: "applelogo")
-                                        .font(.system(size: 18, weight: .medium))
+                                    Image(systemName: "g.circle.fill")
+                                        .font(.system(size: 22))
+                                    Text("Sign in with Google")
+                                        .font(.system(size: 17, weight: .medium))
                                 }
-                                
-                                Text("Sign in with Apple")
-                                    .font(.system(size: 17, weight: .medium))
                             }
-                            .foregroundColor(.white)
+                            .foregroundColor(signInButtonForeground)
                             .frame(maxWidth: .infinity)
                             .frame(height: 50)
-                            .background(Color.black)
+                            .background(signInButtonBackground)
                             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                         }
                         .disabled(isSigningIn)
                         .padding(.horizontal, 32)
-                        
+                        .padding(.top, 24)
+
+                        // Official Sign in with Apple Button
+                        SignInWithAppleButton(
+                            .signIn,
+                            onRequest: { request in
+                                request.requestedScopes = [.fullName, .email]
+                            },
+                            onCompletion: { result in
+                                Task {
+                                    await handleAppleSignInResult(result)
+                                }
+                            }
+                        )
+                        .signInWithAppleButtonStyle(colorScheme == .light ? .black : .white)
+                        .frame(height: 50)
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .disabled(isSigningIn)
+                        .padding(.horizontal, 32)
+                        .padding(.top, 12)
+
                         Spacer()
                             .frame(height: 40)
                     }
                 }
-                
-                // Toast overlay
+
                 if showToast {
                     VStack {
                         Spacer()
-                        
                         HStack {
                             Image(systemName: toastType == .success ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
                                 .foregroundColor(toastType == .success ? .green : .red)
-                            
                             Text(toastMessage)
                                 .font(.system(size: 16, weight: .medium))
                                 .foregroundColor(.primary)
@@ -198,68 +112,100 @@ struct SignInView: View {
             }
         }
     }
-    
-    // MARK: - Form Validation
-    
-    private var isFormValid: Bool {
-        !email.isEmpty && !password.isEmpty && email.contains("@") && password.count >= 6
-    }
-    
-    // MARK: - Email/Password Authentication
-    
-    private func handleEmailAuth() async {
+
+    private func signInWithGoogle() async {
         isSigningIn = true
-        
         do {
-            if isSignUpMode {
-                try await auth.signUp(email: email, password: password)
-                await MainActor.run {
-                    displayToast(message: "Account created successfully 🎉", type: .success)
-                }
-            } else {
-                try await auth.signIn(email: email, password: password)
-                await MainActor.run {
-                    displayToast(message: "Signed in successfully 🎉", type: .success)
-                }
-            }
+            try await auth.signInWithGoogle()
+            await MainActor.run { displayToast(message: "Signed in successfully", type: .success) }
         } catch {
             await MainActor.run {
-                let errorMessage = error.localizedDescription
-                displayToast(message: errorMessage.isEmpty ? "Authentication failed. Please try again." : errorMessage, type: .error)
+                let msg = error.localizedDescription
+                displayToast(message: msg.isEmpty ? "Sign-in failed. Try again." : msg, type: .error)
             }
         }
-        
         isSigningIn = false
     }
-    
-    // MARK: - Apple Sign-In
-    
+
     private func signInWithApple() async {
         isSigningIn = true
-        
         do {
             try await auth.signInWithApple()
-            await MainActor.run {
-                displayToast(message: "Signed in successfully 🎉", type: .success)
-            }
+            await MainActor.run { displayToast(message: "Signed in successfully", type: .success) }
         } catch {
             await MainActor.run {
-                displayToast(message: "Sign-in failed. Try again.", type: .error)
+                let msg = error.localizedDescription
+                displayToast(message: msg.isEmpty ? "Sign-in failed. Try again." : msg, type: .error)
             }
         }
-        
         isSigningIn = false
     }
     
+    private func handleAppleSignInResult(_ result: Result<ASAuthorization, Error>) async {
+        isSigningIn = true
+        switch result {
+        case .success(let authorization):
+            do {
+                try await auth.handleAppleSignInAuthorization(authorization)
+                await MainActor.run { displayToast(message: "Signed in successfully", type: .success) }
+            } catch {
+                await MainActor.run {
+                    let msg = error.localizedDescription
+                    displayToast(message: msg.isEmpty ? "Sign-in failed. Try again." : msg, type: .error)
+                }
+            }
+        case .failure(let error):
+            await MainActor.run {
+                displayToast(message: error.localizedDescription, type: .error)
+            }
+        }
+        isSigningIn = false
+    }
+
     private func displayToast(message: String, type: ToastType) {
         toastMessage = message
         toastType = type
         showToast = true
-        
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-            withAnimation {
-                showToast = false
-            }
+            withAnimation { showToast = false }
         }
+    }
+}
+
+// MARK: - Looping Lottie (auth page)
+
+private struct LoopingLottieView: UIViewRepresentable {
+    let name: String
+
+    func makeUIView(context: Context) -> UIView {
+        let container = UIView()
+        container.clipsToBounds = true
+        let lottie = LottieAnimationView(name: name, bundle: .main)
+        lottie.loopMode = .loop
+        lottie.contentMode = .scaleAspectFit
+        lottie.backgroundBehavior = .pauseAndRestore
+        lottie.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(lottie)
+        NSLayoutConstraint.activate([
+            lottie.topAnchor.constraint(equalTo: container.topAnchor),
+            lottie.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            lottie.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            lottie.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+        ])
+        lottie.play()
+        context.coordinator.lottieView = lottie
+        return container
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        context.coordinator.lottieView?.contentMode = .scaleAspectFit
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    class Coordinator {
+        weak var lottieView: LottieAnimationView?
     }
 }

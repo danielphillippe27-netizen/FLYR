@@ -26,11 +26,11 @@ struct ExportModalView: View {
                             .frame(width: 200)
                         
                         Text(exportHook.isUploading ? "Uploading to Supabase..." : "Exporting...")
-                            .font(.headline)
+                            .font(.flyrHeadline)
                             .foregroundStyle(.secondary)
                         
                         Text("\(Int(exportHook.progress * 100))%")
-                            .font(.title2)
+                            .font(.flyrTitle2)
                             .fontWeight(.semibold)
                     }
                     .padding()
@@ -54,7 +54,7 @@ struct ExportModalView: View {
                                     .font(.system(size: 28, weight: .bold))
                                 
                                 Text("Choose an export format")
-                                    .font(.subheadline)
+                                    .font(.flyrSubheadline)
                                     .foregroundStyle(.secondary)
                             }
                             .padding(.top, 8)

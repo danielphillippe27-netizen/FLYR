@@ -1,5 +1,4 @@
 import SwiftUI
-import Auth
 import Supabase
 
 struct ProfileSheetView: View {
@@ -20,7 +19,7 @@ struct ProfileSheetView: View {
     private let weeklyGoal = 20
     
     private var displayName: String {
-        profile?.displayName ?? auth.user?.email?.components(separatedBy: "@").first?.capitalized ?? "User"
+        profile?.displayName ?? (auth.user?.email).flatMap { $0.components(separatedBy: "@").first?.capitalized } ?? auth.user?.email ?? "User"
     }
     
     private var profileImageURL: String? {
@@ -96,7 +95,7 @@ struct ProfileSheetView: View {
     private var personalInfoSection: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Personal Info")
-                .font(.system(.title3, weight: .bold))
+                .font(AppFont.title(20))
                 .foregroundColor(.text)
             
             VStack(spacing: 16) {
@@ -122,7 +121,7 @@ struct ProfileSheetView: View {
                 
                 // Name
                 Text(displayName)
-                    .font(.system(.title2, weight: .semibold))
+                    .font(.flyrTitle2)
                     .foregroundColor(.text)
                 
                 // Brokerage
@@ -132,7 +131,7 @@ struct ProfileSheetView: View {
                     Text(brokerage)
                         .foregroundColor(.text)
                 }
-                .font(.system(.body))
+                .font(.flyrBody)
                 
                 // City
                 HStack {
@@ -141,7 +140,7 @@ struct ProfileSheetView: View {
                     Text(city)
                         .foregroundColor(.text)
                 }
-                .font(.system(.body))
+                .font(.flyrBody)
             }
             .frame(maxWidth: .infinity)
             .padding()
@@ -157,7 +156,7 @@ struct ProfileSheetView: View {
     private var statsSummarySection: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Stats Summary")
-                .font(.system(.title3, weight: .bold))
+                .font(AppFont.title(20))
                 .foregroundColor(.text)
             
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
@@ -197,16 +196,16 @@ struct ProfileSheetView: View {
     private var streaksSection: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Streaks")
-                .font(.system(.title3, weight: .bold))
+                .font(AppFont.title(20))
                 .foregroundColor(.text)
             
             HStack {
                 Image(systemName: "flame.fill")
-                    .foregroundColor(.orange)
-                    .font(.title2)
+                    .foregroundColor(.flyrPrimary)
+                    .font(.flyrTitle2)
                 
                 Text("\(statsVM.stats?.day_streak ?? 0)-day knocking streak")
-                    .font(.system(.body, weight: .semibold))
+                    .font(AppFont.heading(17))
                     .foregroundColor(.text)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -223,7 +222,7 @@ struct ProfileSheetView: View {
     private var xpLevelSection: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("XP & Level")
-                .font(.system(.title3, weight: .bold))
+                .font(AppFont.title(20))
                 .foregroundColor(.text)
             
             let xp = statsVM.stats?.xp ?? 0
@@ -235,13 +234,13 @@ struct ProfileSheetView: View {
             VStack(spacing: 12) {
                 HStack {
                     Text("Level \(level)")
-                        .font(.system(.title2, weight: .bold))
+                        .font(.flyrTitle2Bold)
                         .foregroundColor(.text)
                     
                     Spacer()
                     
                     Text(levelTitle(for: level))
-                        .font(.system(.body, weight: .semibold))
+                        .font(AppFont.heading(17))
                         .foregroundColor(.muted)
                 }
                 
@@ -249,13 +248,13 @@ struct ProfileSheetView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack {
                         Text("\(xp) XP")
-                            .font(.system(.subheadline, weight: .medium))
+                            .font(.flyrSubheadline)
                             .foregroundColor(.muted)
                         
                         Spacer()
                         
                         Text("\(xpForNextLevel) XP")
-                            .font(.system(.subheadline, weight: .medium))
+                            .font(.flyrSubheadline)
                             .foregroundColor(.muted)
                     }
                     
@@ -277,7 +276,7 @@ struct ProfileSheetView: View {
     private var settingsSection: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Settings")
-                .font(.system(.title3, weight: .bold))
+                .font(AppFont.title(20))
                 .foregroundColor(.text)
             
             VStack(spacing: 0) {
@@ -371,15 +370,15 @@ struct StatSummaryCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Image(systemName: icon)
-                .font(.title3)
+                .font(.flyrTitle3)
                 .foregroundColor(color)
             
             Text(value)
-                .font(.system(.title2, weight: .bold))
+                .font(.flyrTitle2Bold)
                 .foregroundColor(.text)
             
             Text(title)
-                .font(.system(.caption))
+                .font(.flyrCaption)
                 .foregroundColor(.muted)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -408,7 +407,7 @@ struct SettingsRow: View {
                     .frame(width: 24)
                 
                 Text(title)
-                    .font(.system(.body))
+                    .font(.flyrBody)
                     .foregroundColor(isDestructive ? .error : .text)
                 
                 Spacer()

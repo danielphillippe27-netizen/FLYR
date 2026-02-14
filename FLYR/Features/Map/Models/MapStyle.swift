@@ -2,15 +2,13 @@ import Foundation
 import MapboxMaps
 
 enum MapStyle: String, CaseIterable, Identifiable {
-    case standard    // full road labels + POIs
-    case dark        // black minimal
-    case light       // clean light mode
+    case dark        // custom dark style
+    case light       // custom light style
     
     var id: String { rawValue }
     
     var title: String {
         switch self {
-        case .standard: return "Standard"
         case .dark: return "Dark"
         case .light: return "Light"
         }
@@ -18,7 +16,6 @@ enum MapStyle: String, CaseIterable, Identifiable {
     
     var iconName: String {
         switch self {
-        case .standard: return "paintbrush.fill"
         case .dark: return "moon.fill"
         case .light: return "sun.max.fill"
         }
@@ -26,12 +23,12 @@ enum MapStyle: String, CaseIterable, Identifiable {
     
     var mapboxStyleURI: StyleURI {
         switch self {
-        case .standard:
-            return .streets  // Full labeled streets, POIs, parks
         case .dark:
-            return .dark     // Dark minimal style
+            // Custom dark style: mapbox://styles/fliper27/cml6zc5pq002801qo4lh13o19
+            return StyleURI(rawValue: "mapbox://styles/fliper27/cml6zc5pq002801qo4lh13o19")!
         case .light:
-            return .light    // Clean light mode
+            // Custom light style: mapbox://styles/fliper27/cml6z0dhg002301qo9xxc08k4
+            return StyleURI(rawValue: "mapbox://styles/fliper27/cml6z0dhg002301qo9xxc08k4")!
         }
     }
 }

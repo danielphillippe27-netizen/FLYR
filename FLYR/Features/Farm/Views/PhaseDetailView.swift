@@ -10,10 +10,10 @@ struct PhaseDetailView: View {
                 // Phase Header
                 VStack(alignment: .leading, spacing: 8) {
                     Text(phase.phaseName)
-                        .font(.title2.weight(.bold))
+                        .font(.flyrTitle2Bold)
                     
                     Text("\(phase.startDate, style: .date) - \(phase.endDate, style: .date)")
-                        .font(.subheadline)
+                        .font(.flyrSubheadline)
                         .foregroundStyle(.secondary)
                 }
                 .padding()
@@ -28,7 +28,7 @@ struct PhaseDetailView: View {
                 if !touches.isEmpty {
                     VStack(alignment: .leading, spacing: 12) {
                         Text("Touches")
-                            .font(.headline)
+                            .font(.flyrHeadline)
                             .padding(.horizontal)
                         
                         ForEach(touches) { touch in
@@ -51,14 +51,14 @@ struct MetricsSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Results")
-                .font(.headline)
+                .font(.flyrHeadline)
             
             if let flyers = results["flyers_delivered"]?.value as? Int {
                 MetricRow(label: "Flyers", value: "\(flyers)")
             }
             
             if let knocks = results["knocks"]?.value as? Int {
-                MetricRow(label: "Door Knocks", value: "\(knocks)")
+                MetricRow(label: "Door Knock", value: "\(knocks)")
             }
             
             if let leads = results["leads"]?.value as? Int {

@@ -18,6 +18,9 @@ final class CampaignsHooks: ObservableObject {
                 campaigns = try await CampaignsAPI.shared.fetchCampaigns()
             }
         } catch {
+            if (error as NSError).code == NSURLErrorCancelled {
+                return
+            }
             errorMessage = error.localizedDescription
         }
     }

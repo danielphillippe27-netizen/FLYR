@@ -1,85 +1,55 @@
 import SwiftUI
 
-/// Apple Wallet-style card component for displaying Farm in lists
+/// Minimal grey-box list row for Farm (matches Start Session / campaign list style).
 struct FarmRowView: View {
     let farm: Farm
-    
-    private var dateFormatter: DateFormatter {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .short
-        formatter.timeStyle = .none
-        return formatter
+
+    private var subtitleText: String {
+        if let area = farm.areaLabel, !area.isEmpty {
+            return area
+        }
+        return "\(farm.frequency) touches/month"
     }
-    
-    private var progressPercentage: Int {
-        Int(farm.progress * 100)
+
+    private var statusText: String? {
+        if farm.isActive { return "Active" }
+        if farm.isCompleted { return "Completed" }
+        return nil
     }
-    
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            // Header: Name and Badge
-            HStack {
-                Text(farm.name)
-                    .font(.system(.title3, weight: .semibold))
-                    .foregroundColor(.text)
-                    .lineLimit(2)
-                
-                Spacer()
-                
-                Badge(text: "Farm")
-            }
-            
-            // Created date
-            Text("Created \(farm.createdAt, formatter: dateFormatter)")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-            
-            Spacer()
-            
-            // Progress section
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    Text("Progress")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                    
-                    Spacer()
-                    
-                    Text("\(progressPercentage)%")
-                        .font(.subheadline)
-                        .foregroundColor(.text)
-                }
-                
-                ProgressView(value: farm.progress)
-                    .tint(.red)
-            }
-            
-            // Stats row
-            HStack {
-                Label("\(farm.frequency) touches/month", systemImage: "calendar")
-                    .font(.subheadline)
-                    .foregroundColor(.text)
-                
-                Spacer()
-                
-                if let areaLabel = farm.areaLabel {
-                    Text(areaLabel)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 4) {
+            Text(farm.name)
+                .font(.flyrHeadline)
+                .foregroundColor(.primary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+
+            HStack(spacing: 8) {
+                Text(subtitleText)
+                    .font(.flyrCaption)
+                    .foregroundColor(.secondary)
+                if let status = statusText {
+                    Text(status)
+                        .font(.flyrCaption)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 2)
+                        .background(
+                            (farm.isActive ? Color.green : Color.gray).opacity(0.2)
+                        )
+                        .foregroundColor(farm.isActive ? .green : .gray)
+                        .cornerRadius(4)
                 }
             }
         }
-        .padding(20)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(
-            RoundedRectangle(cornerRadius: 24)
-                .fill(.ultraThinMaterial)
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color(.systemGray6))
         )
-        .shadow(
-            color: Color.black.opacity(0.5),
-            radius: 8,
-            x: 0,
-            y: 2
-        )
+        .contentShape(Rectangle())
     }
 }
 
@@ -102,6 +72,3 @@ struct FarmRowView: View {
     .padding()
     .background(Color.bgSecondary)
 }
-
-
-

@@ -6,14 +6,14 @@ struct LeaderboardErrorView: View {
     var body: some View {
         VStack(spacing: 20) {
             Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(.orange)
+                .foregroundStyle(Color.flyrPrimary)
                 .font(.system(size: 48))
             
             Text("Can't Load Leaderboard")
-                .font(.headline)
+                .font(.flyrHeadline)
             
             Text("The data couldn't be loaded. Please try again.")
-                .font(.subheadline)
+                .font(.flyrSubheadline)
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 40)

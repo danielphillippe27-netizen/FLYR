@@ -30,7 +30,7 @@ struct FarmPolygonSelectorView: View {
                         Spacer()
                         
                         Text("\(points.count) points")
-                            .font(.headline)
+                            .font(.flyrHeadline)
                         
                         Spacer()
                         
@@ -68,9 +68,9 @@ struct FarmPolygonSelectorView: View {
     
     private func initializeMap() {
         let newMapView = MapView(frame: .zero)
-        // Configure map
+        // Configure map with custom light style
         if let map = newMapView.mapboxMap {
-            map.loadStyleURI(.streets)
+            map.loadStyleURI(StyleURI(rawValue: "mapbox://styles/fliper27/cml6z0dhg002301qo9xxc08k4")!)
         }
         self.mapView = newMapView
     }

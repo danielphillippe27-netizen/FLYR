@@ -49,3 +49,4 @@ GRANT EXECUTE ON FUNCTION add_campaign_addresses(UUID, JSONB) TO authenticated;
 
 
 
+

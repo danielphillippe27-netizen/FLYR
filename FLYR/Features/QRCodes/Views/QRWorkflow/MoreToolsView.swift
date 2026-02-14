@@ -21,7 +21,7 @@ struct MoreToolsView: View {
                         title: "Print Shop Export Manager",
                         description: "Export QR codes for professional printing",
                         icon: "printer.filled.and.paper",
-                        color: .orange
+                        color: .flyrPrimary
                     ) {
                         // Placeholder for future implementation
                     }
@@ -31,15 +31,6 @@ struct MoreToolsView: View {
                         description: "Monitor QR code scans and engagement in real-time",
                         icon: "chart.line.uptrend.xyaxis",
                         color: .purple
-                    ) {
-                        // Placeholder for future implementation
-                    }
-                    
-                    toolCard(
-                        title: "Campaign Landing Page Previewer",
-                        description: "Preview how your landing pages look to visitors",
-                        icon: "eye.fill",
-                        color: .pink
                     ) {
                         // Placeholder for future implementation
                     }
@@ -69,11 +60,11 @@ struct MoreToolsView: View {
                     
                     VStack(alignment: .leading, spacing: 4) {
                         Text(title)
-                            .font(.headline)
+                            .font(.flyrHeadline)
                             .foregroundColor(.text)
                         
                         Text(description)
-                            .font(.subheadline)
+                            .font(.flyrSubheadline)
                             .foregroundColor(.muted)
                             .multilineTextAlignment(.leading)
                     }
@@ -81,7 +72,7 @@ struct MoreToolsView: View {
                     Spacer()
                     
                     Image(systemName: "chevron.right")
-                        .font(.caption)
+                        .font(.flyrCaption)
                         .foregroundColor(.muted)
                 }
             }

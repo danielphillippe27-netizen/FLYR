@@ -10,7 +10,8 @@ extension GeoAPI {
             print("❌ [GEOAPI DEBUG] Missing Mapbox token")
             throw GeoAPIError.missingToken 
         }
-        let urlStr = "https://api.mapbox.com/geocoding/v5/mapbox.places/\(coordinate.longitude),\(coordinate.latitude).json?types=address,place&limit=5&access_token=\(token)"
+        // Mapbox: use limit=1 for reverse (single result); limit>1 requires exactly one types parameter
+        let urlStr = "https://api.mapbox.com/geocoding/v5/mapbox.places/\(coordinate.longitude),\(coordinate.latitude).json?types=address&limit=1&access_token=\(token)"
         print("🔍 [GEOAPI DEBUG] Reverse geocoding URL (first): \(urlStr.replacingOccurrences(of: token, with: "TOKEN_HIDDEN"))")
         
         guard let url = URL(string: urlStr) else { 
@@ -44,6 +45,7 @@ extension GeoAPI {
         
         let decoded = try JSONDecoder().decode(Resp.self, from: data)
         let feat = decoded.features.first { $0.place_type.contains("address") }
+            ?? decoded.features.first
         guard let f = feat else { throw GeoAPIError.noResults }
         
         let locality = f.context?.first { $0.id.contains("place") }?.text
@@ -53,7 +55,7 @@ extension GeoAPI {
     func reverseStreet(at coordinate: CLLocationCoordinate2D) async throws -> (name: String, center: CLLocationCoordinate2D) {
         let token = Bundle.main.object(forInfoDictionaryKey: "MBXAccessToken") as? String ?? ""
         guard !token.isEmpty else { throw GeoAPIError.missingToken }
-        let urlStr = "https://api.mapbox.com/geocoding/v5/mapbox.places/\(coordinate.longitude),\(coordinate.latitude).json?types=address&limit=5&access_token=\(token)"
+        let urlStr = "https://api.mapbox.com/geocoding/v5/mapbox.places/\(coordinate.longitude),\(coordinate.latitude).json?types=address&limit=1&access_token=\(token)"
         print("🔍 [GEOAPI DEBUG] Reverse geocoding URL: \(urlStr)")
         guard let url = URL(string: urlStr) else { 
             print("❌ [GEOAPI DEBUG] Invalid reverse geocoding URL: \(urlStr)")

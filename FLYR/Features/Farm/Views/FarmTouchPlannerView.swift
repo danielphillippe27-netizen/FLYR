@@ -53,7 +53,7 @@ struct MonthSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(month)
-                .font(.headline)
+                .font(.flyrHeadline)
                 .padding(.horizontal, 16)
             
             ForEach(touches) { touch in
@@ -75,9 +75,9 @@ struct TouchCard: View {
             
             VStack(alignment: .leading, spacing: 4) {
                 Text(touch.title)
-                    .font(.subheadline.weight(.medium))
+                    .font(.flyrSubheadline)
                 Text(touch.date, style: .date)
-                    .font(.caption)
+                    .font(.flyrCaption)
                     .foregroundStyle(.secondary)
             }
             
@@ -99,7 +99,7 @@ struct TouchCard: View {
         switch type {
         case .flyer: return .blue
         case .doorKnock: return .green
-        case .event: return .orange
+        case .event: return .flyrPrimary
         case .newsletter: return .purple
         case .ad: return .yellow
         case .custom: return .gray

@@ -44,8 +44,11 @@ extension Color {
     
     // MARK: - Accent Color (Dynamic)
     
-    /// Default accent color - Electric Red
-    static let accentDefault = Color(red: 1.0, green: 0.23, blue: 0.19) // #FF3B30
+    /// Primary FLYR accent - red (replaces legacy orange)
+    static let flyrPrimary = Color(red: 1.0, green: 0.23, blue: 0.19) // #FF3B30
+    
+    /// Default accent color - Electric Red (same as flyrPrimary)
+    static let accentDefault = flyrPrimary
     
     // MARK: - Legacy Support (Deprecated)
     

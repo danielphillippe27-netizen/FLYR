@@ -2,13 +2,9 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>CFBundleExecutable</key>
-	<string>FLYR</string>
-	<key>SUPABASE_URL</key>
-	<string>https://kfnsnwqylsdsbgnwgxva.supabase.co</string>
-	<key>SUPABASE_ANON_KEY</key>
-	<string>eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtmbnNud3F5bHNkc2JnbndneHZhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA5MjY3MzEsImV4cCI6MjA3NjUwMjczMX0.k2TZKPi3VxAVpEGggLiROYvfVu2nV_oSqBt2GM4jX-Y</string>
 	<key>CFBundleDisplayName</key>
+	<string>FLYR</string>
+	<key>CFBundleExecutable</key>
 	<string>FLYR</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.danielphillippe.FLYR</string>
@@ -16,10 +12,66 @@
 	<string>FLYR</string>
 	<key>CFBundleShortVersionString</key>
 	<string>1.0</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.danielphillippe.FLYR</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>flyr</string>
+			</array>
+		</dict>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLName</key>
+			<string>Google</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>com.googleusercontent.apps.309925212737-5ivglrus1o0ocmtr57ca7ikt5btjqkch</string>
+			</array>
+		</dict>
+	</array>
 	<key>CFBundleVersion</key>
 	<string>1</string>
+	<key>FLYR_PRO_API_URL</key>
+	<string>https://flyrpro.app</string>
+	<key>GOOGLE_CLIENT_ID</key>
+	<string>309925212737-5ivglrus1o0ocmtr57ca7ikt5btjqkch.apps.googleusercontent.com</string>
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>instagram-stories</string>
+	</array>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>MBXAccessToken</key>
+	<string>YOUR_MAPBOX_PUBLIC_TOKEN</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>FLYR needs access to save your session share card to your photo library.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>FLYR needs your location to track your session path and distance while you're walking.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>FLYR uses the microphone to record voice notes after a knock so we can update the lead without typing.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>FLYR uses speech recognition to transcribe your voice notes on device. You can optionally improve accuracy by sending the recording to the server.</string>
+	<key>NSHealthShareUsageDescription</key>
+	<string>We use your step count to show activity progress in the app.</string>
+	<key>NSHealthUpdateUsageDescription</key>
+	<string>We may write health data if you enable future features.</string>
+	<key>SUPABASE_ANON_KEY</key>
+	<string>eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtmbnNud3F5bHNkc2JnbndneHZhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA5MjY3MzEsImV4cCI6MjA3NjUwMjczMX0.k2TZKPi3VxAVpEGggLiROYvfVu2nV_oSqBt2GM4jX-Y</string>
+	<key>SUPABASE_URL</key>
+	<string>https://kfnsnwqylsdsbgnwgxva.supabase.co</string>
+	<key>TRANSCRIPTION_API_URL</key>
+	<string>https://flyr-transcription-api.up.railway.app</string>
+	<key>UIAppFonts</key>
+	<array>
+		<string>Inter-Regular.ttf</string>
+		<string>Inter-Medium.ttf</string>
+		<string>Inter-SemiBold.ttf</string>
+		<string>Inter-Bold.ttf</string>
+	</array>
 	<key>UILaunchScreen</key>
 	<dict/>
 	<key>UIRequiredDeviceCapabilities</key>
@@ -31,21 +83,6 @@
 		<string>UIInterfaceOrientationPortrait</string>
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
-	</array>
-	<key>MBXAccessToken</key>
-	<string>YOUR_MAPBOX_PUBLIC_TOKEN</string>
-	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>FLYR needs your location to track your session path and distance while you're walking.</string>
-	<key>CFBundleURLTypes</key>
-	<array>
-		<dict>
-			<key>CFBundleURLName</key>
-			<string>com.danielphillippe.FLYR</string>
-			<key>CFBundleURLSchemes</key>
-			<array>
-				<string>flyr</string>
-			</array>
-		</dict>
 	</array>
 </dict>
 </plist>

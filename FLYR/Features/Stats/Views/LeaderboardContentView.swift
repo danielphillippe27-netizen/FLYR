@@ -1,7 +1,5 @@
 import SwiftUI
 import Supabase
-import Auth
-
 struct LeaderboardContentView: View {
     @StateObject private var viewModel = LeaderboardViewModel()
     @StateObject private var auth = AuthManager.shared
@@ -34,7 +32,7 @@ struct LeaderboardContentView: View {
                 } else if viewModel.entries.isEmpty {
                     VStack(spacing: 16) {
                         Image(systemName: "trophy")
-                            .font(.largeTitle)
+                            .font(.flyrLargeTitle)
                             .foregroundColor(.gray)
                         Text("No leaderboard entries yet")
                             .foregroundColor(.secondary)
@@ -72,11 +70,11 @@ struct LeaderboardContentView: View {
                             } label: {
                                 HStack {
                                     Text("Stats Settings")
-                                        .font(.system(.body))
+                                        .font(.flyrBody)
                                         .foregroundColor(.primary)
                                     Spacer()
                                     Image(systemName: "chevron.right")
-                                        .font(.system(.caption))
+                                        .font(.flyrCaption)
                                         .foregroundColor(.secondary)
                                 }
                                 .padding(.horizontal, 20)

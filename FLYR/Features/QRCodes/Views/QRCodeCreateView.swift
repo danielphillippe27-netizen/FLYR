@@ -347,7 +347,7 @@ struct QRCodeDetailSheet: View {
                     // Name Field
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Name")
-                            .font(.headline)
+                            .font(.flyrHeadline)
                         TextField("Enter QR code name", text: $qrCodeName)
                             .textFieldStyle(.roundedBorder)
                             .onSubmit {
@@ -359,7 +359,7 @@ struct QRCodeDetailSheet: View {
                     // Printed Toggle
                     HStack {
                         Text("Printed")
-                            .font(.headline)
+                            .font(.flyrHeadline)
                         Spacer()
                         Toggle("", isOn: $isPrinted)
                             .labelsHidden()
@@ -374,7 +374,7 @@ struct QRCodeDetailSheet: View {
                     // QR URL Info
                     VStack(alignment: .leading, spacing: 12) {
                         Text("QR URL")
-                            .font(.headline)
+                            .font(.flyrHeadline)
                         Text(qrCode.qrUrl)
                             .font(.system(.body, design: .monospaced))
                             .foregroundStyle(.secondary)
@@ -391,7 +391,7 @@ struct QRCodeDetailSheet: View {
                             if let entityName = metadata.entityName {
                                 HStack {
                                     Text("Entity")
-                                        .font(.headline)
+                                        .font(.flyrHeadline)
                                     Spacer()
                                     Text(entityName)
                                         .foregroundStyle(.secondary)
@@ -400,7 +400,7 @@ struct QRCodeDetailSheet: View {
                             if let addressCount = metadata.addressCount {
                                 HStack {
                                     Text("Addresses")
-                                        .font(.headline)
+                                        .font(.flyrHeadline)
                                     Spacer()
                                     Text("\(addressCount)")
                                         .foregroundStyle(.secondary)

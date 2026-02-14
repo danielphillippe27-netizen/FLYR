@@ -401,8 +401,8 @@ final class GeoAPI {
   
   /// Reverse: return street + locality for the seed
   private func reverseSeedStreet(_ seed: CLLocationCoordinate2D) async throws -> (street: String, locality: String?) {
-    // Mapbox reverse geocode types=address,place; choose first address, read "text" for street and context[place] for locality
-    let urlStr = "https://api.mapbox.com/geocoding/v5/mapbox.places/\(seed.longitude),\(seed.latitude).json?types=address,place&limit=1&access_token=\(token)"
+    // Mapbox requires limit to be combined with a single type for reverse geocoding
+    let urlStr = "https://api.mapbox.com/geocoding/v5/mapbox.places/\(seed.longitude),\(seed.latitude).json?types=address&limit=1&access_token=\(token)"
     
     guard let url = URL(string: urlStr) else { throw GeoAPIError.badURL }
     let (data, response) = try await URLSession.shared.data(from: url)

@@ -28,7 +28,7 @@ struct Toast: View {
         HStack(spacing: 12) {
             // Icon
             Image(systemName: type.iconName)
-                .font(.title3)
+                .font(.flyrTitle3)
                 .foregroundColor(type.iconColor)
             
             // Message
@@ -42,7 +42,7 @@ struct Toast: View {
             // Dismiss button
             Button(action: dismiss) {
                 Image(systemName: "xmark")
-                    .font(.caption)
+                    .font(.flyrCaption)
                     .foregroundColor(.muted)
             }
         }

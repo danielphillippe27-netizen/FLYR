@@ -12,10 +12,20 @@ class MapCampaignPickerViewModel: ObservableObject {
     private let qrCodeAPI = QRCodeAPI.shared
     private let qrRepository = QRRepository.shared
     
+    private var isFetching = false
+    private var lastFetchTime: Date?
+    
     func loadCampaignsAndFarms() async {
+        guard !isFetching else { return }
+        if let last = lastFetchTime, Date().timeIntervalSince(last) < 3 { return }
+        isFetching = true
+        lastFetchTime = Date()
         isLoading = true
         errorMessage = nil
-        defer { isLoading = false }
+        defer {
+            isFetching = false
+            isLoading = false
+        }
         
         async let campaignsTask = loadCampaigns()
         async let farmsTask = loadFarms()
@@ -27,6 +37,9 @@ class MapCampaignPickerViewModel: ObservableObject {
         do {
             campaigns = try await qrCodeAPI.fetchCampaigns()
         } catch {
+            if (error as NSError).code == NSURLErrorCancelled {
+                return
+            }
             errorMessage = "Failed to load campaigns: \(error.localizedDescription)"
             print("❌ [Map Picker] Error loading campaigns: \(error)")
         }
@@ -37,6 +50,9 @@ class MapCampaignPickerViewModel: ObservableObject {
             let farmRows = try await qrRepository.fetchFarms()
             farms = farmRows.map { $0.toFarmListItem() }
         } catch {
+            if (error as NSError).code == NSURLErrorCancelled {
+                return
+            }
             errorMessage = "Failed to load farms: \(error.localizedDescription)"
             print("❌ [Map Picker] Error loading farms: \(error)")
         }

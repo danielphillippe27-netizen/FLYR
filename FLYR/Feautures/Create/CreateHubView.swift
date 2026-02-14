@@ -23,7 +23,7 @@ struct CreateHubView: View {
                             handleTap(option)
                         } label: {
                             Text(option.title)
-                                .font(.system(size: 28, weight: .semibold, design: .rounded))
+                                .font(.flyrSystem(size: 28, weight: .semibold))
                                 .frame(maxWidth: .infinity)
                                 .foregroundStyle(.primary)
                                 .padding(.vertical, 8)

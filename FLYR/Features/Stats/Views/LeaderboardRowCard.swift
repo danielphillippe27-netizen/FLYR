@@ -13,13 +13,13 @@ struct LeaderboardRowCard: View {
         HStack(spacing: 16) {
             // Rank
             Text("\(entry.rank)")
-                .font(.system(.body, weight: .semibold))
+                .font(AppFont.heading(17))
                 .foregroundColor(.primary)
                 .frame(width: 32, alignment: .leading)
             
             // Name
             Text(entry.user_email)
-                .font(.system(.body, weight: .semibold))
+                .font(AppFont.heading(17))
                 .foregroundColor(isCurrentUser ? .red : .primary)
                 .lineLimit(1)
             
@@ -27,7 +27,7 @@ struct LeaderboardRowCard: View {
             
             // Value
             Text(entry.value(for: selectedSort))
-                .font(.system(.body, weight: .semibold))
+                .font(AppFont.heading(17))
                 .foregroundColor(.primary)
         }
     }

@@ -44,7 +44,7 @@ struct SupabaseClientShim {
         let response = try await client
             .from(table)
             .insert(wrappedValues)
-            .select("id, title, description, scans, conversions, region, created_at, updated_at, owner_id")
+            .select("id, title, description, scans, conversions, region, tags, created_at, updated_at, owner_id")
             .single()
             .execute()
         
@@ -153,6 +153,22 @@ struct SupabaseClientShim {
         return session.user.id
     }
     
+    /// Call RPC function with parameters and return raw response data (for map FeatureCollection decoding).
+    func callRPCData(_ function: String, params: [String: Any]) async throws -> Data {
+        print("🔷 [SHIM] CALL RPC \(function)")
+        let encodableParams = params.mapValues { AnyCodable($0) }
+        let response = try await client.rpc(function, params: encodableParams).execute()
+        #if DEBUG
+        let mapRPCs = ["rpc_get_campaign_addresses", "rpc_get_campaign_roads", "rpc_get_campaign_full_features"]
+        if mapRPCs.contains(function) {
+            let raw = String(data: response.data, encoding: .utf8) ?? ""
+            let preview = String(raw.prefix(2048))
+            print("[RPC DEBUG] \(function) raw JSON (first 2KB): \(preview)\(raw.count > 2048 ? "…" : "")")
+        }
+        #endif
+        return response.data
+    }
+    
     /// Call RPC function with parameters and return decoded result
     func callRPC<T: Decodable>(_ function: String, params: [String: Any]) async throws -> T {
         print("🔷 [SHIM] CALL RPC \(function)")
@@ -162,6 +178,15 @@ struct SupabaseClientShim {
         let encodableParams = params.mapValues { AnyCodable($0) }
         
         let response = try await client.rpc(function, params: encodableParams).execute()
+        
+        #if DEBUG
+        let mapRPCs = ["rpc_get_campaign_addresses", "rpc_get_campaign_roads", "rpc_get_campaign_full_features"]
+        if mapRPCs.contains(function) {
+            let raw = String(data: response.data, encoding: .utf8) ?? ""
+            let preview = String(raw.prefix(2048))
+            print("[RPC DEBUG] \(function) raw JSON (first 2KB): \(preview)\(raw.count > 2048 ? "…" : "")")
+        }
+        #endif
         
         // Debug logging to see what's coming back from Supabase
         if function == "fn_addr_nearest_v2" || function == "fn_addr_same_street_v2" {
@@ -325,6 +350,15 @@ public struct AnyCodable: Codable, Equatable, @unchecked Sendable {
             return
         }
         
+        // Handle [String] (e.g. target_building_ids for sessions insert)
+        if let array = value as? [String] {
+            var container = encoder.unkeyedContainer()
+            for item in array {
+                try container.encode(item)
+            }
+            return
+        }
+        
         // Standard encoding for primitive types using single value container
         var container = encoder.singleValueContainer()
         
@@ -336,6 +370,12 @@ public struct AnyCodable: Codable, Equatable, @unchecked Sendable {
             try container.encode(double)
         } else if let string = value as? String {
             try container.encode(string)
+        } else         if let uuid = value as? UUID {
+            try container.encode(uuid.uuidString)
+        } else if let date = value as? Date {
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            try container.encode(formatter.string(from: date))
         } else if value is NSNull {
             try container.encodeNil()
         } else {

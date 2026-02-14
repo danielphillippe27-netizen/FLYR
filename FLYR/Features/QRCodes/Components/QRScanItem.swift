@@ -8,12 +8,12 @@ struct QRScanItem: View {
         HStack {
             VStack(alignment: .leading, spacing: 4) {
                 Text(scan.scannedAt, style: .relative)
-                    .font(.subheadline)
+                    .font(.flyrSubheadline)
                     .foregroundColor(.primary)
                 
                 if let device = scan.deviceInfo {
                     Text(device)
-                        .font(.caption)
+                        .font(.flyrCaption)
                         .foregroundColor(.secondary)
                 }
             }

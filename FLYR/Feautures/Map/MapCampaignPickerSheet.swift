@@ -96,12 +96,12 @@ struct CampaignFarmRow: View {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(title)
-                        .font(.headline)
+                        .font(.flyrHeadline)
                         .foregroundColor(isSelected ? .white : .primary)
                     
                     if let subtitle = subtitle {
                         Text(subtitle)
-                            .font(.caption)
+                            .font(.flyrCaption)
                             .foregroundColor(isSelected ? .white.opacity(0.8) : .secondary)
                     }
                 }

@@ -25,7 +25,6 @@ struct QRExportOptionsSheet: View {
     // Advanced options
     @State private var filenameMode: FilenameMode = .address
     @State private var includeMetadata = false
-    @State private var exportVariantsSeparately = false
     
     // Export state
     @State private var isExporting = false
@@ -85,11 +84,11 @@ struct QRExportOptionsSheet: View {
                             .frame(width: 200)
                         
                         Text("Exporting...")
-                            .font(.headline)
+                            .font(.flyrHeadline)
                             .foregroundStyle(.secondary)
                         
                         Text("\(Int(exportProgress * 100))%")
-                            .font(.title2)
+                            .font(.flyrTitle2)
                             .fontWeight(.semibold)
                     }
                     .padding()
@@ -101,7 +100,7 @@ struct QRExportOptionsSheet: View {
                             .foregroundColor(.green)
                         
                         Text("Export Complete")
-                            .font(.title2)
+                            .font(.flyrTitle2)
                             .fontWeight(.semibold)
                         
                         Button("Share") {
@@ -127,7 +126,7 @@ struct QRExportOptionsSheet: View {
                                     .font(.system(size: 28, weight: .bold))
                                 
                                 Text(qrSetName)
-                                    .font(.subheadline)
+                                    .font(.flyrSubheadline)
                                     .foregroundStyle(.secondary)
                             }
                             .padding(.top, 8)
@@ -207,12 +206,12 @@ struct QRExportOptionsSheet: View {
     private var thermalExportOptions: some View {
         VStack(alignment: .leading, spacing: 20) {
             Text("Thermal Printing")
-                .font(.headline)
+                .font(.flyrHeadline)
             
             // Label size selector
             VStack(alignment: .leading, spacing: 12) {
                 Text("Label Size")
-                    .font(.subheadline)
+                    .font(.flyrSubheadline)
                     .foregroundStyle(.secondary)
                 
                 Picker("Label Size", selection: $selectedThermalSize) {
@@ -235,7 +234,7 @@ struct QRExportOptionsSheet: View {
                 Image(systemName: "info.circle")
                     .foregroundColor(.secondary)
                 Text("Compatible with Munbyn and other thermal printers")
-                    .font(.caption)
+                    .font(.flyrCaption)
                     .foregroundColor(.secondary)
             }
         }
@@ -249,7 +248,7 @@ struct QRExportOptionsSheet: View {
     private var standardExportOptions: some View {
         VStack(alignment: .leading, spacing: 20) {
             Text("Standard Exports")
-                .font(.headline)
+                .font(.flyrHeadline)
             
             VStack(spacing: 12) {
                 ForEach(StandardExport.allCases, id: \.self) { export in
@@ -300,12 +299,12 @@ struct QRExportOptionsSheet: View {
     private var advancedExportOptions: some View {
         VStack(alignment: .leading, spacing: 20) {
             Text("Advanced Options")
-                .font(.headline)
+                .font(.flyrHeadline)
             
             // Filename mode
             VStack(alignment: .leading, spacing: 12) {
                 Text("Filename Mode")
-                    .font(.subheadline)
+                    .font(.flyrSubheadline)
                     .foregroundStyle(.secondary)
                 
                 Picker("Filename Mode", selection: $filenameMode) {
@@ -318,10 +317,6 @@ struct QRExportOptionsSheet: View {
             
             // Include metadata toggle
             Toggle("Include Address Metadata", isOn: $includeMetadata)
-                .toggleStyle(SwitchToggleStyle(tint: .accent))
-            
-            // Export variants separately
-            Toggle("Export A/B Variants Separately", isOn: $exportVariantsSeparately)
                 .toggleStyle(SwitchToggleStyle(tint: .accent))
         }
         .padding()

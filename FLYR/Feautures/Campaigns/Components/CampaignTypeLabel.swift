@@ -46,7 +46,7 @@ struct CampaignTypeLabel: View {
         switch type {
         case .flyer: return .green
         case .doorKnock: return .blue
-        case .event: return .orange
+        case .event: return .flyrPrimary
         case .survey: return .purple
         case .gift: return .pink
         case .popBy: return .cyan

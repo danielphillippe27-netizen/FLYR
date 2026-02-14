@@ -170,7 +170,7 @@ struct FarmSummaryCard: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Text(farm.name)
-                    .font(.title2.weight(.bold))
+                    .font(.flyrTitle2Bold)
                 
                 Spacer()
                 
@@ -178,7 +178,7 @@ struct FarmSummaryCard: View {
             }
             
             Text("\(farm.startDate, formatter: dateFormatter) - \(farm.endDate, formatter: dateFormatter)")
-                .font(.subheadline)
+                .font(.flyrSubheadline)
                 .foregroundStyle(.secondary)
             
             HStack {
@@ -186,7 +186,7 @@ struct FarmSummaryCard: View {
                 Spacer()
                 Label("\(Int(farm.progress * 100))% complete", systemImage: "chart.pie")
             }
-            .font(.subheadline)
+            .font(.flyrSubheadline)
             .foregroundStyle(.secondary)
             
             ProgressView(value: farm.progress)
@@ -211,7 +211,7 @@ struct SectionHeader: View {
             Image(systemName: icon)
                 .foregroundColor(.secondary)
             Text(title)
-                .font(.headline)
+                .font(.flyrHeadline)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -236,10 +236,10 @@ struct TouchRowView: View {
             
             VStack(alignment: .leading, spacing: 4) {
                 Text(touch.title)
-                    .font(.subheadline.weight(.medium))
+                    .font(.flyrSubheadline)
                 
                 Text(touch.date, formatter: dateFormatter)
-                    .font(.caption)
+                    .font(.flyrCaption)
                     .foregroundStyle(.secondary)
             }
             
@@ -261,7 +261,7 @@ struct TouchRowView: View {
         switch type {
         case .flyer: return .blue
         case .doorKnock: return .green
-        case .event: return .orange
+        case .event: return .flyrPrimary
         case .newsletter: return .purple
         case .ad: return .yellow
         case .custom: return .gray
@@ -277,10 +277,10 @@ struct PhaseCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(phase.phaseName)
-                .font(.headline)
+                .font(.flyrHeadline)
             
             Text("\(phase.startDate, style: .date) - \(phase.endDate, style: .date)")
-                .font(.caption)
+                .font(.flyrCaption)
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -304,10 +304,10 @@ struct LeadRowView: View {
             
             VStack(alignment: .leading, spacing: 4) {
                 Text(lead.name ?? "Unknown")
-                    .font(.subheadline.weight(.medium))
+                    .font(.flyrSubheadline)
                 
                 Text(lead.leadSource.displayName)
-                    .font(.caption)
+                    .font(.flyrCaption)
                     .foregroundStyle(.secondary)
             }
             
@@ -332,11 +332,11 @@ struct RecommendationCard: View {
                 Image(systemName: "lightbulb.fill")
                     .foregroundColor(.yellow)
                 Text(recommendation.title)
-                    .font(.headline)
+                    .font(.flyrHeadline)
             }
             
             Text(recommendation.detail)
-                .font(.subheadline)
+                .font(.flyrSubheadline)
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -362,10 +362,10 @@ struct FarmMapPreview: View {
             .overlay {
                 VStack {
                     Image(systemName: "map")
-                        .font(.largeTitle)
+                        .font(.flyrLargeTitle)
                         .foregroundStyle(.secondary)
                     Text("Tap to view full map")
-                        .font(.caption)
+                        .font(.flyrCaption)
                         .foregroundStyle(.secondary)
                 }
             }

@@ -4,89 +4,76 @@ import Combine
 
 // MARK: - Address Service
 
-/// Pro-mode address service: ODA first, Mapbox fallback
+/// Address service: backend (Lambda/S3) primary, Mapbox fallback.
 @MainActor
 final class AddressService: ObservableObject {
-    static let shared = AddressService(oda: ODAProvider(), mapbox: MapboxProvider())
-    
-    private let oda: AddressProvider
+    static let shared = AddressService(overture: OvertureAddressProvider(), mapbox: MapboxProvider())
+
+    private let overture: AddressProvider
     private let mapbox: AddressProvider
     private let geoAdapter = GeoStreetAdapter()
-    
+
     @Published var isLoading = false
     @Published var error: String?
     @Published var results: [AddressCandidate] = []
-    @Published var source: AddressSource = .oda // Track which source was used
-    
+    @Published var source: AddressSource = .overture
+
     enum AddressSource {
-        case oda
+        case overture  // Backend Lambda/S3 (generate-address-list)
         case mapbox
         case hybrid
     }
-    
-    init(oda: AddressProvider, mapbox: AddressProvider) {
-        self.oda = oda
+
+    init(overture: AddressProvider, mapbox: AddressProvider) {
+        self.overture = overture
         self.mapbox = mapbox
     }
-    
-    /// Find nearest addresses: DB first with instant fallback
-    func fetchNearest(center: CLLocationCoordinate2D, target: Int) async throws -> [AddressCandidate] {
-        print("🔍 [ADDRESS SERVICE] Finding \(target) nearest addresses to \(center)")
-        
+
+    /// Find nearest addresses: backend (generate-address-list) first when campaignId present, else Mapbox fallback
+    func fetchNearest(center: CLLocationCoordinate2D, target: Int, campaignId: UUID? = nil) async throws -> [AddressCandidate] {
+        print("🔍 [ADDRESS SERVICE] Finding \(target) nearest addresses to \(center) (strategy: backend when campaignId set, else Mapbox fallback)")
+
         isLoading = true
         error = nil
         results = []
-        source = .oda
-        
+        source = .overture
+
         defer { isLoading = false }
-        
+
         var seen = Set<String>()
         var out: [AddressCandidate] = []
-        
-        // Always attempt DB first with short timeout
+
         do {
+            print("🔍 [ADDRESS SERVICE] Trying address backend...")
             let startTime = Date()
-            let odaResults = try await oda.tryDBOnce(center: center, limit: target * 2)
+            let overtureResults = try await overture.tryDBOnce(center: center, limit: target * 2, timeoutMs: 1200, campaignId: campaignId)
             let latency = Int(Date().timeIntervalSince(startTime) * 1000)
-            
-            // Update health to healthy after successful DB call
-            await AddressServiceHealth.shared.probe(lat: center.latitude, lon: center.longitude, ignoreTTL: true)
-            
-            print("✅ [DB] ODA/Durham returned \(odaResults.count) addresses in \(latency)ms")
-            
-            for candidate in odaResults {
+            print("✅ [ADDRESS SERVICE] Backend returned \(overtureResults.count) addresses in \(latency)ms")
+
+            for candidate in overtureResults {
                 if seen.insert(candidate.houseKey).inserted {
                     out.append(candidate)
                     if out.count >= target {
-                        print("✅ [DB] ODA/Durham provided enough addresses (\(out.count))")
                         results = out
-                        source = .oda
+                        source = .overture
+                        print("✅ [ADDRESS SERVICE] Final result: \(out.count) addresses (source: overture)")
                         return out
                     }
                 }
             }
         } catch {
-            // Update health to unhealthy after failed DB call
-            await AddressServiceHealth.shared.probe(lat: center.latitude, lon: center.longitude, ignoreTTL: true)
-            print("⚠️ [DB] ODA/Durham failed: \(error.localizedDescription)")
+            print("⚠️ [ADDRESS SERVICE] Address backend failed: \(error.localizedDescription)")
         }
-        
-        // Phase 2: Fill gaps with Mapbox
+
         if out.count < target {
-            print("🗺️ [FALLBACK] Using Mapbox API (confidence: 0.70)")
-            print("🗺️ [FALLBACK] Filling gaps with Mapbox (need \(target - out.count) more)")
+            print("🗺️ [FALLBACK] Using Mapbox (need \(target - out.count) more)")
             source = out.isEmpty ? .mapbox : .hybrid
-            
             do {
-                let mapboxResults = try await mapbox.nearest(center: center, limit: max(target, target * 2))
-                print("🗺️ [ADDRESS SERVICE] Mapbox returned \(mapboxResults.count) addresses")
-                
+                let mapboxResults = try await mapbox.nearest(center: center, limit: max(target, target * 2), campaignId: nil)
                 for candidate in mapboxResults {
                     if seen.insert(candidate.houseKey).inserted {
                         out.append(candidate)
-                        if out.count >= target {
-                            break
-                        }
+                        if out.count >= target { break }
                     }
                 }
             } catch {
@@ -95,93 +82,67 @@ final class AddressService: ObservableObject {
                 throw error
             }
         }
-        
-        // Determine final source for logging
-        let finalSource: String
-        if out.isEmpty {
-            finalSource = "none"
-        } else if out.allSatisfy({ $0.source == "oda" }) {
-            finalSource = "oda"
-        } else if out.allSatisfy({ $0.source == "mapbox" }) {
-            finalSource = "mapbox"
-        } else {
-            finalSource = "hybrid"
-        }
-        
+
+        let finalSource: String = out.isEmpty ? "none" : (out.allSatisfy { $0.source == "overture" } ? "overture" : (out.allSatisfy { $0.source == "mapbox" } ? "mapbox" : "hybrid"))
         print("✅ [ADDRESS SERVICE] Final result: \(out.count) addresses (source: \(finalSource))")
         results = out
         return out
     }
-    
-    /// Find addresses on same street with automatic street detection: ODA first, Mapbox fallback
+
+    /// Find addresses on same street with automatic street detection
     func fetchSameStreet(seed: CLLocationCoordinate2D, target: Int) async throws -> [AddressCandidate] {
         print("🔍 [ADDRESS SERVICE] Finding \(target) addresses on same street (auto-detect) for \(seed)")
-        
-        // Use GeoStreetAdapter to get street and locality
+
         let (street, locality) = try await geoAdapter.reverseSeedStreet(at: seed)
         print("🔍 [ADDRESS SERVICE] Detected street: '\(street)', locality: '\(locality ?? "none")'")
-        
+
         return try await fetchSameStreet(seed: seed, street: street, locality: locality, target: target)
     }
-    
-    /// Find addresses on same street: DB first with instant fallback
+
+    /// Find addresses on same street: backend first, Mapbox fallback
     func fetchSameStreet(seed: CLLocationCoordinate2D, street: String, locality: String?, target: Int) async throws -> [AddressCandidate] {
         print("🔍 [ADDRESS SERVICE] Finding \(target) addresses on street '\(street)' in locality '\(locality ?? "any")'")
-        
+
         isLoading = true
         error = nil
         results = []
-        source = .oda
-        
+        source = .overture
+
         defer { isLoading = false }
-        
+
         var seen = Set<String>()
         var out: [AddressCandidate] = []
-        
-        // Always attempt DB first with short timeout
+
         do {
             let startTime = Date()
-            let odaResults = try await oda.sameStreet(seed: seed, street: street, locality: locality, limit: target * 3)
+            let overtureResults = try await overture.sameStreet(seed: seed, street: street, locality: locality, limit: target * 3)
             let latency = Int(Date().timeIntervalSince(startTime) * 1000)
-            
-            // Update health to healthy after successful DB call
-            await AddressServiceHealth.shared.probe(lat: seed.latitude, lon: seed.longitude, ignoreTTL: true)
-            
-            print("✅ [DB] ODA/Durham returned \(odaResults.count) addresses on street in \(latency)ms")
-            
-            for candidate in odaResults {
+            print("✅ [ADDRESS SERVICE] Backend returned \(overtureResults.count) on street in \(latency)ms")
+
+            for candidate in overtureResults {
                 if seen.insert(candidate.houseKey).inserted {
                     out.append(candidate)
                     if out.count >= target {
-                        print("✅ [DB] ODA/Durham provided enough addresses on street (\(out.count))")
                         results = out
-                        source = .oda
+                        source = .overture
+                        print("✅ [ADDRESS SERVICE] Final street result: \(out.count) addresses (source: overture)")
                         return out
                     }
                 }
             }
         } catch {
-            // Update health to unhealthy after failed DB call
-            await AddressServiceHealth.shared.probe(lat: seed.latitude, lon: seed.longitude, ignoreTTL: true)
-            print("⚠️ [DB] ODA/Durham street search failed: \(error.localizedDescription)")
+            print("⚠️ [ADDRESS SERVICE] Backend street search failed: \(error.localizedDescription)")
         }
-        
-        // Phase 2: Fill gaps with Mapbox
+
         if out.count < target {
-            print("🗺️ [FALLBACK] Using Mapbox API for street search (confidence: 0.70)")
-            print("🗺️ [FALLBACK] Filling street gaps with Mapbox (need \(target - out.count) more)")
+            print("🗺️ [FALLBACK] Using Mapbox for street (need \(target - out.count) more)")
             source = out.isEmpty ? .mapbox : .hybrid
-            
             do {
                 let mapboxResults = try await mapbox.sameStreet(seed: seed, street: street, locality: locality, limit: max(target, target * 2))
-                print("🗺️ [ADDRESS SERVICE] Mapbox returned \(mapboxResults.count) addresses on street")
-                
                 for candidate in mapboxResults {
                     if seen.insert(candidate.houseKey).inserted {
                         out.append(candidate)
-                        if out.count >= target {
-                            break
-                        }
+                        if out.count >= target { break }
                     }
                 }
             } catch {
@@ -190,17 +151,17 @@ final class AddressService: ObservableObject {
                 throw error
             }
         }
-        
+
         print("✅ [ADDRESS SERVICE] Final street result: \(out.count) addresses (source: \(source))")
         results = out
         return out
     }
-    
+
     /// Clear results and reset state
     func clear() {
         results = []
         error = nil
         isLoading = false
-        source = .oda
+        source = .overture
     }
 }

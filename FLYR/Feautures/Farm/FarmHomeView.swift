@@ -100,7 +100,7 @@ struct FarmPlaceholderEmptyStateSection: View {
                 Text("No Farms Yet")
                     .font(.title3.weight(.semibold))
                 Text("Create a farm plan to repeatedly work an area.")
-                    .font(.footnote)
+                    .font(.flyrFootnote)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
             }
@@ -131,7 +131,7 @@ struct FarmHomeRowView: View {
             // Header: Name and Badge
             HStack {
                 Text(farm.name)
-                    .font(.system(.title3, weight: .semibold))
+                    .font(.flyrTitle3)
                     .foregroundColor(.text)
                     .lineLimit(2)
                 
@@ -142,20 +142,20 @@ struct FarmHomeRowView: View {
             
             // Created date
             Text("Created \(farm.createdAt, formatter: dateFormatter)")
-                .font(.subheadline)
+                .font(.flyrSubheadline)
                 .foregroundStyle(.secondary)
             
             // Progress section
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
                     Text("Progress")
-                        .font(.subheadline)
+                        .font(.flyrSubheadline)
                         .foregroundStyle(.secondary)
                     
                     Spacer()
                     
                     Text("\(progressPercentage)%")
-                        .font(.subheadline)
+                        .font(.flyrSubheadline)
                         .foregroundColor(.text)
                 }
                 
@@ -166,18 +166,18 @@ struct FarmHomeRowView: View {
             // Stats row
             HStack {
                 Label("\(farm.addressCount) addresses", systemImage: "paperplane")
-                    .font(.subheadline)
+                    .font(.flyrSubheadline)
                     .foregroundColor(.text)
                 
                 Spacer()
                 
                 if let areaLabel = farm.areaLabel {
                     Text(areaLabel)
-                        .font(.subheadline)
+                        .font(.flyrSubheadline)
                         .foregroundStyle(.secondary)
                 } else {
                     Text("Every \(farm.frequencyDays) days")
-                        .font(.subheadline)
+                        .font(.flyrSubheadline)
                         .foregroundStyle(.secondary)
                 }
             }

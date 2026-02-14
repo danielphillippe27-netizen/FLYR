@@ -4,13 +4,13 @@ struct ContactsView: View {
     var body: some View {
         VStack(spacing: 16) {
             Image(systemName: "person.2.fill")
-                .font(.largeTitle)
+                .font(.flyrLargeTitle)
                 .foregroundColor(.gray)
             Text("Contacts")
-                .font(.title2)
+                .font(.flyrTitle2)
                 .fontWeight(.semibold)
             Text("Contact management coming soon")
-                .font(.subheadline)
+                .font(.flyrSubheadline)
                 .foregroundColor(.secondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

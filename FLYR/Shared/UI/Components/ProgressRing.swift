@@ -88,7 +88,7 @@ extension ProgressRing where Content == Text {
     ) {
         self.init(progress: progress, size: size, strokeWidth: strokeWidth) {
             Text(text)
-                .font(.system(size: size * 0.25, weight: .semibold))
+                .font(.flyrSystem(size: size * 0.25, weight: .semibold))
                 .foregroundColor(.text)
         }
     }
@@ -118,18 +118,18 @@ extension View {
             
             ProgressRing(progress: 0.5, size: 80, strokeWidth: 8) {
                 Image(systemName: "checkmark")
-                    .font(.title2)
+                    .font(.flyrTitle2)
                     .foregroundColor(.success)
             }
             
             ProgressRing(progress: 0.25, size: 100, strokeWidth: 10) {
                 VStack(spacing: 4) {
                     Text("1,234")
-                        .font(.title3)
+                        .font(.flyrTitle3)
                         .fontWeight(.semibold)
                         .foregroundColor(.text)
                     Text("Scans")
-                        .font(.caption)
+                        .font(.flyrCaption)
                         .foregroundColor(.muted)
                 }
             }

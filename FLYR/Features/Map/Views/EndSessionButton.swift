@@ -6,7 +6,7 @@ struct EndSessionButton: View {
             SessionManager.shared.stop()
         }) {
             Text("End Session")
-                .font(.headline)
+                .font(.flyrHeadline)
                 .foregroundColor(.white)
                 .padding(.horizontal, 24)
                 .padding(.vertical, 14)

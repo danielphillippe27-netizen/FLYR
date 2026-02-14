@@ -41,12 +41,12 @@ struct AddressSearchField: View {
                   .foregroundStyle(.secondary)
                 VStack(alignment: .leading, spacing: 2) {
                   Text(s.title)
-                    .font(.subheadline.weight(.medium))
+                    .font(.flyrSubheadline)
                     .foregroundStyle(.primary)
                     .lineLimit(1)
                   if let sub = s.subtitle {
                     Text(sub)
-                      .font(.footnote)
+                      .font(.flyrFootnote)
                       .foregroundStyle(.secondary)
                       .lineLimit(1)
                   }

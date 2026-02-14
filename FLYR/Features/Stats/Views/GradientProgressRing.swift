@@ -103,7 +103,7 @@ extension GradientProgressRing where Content == Text {
     ) {
         self.init(progress: progress, size: size, strokeWidth: strokeWidth) {
             Text(text)
-                .font(.system(size: size * 0.2, weight: .semibold))
+                .font(.flyrSystem(size: size * 0.2, weight: .semibold))
                 .foregroundColor(.text)
         }
     }
@@ -118,11 +118,11 @@ extension GradientProgressRing where Content == Text {
         GradientProgressRing(progress: 0.3, size: 80, strokeWidth: 8) {
             VStack(spacing: 4) {
                 Text("17")
-                    .font(.title2)
+                    .font(.flyrTitle2)
                     .fontWeight(.bold)
                     .foregroundColor(.text)
                 Text("conversations")
-                    .font(.caption)
+                    .font(.flyrCaption)
                     .foregroundColor(.muted)
             }
         }

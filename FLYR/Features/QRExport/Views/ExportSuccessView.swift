@@ -22,7 +22,7 @@ struct ExportSuccessView: View {
                         .font(.system(size: 24, weight: .bold))
                     
                     Text("\(exportResult.addressCount) QR codes exported")
-                        .font(.subheadline)
+                        .font(.flyrSubheadline)
                         .foregroundStyle(.secondary)
                 }
                 .padding(.top)
@@ -30,7 +30,7 @@ struct ExportSuccessView: View {
                 // File URLs
                 VStack(alignment: .leading, spacing: 16) {
                     Text("Generated Files")
-                        .font(.headline)
+                        .font(.flyrHeadline)
                         .padding(.horizontal)
                     
                     if let pdfGridURL = exportResult.pdfGridURL {

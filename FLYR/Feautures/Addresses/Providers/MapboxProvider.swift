@@ -9,7 +9,7 @@ public struct MapboxProvider: AddressProvider {
     
     public init() {}
     
-    public func nearest(center: CLLocationCoordinate2D, limit: Int) async throws -> [AddressCandidate] {
+    public func nearest(center: CLLocationCoordinate2D, limit: Int, campaignId: UUID? = nil) async throws -> [AddressCandidate] {
         print("🗺️ [MAPBOX] Finding \(limit) nearest addresses to \(center)")
         
         // Use the expanded search with progressive street-unlock

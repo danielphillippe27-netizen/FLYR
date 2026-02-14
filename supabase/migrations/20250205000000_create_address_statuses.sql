@@ -1,6 +1,10 @@
 -- Migration: Create address_statuses table
 -- This table stores visit/door status for campaign addresses, keyed by address_id + campaign_id
 -- Supports the architecture: Supabase = logical state, Mapbox = geometry + coloring
+-- Table has id UUID PRIMARY KEY; iOS client supports address_id as fallback for id when decoding.
+
+-- Drop existing view if it exists
+DROP VIEW IF EXISTS public.address_statuses CASCADE;
 
 -- Create address_statuses table
 CREATE TABLE IF NOT EXISTS public.address_statuses (

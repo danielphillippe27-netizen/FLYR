@@ -2,21 +2,13 @@ import SwiftUI
 
 enum MetricType: String, CaseIterable {
     case flyers = "flyers"
-    case leads = "leads"
     case conversations = "conversations"
-    case appointments = "appointments"
-    case deals = "deals"
-    case doorknocks = "doorknocks"
     case distance = "distance"
     
     var displayName: String {
         switch self {
         case .flyers: return "Flyers"
-        case .leads: return "Leads"
-        case .conversations: return "Conversations"
-        case .appointments: return "Appointments"
-        case .deals: return "Deals"
-        case .doorknocks: return "Doorknocks"
+        case .conversations: return "Convo's"
         case .distance: return "Distance"
         }
     }

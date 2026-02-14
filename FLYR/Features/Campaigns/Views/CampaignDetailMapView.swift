@@ -38,7 +38,7 @@ struct CampaignDetailMapView: View {
             // Campaign header
             VStack(alignment: .leading, spacing: 8) {
                 Text(campaign.name)
-                    .font(.title2)
+                    .font(.flyrTitle2)
                     .fontWeight(.bold)
                 
                 Text("Type: \(campaign.type.rawValue)")
@@ -46,7 +46,7 @@ struct CampaignDetailMapView: View {
                     .foregroundColor(.secondary)
                 
                 Text("\(addresses.count) addresses")
-                    .font(.caption)
+                    .font(.flyrCaption)
                     .foregroundColor(.secondary)
             }
             .padding()
@@ -95,18 +95,18 @@ struct CampaignDetailMapView: View {
                     ProgressView()
                         .scaleEffect(0.8)
                     Text("Loading building polygons...")
-                        .font(.caption)
+                        .font(.flyrCaption)
                         .foregroundColor(.secondary)
                 }
                 .padding()
             } else if let error = buildings.error {
                 Text("Error: \(error)")
-                    .font(.caption)
+                    .font(.flyrCaption)
                     .foregroundColor(.red)
                     .padding()
             } else if let featureCollection = buildings.featureCollection {
                 Text("\(featureCollection.features.count) building polygons loaded")
-                    .font(.caption)
+                    .font(.flyrCaption)
                     .foregroundColor(.green)
                     .padding()
             }

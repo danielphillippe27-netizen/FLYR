@@ -7,10 +7,9 @@ with ranked as (
       partition by norm_key
       order by confidence desc,
                (case when source='durham_open' then 1
-                     when source='oda'         then 2
-                     when source='osm'         then 3
-                     when source='user'        then 4
-                     when source='fallback'    then 5
+                     when source='osm'         then 2
+                     when source='user'        then 3
+                     when source='fallback'    then 4
                      else 9 end),
                (case when geom is not null then 1 else 2 end),
                updated_at desc

@@ -10,7 +10,7 @@ struct AddressFilter: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Filter by Address")
-                .font(.headline)
+                .font(.flyrHeadline)
                 .padding(.horizontal)
             
             ScrollView(.horizontal, showsIndicators: false) {
@@ -19,7 +19,7 @@ struct AddressFilter: View {
                         onSelectAll()
                     } label: {
                         Text("All Addresses")
-                            .font(.subheadline)
+                            .font(.flyrSubheadline)
                             .foregroundStyle(selectedId == nil ? .white : .primary)
                             .padding()
                             .background(selectedId == nil ? Color.accent : Color(.systemGray6))
@@ -32,7 +32,7 @@ struct AddressFilter: View {
                             onSelectAddress(address.id)
                         } label: {
                             Text(address.formatted)
-                                .font(.caption)
+                                .font(.flyrCaption)
                                 .foregroundStyle(selectedId == address.id ? .white : .primary)
                                 .padding()
                                 .background(selectedId == address.id ? Color.accent : Color(.systemGray6))

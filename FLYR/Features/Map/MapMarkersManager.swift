@@ -16,25 +16,28 @@ final class MapMarkersManager {
     private init() {}
     
     /// Add campaign markers to the map
-    func addCampaignMarkers(campaigns: [CampaignMarker], to mapView: MapView) {
+    /// - Parameters:
+    ///   - campaigns: Campaign markers to display
+    ///   - mapView: Map view to add markers to
+    ///   - selectedCampaignId: If set, the matching marker is styled larger (selected state)
+    func addCampaignMarkers(campaigns: [CampaignMarker], to mapView: MapView, selectedCampaignId: UUID? = nil) {
         guard let map = mapView.mapboxMap else { return }
-        
-        // Wait for map to load
+
         if !map.isStyleLoaded {
             map.onMapLoaded.observeNext { [weak self] _ in
                 Task { @MainActor in
-                    await self?.addCampaignMarkersInternal(campaigns: campaigns, to: mapView)
+                    await self?.addCampaignMarkersInternal(campaigns: campaigns, to: mapView, selectedCampaignId: selectedCampaignId)
                 }
             }
             return
         }
-        
+
         Task {
-            await addCampaignMarkersInternal(campaigns: campaigns, to: mapView)
+            await addCampaignMarkersInternal(campaigns: campaigns, to: mapView, selectedCampaignId: selectedCampaignId)
         }
     }
-    
-    private func addCampaignMarkersInternal(campaigns: [CampaignMarker], to mapView: MapView) async {
+
+    private func addCampaignMarkersInternal(campaigns: [CampaignMarker], to mapView: MapView, selectedCampaignId: UUID? = nil) async {
         guard let map = mapView.mapboxMap else { return }
         
         // Create features from campaign markers
@@ -68,31 +71,44 @@ final class MapMarkersManager {
             source.data = .featureCollection(featureCollection)
             try map.addSource(source)
             
-            // Add circle layer for target-like appearance (outer circle)
+            // Add circle layer for target-like appearance (outer circle). Selected pin uses data-driven radius.
             var circleLayer = CircleLayer(id: campaignLayerId, source: campaignSourceId)
-            circleLayer.circleRadius = .constant(8)
+            circleLayer.circleRadius = .expression(
+                Exp(.match) {
+                    Exp(.get) { "id" }
+                    selectedCampaignId?.uuidString ?? ""
+                    12
+                    8
+                }
+            )
             circleLayer.circleColor = .constant(StyleColor(.systemRed))
             circleLayer.circleStrokeColor = .constant(StyleColor(.white))
             circleLayer.circleStrokeWidth = .constant(2)
             circleLayer.circleOpacity = .constant(0.8)
             try map.addLayer(circleLayer)
-            
-            // Add inner circle for target appearance
+
             let innerLayerId = "\(campaignLayerId)-inner"
             var innerLayer = CircleLayer(id: innerLayerId, source: campaignSourceId)
-            innerLayer.circleRadius = .constant(4)
+            innerLayer.circleRadius = .expression(
+                Exp(.match) {
+                    Exp(.get) { "id" }
+                    selectedCampaignId?.uuidString ?? ""
+                    6
+                    4
+                }
+            )
             innerLayer.circleColor = .constant(StyleColor(.systemRed))
             innerLayer.circleOpacity = .constant(1.0)
             try map.addLayer(innerLayer, layerPosition: .above(campaignLayerId))
-            
-            // Add text label layer
+
+            // Text label: larger size, white text with dark halo for readability
             let textLayerId = "\(campaignLayerId)-text"
             var textLayer = SymbolLayer(id: textLayerId, source: campaignSourceId)
             textLayer.textField = .expression(Exp(.get) { "name" })
-            textLayer.textSize = .constant(12)
-            textLayer.textColor = .constant(StyleColor(.label))
-            textLayer.textHaloColor = .constant(StyleColor(.systemBackground))
-            textLayer.textHaloWidth = .constant(1)
+            textLayer.textSize = .constant(15)
+            textLayer.textColor = .constant(StyleColor(.white))
+            textLayer.textHaloColor = .constant(StyleColor(.black))
+            textLayer.textHaloWidth = .constant(1.5)
             textLayer.textAnchor = .constant(.top)
             textLayer.textOffset = .constant([0, 2])
             textLayer.textOptional = .constant(true)

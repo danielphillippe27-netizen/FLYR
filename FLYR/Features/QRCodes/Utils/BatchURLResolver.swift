@@ -16,13 +16,6 @@ public struct BatchURLResolver {
         let baseURL: String
         
         switch batch.qrType {
-        case .landingPage:
-            guard let landingPageId = batch.landingPageId else {
-                // Fallback if landing page ID is missing
-                return "https://flyr.app"
-            }
-            baseURL = "https://flyr.app/l/\(landingPageId.uuidString)"
-            
         case .map:
             baseURL = "https://flyr.app/map/\(batch.id.uuidString)"
             

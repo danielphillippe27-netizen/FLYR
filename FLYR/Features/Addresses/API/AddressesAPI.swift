@@ -65,29 +65,14 @@ final class AddressesAPI {
         }
     }
     
-    /// Fetch building polygons for specific campaign address IDs
-    /// - Parameter addressIds: Array of campaign_addresses.id UUIDs
+    /// Fetch building polygons for specific campaign address IDs or campaign
+    /// - Parameters:
+    ///   - campaignId: Campaign UUID (preferred - queries buildings table)
+    ///   - addressIds: Array of campaign_addresses.id UUIDs (fallback)
     /// - Returns: GeoJSON FeatureCollection with building polygons
-    func fetchBuildingPolygons(addressIds: [UUID]) async throws -> GeoJSONFeatureCollection {
-        guard !addressIds.isEmpty else {
-            return GeoJSONFeatureCollection(features: [])
-        }
-        
-        print("🏠 [ADDRESSES] Fetching building polygons for \(addressIds.count) address IDs")
-        
-        let idStrings = addressIds.map { $0.uuidString }
-        let res = try await client
-            .rpc("get_buildings_by_address_ids", params: ["p_address_ids": idStrings])
-            .execute()
-        
-        do {
-            let featureCollection = try JSONDecoder().decode(GeoJSONFeatureCollection.self, from: res.data)
-            print("✅ [ADDRESSES] Loaded \(featureCollection.features.count) building polygons")
-            return featureCollection
-        } catch {
-            print("❌ [ADDRESSES] Failed to decode FeatureCollection: \(error)")
-            throw error
-        }
+    func fetchBuildingPolygons(campaignId: UUID? = nil, addressIds: [UUID] = []) async throws -> GeoJSONFeatureCollection {
+        // Delegate to BuildingsAPI which has the updated logic
+        return try await BuildingsAPI.shared.fetchBuildingPolygons(campaignId: campaignId, addressIds: addressIds)
     }
     
     /// Check if an address already has a cached building polygon

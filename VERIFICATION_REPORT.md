@@ -3,7 +3,7 @@
 
 **Version:** v2.0  
 **Date:** October 28, 2025  
-**Status:** ✅ IMPLEMENTATION COMPLETE - READY FOR VERIFICATION
+**Status:** ⚠️ **HISTORICAL** – ODA/DB-first logic has been removed. Address lookups now use Mapbox only. This document is kept for reference.
 
 ---
 

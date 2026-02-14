@@ -3,18 +3,33 @@ import SwiftUI
 struct LeaderboardHeaderView: View {
     @Binding var selectedPeriod: TimeRange
     
+    private let accentRed = Color(hex: "#FF4F4F")
+    
     var body: some View {
-        VStack(spacing: 4) {
-            Text("FLYR Global Leaderboard")
-                .font(.system(size: 20, weight: .semibold))
-                .foregroundColor(.text)
-            
-            Text("— \(selectedPeriod.displayName)")
-                .font(.system(size: 14, weight: .regular))
-                .foregroundColor(.muted)
+        HStack {
+            Spacer(minLength: 0)
+            Menu {
+                ForEach(TimeRange.allCases, id: \.rawValue) { range in
+                    Button(range.displayName) {
+                        withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+                            selectedPeriod = range
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Text(selectedPeriod.displayName)
+                        .font(.system(size: 15, weight: .semibold))
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 12, weight: .semibold))
+                }
+                .foregroundColor(accentRed)
+            }
+            .buttonStyle(.plain)
         }
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 12)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
     }
 }
 
@@ -22,10 +37,7 @@ struct LeaderboardHeaderView: View {
     VStack {
         LeaderboardHeaderView(selectedPeriod: .constant(.monthly))
         LeaderboardHeaderView(selectedPeriod: .constant(.weekly))
-        LeaderboardHeaderView(selectedPeriod: .constant(.daily))
-        LeaderboardHeaderView(selectedPeriod: .constant(.allTime))
     }
     .padding()
     .background(Color.bg)
 }
-

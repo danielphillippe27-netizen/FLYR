@@ -18,6 +18,23 @@ struct CampaignAddressRow {
     let lon: Double
 }
 
+/// GeoJSON Polygon for PostGIS territory_boundary (geometry(Polygon, 4326)).
+/// Matches web: { type: "Polygon", coordinates: [[[lng, lat], ...]] }; closed ring, ≥4 points.
+struct GeoJSONPolygon: Codable {
+    let type: String  // "Polygon"
+    let coordinates: [[[Double]]]  // ring(s); first ring = outer boundary; [lng, lat]
+}
+
+/// Payload for campaigns.update(territory_boundary).
+struct TerritoryBoundaryUpdate: Encodable {
+    let territory_boundary: GeoJSONPolygon
+}
+
+/// Payload for campaigns.update(status).
+struct CampaignStatusUpdate: Encodable {
+    let status: String
+}
+
 final class CampaignsAPI {
     static let shared = CampaignsAPI()
     private let client = SupabaseManager.shared.client
@@ -79,7 +96,13 @@ final class CampaignsAPI {
         print("🌐 [API DEBUG] Address source: \(payload.addressSource.rawValue)")
         print("🌐 [API DEBUG] Target count: \(payload.addressTargetCount)")
         print("🌐 [API DEBUG] Seed query: \(payload.seedQuery ?? "nil")")
-        print("🌐 [API DEBUG] Seed coordinates: (\(payload.seedLat ?? 0), \(payload.seedLon ?? 0))")
+        let seedCoordStr: String
+        if let lat = payload.seedLat, let lon = payload.seedLon {
+            seedCoordStr = "(\(lat), \(lon))"
+        } else {
+            seedCoordStr = "nil (e.g. polygon flow uses territory_boundary)"
+        }
+        print("🌐 [API DEBUG] Seed coordinates: \(seedCoordStr)")
         print("🌐 [API DEBUG] Addresses JSON count: \(payload.addressesJSON.count)")
 
         let shim = SupabaseClientShim()
@@ -89,15 +112,22 @@ final class CampaignsAPI {
         print("🌐 [API DEBUG] User ID: \(userId)")
         
         // 2. Insert campaign row into campaigns table
-        let campaignValues: [String: Any] = [
+        let sanitizedRegion = Self.sanitizeRegionForStorage(payload.seedQuery)
+        var campaignValues: [String: Any] = [
             "owner_id": userId.uuidString,
             "title": payload.name,
+            "name": payload.name,
             "description": payload.description,
-            // total_flyers removed - computed automatically from addresses
+            "type": payload.type.rawValue,
+            "address_source": payload.addressSource.rawValue,
+            "status": "draft",
             "scans": 0,
             "conversions": 0,
-            "region": payload.seedQuery as Any
+            "region": sanitizedRegion as Any
         ]
+        if let tags = payload.tags, !tags.trimmingCharacters(in: .whitespaces).isEmpty {
+            campaignValues["tags"] = tags.trimmingCharacters(in: .whitespaces)
+        }
         
         print("🌐 [API DEBUG] Inserting campaign into DB...")
         let dbRow: CampaignDBRow = try await shim.insertReturning("campaigns", values: campaignValues)
@@ -133,6 +163,19 @@ final class CampaignsAPI {
         
         print("✅ [API DEBUG] Campaign creation completed")
         return campaign
+    }
+
+    /// Defensive guard so malformed UI labels never pollute campaigns.region
+    /// (e.g. "Polygon (9 points)" from map drawing UI).
+    private static func sanitizeRegionForStorage(_ value: String?) -> String? {
+        guard let raw = value?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+            return nil
+        }
+        let lower = raw.lowercased()
+        if lower.hasPrefix("polygon (") && lower.hasSuffix(" points)") {
+            return nil
+        }
+        return raw
     }
     
     // Create Campaign V2 (legacy draft method)
@@ -179,9 +222,9 @@ final class CampaignsAPI {
     }
     
     // Fetch Campaigns V2 - REAL SUPABASE INTEGRATION
-    // Now only fetches campaign metadata, NOT addresses (for performance)
+    // Fetches campaign metadata and address counts so list shows correct house count
     func fetchCampaignsV2() async throws -> [CampaignV2] {
-        print("🌐 [API DEBUG] Fetching campaigns V2 from Supabase (metadata only, no addresses)")
+        print("🌐 [API DEBUG] Fetching campaigns V2 from Supabase (metadata + address counts)")
         
         // 1. Fetch campaigns from DB
         let res: PostgrestResponse<[CampaignDBRow]> = try await client
@@ -193,30 +236,49 @@ final class CampaignsAPI {
         let dbRows = res.value
         print("✅ [API DEBUG] Fetched \(dbRows.count) campaigns from DB")
         
-        // 2. Convert each campaign to CampaignV2 WITHOUT fetching addresses
-        // Addresses will be fetched lazily when campaign detail is opened
+        // 2. Fetch address counts per campaign (for house count in list)
+        var addressCountByCampaignId: [UUID: Int] = [:]
+        do {
+            struct CampaignCountRow: Decodable {
+                let campaignId: UUID
+                let addressCount: Int
+                enum CodingKeys: String, CodingKey {
+                    case campaignId = "campaign_id"
+                    case addressCount = "address_count"
+                }
+            }
+            let countRes: PostgrestResponse<[CampaignCountRow]> = try await client
+                .rpc("get_campaign_address_counts")
+                .execute()
+            addressCountByCampaignId = Dictionary(uniqueKeysWithValues: countRes.value.map { ($0.campaignId, $0.addressCount) })
+            print("✅ [API DEBUG] Fetched address counts for \(addressCountByCampaignId.count) campaigns")
+        } catch {
+            print("⚠️ [API DEBUG] Could not fetch address counts (list may show 0): \(error)")
+            // Continue with 0 counts so list still works
+        }
+        
+        // 3. Convert each campaign to CampaignV2 with correct totalFlyers
         var campaigns: [CampaignV2] = []
         for dbRow in dbRows {
-            // Create CampaignV2 with empty addresses array
-            // Addresses and count will be loaded when user opens the campaign detail view
-            // For now, set totalFlyers to 0 - it will be updated when addresses are loaded
+            let totalFlyers = addressCountByCampaignId[dbRow.id] ?? 0
+            let status = dbRow.status ?? .draft
             let campaign = CampaignV2(
                 id: dbRow.id,
                 name: dbRow.title,
                 type: .flyer, // Default - should be stored in DB
                 addressSource: .closestHome, // Default - should be stored in DB
-                addresses: [], // Empty - will be loaded on demand
-                totalFlyers: 0, // Will be set when addresses are loaded
+                addresses: [], // Empty - will be loaded on demand when user opens detail
+                totalFlyers: totalFlyers,
                 scans: dbRow.scans,
                 conversions: dbRow.conversions,
                 createdAt: dbRow.createdAt,
-                status: .draft,
+                status: status,
                 seedQuery: dbRow.region
             )
             campaigns.append(campaign)
         }
         
-        print("✅ [API DEBUG] Converted \(campaigns.count) campaigns to CampaignV2 (addresses will load on demand)")
+        print("✅ [API DEBUG] Converted \(campaigns.count) campaigns to CampaignV2 with house counts")
         return campaigns
     }
     
@@ -290,6 +352,154 @@ final class CampaignsAPI {
             lon: dbRow.geom.coordinate.longitude
         )
     }
+
+    // MARK: - Provision (backend Lambda/S3 → Supabase)
+
+    /// Backend base URL for provision API (e.g. https://flyrpro.app).
+    private static var provisionBaseURL: String {
+        (Bundle.main.object(forInfoDictionaryKey: "FLYR_PRO_API_URL") as? String)?.trimmingCharacters(in: CharacterSet(charactersIn: "/")) ?? "https://flyrpro.app"
+    }
+
+    /// Update campaign's territory boundary (polygon). Backend reads this when provisioning (Lambda/S3 server-side).
+    func updateTerritoryBoundary(campaignId: UUID, polygonGeoJSON: String) async throws {
+        guard let data = polygonGeoJSON.data(using: .utf8) else {
+            throw NSError(domain: "CampaignsAPI", code: 400, userInfo: [NSLocalizedDescriptionKey: "Invalid GeoJSON polygon"])
+        }
+        let decoder = JSONDecoder()
+        let polygon: GeoJSONPolygon
+        do {
+            polygon = try decoder.decode(GeoJSONPolygon.self, from: data)
+        } catch {
+            throw NSError(domain: "CampaignsAPI", code: 400, userInfo: [NSLocalizedDescriptionKey: "Invalid GeoJSON polygon: \(error.localizedDescription)"])
+        }
+        let territoryUpdate = TerritoryBoundaryUpdate(territory_boundary: polygon)
+        _ = try await client
+            .from("campaigns")
+            .update(territoryUpdate)
+            .eq("id", value: campaignId.uuidString)
+            .execute()
+        print("✅ [API] Updated territory_boundary for campaign \(campaignId)")
+    }
+
+    /// Update campaign status (e.g. archive).
+    func updateCampaignStatus(campaignId: UUID, status: CampaignStatus) async throws {
+        let payload = CampaignStatusUpdate(status: status.rawValue)
+        _ = try await client
+            .from("campaigns")
+            .update(payload)
+            .eq("id", value: campaignId.uuidString)
+            .execute()
+        print("✅ [API] Updated campaign \(campaignId) status to \(status.rawValue)")
+    }
+
+    /// Trigger provision: backend reads territory_boundary, calls Lambda/S3, ingests into Supabase. Frontend only calls this API.
+    func provisionCampaign(campaignId: UUID) async throws {
+        let url = URL(string: "\(Self.provisionBaseURL)/api/campaigns/provision")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["campaign_id": campaignId.uuidString])
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw NSError(domain: "CampaignsAPI", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid response"])
+        }
+        guard (200...299).contains(http.statusCode) else {
+            let bodyStr = String(data: data, encoding: .utf8) ?? ""
+            let userMessage = Self.extractMessageFromErrorBody(data)
+            let displayMessage = userMessage ?? bodyStr
+            throw NSError(domain: "CampaignsAPI", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: "Provision failed: \(displayMessage.prefix(300))"])
+        }
+        if let provisionResponse = try? JSONDecoder().decode(ProvisionResponse.self, from: data) {
+            print("✅ [API] Provision completed for campaign \(campaignId): addresses=\(provisionResponse.addressesSaved ?? 0), buildings=\(provisionResponse.buildingsSaved ?? 0), roads=\(provisionResponse.roadsSaved ?? 0)")
+        } else {
+            print("✅ [API] Provision completed for campaign \(campaignId) (response not decoded)")
+        }
+    }
+
+    /// Poll campaign provision state until ready/failed/timeout so UI can gate map routing.
+    func waitForProvisionReady(
+        campaignId: UUID,
+        timeoutSeconds: TimeInterval = 90,
+        pollIntervalSeconds: TimeInterval = 2
+    ) async throws -> CampaignProvisionState {
+        let timeoutNanos = UInt64(timeoutSeconds * 1_000_000_000)
+        let pollNanos = UInt64(max(0.5, pollIntervalSeconds) * 1_000_000_000)
+        let start = Date()
+
+        while Date().timeIntervalSince(start) * 1_000_000_000 < Double(timeoutNanos) {
+            let state = try await fetchProvisionState(campaignId: campaignId)
+            print("🧭 [API] Provision state campaign=\(campaignId) status=\(state.provisionStatus ?? "nil")")
+
+            if state.provisionStatus == "ready" {
+                return state
+            }
+            if state.provisionStatus == "failed" {
+                return state
+            }
+
+            try await Task.sleep(nanoseconds: pollNanos)
+        }
+
+        return try await fetchProvisionState(campaignId: campaignId)
+    }
+
+    private func fetchProvisionState(campaignId: UUID) async throws -> CampaignProvisionState {
+        let res: PostgrestResponse<CampaignProvisionState> = try await client
+            .from("campaigns")
+            .select("id,provision_status,provisioned_at,snapshot_bucket,snapshot_prefix,snapshot_buildings_url,snapshot_roads_url")
+            .eq("id", value: campaignId.uuidString)
+            .single()
+            .execute()
+        return res.value
+    }
+
+    /// Try to extract a "message" (or "error") field from error response JSON for user-facing error.
+    private static func extractMessageFromErrorBody(_ data: Data) -> String? {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        if let msg = json["message"] as? String, !msg.isEmpty { return msg }
+        if let msg = json["error"] as? String, !msg.isEmpty { return msg }
+        return nil
+    }
+}
+
+// MARK: - Provision response (backend contract)
+
+/// Response from POST /api/campaigns/provision (optional decode for logging/UI).
+private struct ProvisionResponse: Codable {
+    let success: Bool?
+    let addressesSaved: Int?
+    let buildingsSaved: Int?
+    let roadsSaved: Int?
+    let message: String?
+
+    enum CodingKeys: String, CodingKey {
+        case success
+        case addressesSaved = "addresses_saved"
+        case buildingsSaved = "buildings_saved"
+        case roadsSaved = "roads_saved"
+        case message
+    }
+}
+
+struct CampaignProvisionState: Codable {
+    let id: UUID
+    let provisionStatus: String?
+    let provisionedAt: Date?
+    let snapshotBucket: String?
+    let snapshotPrefix: String?
+    let snapshotBuildingsURL: String?
+    let snapshotRoadsURL: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case provisionStatus = "provision_status"
+        case provisionedAt = "provisioned_at"
+        case snapshotBucket = "snapshot_bucket"
+        case snapshotPrefix = "snapshot_prefix"
+        case snapshotBuildingsURL = "snapshot_buildings_url"
+        case snapshotRoadsURL = "snapshot_roads_url"
+    }
 }
 
 // MARK: - Campaign V2 API
@@ -358,7 +568,7 @@ final class CampaignsV2APISupabase: CampaignsV2APIType {
             )
         }
         
-        // Convert to CampaignV2
+        // Convert to CampaignV2 (use DB status so store.update doesn't overwrite with draft)
         return CampaignV2(
             id: dbRow.id,
             name: dbRow.title,
@@ -369,7 +579,7 @@ final class CampaignsV2APISupabase: CampaignsV2APIType {
             scans: dbRow.scans,
             conversions: dbRow.conversions,
             createdAt: dbRow.createdAt,
-            status: .draft,
+            status: dbRow.status ?? .draft,
             seedQuery: dbRow.region
         )
     }

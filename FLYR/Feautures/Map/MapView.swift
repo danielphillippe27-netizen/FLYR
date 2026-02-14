@@ -2,179 +2,174 @@ import MapboxMaps
 import SwiftUI
 import CoreLocation
 import Combine
+import UIKit
 
-// Extracted view to reduce compiler complexity
+// Extracted view to reduce compiler complexity (ultra-minimal: search, campaigns, info, optional toast)
 private struct MapContentView: View {
-    @Binding var is3DMode: Bool
-    var mapStyleMode: Binding<MapStyle>
+    @Binding var searchText: String
+    var colorScheme: ColorScheme
     var campaignPolygon: [CLLocationCoordinate2D]?
     var campaignMarkers: [CampaignMarker]
     var farmMarkers: [FarmMarker]
     var selectedCampaignId: UUID?
-    var selectedFarmId: UUID?
-    var onToggle3D: () -> Void
-    var onShowCampaignPicker: () -> Void
-    var onShowSessionStart: () -> Void
-    
+    var selectedCampaignName: String?
+    var campaigns: [CampaignListItem]
+    var isLoadingCampaign: Bool
+    var onMarkerTap: (UUID) -> Void
+    var onClearCampaign: () -> Void
+    var onStartSession: () -> Void
+    var onShowGestureInfo: () -> Void
+    var isLocationDenied: Bool = false
+
     var body: some View {
-        ZStack(alignment: .topTrailing) {
-            // Simple map view wrapper
+        ZStack(alignment: .topLeading) {
+            // Map (full screen)
             SimpleMapViewRepresentable(
-                is3DMode: $is3DMode,
-                mapStyleMode: mapStyleMode,
+                colorScheme: colorScheme,
                 campaignPolygon: campaignPolygon,
                 campaignMarkers: campaignMarkers,
-                farmMarkers: farmMarkers
+                farmMarkers: farmMarkers,
+                selectedCampaignId: selectedCampaignId,
+                onMarkerTap: onMarkerTap
             )
             .ignoresSafeArea()
-            
-            // 3D Toggle, Map Style Toggle, and Campaign Picker Buttons
-            VStack(spacing: 12) {
-                // 3D Toggle Button
-                Button(action: onToggle3D) {
-                    Image(systemName: is3DMode ? "cube.fill" : "cube")
-                        .font(.title2)
-                        .foregroundColor(.white)
-                        .padding(12)
-                        .background(is3DMode ? Color.red : Color.black.opacity(0.6))
-                        .clipShape(Circle())
-                        .shadow(radius: 4)
+
+            // Top: Search, Info, locate
+            VStack(spacing: 8) {
+                HStack(spacing: 10) {
+                    MapSearchBar(
+                        searchText: $searchText,
+                        campaigns: campaigns,
+                        onSelectCampaign: onMarkerTap,
+                        isLoading: isLoadingCampaign
+                    )
+                    .frame(maxWidth: .infinity)
+
+                    // Legend/info button removed – legend hidden from every map per design
                 }
-                
-                // Map Style Toggle Button
-                MapStyleToggleButton(mapStyleMode: mapStyleMode)
-                
-                // Campaign/Farm Picker Button
-                Button(action: onShowCampaignPicker) {
-                    let isSelected = selectedCampaignId != nil || selectedFarmId != nil
-                    Image(systemName: isSelected ? "map.fill" : "map")
-                        .font(.title2)
-                        .foregroundColor(.white)
-                        .padding(12)
-                        .background(isSelected ? Color.red : Color.black.opacity(0.6))
-                        .clipShape(Circle())
-                        .shadow(radius: 4)
-                }
-                
-                Spacer()
-            }
-            .padding(.top, 60)
-            .padding(.trailing, 16)
-            
-            // Start Session Button
-            VStack {
-                Spacer()
-                HStack {
-                    Spacer()
-                    Button(action: onShowSessionStart) {
-                        Text("Start Session")
-                            .font(.headline)
-                            .padding(.horizontal, 20)
-                            .padding(.vertical, 12)
-                            .background(.thinMaterial)
-                            .clipShape(Capsule())
-                            .shadow(radius: 10)
+                .padding(.horizontal, 16)
+                .padding(.top, 16)
+
+                // Pill card: address/campaign name (left), red Start session button (right)
+                if let name = selectedCampaignName, !name.isEmpty {
+                    HStack {
+                        Text(name)
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundColor(.primary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                        Spacer()
+                        Button {
+                            onStartSession()
+                        } label: {
+                            Text("Start session")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 6)
+                                .background(Color.red)
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .padding(.horizontal)
-                    .padding(.bottom, 8)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(.ultraThinMaterial)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                    .padding(.horizontal, 16)
+                    .padding(.top, 8)
                 }
+
+                // Gentle prompt when location permission denied
+                if isLocationDenied {
+                    Text("Location access helps center the map. Enable in Settings if you’d like.")
+                        .font(.system(size: 13))
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .background(.ultraThinMaterial)
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                        .padding(.horizontal, 16)
+                        .padding(.top, 8)
+                }
+
+                Spacer()
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
     }
 }
 
 struct FullScreenMapView: View {
-    @State private var is3DMode = false
+    @Environment(\.colorScheme) private var colorScheme
+    @EnvironmentObject private var uiState: AppUIState
+
     @State private var showCampaignPicker = false
     @State private var selectedCampaignId: UUID?
     @State private var selectedFarmId: UUID?
     @State private var campaignPolygon: [CLLocationCoordinate2D]? = nil
+    @State private var mapSearchText = ""
+    @State private var showGestureInfoSheet = false
     @StateObject private var viewModel = MapCampaignPickerViewModel()
     @ObservedObject private var sessionManager = SessionManager.shared
-    
-    @State private var showSessionStartSheet = false
+
     @State private var showSessionSummary = false
     @State private var sessionSummaryData: SessionSummaryData?
-    
+
+    @State private var showSessionStartSheet = false
+    @State private var sessionStartPreselectedCampaign: CampaignV2?
+    @State private var isPreparingSessionStart = false
+
     @StateObject private var locationManager = LocationManager()
     @State private var hasCenteredOnLocation = false
-    
+
     @State private var campaignMarkers: [CampaignMarker] = []
     @State private var farmMarkers: [FarmMarker] = []
-    
-    @AppStorage("mapStyleMode") private var mapStyleModeRaw: String = MapStyle.standard.rawValue
-    
-    var mapStyleMode: MapStyle {
-        get { MapStyle(rawValue: mapStyleModeRaw) ?? .standard }
-        set { mapStyleModeRaw = newValue.rawValue }
+    @State private var isLoadingSelectedCampaign = false
+
+    private var selectedCampaignName: String? {
+        guard let id = selectedCampaignId else { return nil }
+        return viewModel.campaigns.first { $0.id == id }?.name
     }
-    
-    // Helper functions to reduce body complexity
-    private func makeToggle3DButton() -> some View {
-        let iconName = is3DMode ? "cube.fill" : "cube"
-        let bgColor: Color = is3DMode ? .red : .black.opacity(0.6)
-        return AnyView(
-            Button(action: { is3DMode.toggle() }) {
-                Image(systemName: iconName)
-                    .font(.title2)
-                    .foregroundColor(.white)
-                    .padding(12)
-                    .background(bgColor)
-                    .clipShape(Circle())
-                    .shadow(radius: 4)
-            }
-        )
-    }
-    
-    private func makeCampaignPickerButton() -> some View {
-        let isSelected = selectedCampaignId != nil || selectedFarmId != nil
-        let iconName = isSelected ? "map.fill" : "map"
-        let bgColor: Color = isSelected ? .red : .black.opacity(0.6)
-        return AnyView(
-            Button(action: { showCampaignPicker = true }) {
-                Image(systemName: iconName)
-                    .font(.title2)
-                    .foregroundColor(.white)
-                    .padding(12)
-                    .background(bgColor)
-                    .clipShape(Circle())
-                    .shadow(radius: 4)
-            }
-        )
-    }
-    
-    private var mapStyleBinding: Binding<MapStyle> {
-        Binding(
-            get: { mapStyleMode },
-            set: { mapStyleModeRaw = $0.rawValue }
-        )
-    }
-    
-    private func handleToggle3D() {
-        is3DMode.toggle()
-    }
-    
+
     private func handleShowCampaignPicker() {
         showCampaignPicker = true
     }
-    
-    private func handleShowSessionStart() {
-        showSessionStartSheet = true
-    }
-    
+
     private var mapContentView: some View {
         MapContentView(
-            is3DMode: $is3DMode,
-            mapStyleMode: mapStyleBinding,
+            searchText: $mapSearchText,
+            colorScheme: colorScheme,
             campaignPolygon: campaignPolygon,
             campaignMarkers: campaignMarkers,
             farmMarkers: farmMarkers,
             selectedCampaignId: selectedCampaignId,
-            selectedFarmId: selectedFarmId,
-            onToggle3D: handleToggle3D,
-            onShowCampaignPicker: handleShowCampaignPicker,
-            onShowSessionStart: handleShowSessionStart
+            selectedCampaignName: selectedCampaignName,
+            campaigns: viewModel.campaigns,
+            isLoadingCampaign: isLoadingSelectedCampaign,
+            onMarkerTap: { id in
+                selectedCampaignId = id
+                syncSelectionToUIState()
+            },
+            onClearCampaign: {
+                selectedCampaignId = nil
+                selectedFarmId = nil
+                syncSelectionToUIState()
+                Task { await loadSelectedCampaignOrFarm() }
+            },
+            onStartSession: { startSessionFromMap() },
+            onShowGestureInfo: { showGestureInfoSheet = true },
+            isLocationDenied: locationManager.isLocationDenied
         )
+        .sheet(isPresented: $showGestureInfoSheet) {
+            MapGestureInfoSheet()
+        }
+    }
+
+    private func syncSelectionToUIState() {
+        uiState.selectedMapCampaignId = selectedCampaignId
+        uiState.selectedMapCampaignName = selectedCampaignName
     }
     
     private var sessionMapContentView: some View {
@@ -197,22 +192,35 @@ struct FullScreenMapView: View {
                 .sheet(isPresented: $showCampaignPicker) {
                     campaignPickerSheet
                 }
-                .sheet(isPresented: $showSessionStartSheet) {
-                    SessionStartView()
-                }
                 .sheet(isPresented: $showSessionSummary) {
                     sessionSummarySheet
                 }
+                .sheet(isPresented: $showSessionStartSheet) {
+                    SessionStartView(
+                        showCancelButton: true,
+                        preselectedCampaign: sessionStartPreselectedCampaign
+                    )
+                    .onDisappear {
+                        sessionStartPreselectedCampaign = nil
+                    }
+                }
         )
     }
-    
+
     private func applySelectionChanges<V: View>(to view: V) -> AnyView {
         AnyView(
             view
-                .onChange(of: selectedCampaignId) { _, _ in
+                .onChange(of: selectedCampaignId) { _, newId in
+                    syncSelectionToUIState()
+                    if newId != nil {
+                        isLoadingSelectedCampaign = true
+                    } else {
+                        isLoadingSelectedCampaign = false
+                    }
                     handleCampaignIdChange()
                 }
                 .onChange(of: selectedFarmId) { _, _ in
+                    syncSelectionToUIState()
                     handleFarmIdChange()
                 }
         )
@@ -221,8 +229,10 @@ struct FullScreenMapView: View {
     private func applyTask<V: View>(to view: V) -> AnyView {
         AnyView(
             view
-                .task {
-                    handleTask()
+                .task(id: "mapCampaigns") {
+                    await viewModel.loadCampaignsAndFarms()
+                    await loadMapMarkers()
+                    locationManager.requestLocation()
                 }
         )
     }
@@ -248,15 +258,6 @@ struct FullScreenMapView: View {
         )
     }
     
-    private func applyStyleChanges<V: View>(to view: V) -> AnyView {
-        AnyView(
-            view
-                .onChange(of: mapStyleMode) { oldValue, newValue in
-                    handleMapStyleChange(newValue)
-                }
-        )
-    }
-    
     private func applyNotifications<V: View>(to view: V) -> AnyView {
         AnyView(
             view
@@ -272,8 +273,7 @@ struct FullScreenMapView: View {
         let step3 = applyTask(to: step2)
         let step4 = applyViewModelChanges(to: step3)
         let step5 = applyLocationChanges(to: step4)
-        let step6 = applyStyleChanges(to: step5)
-        return applyNotifications(to: step6)
+        return applyNotifications(to: step5)
     }
     
     var body: some View {
@@ -296,33 +296,49 @@ struct FullScreenMapView: View {
     private var sessionSummarySheet: some View {
         Group {
             if let summaryData = sessionSummaryData {
-                SessionSummaryView(
-                    distance: summaryData.distance,
-                    time: summaryData.time,
-                    goalType: summaryData.goalType,
-                    goalAmount: summaryData.goalAmount
+                EndSessionSummaryView(
+                    data: summaryData,
+                    userName: AuthManager.shared.user?.email
                 )
             }
         }
     }
     
+    private func startSessionFromMap() {
+        guard let campaignId = selectedCampaignId else { return }
+        isPreparingSessionStart = true
+        Task {
+            do {
+                let campaign = try await sharedV2API.fetchCampaign(id: campaignId)
+                await MainActor.run {
+                    sessionStartPreselectedCampaign = campaign
+                    isPreparingSessionStart = false
+                    showSessionStartSheet = true
+                }
+            } catch {
+                await MainActor.run {
+                    isPreparingSessionStart = false
+                    print("⚠️ [Map] Failed to load campaign for session: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
     private func handleCampaignIdChange() {
         Task {
             await loadSelectedCampaignOrFarm()
+            await MainActor.run {
+                isLoadingSelectedCampaign = false
+            }
         }
     }
     
     private func handleFarmIdChange() {
         Task {
             await loadSelectedCampaignOrFarm()
-        }
-    }
-    
-    private func handleTask() {
-        Task {
-            await viewModel.loadCampaignsAndFarms()
-            await loadMapMarkers()
-            locationManager.requestLocation()
+            await MainActor.run {
+                isLoadingSelectedCampaign = false
+            }
         }
     }
     
@@ -345,20 +361,22 @@ struct FullScreenMapView: View {
         }
     }
     
-    private func handleMapStyleChange(_ newValue: MapStyle) {
-        if let mapView = SimpleMapViewRepresentable.currentMapView {
-            mapView.mapboxMap?.loadStyle(newValue.mapboxStyleURI)
-        }
-    }
-    
+    /// Building sessions set lastEndedSummary; use it when present. Otherwise build summary from current manager state (SessionMapView / non-building flow).
     private func handleSessionEnded() {
-        if let startTime = sessionManager.startTime {
+        if let data = SessionManager.lastEndedSummary {
+            sessionSummaryData = data
+            showSessionSummary = true
+            return
+        }
+        if sessionManager.startTime != nil {
             sessionSummaryData = SessionSummaryData(
                 distance: sessionManager.distanceMeters,
                 time: sessionManager.elapsedTime,
                 goalType: sessionManager.goalType,
                 goalAmount: sessionManager.goalAmount,
-                pathCoordinates: sessionManager.pathCoordinates
+                pathCoordinates: sessionManager.pathCoordinates,
+                completedCount: nil,
+                startTime: sessionManager.startTime
             )
             showSessionSummary = true
         }
@@ -366,19 +384,23 @@ struct FullScreenMapView: View {
     
     private func loadSelectedCampaignOrFarm() async {
         campaignPolygon = nil
-        
+
         if let campaignId = selectedCampaignId {
-            // Update map to show campaign buildings in white (using campaign ID)
             if let mapView = SimpleMapViewRepresentable.currentMapView {
-                MapController.shared.applyMode(.campaign3D, to: mapView, campaignPolygon: nil, campaignId: campaignId)
+                let preferLight = (colorScheme != .dark)
+                MapController.shared.applyMode(.campaign3D, to: mapView, campaignPolygon: nil, campaignId: campaignId, preferLightStyle: preferLight)
+                // Fly to selected campaign marker when selected from search or pin tap
+                if let marker = campaignMarkers.first(where: { $0.id == campaignId }) {
+                    mapView.camera.fly(to: CameraOptions(center: marker.coordinate, zoom: 15), duration: 0.5)
+                }
             }
         } else if selectedFarmId != nil {
             // TODO: Fetch farm addresses when farm polygon support is added
             print("⚠️ [Map] Farm polygon support coming soon")
         } else {
-            // Clear polygon
             if let mapView = SimpleMapViewRepresentable.currentMapView {
-                MapController.shared.applyMode(is3DMode ? .black3D : .light, to: mapView, campaignPolygon: nil, campaignId: nil)
+                let mode: MapMode = colorScheme == .dark ? .dark : .light
+                MapController.shared.applyMode(mode, to: mapView, campaignPolygon: nil, campaignId: nil)
             }
         }
     }
@@ -463,19 +485,20 @@ struct FullScreenMapView: View {
 
 class LocationManager: NSObject, ObservableObject, CLLocationManagerDelegate {
     @Published var currentLocation: CLLocation?
+    @Published var isLocationDenied: Bool = false
     private let manager = CLLocationManager()
     private var hasRequestedLocation = false
-    
+
     override init() {
         super.init()
         manager.delegate = self
         manager.desiredAccuracy = kCLLocationAccuracyBest
     }
-    
+
     func requestLocation() {
         guard !hasRequestedLocation else { return }
         hasRequestedLocation = true
-        
+        updateDeniedState()
         let status = manager.authorizationStatus
         if status == .notDetermined {
             manager.requestWhenInUseAuthorization()
@@ -483,185 +506,133 @@ class LocationManager: NSObject, ObservableObject, CLLocationManagerDelegate {
             manager.requestLocation()
         }
     }
-    
+
+    private func updateDeniedState() {
+        let status = manager.authorizationStatus
+        isLocationDenied = (status == .denied || status == .restricted)
+    }
+
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard let location = locations.last else { return }
         currentLocation = location
-        // Stop updating after getting location once
+        isLocationDenied = false
         manager.stopUpdatingLocation()
     }
-    
+
     func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
         print("⚠️ [LocationManager] Failed to get location: \(error.localizedDescription)")
     }
-    
+
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
-        let status = manager.authorizationStatus
-        if status == .authorizedWhenInUse || status == .authorizedAlways {
+        updateDeniedState()
+        if manager.authorizationStatus == .authorizedWhenInUse || manager.authorizationStatus == .authorizedAlways {
             manager.requestLocation()
-        } else if status == .denied || status == .restricted {
+        } else if isLocationDenied {
             print("⚠️ [LocationManager] Location permission denied")
         }
     }
 }
 
 struct SimpleMapViewRepresentable: UIViewRepresentable {
-    @Binding var is3DMode: Bool
-    @Binding var mapStyleMode: MapStyle
+    var colorScheme: ColorScheme
     var campaignPolygon: [CLLocationCoordinate2D]?
     var campaignMarkers: [CampaignMarker]
     var farmMarkers: [FarmMarker]
-    
+    var selectedCampaignId: UUID?
+    var onMarkerTap: (UUID) -> Void
+
     static weak var currentMapView: MapView?
-    
+
+    private var mapStyleFromScheme: MapStyle {
+        colorScheme == .dark ? .dark : .light
+    }
+
     func makeUIView(context: Context) -> MapView {
         let mapView = MapView(frame: .zero)
-        
-        // Configure ornaments
+
         mapView.ornaments.options.scaleBar.visibility = .hidden
-        mapView.ornaments.options.logo.margins = CGPoint(x: 8, y: 8)
-        mapView.ornaments.options.compass.visibility = .adaptive
-        
-        // Load initial style from mapStyleMode
-        mapView.mapboxMap?.loadStyle(mapStyleMode.mapboxStyleURI)
-        
-        // Store coordinator and map view reference
+        mapView.ornaments.options.logo.margins = CGPoint(x: 8, y: 24)
+        mapView.ornaments.options.compass.visibility = .hidden
+
+        mapView.mapboxMap?.loadStyle(mapStyleFromScheme.mapboxStyleURI)
+
         context.coordinator.mapView = mapView
         Self.currentMapView = mapView
-        
+
+        let tapGesture = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleMapTap(_:)))
+        tapGesture.numberOfTapsRequired = 1
+        mapView.addGestureRecognizer(tapGesture)
+
         return mapView
     }
-    
+
     func updateUIView(_ mapView: MapView, context: Context) {
-        // Only update 3D if no campaign is selected (MapController handles campaign mode)
-        // We need to check if MapController is managing the map by checking if campaign3D mode is active
-        // For now, we'll let MapController handle 3D when campaigns are involved
-        // SimpleMapViewRepresentable handles 3D for non-campaign cases
-        context.coordinator.update3D(enabled: is3DMode)
-        
-        // Update map style if it changed
-        context.coordinator.updateStyle(mapStyleMode)
-        
-        // Update campaign polygon if provided (legacy support)
+        context.coordinator.onMarkerTap = onMarkerTap
+        context.coordinator.selectedCampaignId = selectedCampaignId
+        context.coordinator.updateStyle(mapStyleFromScheme)
+
         if let polygon = campaignPolygon {
-            MapController.shared.applyMode(.campaign3D, to: mapView, campaignPolygon: polygon, campaignId: nil)
+            let preferLight = (colorScheme != .dark)
+            MapController.shared.applyMode(.campaign3D, to: mapView, campaignPolygon: polygon, campaignId: nil, preferLightStyle: preferLight)
         }
-        
-        // Update markers
-        context.coordinator.updateMarkers(campaignMarkers: campaignMarkers, farmMarkers: farmMarkers, on: mapView)
+
+        context.coordinator.updateMarkers(campaignMarkers: campaignMarkers, farmMarkers: farmMarkers, selectedCampaignId: selectedCampaignId, on: mapView)
     }
-    
+
     func makeCoordinator() -> Coordinator {
-        Coordinator(is3DMode: $is3DMode, mapStyleMode: $mapStyleMode)
+        Coordinator(onMarkerTap: onMarkerTap)
     }
-    
-    class Coordinator {
-        @Binding var is3DMode: Bool
-        @Binding var mapStyleMode: MapStyle
+
+    class Coordinator: NSObject {
         weak var mapView: MapView?
-        private let layerId = "flyr-3d-buildings"
+        var onMarkerTap: (UUID) -> Void
+        var selectedCampaignId: UUID?
+        private let campaignLayerIds = ["campaign-markers-layer", "campaign-markers-layer-inner", "campaign-markers-layer-text"]
         private var currentStyle: MapStyle?
         private var hasLoadedTargetIcon = false
-        
-        init(is3DMode: Binding<Bool>, mapStyleMode: Binding<MapStyle>) {
-            _is3DMode = is3DMode
-            _mapStyleMode = mapStyleMode
+
+        init(onMarkerTap: @escaping (UUID) -> Void) {
+            self.onMarkerTap = onMarkerTap
         }
-        
-        func updateMarkers(campaignMarkers: [CampaignMarker], farmMarkers: [FarmMarker], on mapView: MapView) {
-            // Load target icon if not already loaded
+
+        @objc func handleMapTap(_ gesture: UITapGestureRecognizer) {
+            guard let mapView = mapView, gesture.state == .ended else { return }
+            let point = gesture.location(in: mapView)
+            let options = RenderedQueryOptions(layerIds: campaignLayerIds, filter: nil)
+            mapView.mapboxMap.queryRenderedFeatures(with: point, options: options) { [weak self] result in
+                guard let self = self else { return }
+                switch result {
+                case .success(let features):
+                    if let first = features.first {
+                        let props = first.queriedFeature.feature.properties
+                        if let idVal = props?["id"], case .string(let idStr) = idVal, let uuid = UUID(uuidString: idStr) {
+                            DispatchQueue.main.async { self.onMarkerTap(uuid) }
+                        }
+                    }
+                case .failure:
+                    break
+                }
+            }
+        }
+
+        func updateMarkers(campaignMarkers: [CampaignMarker], farmMarkers: [FarmMarker], selectedCampaignId: UUID?, on mapView: MapView) {
             if !hasLoadedTargetIcon, let map = mapView.mapboxMap {
                 loadTargetIcon(to: map)
             }
-            
-            // Update markers
-            MapMarkersManager.shared.addCampaignMarkers(campaigns: campaignMarkers, to: mapView)
+            MapMarkersManager.shared.addCampaignMarkers(campaigns: campaignMarkers, to: mapView, selectedCampaignId: selectedCampaignId)
             MapMarkersManager.shared.addFarmMarkers(farms: farmMarkers, to: mapView)
         }
-        
+
         private func loadTargetIcon(to map: MapboxMap) {
-            // Markers now use circle layers instead of icon images
-            // No need to load custom icons
             hasLoadedTargetIcon = true
         }
-        
+
         func updateStyle(_ style: MapStyle) {
             guard let mapView = mapView,
                   let map = mapView.mapboxMap,
                   currentStyle != style else { return }
-            
             currentStyle = style
             map.loadStyle(style.mapboxStyleURI)
-            
-            // If 3D mode is enabled, re-add the 3D layer with the correct color after style loads
-            if is3DMode {
-                map.onMapLoaded.observeNext { [weak self] _ in
-                    guard let self = self else { return }
-                    self.add3DLayer(to: map, mapView: mapView)
-                }
-            }
-        }
-        
-        func update3D(enabled: Bool) {
-            guard let mapView = mapView,
-                  let map = mapView.mapboxMap else { return }
-            
-            // Remove existing layer if it exists
-            if map.allLayerIdentifiers.contains(where: { $0.id == layerId }) {
-                try? map.removeLayer(withId: layerId)
-            }
-            
-            if enabled {
-                // Wait for map to be ready
-                if map.isStyleLoaded {
-                    add3DLayer(to: map, mapView: mapView)
-                } else {
-                    map.onMapLoaded.observeNext { [weak self] _ in
-                        self?.add3DLayer(to: map, mapView: mapView)
-                    }
-                }
-            } else {
-                // Reset camera pitch to 0
-                let currentCamera = map.cameraState
-                let cameraOptions = CameraOptions(
-                    center: currentCamera.center,
-                    zoom: currentCamera.zoom,
-                    pitch: 0
-                )
-                map.setCamera(to: cameraOptions)
-            }
-        }
-        
-        private func add3DLayer(to map: MapboxMap, mapView: MapView) {
-            // Remove existing layer if it exists
-            if map.allLayerIdentifiers.contains(where: { $0.id == layerId }) {
-                try? map.removeLayer(withId: layerId)
-            }
-            
-            do {
-                var layer = FillExtrusionLayer(id: layerId, source: "composite")
-                layer.sourceLayer = "building"
-                layer.minZoom = 13
-                layer.fillExtrusionOpacity = .constant(0.9)
-                layer.fillExtrusionHeight = .expression(Exp(.get) { "height" })
-                layer.fillExtrusionBase = .expression(Exp(.get) { "min_height" })
-                // Use black for dark mode, white for light mode
-                let buildingColor: UIColor = mapStyleMode == .dark ? .black : .white
-                layer.fillExtrusionColor = .constant(StyleColor(buildingColor))
-                
-                try map.addLayer(layer)
-                
-                // Tilt camera for 3D view
-                let currentCamera = map.cameraState
-                let cameraOptions = CameraOptions(
-                    center: currentCamera.center,
-                    zoom: currentCamera.zoom,
-                    pitch: 60
-                )
-                map.setCamera(to: cameraOptions)
-            } catch {
-                print("❌ [3D] Failed to add 3D buildings: \(error)")
-            }
         }
     }
 }

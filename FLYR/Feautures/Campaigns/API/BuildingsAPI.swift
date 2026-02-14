@@ -339,6 +339,11 @@ final class BuildingsAPI {
             
             print("🏗️ [BUILDINGS] Ensuring polygons for chunk \(chunkIndex / chunkSize + 1), \(chunk.count) addresses")
             
+            // Defensive: Log sample address for debugging
+            if let firstAddr = chunk.first {
+                print("🔍 [BUILDINGS] Sample address: id=\(firstAddr.id.uuidString), lat=\(firstAddr.lat), lon=\(firstAddr.lon)")
+            }
+            
             do {
                 // Call Edge Function - use URLSession with authenticated request
                 let supabaseURLString = Bundle.main.object(forInfoDictionaryKey: "SUPABASE_URL") as! String
@@ -401,6 +406,18 @@ final class BuildingsAPI {
                 
                 print("✅ [BUILDINGS] Chunk processed: \(result.matched)/\(result.addresses) matched, \(result.proxies) proxies, \(result.total_ms)ms total (\(result.per_addr_ms)ms/addr)")
                 
+                // Defensive: Warn if no matches found
+                if result.matched == 0 && result.addresses > 0 {
+                    print("⚠️ [BUILDINGS] No matches found for this chunk!")
+                    print("🔍 [BUILDINGS] This may indicate:")
+                    print("   - No buildings exist at these coordinates in MVT tiles")
+                    print("   - Zoom level too low (try zoom 16+)")
+                    print("   - Search radius too small")
+                    if let firstAddr = chunk.first {
+                        print("   - Check MVT tiles at: https://api.mapbox.com/v4/mapbox.mapbox-streets-v8/tilequery/\(firstAddr.lon),\(firstAddr.lat).json?radius=50&layers=building&access_token=YOUR_TOKEN")
+                    }
+                }
+                
             } catch {
                 print("❌ [BUILDINGS] Error processing chunk: \(error)")
                 // Count chunk as proxies (no polygons found)
@@ -428,54 +445,233 @@ final class BuildingsAPI {
         )
     }
     
-    /// Fetch building polygons from database for given address IDs
-    /// - Parameter addressIds: Array of campaign_addresses.id UUIDs
+    /// Backend base URL for GET buildings API (e.g. https://flyrpro.app).
+    private static var buildingsAPIBaseURL: String {
+        (Bundle.main.object(forInfoDictionaryKey: "FLYR_PRO_API_URL") as? String)?.trimmingCharacters(in: CharacterSet(charactersIn: "/")) ?? "https://flyrpro.app"
+    }
+
+    private static let snapshotTimestampFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+
+    private enum SnapshotFetchResult {
+        case success(GeoJSONFeatureCollection)
+        case snapshotUnavailable
+        case snapshotEmpty
+        case snapshotDecodeError
+    }
+
+    /// Legacy DB fallback is intentionally opt-in so campaign geometry remains snapshot-first by default.
+    private static var legacyFallbackEnabled: Bool {
+        Bundle.main.object(forInfoDictionaryKey: "FLYR_ENABLE_LEGACY_BUILDINGS_FALLBACK") as? Bool ?? false
+    }
+
+    /// Fetch building polygons from database for a campaign or specific address IDs
+    /// - Parameters:
+    ///   - campaignId: Campaign UUID (preferred). Tries GET /api/campaigns/[id]/buildings first (S3 snapshot), then RPC fallback.
+    ///   - addressIds: Array of campaign_addresses.id UUIDs (fallback - queries building_polygons table)
     /// - Returns: GeoJSON FeatureCollection with building polygons
-    func fetchBuildingPolygons(addressIds: [UUID]) async throws -> GeoJSONFeatureCollection {
+    func fetchBuildingPolygons(campaignId: UUID? = nil, addressIds: [UUID] = []) async throws -> GeoJSONFeatureCollection {
+        if let campaignId = campaignId {
+            switch await fetchBuildingsFromSnapshotAPI(campaignId: campaignId) {
+            case .success(let fromAPI):
+                print("✅ [BUILDINGS] Source=snapshot campaign=\(campaignId.uuidString) features=\(fromAPI.features.count)")
+                return normalizeFeatureIdentity(collection: fromAPI, source: "snapshot")
+            case .snapshotUnavailable:
+                print("ℹ️ [BUILDINGS] snapshot_unavailable campaign=\(campaignId.uuidString)")
+                guard Self.legacyFallbackEnabled else {
+                    print("🛑 [BUILDINGS] legacy_fallback_disabled campaign=\(campaignId.uuidString)")
+                    return GeoJSONFeatureCollection(features: [])
+                }
+                print("↩️ [BUILDINGS] legacy_fallback_used campaign=\(campaignId.uuidString)")
+                return try await fetchBuildingsByCampaign(campaignId: campaignId)
+            case .snapshotEmpty:
+                print("ℹ️ [BUILDINGS] snapshot_empty campaign=\(campaignId.uuidString)")
+                return GeoJSONFeatureCollection(features: [])
+            case .snapshotDecodeError:
+                print("⚠️ [BUILDINGS] snapshot_decode_error campaign=\(campaignId.uuidString)")
+                return GeoJSONFeatureCollection(features: [])
+            }
+        }
+
+        // Fallback: fetch by address IDs (queries building_polygons table - legacy)
         guard !addressIds.isEmpty else {
+            print("⚠️ [BUILDINGS] No campaign ID or address IDs provided")
+            return GeoJSONFeatureCollection(features: [])
+        }
+
+        return try await fetchBuildingsByAddressIds(addressIds: addressIds)
+    }
+
+    /// Fetch buildings from GET /api/campaigns/[campaignId]/buildings (S3 snapshot).
+    private func fetchBuildingsFromSnapshotAPI(campaignId: UUID) async -> SnapshotFetchResult {
+        guard let url = URL(string: "\(Self.buildingsAPIBaseURL)/api/campaigns/\(campaignId.uuidString)/buildings") else {
+            return .snapshotUnavailable
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        let requestTimestamp = Self.snapshotTimestampFormatter.string(from: Date())
+        print("🧭 [BUILDINGS] Snapshot request campaign=\(campaignId.uuidString) url=\(url.absoluteString) at=\(requestTimestamp)")
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse else { return .snapshotUnavailable }
+            guard http.statusCode == 200 else {
+                if http.statusCode == 404 {
+                    print("🏠 [BUILDINGS] snapshot_unavailable campaign=\(campaignId.uuidString) status=404")
+                } else {
+                    print("⚠️ [BUILDINGS] snapshot_unavailable campaign=\(campaignId.uuidString) status=\(http.statusCode)")
+                }
+                return .snapshotUnavailable
+            }
+
+            let decoder = JSONDecoder()
+            let collection: GeoJSONFeatureCollection
+            do {
+                collection = try decoder.decode(GeoJSONFeatureCollection.self, from: data)
+            } catch {
+                print("⚠️ [BUILDINGS] snapshot_decode_error campaign=\(campaignId.uuidString) reason=\(error.localizedDescription)")
+                return .snapshotDecodeError
+            }
+            print("✅ [BUILDINGS] Loaded \(collection.features.count) features from GET buildings API (S3 snapshot)")
+            if collection.features.isEmpty {
+                print("🪵 [BUILDINGS] snapshot_empty campaign=\(campaignId.uuidString) url=\(url.absoluteString) at=\(requestTimestamp)")
+                return .snapshotEmpty
+            }
+            // Optional: confirm API sends address_id for linked buildings
+            if let first = collection.features.first {
+                let gersId = (first.properties["gers_id"]?.value as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "nil"
+                let addressIdRaw = first.properties["address_id"]?.value as? String
+                let addressIdStatus = (addressIdRaw?.isEmpty == false) ? "present" : "missing"
+                print("🔗 [BUILDINGS] Snapshot first feature gers_id=\(gersId) address_id=\(addressIdStatus)")
+            }
+            return .success(collection)
+        } catch {
+            print("⚠️ [BUILDINGS] snapshot_unavailable campaign=\(campaignId.uuidString) reason=\(error.localizedDescription)")
+            return .snapshotUnavailable
+        }
+    }
+
+    /// Fetch buildings for a campaign using get_campaign_buildings_geojson (queries buildings table)
+    private func fetchBuildingsByCampaign(campaignId: UUID) async throws -> GeoJSONFeatureCollection {
+        print("🏠 [BUILDINGS] Fetching buildings for campaign: \(campaignId.uuidString)")
+        
+        do {
+            return try await fetchCampaignBuildingsViaRPC(
+                rpcName: "get_campaign_buildings_geojson",
+                campaignId: campaignId
+            )
+        } catch {
+            if let postgrestError = error as? PostgrestError {
+                print("🔍 [BUILDINGS] Source=db_fallback rpc=get_campaign_buildings_geojson code=\(postgrestError.code ?? "unknown") message=\(postgrestError.message)")
+                
+                // Some backends still have this RPC referencing a removed relation (e.g., public.address_buildings).
+                // Try a secondary RPC to remain compatible across schema versions.
+                if postgrestError.code == "42P01" {
+                    print("⚠️ [BUILDINGS] Source=db_fallback relation missing for rpc=get_campaign_buildings_geojson; trying rpc_get_campaign_full_features")
+                    do {
+                        return try await fetchCampaignBuildingsViaRPC(
+                            rpcName: "rpc_get_campaign_full_features",
+                            campaignId: campaignId
+                        )
+                    } catch {
+                        print("❌ [BUILDINGS] Source=db_fallback secondary RPC failed rpc=rpc_get_campaign_full_features campaign=\(campaignId.uuidString): \(error.localizedDescription)")
+                        throw error
+                    }
+                }
+            }
+            print("❌ [BUILDINGS] Source=db_fallback failed for campaign=\(campaignId.uuidString): \(error.localizedDescription)")
+            throw error
+        }
+    }
+
+    private func fetchCampaignBuildingsViaRPC(rpcName: String, campaignId: UUID) async throws -> GeoJSONFeatureCollection {
+        let response = try await supabaseClient.rpc(
+            rpcName,
+            params: ["p_campaign_id": campaignId.uuidString]
+        ).execute()
+        
+        guard response.data.count > 0 else {
+            print("⚠️ [BUILDINGS] Source=db_fallback rpc=\(rpcName) returned empty response")
             return GeoJSONFeatureCollection(features: [])
         }
         
-        print("🏠 [BUILDINGS] Fetching building polygons for \(addressIds.count) address IDs")
-        
-        // Use Supabase client directly - pass UUIDs directly (SDK handles uuid[] conversion)
-        let ids: [UUID] = addressIds
-        let response = try await supabaseClient.rpc(
-            "get_buildings_by_address_ids",
-            params: ["p_address_ids": ids]
-        ).execute()
-        
-        // Log raw response for debugging
         if let text = String(data: response.data, encoding: .utf8) {
-            print("🔎 [RPC RAW] \(text.prefix(500))")
+            print("🔎 [RPC RAW] rpc=\(rpcName) \(text.prefix(500))")
         }
         
-        // Decode RPC table response (array of rows with address_id, geom_geom, geom)
-        let rows = try decodeRpcRows(response.data)
-        print("📦 [FEATURES DEBUG] rows: \(rows.count)")
+        let decoder = JSONDecoder()
+        let featureCollection = try decoder.decode(GeoJSONFeatureCollection.self, from: response.data)
         
-        // Convert rows to GeoJSONFeatureCollection
-        var features: [GeoJSONFeature] = []
-        for row in rows {
-            guard let geom = row.geom else {
-                print("⚠️ [BUILDINGS] Skipping row with null geom for address_id=\(row.address_id)")
-                continue
+        print("📦 [BUILDINGS] Source=db_fallback campaign=\(campaignId.uuidString) rpc=\(rpcName) features=\(featureCollection.features.count)")
+        
+        let polygonCount = featureCollection.features.filter { feature in
+            feature.geometry.type == "Polygon" || feature.geometry.type == "MultiPolygon"
+        }.count
+        
+        print("✅ [BUILDINGS] Source=db_fallback loaded rpc=\(rpcName) features=\(featureCollection.features.count) polygons=\(polygonCount)")
+        return normalizeFeatureIdentity(collection: featureCollection, source: "db_fallback:\(rpcName)")
+    }
+    
+    /// Fetch buildings by address IDs using get_buildings_by_address_ids (queries building_polygons table - legacy)
+    private func fetchBuildingsByAddressIds(addressIds: [UUID]) async throws -> GeoJSONFeatureCollection {
+        print("🏠 [BUILDINGS] Fetching building polygons for \(addressIds.count) address IDs")
+        
+        // Defensive: Log sample address IDs for debugging (first 3)
+        let sampleIds = addressIds.prefix(3).map { $0.uuidString }
+        print("🔍 [BUILDINGS] Sample address IDs: \(sampleIds)")
+        
+        do {
+            // Use Supabase client directly - pass UUIDs directly (SDK handles uuid[] conversion)
+            let ids: [UUID] = addressIds
+            let response = try await supabaseClient.rpc(
+                "get_buildings_by_address_ids",
+                params: ["p_address_ids": ids]
+            ).execute()
+            
+            // Defensive: Check response status
+            guard response.data.count > 0 else {
+                print("⚠️ [BUILDINGS] Empty response from RPC")
+                print("🔍 [BUILDINGS] This may indicate:")
+                print("   - No buildings found for these address IDs")
+                print("   - MVT decode hasn't run yet for these addresses")
+                print("   - UUID case mismatch in database")
+                return GeoJSONFeatureCollection(features: [])
             }
             
-            switch geom {
-            case .feature(let feature):
-                // Add address_id to properties if not already present
-                var props = feature.properties
-                props["address_id"] = AnyCodable(row.address_id.uuidString)
-                let enhancedFeature = GeoJSONFeature(
-                    id: feature.id,
-                    geometry: feature.geometry,
-                    properties: props
-                )
-                features.append(enhancedFeature)
-            case .featureCollection(let collection):
-                // Extract features from collection and add address_id
-                for feature in collection.features {
+            // Log raw response for debugging
+            if let text = String(data: response.data, encoding: .utf8) {
+                print("🔎 [RPC RAW] \(text.prefix(500))")
+            }
+            
+            // Decode RPC table response (array of rows with address_id, geom_geom, geom)
+            let rows = try decodeRpcRows(response.data)
+            print("📦 [FEATURES DEBUG] Decoded \(rows.count) rows from RPC")
+            
+            // Defensive: If no rows, log diagnostic info
+            if rows.isEmpty {
+                print("⚠️ [BUILDINGS] No rows decoded from RPC response")
+                print("🔍 [BUILDINGS] Run diagnostic: SELECT * FROM get_buildings_by_address_ids(ARRAY['\(addressIds.first!.uuidString)'::uuid])")
+                return GeoJSONFeatureCollection(features: [])
+            }
+            
+            // Convert rows to GeoJSONFeatureCollection
+            var features: [GeoJSONFeature] = []
+            var skippedCount = 0
+            
+            for row in rows {
+                guard let geom = row.geom else {
+                    print("⚠️ [BUILDINGS] Skipping row with null geom for address_id=\(row.address_id)")
+                    skippedCount += 1
+                    continue
+                }
+                
+                switch geom {
+                case .feature(let feature):
+                    // Add address_id to properties if not already present
                     var props = feature.properties
                     props["address_id"] = AnyCodable(row.address_id.uuidString)
                     let enhancedFeature = GeoJSONFeature(
@@ -484,18 +680,119 @@ final class BuildingsAPI {
                         properties: props
                     )
                     features.append(enhancedFeature)
+                    
+                case .featureCollection(let collection):
+                    // Extract features from collection and add address_id
+                    for feature in collection.features {
+                        var props = feature.properties
+                        props["address_id"] = AnyCodable(row.address_id.uuidString)
+                        let enhancedFeature = GeoJSONFeature(
+                            id: feature.id,
+                            geometry: feature.geometry,
+                            properties: props
+                        )
+                        features.append(enhancedFeature)
+                    }
+                    
+                case .raw:
+                    // Skip raw JSON that we can't decode
+                    print("⚠️ [BUILDINGS] Skipping raw JSON for address_id=\(row.address_id)")
+                    skippedCount += 1
                 }
-            case .raw:
-                // Skip raw JSON that we can't decode
-                print("⚠️ [BUILDINGS] Skipping raw JSON for address_id=\(row.address_id)")
             }
+            
+            if skippedCount > 0 {
+                print("⚠️ [BUILDINGS] Skipped \(skippedCount) rows due to null or invalid geometry")
+            }
+            
+            let polygonCount = features.filter { feature in
+                feature.geometry.type == "Polygon" || feature.geometry.type == "MultiPolygon"
+            }.count
+            print("✅ [BUILDINGS] Loaded \(features.count) features (\(polygonCount) polygons)")
+            
+            // Defensive: Warn if polygon count is unexpectedly low
+            if polygonCount == 0 && addressIds.count > 0 {
+                print("⚠️ [BUILDINGS] No polygons found for \(addressIds.count) addresses")
+                print("🔍 [BUILDINGS] Possible causes:")
+                print("   1. MVT decode hasn't processed these addresses yet")
+                print("   2. UUID case mismatch (check: building_polygons.address_id vs campaign_addresses.id)")
+                print("   3. Buildings table is empty for this campaign")
+            }
+            
+            return normalizeFeatureIdentity(
+                collection: GeoJSONFeatureCollection(features: features),
+                source: "db_fallback:get_buildings_by_address_ids"
+            )
+            
+        } catch {
+            print("❌ [BUILDINGS] Error fetching building polygons: \(error)")
+            print("🔍 [BUILDINGS] Error details: \(error.localizedDescription)")
+            
+            // Re-throw the error but log helpful diagnostic info
+            if let postgrestError = error as? PostgrestError {
+                print("🔍 [BUILDINGS] Postgrest error code: \(postgrestError.code)")
+                print("🔍 [BUILDINGS] Postgrest error message: \(postgrestError.message)")
+            }
+            
+            throw error
         }
-        
-        let polygonCount = features.filter { feature in
-            feature.geometry.type == "Polygon" || feature.geometry.type == "MultiPolygon"
-        }.count
-        print("✅ [BUILDINGS] Loaded \(features.count) features (\(polygonCount) polygons)")
-        
-        return GeoJSONFeatureCollection(features: features)
+    }
+
+    /// Normalize `id`/`gers_id` identity so Mapbox feature-state can consistently key by gers_id.
+    private func normalizeFeatureIdentity(collection: GeoJSONFeatureCollection, source: String) -> GeoJSONFeatureCollection {
+        var normalized: [GeoJSONFeature] = []
+        normalized.reserveCapacity(collection.features.count)
+
+        var missingIdentityCount = 0
+        var idMismatchCount = 0
+        var fixedFromPropertyCount = 0
+        var fixedFromIdCount = 0
+
+        for feature in collection.features {
+            var properties = feature.properties
+            let idValue = feature.id?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let gersValue = (properties["gers_id"]?.value as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+
+            if let idValue, let gersValue, !idValue.isEmpty, !gersValue.isEmpty, idValue != gersValue {
+                idMismatchCount += 1
+                print("⚠️ [BUILDINGS] gers_id_mismatch source=\(source) id=\(idValue) gers_id=\(gersValue)")
+            }
+
+            if let gersValue, !gersValue.isEmpty {
+                if idValue == nil || idValue?.isEmpty == true {
+                    fixedFromPropertyCount += 1
+                }
+                let normalizedFeature = GeoJSONFeature(
+                    id: gersValue,
+                    geometry: feature.geometry,
+                    properties: properties
+                )
+                normalized.append(normalizedFeature)
+                continue
+            }
+
+            if let idValue, !idValue.isEmpty {
+                properties["gers_id"] = AnyCodable(idValue)
+                fixedFromIdCount += 1
+                let normalizedFeature = GeoJSONFeature(
+                    id: idValue,
+                    geometry: feature.geometry,
+                    properties: properties
+                )
+                normalized.append(normalizedFeature)
+                continue
+            }
+
+            missingIdentityCount += 1
+        }
+
+        if fixedFromPropertyCount > 0 || fixedFromIdCount > 0 || idMismatchCount > 0 || missingIdentityCount > 0 {
+            print(
+                "🧭 [BUILDINGS] identity_normalized source=\(source) fixed_id_from_gers=\(fixedFromPropertyCount) fixed_gers_from_id=\(fixedFromIdCount) mismatches=\(idMismatchCount) dropped_missing=\(missingIdentityCount)"
+            )
+        }
+
+        return GeoJSONFeatureCollection(features: normalized)
     }
 }

@@ -32,7 +32,7 @@ public struct ThermalPrintView: View {
                     Card {
                         VStack(alignment: .leading, spacing: 12) {
                             Text("Label Size")
-                                .font(.headline)
+                                .font(.flyrHeadline)
                             
                             Picker("Label Size", selection: $selectedSize) {
                                 Text(ThermalLabelSize.size2x2.displayName)
@@ -54,7 +54,7 @@ public struct ThermalPrintView: View {
                         Card {
                             VStack(spacing: 12) {
                                 Text("Preview")
-                                    .font(.headline)
+                                    .font(.flyrHeadline)
                                 
                                 Image(uiImage: generatedImage)
                                     .resizable()
@@ -66,7 +66,7 @@ public struct ThermalPrintView: View {
                                     .shadow(radius: 4)
                                 
                                 Text("\(Int(selectedSize.pixelSize.width))×\(Int(selectedSize.pixelSize.height)) px @ \(selectedSize.dpi) DPI")
-                                    .font(.caption)
+                                    .font(.flyrCaption)
                                     .foregroundStyle(.secondary)
                             }
                         }
@@ -75,7 +75,7 @@ public struct ThermalPrintView: View {
                             VStack(spacing: 12) {
                                 ProgressView()
                                 Text("Generating label...")
-                                    .font(.subheadline)
+                                    .font(.flyrSubheadline)
                                     .foregroundStyle(.secondary)
                             }
                             .frame(maxWidth: .infinity)

@@ -89,6 +89,21 @@ extension LeadModel {
         )
     }
     
+    /// Create LeadModel from FieldLead (session-captured lead)
+    init(from fieldLead: FieldLead) {
+        self.init(
+            id: fieldLead.id,
+            name: fieldLead.name,
+            phone: fieldLead.phone,
+            email: nil,
+            address: fieldLead.address,
+            source: "Field Lead",
+            campaignId: fieldLead.campaignId,
+            notes: fieldLead.notes,
+            createdAt: fieldLead.createdAt
+        )
+    }
+    
     /// Create LeadModel from QR scan data
     init(
         id: UUID = UUID(),

@@ -10,9 +10,11 @@ public struct CampaignCreatePayloadV2: Codable, Sendable {
     public var seedQuery: String?           // Maps to DB region field
     public var seedLon: Double?
     public var seedLat: Double?
+    /// Optional tags (saved to campaigns.tags in Supabase)
+    public var tags: String?
     /// Array of CampaignAddress objects
     public var addressesJSON: [CampaignAddress]
-    
+
     public init(
         name: String,
         description: String,
@@ -22,6 +24,7 @@ public struct CampaignCreatePayloadV2: Codable, Sendable {
         seedQuery: String? = nil,
         seedLon: Double? = nil,
         seedLat: Double? = nil,
+        tags: String? = nil,
         addressesJSON: [CampaignAddress]
     ) {
         self.name = name
@@ -32,6 +35,7 @@ public struct CampaignCreatePayloadV2: Codable, Sendable {
         self.seedQuery = seedQuery
         self.seedLon = seedLon
         self.seedLat = seedLat
+        self.tags = tags
         self.addressesJSON = addressesJSON
     }
 }

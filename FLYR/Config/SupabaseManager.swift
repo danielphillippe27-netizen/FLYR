@@ -11,6 +11,14 @@ final class SupabaseManager {
     let client: SupabaseClient
     
     private init() {
-        client = SupabaseClient(supabaseURL: supabaseURL, supabaseKey: supabaseKey)
+        client = SupabaseClient(
+            supabaseURL: supabaseURL,
+            supabaseKey: supabaseKey,
+            options: .init(
+                auth: .init(
+                    emitLocalSessionAsInitialSession: true
+                )
+            )
+        )
     }
 }

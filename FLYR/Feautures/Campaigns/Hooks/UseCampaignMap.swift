@@ -48,9 +48,13 @@ final class UseCampaignMap: ObservableObject {
   // MapView reference for feature-state updates
   weak var mapView: MapView?
   
+  // Store campaign ID for building queries
+  private var currentCampaignId: UUID?
+  
   private var cancellables = Set<AnyCancellable>()
 
   func loadHomes(campaignId: UUID, campaign: CampaignV2? = nil) async {
+    self.currentCampaignId = campaignId
     isLoading = true; defer { isLoading = false }
     
     // Fetch addresses from database to ensure we have correct DB IDs (campaign_addresses.id)
@@ -216,9 +220,16 @@ final class UseCampaignMap: ObservableObject {
       }
       
       // Step 2: Fetch polygons from database (for persistence and to get any missing ones)
-      let addressIds = homes.map { $0.id }
       print("🏗️ [MVT] Fetching polygons from database...")
-      let geoJSONCollection = try await BuildingsAPI.shared.fetchBuildingPolygons(addressIds: addressIds)
+      let geoJSONCollection: GeoJSONFeatureCollection
+      if let campaignId = currentCampaignId {
+        // Use campaign-based fetch (queries buildings table where data exists)
+        geoJSONCollection = try await BuildingsAPI.shared.fetchBuildingPolygons(campaignId: campaignId)
+      } else {
+        // Fallback: fetch by address IDs (legacy)
+        let addressIds = homes.map { $0.id }
+        geoJSONCollection = try await BuildingsAPI.shared.fetchBuildingPolygons(addressIds: addressIds)
+      }
       
       // Step 3: Convert GeoJSONFeatureCollection to Mapbox FeatureCollection
       // Filter to only Polygon/MultiPolygon geometries to prevent FillLayer errors
@@ -355,70 +366,57 @@ final class UseCampaignMap: ObservableObject {
     }
   }
   
-  /// Load addresses within a drawn polygon
+  /// Load addresses within a drawn polygon via provision flow: save territory → backend (Lambda/S3) provisions → ingest to Supabase → refetch from Supabase.
   /// - Parameters:
   ///   - polygon: Array of coordinates forming the polygon
-  ///   - campaignId: Optional campaign ID to filter addresses
+  ///   - campaignId: Campaign ID (required). Backend reads territory_boundary and provisions via Lambda/S3.
   func loadAddressesInPolygon(polygon: [CLLocationCoordinate2D], campaignId: UUID?) async {
-    // Validate polygon has at least 3 points
     guard polygon.count >= 3 else {
       print("⚠️ [POLYGON] Polygon must have at least 3 points, got \(polygon.count)")
       return
     }
-    
+
+    guard let campaignId = campaignId else {
+      print("⚠️ [POLYGON] Campaign required to provision addresses from polygon")
+      await MainActor.run {
+        self.error = "Select a campaign to add addresses from this area."
+      }
+      return
+    }
+
     isLoading = true
     defer { isLoading = false }
-    
-    // Convert polygon to GeoJSON
+
     let geoJSONString = polygonToGeoJSON(polygon: polygon)
-    print("🗺️ [POLYGON] Querying addresses in polygon with \(polygon.count) vertices")
-    
+    print("🗺️ [POLYGON] Provision flow: update territory → provision (backend) → refetch from Supabase")
+
     do {
-      // Fetch addresses from Supabase
-      let addressRows = try await AddressesAPI.shared.fetchAddressesInPolygon(
-        polygonGeoJSON: geoJSONString,
-        campaignId: campaignId
-      )
-      
-      print("✅ [POLYGON] Fetched \(addressRows.count) addresses from polygon query")
-      
-      // Convert to HomePoint array
-      let newHomePoints = addressRows.map { row in
+      try await CampaignsAPI.shared.updateTerritoryBoundary(campaignId: campaignId, polygonGeoJSON: geoJSONString)
+      try await CampaignsAPI.shared.provisionCampaign(campaignId: campaignId)
+
+      let addresses = try await CampaignsAPI.shared.fetchAddresses(campaignId: campaignId)
+      let newHomePoints = addresses.map { row in
         HomePoint(
           id: row.id,
           address: row.formatted,
-          coord: CLLocationCoordinate2D(latitude: row.geom.coordinate.latitude, longitude: row.geom.coordinate.longitude),
+          coord: CLLocationCoordinate2D(latitude: row.lat, longitude: row.lon),
           number: row.formatted.extractHouseNumber()
         )
       }
-      
-      // Merge with existing homes, de-duplicating by ID
-      let existingIds = Set(homes.map { $0.id })
-      let uniqueNewPoints = newHomePoints.filter { !existingIds.contains($0.id) }
-      
-      let addedCount = uniqueNewPoints.count
-      let duplicateCount = newHomePoints.count - addedCount
-      
-      if duplicateCount > 0 {
-        print("ℹ️ [POLYGON] Skipped \(duplicateCount) duplicate addresses")
-      }
-      
-      // Update homes array with merged results
+
+      print("✅ [POLYGON] Refetched \(newHomePoints.count) addresses from Supabase after provision")
+
       await MainActor.run {
-        self.homes.append(contentsOf: uniqueNewPoints)
+        self.homes = newHomePoints
       }
-      
-      print("✅ [POLYGON] Added \(addedCount) new addresses to campaign map")
-      
-      // Trigger building polygon loading for new addresses
-      if !uniqueNewPoints.isEmpty {
+
+      if !newHomePoints.isEmpty {
         await loadFootprints()
       }
-      
     } catch {
-      print("❌ [POLYGON] Error loading addresses in polygon: \(error)")
+      print("❌ [POLYGON] Error: \(error)")
       await MainActor.run {
-        self.error = "Failed to load addresses: \(error.localizedDescription)"
+        self.error = "Failed to provision addresses: \(error.localizedDescription)"
       }
     }
   }

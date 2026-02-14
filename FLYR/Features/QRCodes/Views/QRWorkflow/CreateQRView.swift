@@ -1,9 +1,8 @@
 import SwiftUI
 import Combine
 
-/// View for creating QR codes with campaign and landing page selection
+/// View for creating QR codes with URL (direct link) destination
 struct CreateQRView: View {
-    let selectedLandingPageId: UUID?
     let selectedCampaignId: UUID?
     
     @StateObject private var viewModel = CreateQRViewModel()
@@ -11,23 +10,17 @@ struct CreateQRView: View {
     @State private var generatedQRCodeId: UUID?
     
     init(selectedLandingPageId: UUID? = nil, selectedCampaignId: UUID? = nil) {
-        self.selectedLandingPageId = selectedLandingPageId
         self.selectedCampaignId = selectedCampaignId
     }
     
     var body: some View {
         ScrollView {
             VStack(spacing: 28) {
-                // Destination Type Section
+                // Destination Type Section (URL only)
                 destinationTypeSection
                 
-                // Conditional Destination Fields
+                // URL Field
                 destinationFieldsSection
-                
-                // Landing Page Section (for landingPage destination type)
-                if viewModel.destinationType == .landingPage {
-                    landingPageSection
-                }
                 
                 // Campaign Section (Optional)
                 campaignSection
@@ -35,7 +28,6 @@ struct CreateQRView: View {
                 // Farm Section (Optional)
                 farmSection
                 
-                // Spacer to reveal CTA above tab bar
                 Rectangle()
                     .fill(.clear)
                     .frame(height: 8)
@@ -48,7 +40,7 @@ struct CreateQRView: View {
                 if let err = viewModel.error {
                     Text(err)
                         .foregroundStyle(.red)
-                        .font(.footnote)
+                        .font(.flyrFootnote)
                 }
                 PrimaryButton(title: "Generate QR Code", enabled: canGenerate) {
                     Task { await generateQRCode() }
@@ -68,54 +60,30 @@ struct CreateQRView: View {
             await viewModel.loadFarms()
             if let selectedCampaignId = selectedCampaignId {
                 viewModel.selectedCampaignId = selectedCampaignId
-                await viewModel.loadLandingPages(for: selectedCampaignId)
             }
-            if let selectedLandingPageId = selectedLandingPageId {
-                viewModel.selectedLandingPageId = selectedLandingPageId
-            }
-            // Update names for any pre-selected values
-            viewModel.updateLandingPageName()
             viewModel.updateCampaignName()
             viewModel.updateFarmName()
         }
         .onChange(of: viewModel.destinationType) { _, _ in
-            // Reset destination value when type changes
             viewModel.destinationValue = ""
-        }
-        .sheet(isPresented: $viewModel.showLandingPagePicker) {
-            LandingPagePickerSheet(
-                selectedLandingPageId: $viewModel.selectedLandingPageId
-            ) { landingPageId, name in
-                viewModel.selectedLandingPageName = name
-            }
         }
         .sheet(isPresented: $viewModel.showCampaignPicker) {
             CampaignPickerSheet(
                 campaigns: viewModel.campaigns,
                 selectedCampaignId: $viewModel.selectedCampaignId
-            ) { campaignId in
+            ) { _ in
                 viewModel.updateCampaignName()
-                if let campaignId = campaignId {
-                    Task {
-                        await viewModel.loadLandingPages(for: campaignId)
-                    }
-                } else {
-                    viewModel.landingPages = []
-                    viewModel.selectedLandingPageId = nil
-                }
             }
         }
         .sheet(isPresented: $viewModel.showFarmPicker) {
             FarmPickerSheet(
                 farms: viewModel.farms,
                 selectedFarmId: $viewModel.selectedFarmId
-            ) { farmId in
+            ) { _ in
                 viewModel.updateFarmName()
             }
         }
     }
-    
-    // MARK: - Destination Type Section
     
     private var destinationTypeSection: some View {
         FormSection("QR Destination") {
@@ -126,49 +94,22 @@ struct CreateQRView: View {
         .formContainerPadding()
     }
     
-    // MARK: - Destination Fields Section
-    
     private var destinationFieldsSection: some View {
-        Group {
-            switch viewModel.destinationType {
-            case .landingPage:
-                EmptyView()
-                
-            case .directLink:
-                FormSection("URL") {
-                    HStack {
-                        TextField(viewModel.destinationType.valuePlaceholder, text: $viewModel.destinationValue)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                            .keyboardType(.URL)
-                            .font(.system(size: 16))
-                        Spacer()
-                    }
-                    .padding(12)
-                    .background(Color(.secondarySystemBackground))
-                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                }
-                .formContainerPadding()
+        FormSection("URL") {
+            HStack {
+                TextField(viewModel.destinationType.valuePlaceholder, text: $viewModel.destinationValue)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .keyboardType(.URL)
+                    .font(.system(size: 16))
+                Spacer()
             }
-        }
-    }
-    
-    // MARK: - Landing Page Section
-    
-    private var landingPageSection: some View {
-        FormSection("Landing Page") {
-            FormRowButton(
-                title: "Landing Page",
-                value: viewModel.selectedLandingPageName,
-                placeholder: "Select Landing Page"
-            ) {
-                viewModel.showLandingPagePicker = true
-            }
+            .padding(12)
+            .background(Color(.secondarySystemBackground))
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
         .formContainerPadding()
     }
-    
-    // MARK: - Campaign Section (Optional)
     
     private var campaignSection: some View {
         FormSection("Campaign (Optional)") {
@@ -188,8 +129,6 @@ struct CreateQRView: View {
         .formContainerPadding()
     }
     
-    // MARK: - Farm Section (Optional)
-    
     private var farmSection: some View {
         FormSection("Farm (Optional)") {
             if viewModel.isLoadingFarms {
@@ -208,17 +147,9 @@ struct CreateQRView: View {
         .formContainerPadding()
     }
     
-    // MARK: - Validation
-    
     private var canGenerate: Bool {
         guard !viewModel.isGenerating else { return false }
-        
-        switch viewModel.destinationType {
-        case .landingPage:
-            return viewModel.selectedLandingPageId != nil
-        case .directLink:
-            return !viewModel.destinationValue.trimmingCharacters(in: .whitespaces).isEmpty
-        }
+        return !viewModel.destinationValue.trimmingCharacters(in: .whitespaces).isEmpty
     }
     
     private func generateQRCode() async {
@@ -226,30 +157,12 @@ struct CreateQRView: View {
         defer { viewModel.isGenerating = false }
         
         do {
-            // Generate slug (only for campaign/landingPage types that use redirect)
-            var slug: String? = nil
-            var qrUrl: String
+            let qrUrl = viewModel.destinationType.buildURL(
+                value: viewModel.destinationValue.isEmpty ? nil : viewModel.destinationValue,
+                campaignId: viewModel.selectedCampaignId,
+                landingPageId: nil
+            )
             
-            switch viewModel.destinationType {
-            case .landingPage:
-                // For landing page, use slug-based redirect
-                slug = QRSlugGenerator.generateLowercase(length: 8)
-                qrUrl = viewModel.destinationType.buildURL(
-                    value: slug,
-                    campaignId: viewModel.selectedCampaignId,
-                    landingPageId: viewModel.selectedLandingPageId
-                )
-                
-            case .directLink:
-                // For URL, build URL directly from destination value
-                qrUrl = viewModel.destinationType.buildURL(
-                    value: viewModel.destinationValue.isEmpty ? nil : viewModel.destinationValue,
-                    campaignId: viewModel.selectedCampaignId,
-                    landingPageId: viewModel.selectedLandingPageId
-                )
-            }
-            
-            // Generate QR code image
             guard let base64Image = QRCodeGenerator.generateBase64(from: qrUrl) else {
                 await MainActor.run {
                     viewModel.error = "Failed to generate QR code image"
@@ -257,16 +170,14 @@ struct CreateQRView: View {
                 return
             }
             
-            // Prepare metadata
             var metadataDict: [String: AnyCodable] = [:]
             metadataDict["destination_type"] = AnyCodable(viewModel.destinationType.rawValue)
             
-            // Create QR code in database
-            let qrCode = try await SupabaseQRService.shared.createQRCodeWithSlug(
+            let qrCode = try await QRRepository.shared.createQRCodeWithSlug(
                 campaignId: viewModel.selectedCampaignId,
                 farmId: viewModel.selectedFarmId,
-                landingPageId: viewModel.destinationType == .landingPage ? viewModel.selectedLandingPageId : nil,
-                slug: slug,
+                landingPageId: nil,
+                slug: nil,
                 qrUrl: qrUrl,
                 qrImage: base64Image,
                 variant: nil,
@@ -294,36 +205,27 @@ enum QRStyle: String, CaseIterable {
 @MainActor
 class CreateQRViewModel: ObservableObject {
     @Published var campaigns: [CampaignListItem] = []
-    @Published var landingPages: [CampaignLandingPage] = []
     @Published var farms: [FarmListItem] = []
     @Published var selectedCampaignId: UUID?
-    @Published var selectedLandingPageId: UUID?
     @Published var selectedFarmId: UUID?
     @Published var qrStyle: QRStyle = .light
     @Published var includeLogo: Bool = false
     
-    // Destination Type
-    @Published var destinationType: QRDestinationType = .landingPage
+    @Published var destinationType: QRDestinationType = .directLink
     @Published var destinationValue: String = ""
     
-    // Picker state
-    @Published var showLandingPagePicker = false
     @Published var showCampaignPicker = false
     @Published var showFarmPicker = false
     
-    // Display names
-    @Published var selectedLandingPageName: String?
     @Published var selectedCampaignName: String?
     @Published var selectedFarmName: String?
     
     @Published var isLoadingCampaigns = false
-    @Published var isLoadingLandingPages = false
     @Published var isLoadingFarms = false
     @Published var isGenerating = false
     @Published var error: String?
     
     private let campaignsAPI = CampaignsAPI.shared
-    private let landingPageService = SupabaseLandingPageService.shared
     private let qrRepository = QRRepository.shared
     
     func loadCampaigns() async {
@@ -338,22 +240,6 @@ class CreateQRViewModel: ObservableObject {
         }
     }
     
-    func loadLandingPages(for campaignId: UUID) async {
-        isLoadingLandingPages = true
-        defer { isLoadingLandingPages = false }
-        
-        do {
-            if let landingPage = try await landingPageService.fetchLandingPage(campaignId: campaignId) {
-                landingPages = [landingPage]
-            } else {
-                landingPages = []
-            }
-        } catch {
-            self.error = "Failed to load landing pages: \(error.localizedDescription)"
-            landingPages = []
-        }
-    }
-    
     func loadFarms() async {
         isLoadingFarms = true
         defer { isLoadingFarms = false }
@@ -364,18 +250,6 @@ class CreateQRViewModel: ObservableObject {
             updateFarmName()
         } catch {
             self.error = "Failed to load farms: \(error.localizedDescription)"
-        }
-    }
-    
-    func updateLandingPageName() {
-        if let landingPageId = selectedLandingPageId {
-            // Try to find in loaded landing pages first
-            if let landingPage = landingPages.first(where: { $0.id == landingPageId }) {
-                selectedLandingPageName = landingPage.headline ?? landingPage.slug
-            }
-            // If not found, the picker sheet will set the name directly
-        } else {
-            selectedLandingPageName = nil
         }
     }
     
@@ -397,4 +271,3 @@ class CreateQRViewModel: ObservableObject {
         }
     }
 }
-

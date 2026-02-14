@@ -2,17 +2,13 @@ import Foundation
 
 /// QR code type for batch configuration
 public enum QRType: String, Codable, CaseIterable {
-    case landingPage = "landing_page"
     case directLink = "direct_link"
     case map = "map"
     case customURL = "custom_url"
-    // Future: case variant = "variant"
     
     /// Display label for UI
     public var displayLabel: String {
         switch self {
-        case .landingPage:
-            return "Landing Page"
         case .directLink:
             return "Direct Link"
         case .map:
@@ -25,8 +21,6 @@ public enum QRType: String, Codable, CaseIterable {
     /// System icon name for UI
     public var iconName: String {
         switch self {
-        case .landingPage:
-            return "doc.text.fill"
         case .directLink:
             return "link"
         case .map:
@@ -39,8 +33,6 @@ public enum QRType: String, Codable, CaseIterable {
     /// Description text for UI
     public var description: String {
         switch self {
-        case .landingPage:
-            return "Link to a custom landing page"
         case .directLink:
             return "Link directly to your website"
         case .map:

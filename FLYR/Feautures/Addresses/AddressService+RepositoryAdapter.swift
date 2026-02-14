@@ -10,10 +10,10 @@ extension AddressService: AddressRepository {
     public func nearestAddresses(
         at location: CLLocationCoordinate2D,
         limit: Int,
-        radiusMeters: Double
+        radiusMeters: Double,
+        campaignId: UUID? = nil
     ) async throws -> [AddressCandidate] {
-        // Delegate to existing fetchNearest method, preserving ODA-first, Mapbox-fallback logic
-        return try await fetchNearest(center: location, target: limit)
+        return try await fetchNearest(center: location, target: limit, campaignId: campaignId)
     }
     
     public func sameStreet(

@@ -1,7 +1,5 @@
 import SwiftUI
 import Supabase
-import Auth
-
 struct StatsView: View {
     @StateObject private var vm = StatsViewModel()
     @StateObject private var auth = AuthManager.shared
@@ -37,6 +35,7 @@ struct StatsView: View {
                     }
                     .refreshable {
                         await vm.refreshStats(for: userID)
+                        HapticManager.rigid()
                     }
                     .task {
                         await vm.loadStats(for: userID)
@@ -55,6 +54,7 @@ struct StatsView: View {
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button {
+                        HapticManager.light()
                         showSettings = true
                     } label: {
                         Image(systemName: "gearshape.fill")
@@ -74,11 +74,11 @@ struct StatsView: View {
         HStack {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Your Stats")
-                    .font(.system(size: 28, weight: .bold))
+                    .font(AppFont.title(28))
                     .foregroundColor(.text)
                 
                 Text("Updated just now")
-                    .font(.system(size: 14))
+                    .font(AppFont.body(14))
                     .foregroundColor(.muted)
             }
             
@@ -102,7 +102,7 @@ struct StatsView: View {
         HStack(spacing: 16) {
             StatCard(
                 icon: "flame.fill",
-                color: .orange,
+                color: .flyrPrimary,
                 title: "Day Streak",
                 value: vm.stats?.day_streak ?? 0
             )
@@ -153,7 +153,7 @@ struct StatsView: View {
             
             StatCard(
                 icon: "star.fill",
-                color: .orange,
+                color: .flyrPrimary,
                 title: "Leads Created",
                 value: vm.stats?.leads_created ?? 0
             )
@@ -218,14 +218,6 @@ struct StatsView: View {
                     icon: "qrcode.viewfinder",
                     color: .red,
                     description: "QR code scans per flyer"
-                )
-                
-                SuccessMetricBar(
-                    title: "FLYR™ QR Code - Lead",
-                    value: vm.stats?.qr_code_lead_rate ?? 0.0,
-                    icon: "qrcode",
-                    color: .orange,
-                    description: "Leads per QR code scan"
                 )
             }
             .padding(.top, 8)

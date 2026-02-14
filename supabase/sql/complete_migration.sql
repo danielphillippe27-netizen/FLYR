@@ -8,7 +8,7 @@ create extension if not exists btree_gist;
 -- 2. Create addresses_master table if it doesn't exist
 create table if not exists public.addresses_master (
   id            bigserial primary key,
-  source        text not null,                    -- 'oda','durham_open','osm','user','fallback'
+  source        text not null,                    -- 'durham_open','osm','user','fallback'
   source_id     text,
   full_address  text not null,
   street_number text,
@@ -17,7 +17,7 @@ create table if not exists public.addresses_master (
   province      text not null,
   postal_code   text,
   geom          geometry(Point,4326),
-  confidence    real default 0.90,                -- ODA ~0.90, Durham ~0.95, fallback ~0.70
+  confidence    real default 0.90,                -- Durham ~0.95, fallback ~0.70
   updated_at    timestamptz default now(),
   norm_key      text generated always as
     (trim(both from upper(

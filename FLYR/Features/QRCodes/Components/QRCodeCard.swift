@@ -24,7 +24,7 @@ struct QRCodeCard: View {
                 }
                 
                 Text(qrCode.formatted)
-                    .font(.caption)
+                    .font(.flyrCaption)
                     .lineLimit(2)
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.primary)
