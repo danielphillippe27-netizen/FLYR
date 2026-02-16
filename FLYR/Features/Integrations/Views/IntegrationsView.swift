@@ -21,7 +21,10 @@ struct IntegrationsView: View {
     @State private var isConnectingWebhook = false
     @State private var apiKeyError: String?
     @State private var webhookError: String?
-    
+    @State private var fubActionMessage: String?
+    @State private var fubActionSuccess: Bool = true
+    @State private var isFUBActionInProgress = false
+
     var body: some View {
         NavigationStack {
             ZStack {
@@ -56,6 +59,70 @@ struct IntegrationsView: View {
                                     Spacer()
                                 }
                                 .padding(.horizontal, 16)
+                            }
+
+                            // Follow Up Boss actions (when connected)
+                            if crmStore.isFUBConnected {
+                                Section {
+                                    VStack(spacing: 12) {
+                                        if let msg = fubActionMessage {
+                                            Text(msg)
+                                                .font(.system(size: 13))
+                                                .foregroundColor(fubActionSuccess ? .success : .error)
+                                                .multilineTextAlignment(.center)
+                                        }
+                                        HStack(spacing: 12) {
+                                            Button(action: { runFUBTestConnection() }) {
+                                                HStack(spacing: 6) {
+                                                    if isFUBActionInProgress { ProgressView().scaleEffect(0.8).tint(.white) }
+                                                    Text("Test connection")
+                                                        .font(.system(size: 15, weight: .medium))
+                                                }
+                                                .foregroundColor(.white)
+                                                .frame(maxWidth: .infinity)
+                                                .padding(.vertical, 12)
+                                                .background(Color.info)
+                                                .cornerRadius(10)
+                                            }
+                                            .disabled(isFUBActionInProgress)
+                                            Button(action: { runFUBTestPush() }) {
+                                                Text("Send test lead")
+                                                    .font(.system(size: 15, weight: .medium))
+                                                    .foregroundColor(.white)
+                                                    .frame(maxWidth: .infinity)
+                                                    .padding(.vertical, 12)
+                                                    .background(Color.info)
+                                                    .cornerRadius(10)
+                                            }
+                                            .disabled(isFUBActionInProgress)
+                                        }
+                                        Button(action: { runFUBSyncCRM() }) {
+                                            HStack(spacing: 6) {
+                                                if isFUBActionInProgress { ProgressView().scaleEffect(0.8).tint(.white) }
+                                                Text("Sync to CRM")
+                                                    .font(.system(size: 15, weight: .medium))
+                                            }
+                                            .foregroundColor(.white)
+                                            .frame(maxWidth: .infinity)
+                                            .padding(.vertical, 12)
+                                            .background(Color.success)
+                                            .cornerRadius(10)
+                                        }
+                                        .disabled(isFUBActionInProgress)
+                                    }
+                                    .padding(16)
+                                    .background(Color.bgSecondary)
+                                    .cornerRadius(20)
+                                    .shadow(color: Color.black.opacity(0.05), radius: 8, x: 0, y: 2)
+                                } header: {
+                                    HStack {
+                                        Text("Follow Up Boss")
+                                            .font(.system(size: 22, weight: .bold))
+                                            .foregroundColor(.text)
+                                        Spacer()
+                                    }
+                                    .padding(.horizontal, 16)
+                                }
                             }
                             
                             // Test Lead Section
@@ -250,6 +317,69 @@ struct IntegrationsView: View {
             await LeadSyncManager.shared.syncLeadToCRM(lead: testLead, userId: userId)
             await MainActor.run {
                 showTestLeadAlert = true
+            }
+        }
+    }
+
+    private func runFUBTestConnection() {
+        fubActionMessage = nil
+        isFUBActionInProgress = true
+        Task {
+            do {
+                let res = try await FUBPushLeadAPI.shared.testConnection()
+                await MainActor.run {
+                    isFUBActionInProgress = false
+                    fubActionSuccess = true
+                    fubActionMessage = res.message ?? "Connection is working."
+                }
+            } catch {
+                await MainActor.run {
+                    isFUBActionInProgress = false
+                    fubActionSuccess = false
+                    fubActionMessage = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    private func runFUBTestPush() {
+        fubActionMessage = nil
+        isFUBActionInProgress = true
+        Task {
+            do {
+                let res = try await FUBPushLeadAPI.shared.testPush()
+                await MainActor.run {
+                    isFUBActionInProgress = false
+                    fubActionSuccess = true
+                    fubActionMessage = res.message ?? "Test lead sent."
+                }
+            } catch {
+                await MainActor.run {
+                    isFUBActionInProgress = false
+                    fubActionSuccess = false
+                    fubActionMessage = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    private func runFUBSyncCRM() {
+        fubActionMessage = nil
+        isFUBActionInProgress = true
+        Task {
+            do {
+                let res = try await FUBPushLeadAPI.shared.syncCRM()
+                await MainActor.run {
+                    isFUBActionInProgress = false
+                    fubActionSuccess = true
+                    fubActionMessage = res.message ?? "Synced \(res.synced ?? 0) contacts."
+                }
+            } catch {
+                await MainActor.run {
+                    isFUBActionInProgress = false
+                    fubActionSuccess = false
+                    fubActionMessage = error.localizedDescription
+                }
             }
         }
     }

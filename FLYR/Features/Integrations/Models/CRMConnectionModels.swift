@@ -53,3 +53,62 @@ struct FUBConnectResponse: Decodable {
         let company: String?
     }
 }
+
+// MARK: - Push Lead (POST /api/integrations/fub/push-lead)
+
+struct FUBPushLeadRequest: Encodable {
+    let firstName: String?
+    let lastName: String?
+    let email: String?
+    let phone: String?
+    let address: String?
+    let city: String?
+    let state: String?
+    let zip: String?
+    let message: String?
+    let source: String?
+    let sourceUrl: String?
+    let campaignId: String?
+    let metadata: [String: String]?
+
+    enum CodingKeys: String, CodingKey {
+        case firstName, lastName, email, phone, address, city, state, zip
+        case message, source, sourceUrl, campaignId, metadata
+    }
+}
+
+struct FUBPushLeadResponse: Decodable {
+    let success: Bool
+    let message: String?
+    let fubEventId: String?
+    let error: String?
+}
+
+// MARK: - Sync CRM (POST /api/leads/sync-crm)
+
+struct FUBSyncCRMResponse: Decodable {
+    let success: Bool
+    let message: String?
+    let synced: Int?
+    let error: String?
+}
+
+// MARK: - Status (GET /api/integrations/fub/status)
+
+struct FUBStatusResponse: Decodable {
+    let connected: Bool
+    let status: String?
+    let createdAt: String?
+    let updatedAt: String?
+    let lastSyncAt: String?
+    let lastError: String?
+    let error: String?
+}
+
+// MARK: - Test (POST /api/integrations/fub/test, test-push)
+
+struct FUBTestResponse: Decodable {
+    let success: Bool
+    let message: String?
+    let error: String?
+}

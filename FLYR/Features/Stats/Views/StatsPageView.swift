@@ -15,8 +15,10 @@ enum StatsPageTab: String, CaseIterable {
 private let statsAccentRed = Color(hex: "#FF4F4F")
 
 struct StatsPageView: View {
+    @EnvironmentObject var entitlementsService: EntitlementsService
     @State private var selectedTab: StatsPageTab = .leaderboard
     @State private var youPeriod: String = "Week"
+    @State private var showPaywall = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -39,8 +41,13 @@ struct StatsPageView: View {
             Group {
                 switch selectedTab {
                 case .leaderboard:
-                    LeaderboardView()
-                        .transition(.opacity.combined(with: .move(edge: .leading)))
+                    if entitlementsService.canUsePro {
+                        LeaderboardView()
+                            .transition(.opacity.combined(with: .move(edge: .leading)))
+                    } else {
+                        LeaderboardPaywallGate(showPaywall: $showPaywall)
+                            .transition(.opacity.combined(with: .move(edge: .leading)))
+                    }
                 case .you:
                     YouViewContent(period: $youPeriod)
                         .transition(.opacity.combined(with: .move(edge: .trailing)))
@@ -51,6 +58,45 @@ struct StatsPageView: View {
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .navigationBar)
+        .sheet(isPresented: $showPaywall) {
+            PaywallView()
+        }
+    }
+}
+
+// MARK: - Leaderboard Pro gate (upgrade CTA when not Pro)
+private struct LeaderboardPaywallGate: View {
+    @Binding var showPaywall: Bool
+
+    var body: some View {
+        VStack(spacing: 20) {
+            Spacer(minLength: 40)
+            Image(systemName: "trophy.fill")
+                .font(.system(size: 56))
+                .foregroundColor(.muted)
+            Text("Leaderboard is a Pro feature")
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundColor(.text)
+                .multilineTextAlignment(.center)
+            Text("Upgrade to see how you rank.")
+                .font(.system(size: 16))
+                .foregroundColor(.muted)
+            Button {
+                showPaywall = true
+            } label: {
+                Text("Upgrade to Pro")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundColor(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 14)
+                    .background(Color(hex: "#FF4F4F"))
+                    .cornerRadius(12)
+            }
+            .padding(.horizontal, 32)
+            .padding(.top, 8)
+            Spacer(minLength: 40)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
@@ -130,12 +176,6 @@ struct YouViewContent: View {
                             CompactStatRow(
                                 icon: "door.left.hand.open",
                                 label: "Doors",
-                                progress: progress(actual: Double(vm.stats?.doors_knocked ?? 0), max: StatsProgressMax.doors),
-                                value: "\(vm.stats?.doors_knocked ?? 0)"
-                            )
-                            CompactStatRow(
-                                icon: "doc.text",
-                                label: "Flyers",
                                 progress: progress(actual: Double(vm.stats?.flyers ?? 0), max: StatsProgressMax.flyers),
                                 value: "\(vm.stats?.flyers ?? 0)"
                             )
@@ -261,7 +301,7 @@ struct YouViewContent: View {
         HStack(spacing: 0) {
             miniColumn(label: "Streak", value: "\(vm.stats?.day_streak ?? 0)")
             miniColumn(label: "Best", value: "\(vm.stats?.best_streak ?? 0)")
-            miniColumn(label: "Flyers", value: "\(vm.stats?.flyers ?? 0)")
+            miniColumn(label: "Doors", value: "\(vm.stats?.flyers ?? 0)")
             miniColumn(label: "Conv", value: "\(vm.stats?.conversations ?? 0)")
         }
         .padding(.horizontal, 8)

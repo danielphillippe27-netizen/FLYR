@@ -3,11 +3,37 @@ struct LeadDetailView: View {
     let lead: FieldLead
     var onConnectCRM: () -> Void
     var onDismiss: (() -> Void)?
+    /// Called after successfully saving edits so the parent can refresh (e.g. update list and selectedLead).
+    var onLeadUpdated: ((FieldLead) -> Void)?
     
     @State private var integrations: [UserIntegration] = []
     @State private var showSyncSettings = false
     @State private var showShareSheet = false
     @State private var shareItems: [Any] = []
+    @State private var isPushingToCRM = false
+    @State private var pushToCRMSuccess: Bool? = nil
+    
+    // Editable fields wired to lead data
+    @State private var editableName: String = ""
+    @State private var editablePhone: String = ""
+    @State private var editableEmail: String = ""
+    @State private var editableNotes: String = ""
+    @State private var isSaving = false
+    private var hasEdits: Bool { editableName != (lead.name ?? "") || editablePhone != (lead.phone ?? "") || editableEmail != (lead.email ?? "") || editableNotes != (lead.notes ?? "") }
+    
+    // Appointment / task for CRM push (UI-only, not persisted on lead)
+    @State private var appointmentDate: Date = Date()
+    @State private var appointmentTitle: String = ""
+    @State private var appointmentNotes: String = ""
+    @State private var taskTitle: String = ""
+    @State private var taskDueDate: Date = Date()
+    
+    init(lead: FieldLead, onConnectCRM: @escaping () -> Void, onDismiss: (() -> Void)? = nil, onLeadUpdated: ((FieldLead) -> Void)? = nil) {
+        self.lead = lead
+        self.onConnectCRM = onConnectCRM
+        self.onDismiss = onDismiss
+        self.onLeadUpdated = onLeadUpdated
+    }
     
     private var connectedProvider: IntegrationProvider? {
         integrations.first { $0.isConnected }?.provider
@@ -23,22 +49,227 @@ struct LeadDetailView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
+                appleStyleHeaderSection
+                contactRowsSection
                 addressSection
-                fieldNotesSection
+                appointmentSection
+                taskSection
+                fieldNotesMetadataSection
                 if lead.qrCode != nil { qrSection }
                 syncSection
                 actionsSection
             }
             .padding(20)
         }
-        .navigationTitle(lead.address)
+        .background(
+            LinearGradient(
+                colors: [Color.black.opacity(0.2), Color.gray.opacity(0.15), Color.clear],
+                startPoint: .topTrailing,
+                endPoint: .bottomLeading
+            )
+            .ignoresSafeArea()
+        )
+        .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                if hasEdits {
+                    Button("Save") {
+                        saveEdits()
+                    }
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundColor(.accent)
+                    .disabled(isSaving)
+                }
+            }
+        }
         .task { await loadIntegrations() }
+        .onAppear {
+            editableName = lead.name ?? ""
+            editablePhone = lead.phone ?? ""
+            editableEmail = lead.email ?? ""
+            editableNotes = lead.notes ?? ""
+        }
         .sheet(isPresented: $showSyncSettings) {
             SyncSettingsView()
         }
         .sheet(isPresented: $showShareSheet) {
             ShareSheet(activityItems: shareItems)
+        }
+    }
+    
+    private var displayTitle: String {
+        let name = (editableName.isEmpty ? lead.name : editableName) ?? ""
+        if !name.isEmpty { return name }
+        return lead.address
+    }
+    
+    // MARK: - Apple-style header (name + circular action buttons, no avatar)
+    private var appleStyleHeaderSection: some View {
+        VStack(spacing: 20) {
+            // Name (editable) — prominent, higher and larger like Apple Contacts
+            TextField("Name", text: $editableName)
+                .textFieldStyle(.plain)
+                .font(.system(size: 28, weight: .bold))
+                .foregroundColor(.text)
+                .multilineTextAlignment(.center)
+                .autocapitalization(.words)
+            // Circular action buttons: Message, Phone, Email, Address
+            HStack(spacing: 24) {
+                circularActionButton(icon: "message.fill", isEnabled: phoneDigits(from: editablePhone) != nil) {
+                    openSMS()
+                }
+                circularActionButton(icon: "phone.fill", isEnabled: phoneDigits(from: editablePhone) != nil) {
+                    openPhone()
+                }
+                circularActionButton(icon: "envelope.fill", isEnabled: !(editableEmail.isEmpty && (lead.email ?? "").isEmpty)) {
+                    openEmail()
+                }
+                circularActionButton(icon: "mappin.circle.fill", isEnabled: !lead.address.isEmpty) {
+                    openMaps()
+                }
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 8)
+    }
+    
+    private func phoneDigits(from raw: String) -> String? {
+        let digits = raw.filter { $0.isNumber || $0 == "+" }
+        let digitsOnly = digits.filter { $0.isNumber }
+        if digitsOnly.isEmpty { return nil }
+        return (digits.hasPrefix("+") ? "+" : "") + digitsOnly
+    }
+    
+    private func circularActionButton(icon: String, isEnabled: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.system(size: 22))
+                .foregroundColor(isEnabled ? .white : .gray)
+                .frame(width: 50, height: 50)
+                .background(isEnabled ? Color.accent : Color.gray.opacity(0.3))
+                .clipShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!isEnabled)
+    }
+    
+    private func openPhone() {
+        guard let digits = phoneDigits(from: editablePhone.isEmpty ? (lead.phone ?? "") : editablePhone),
+              let url = URL(string: "tel:\(digits)") else { return }
+        UIApplication.shared.open(url)
+    }
+    
+    private func openSMS() {
+        guard let digits = phoneDigits(from: editablePhone.isEmpty ? (lead.phone ?? "") : editablePhone),
+              let url = URL(string: "sms:\(digits)") else { return }
+        UIApplication.shared.open(url)
+    }
+    
+    private func openEmail() {
+        let email = editableEmail.isEmpty ? (lead.email ?? "") : editableEmail
+        guard !email.isEmpty, let url = URL(string: "mailto:\(email)") else { return }
+        UIApplication.shared.open(url)
+    }
+    
+    private func openMaps() {
+        let encoded = lead.address.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
+        guard let url = URL(string: "http://maps.apple.com/?q=\(encoded)") else { return }
+        UIApplication.shared.open(url)
+    }
+    
+    // MARK: - Appointment (for CRM push)
+    private var appointmentSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label("Appointment (for CRM)", systemImage: "calendar")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundColor(.muted)
+            DatePicker("Date & time", selection: $appointmentDate, in: Date()...)
+                .datePickerStyle(.compact)
+                .foregroundColor(.text)
+            TextField("Title (optional)", text: $appointmentTitle)
+                .textFieldStyle(.plain)
+                .font(.system(size: 16))
+                .foregroundColor(.text)
+            TextField("Notes (optional)", text: $appointmentNotes, axis: .vertical)
+                .textFieldStyle(.plain)
+                .font(.system(size: 16))
+                .foregroundColor(.text)
+                .lineLimit(3...6)
+        }
+        .padding(16)
+        .background(Color.gray.opacity(0.12))
+        .cornerRadius(12)
+    }
+    
+    // MARK: - Task (for CRM push)
+    private var taskSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label("Task (for CRM)", systemImage: "checkmark.circle")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundColor(.muted)
+            TextField("Task title", text: $taskTitle)
+                .textFieldStyle(.plain)
+                .font(.system(size: 16))
+                .foregroundColor(.text)
+            DatePicker("Due date", selection: $taskDueDate, in: Date()...)
+                .datePickerStyle(.compact)
+                .foregroundColor(.text)
+        }
+        .padding(16)
+        .background(Color.gray.opacity(0.12))
+        .cornerRadius(12)
+    }
+    
+    // MARK: - Phone, Email, Notes rows
+    private var contactRowsSection: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            contactRow(icon: "phone.fill", label: "Phone", text: $editablePhone, placeholder: "Phone number", keyboardType: .phonePad)
+            Divider().background(Color.border).padding(.vertical, 12)
+            contactRow(icon: "envelope.fill", label: "Email", text: $editableEmail, placeholder: "Email", keyboardType: .emailAddress)
+            Divider().background(Color.border).padding(.vertical, 12)
+            VStack(alignment: .leading, spacing: 8) {
+                Label("Notes", systemImage: "note.text")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(.muted)
+                TextEditor(text: $editableNotes)
+                    .font(.system(size: 16))
+                    .foregroundColor(.text)
+                    .scrollContentBackground(.hidden)
+                    .frame(minHeight: 88)
+                    .padding(10)
+                    .background(Color.gray.opacity(0.12))
+                    .cornerRadius(10)
+                    .overlay(alignment: .topLeading) {
+                        if editableNotes.isEmpty {
+                            Text("Add notes…")
+                                .font(.system(size: 16))
+                                .foregroundColor(.muted)
+                                .padding(14)
+                                .allowsHitTesting(false)
+                        }
+                    }
+            }
+        }
+    }
+    
+    private func contactRow(icon: String, label: String, text: Binding<String>, placeholder: String, keyboardType: UIKeyboardType = .default) -> some View {
+        HStack(alignment: .center, spacing: 12) {
+            Image(systemName: icon)
+                .font(.system(size: 16))
+                .foregroundColor(.muted)
+                .frame(width: 24, alignment: .center)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(label)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(.muted)
+                TextField(placeholder, text: text)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 16))
+                    .foregroundColor(.text)
+                    .keyboardType(keyboardType)
+                    .autocapitalization(keyboardType == .emailAddress ? .none : .sentences)
+            }
         }
     }
     
@@ -61,34 +292,22 @@ struct LeadDetailView: View {
         }
     }
     
-    private var fieldNotesSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Field Notes")
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundColor(.text)
-            Divider().background(Color.border)
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Text("Status:")
-                        .foregroundColor(.muted)
-                    Text(lead.status.displayName)
-                        .foregroundColor(.text)
-                }
-                .font(.system(size: 15))
-                Text("Last: \(lead.createdAt, style: .date) at \(lead.createdAt, style: .time)")
-                    .font(.system(size: 14))
+    private var fieldNotesMetadataSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Status:")
                     .foregroundColor(.muted)
-                if let sessionId = lead.sessionId {
-                    Text("Captured during Session")
-                        .font(.system(size: 13))
-                        .foregroundColor(.muted)
-                }
-                if let notes = lead.notes, !notes.isEmpty {
-                    Text(notes)
-                        .font(.system(size: 15))
-                        .foregroundColor(.text)
-                        .padding(.top, 4)
-                }
+                Text(lead.status.displayName)
+                    .foregroundColor(.text)
+            }
+            .font(.system(size: 15))
+            Text("Last: \(lead.createdAt, style: .date) at \(lead.createdAt, style: .time)")
+                .font(.system(size: 14))
+                .foregroundColor(.muted)
+            if let sessionId = lead.sessionId {
+                Text("Captured during Session")
+                    .font(.system(size: 13))
+                    .foregroundColor(.muted)
             }
         }
     }
@@ -163,15 +382,51 @@ struct LeadDetailView: View {
                     .cornerRadius(10)
             }
             .buttonStyle(.plain)
-            Button(action: exportLead) {
-                Label("Export", systemImage: "doc.text")
-                    .font(.system(size: 15, weight: .medium))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 12)
-                    .background(Color.gray.opacity(0.15))
-                    .cornerRadius(10)
+            Button(action: pushToCRM) {
+                Group {
+                    if isPushingToCRM {
+                        ProgressView()
+                            .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                    } else if pushToCRMSuccess == true {
+                        Label("Pushed", systemImage: "checkmark.circle.fill")
+                    } else {
+                        Label("Push to CRM", systemImage: "arrow.up.circle")
+                    }
+                }
+                .font(.system(size: 15, weight: .medium))
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 12)
+                .background(Color.gray.opacity(0.15))
+                .cornerRadius(10)
             }
             .buttonStyle(.plain)
+            .disabled(isPushingToCRM)
+        }
+    }
+    
+    private func saveEdits() {
+        guard hasEdits else { return }
+        isSaving = true
+        var updated = lead
+        updated.name = editableName.isEmpty ? nil : editableName
+        updated.phone = editablePhone.isEmpty ? nil : editablePhone
+        updated.email = editableEmail.isEmpty ? nil : editableEmail
+        updated.notes = editableNotes.isEmpty ? nil : editableNotes
+        updated.updatedAt = Date()
+        Task {
+            do {
+                let saved = try await FieldLeadsService.shared.updateLead(updated)
+                await MainActor.run {
+                    isSaving = false
+                    editableName = saved.name ?? ""
+                    editablePhone = saved.phone ?? ""
+                    editableEmail = saved.email ?? ""
+                    editableNotes = saved.notes ?? ""
+                    onLeadUpdated?(saved)
+                }
+            } catch {
+                await MainActor.run { isSaving = false }
+            }
         }
     }
     
@@ -183,16 +438,37 @@ struct LeadDetailView: View {
     }
     
     private func shareLead() {
-        shareItems = [LeadsExportManager.shareableText(for: lead)]
+        var leadForShare = lead
+        leadForShare.name = editableName.isEmpty ? lead.name : editableName
+        leadForShare.phone = editablePhone.isEmpty ? lead.phone : editablePhone
+        leadForShare.email = editableEmail.isEmpty ? lead.email : editableEmail
+        leadForShare.notes = editableNotes.isEmpty ? lead.notes : editableNotes
+        shareItems = [LeadsExportManager.shareableText(for: leadForShare)]
         showShareSheet = true
     }
     
-    private func exportLead() {
-        do {
-            let url = try LeadsExportManager.exportToTempFile(leads: [lead], filename: "lead_\(lead.id.uuidString.prefix(8)).csv")
-            shareItems = [url]
-            showShareSheet = true
-        } catch {}
+    private func pushToCRM() {
+        isPushingToCRM = true
+        pushToCRMSuccess = nil
+        var currentLead = lead
+        currentLead.name = editableName.isEmpty ? lead.name : editableName
+        currentLead.phone = editablePhone.isEmpty ? lead.phone : editablePhone
+        currentLead.email = editableEmail.isEmpty ? lead.email : editableEmail
+        currentLead.notes = editableNotes.isEmpty ? lead.notes : editableNotes
+        let leadModel = LeadModel(from: currentLead)
+        let appointment: LeadSyncAppointment? = (appointmentTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && appointmentNotes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) ? nil : LeadSyncAppointment(date: appointmentDate, title: appointmentTitle.isEmpty ? nil : appointmentTitle, notes: appointmentNotes.isEmpty ? nil : appointmentNotes)
+        let task: LeadSyncTask? = taskTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : LeadSyncTask(title: taskTitle, dueDate: taskDueDate)
+        Task {
+            await LeadSyncManager.shared.syncLeadToCRM(lead: leadModel, userId: lead.userId, appointment: appointment, task: task)
+            await MainActor.run {
+                isPushingToCRM = false
+                pushToCRMSuccess = true
+                Task {
+                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                    await MainActor.run { pushToCRMSuccess = nil }
+                }
+            }
+        }
     }
 }
 
@@ -203,6 +479,8 @@ struct LeadDetailView: View {
                 userId: UUID(),
                 address: "147 Bastedo Ave, Toronto, ON",
                 name: "Ryan Secrest",
+                phone: "+1 416 555 1234",
+                email: "ryan@example.com",
                 status: .notHome,
                 notes: "Met wife, call back at 6pm. Left flyer on door.",
                 sessionId: UUID()

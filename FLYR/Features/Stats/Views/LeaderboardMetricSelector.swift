@@ -7,7 +7,7 @@ enum MetricType: String, CaseIterable {
     
     var displayName: String {
         switch self {
-        case .flyers: return "Flyers"
+        case .flyers: return "Doors"
         case .conversations: return "Convo's"
         case .distance: return "Distance"
         }

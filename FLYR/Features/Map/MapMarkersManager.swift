@@ -39,9 +39,14 @@ final class MapMarkersManager {
 
     private func addCampaignMarkersInternal(campaigns: [CampaignMarker], to mapView: MapView, selectedCampaignId: UUID? = nil) async {
         guard let map = mapView.mapboxMap else { return }
-        
+
+        // Hide the selected campaign's pin (e.g. when viewing that campaign's map or during transition)
+        let markersToShow: [CampaignMarker] = selectedCampaignId != nil
+            ? campaigns.filter { $0.id != selectedCampaignId }
+            : campaigns
+
         // Create features from campaign markers
-        let features = campaigns.map { marker -> Feature in
+        let features = markersToShow.map { marker -> Feature in
             var feature = Feature(geometry: .point(Point(marker.coordinate)))
             feature.properties = [
                 "id": .string(marker.id.uuidString),
@@ -113,7 +118,7 @@ final class MapMarkersManager {
             textLayer.textOffset = .constant([0, 2])
             textLayer.textOptional = .constant(true)
             try map.addLayer(textLayer, layerPosition: .above(innerLayerId))
-            print("✅ [MapMarkers] Added \(campaigns.count) campaign markers")
+            print("✅ [MapMarkers] Added \(markersToShow.count) campaign markers")
         } catch {
             print("❌ [MapMarkers] Failed to add campaign markers: \(error)")
         }

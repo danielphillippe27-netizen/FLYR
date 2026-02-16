@@ -1,6 +1,31 @@
 import Foundation
 import Supabase
 
+// #region agent log
+private func _debugLogLeaderboard(location: String, message: String, data: [String: Any], hypothesisId: String) {
+    let payload: [String: Any] = [
+        "id": "log_\(Int(Date().timeIntervalSince1970 * 1000))_\(UUID().uuidString.prefix(8))",
+        "timestamp": Int(Date().timeIntervalSince1970 * 1000),
+        "location": location,
+        "message": message,
+        "data": data,
+        "hypothesisId": hypothesisId
+    ]
+    guard let json = try? JSONSerialization.data(withJSONObject: payload),
+          let line = String(data: json, encoding: .utf8) else { return }
+    let path = "/Users/danielphillippe/Desktop/FLYR IOS/.cursor/debug.log"
+    let lineWithNewline = line + "\n"
+    guard let dataToWrite = lineWithNewline.data(using: .utf8) else { return }
+    if FileManager.default.fileExists(atPath: path), let handle = FileHandle(forWritingAtPath: path) {
+        handle.seekToEndOfFile()
+        handle.write(dataToWrite)
+        try? handle.close()
+    } else {
+        try? dataToWrite.write(to: URL(fileURLWithPath: path), options: .atomic)
+    }
+}
+// #endregion
+
 actor LeaderboardService {
     static let shared = LeaderboardService()
     
@@ -38,13 +63,14 @@ actor LeaderboardService {
             print("✅ [LeaderboardService] Successfully fetched \(response.count) entries")
             return response
         } catch {
-            print("❌ [LeaderboardService] RPC call failed:")
-            print("   Function: get_leaderboard")
-            print("   Params: \(params)")
-            print("   Error: \(error)")
-            print("   Error type: \(type(of: error))")
-            
-            // Re-throw with more context
+            let nsError = error as NSError
+            if nsError.domain != NSURLErrorDomain || nsError.code != NSURLErrorCancelled {
+                print("❌ [LeaderboardService] RPC call failed:")
+                print("   Function: get_leaderboard")
+                print("   Params: \(params)")
+                print("   Error: \(error)")
+                print("   Error type: \(type(of: error))")
+            }
             throw error
         }
     }
@@ -167,7 +193,9 @@ actor LeaderboardService {
                         allTime: allTime
                     )
                 }
-                
+                // #region agent log
+                _debugLogLeaderboard(location: "LeaderboardService.fetchLeaderboard", message: "leaderboard result", data: ["userCount": users.count, "timeframe": timeframe, "metric": metric, "userIds": Array(users.prefix(15).map(\.id)), "flyersList": Array(users.prefix(15).map(\.flyers))], hypothesisId: "H4")
+                // #endregion
                 print("✅ [LeaderboardService] Successfully fetched \(users.count) users")
                 return users
             } else {
@@ -177,13 +205,14 @@ actor LeaderboardService {
                 return users
             }
         } catch {
-            print("❌ [LeaderboardService] RPC call failed:")
-            print("   Function: get_leaderboard")
-            print("   Params: \(params)")
-            print("   Error: \(error)")
-            print("   Error type: \(type(of: error))")
-            
-            // Re-throw with more context
+            let nsError = error as NSError
+            if nsError.domain != NSURLErrorDomain || nsError.code != NSURLErrorCancelled {
+                print("❌ [LeaderboardService] RPC call failed:")
+                print("   Function: get_leaderboard")
+                print("   Params: \(params)")
+                print("   Error: \(error)")
+                print("   Error type: \(type(of: error))")
+            }
             throw error
         }
     }

@@ -6,6 +6,7 @@ import Supabase
 struct FLYRApp: App {
     @StateObject private var auth = AuthManager.shared
     @StateObject private var uiState = AppUIState()
+    @StateObject private var entitlementsService = EntitlementsService()
 
     init() {
         MapboxOptions.accessToken = Config.mapboxAccessToken
@@ -37,6 +38,7 @@ struct FLYRApp: App {
         WindowGroup {
             AuthGate()
                 .environmentObject(uiState)
+                .environmentObject(entitlementsService)
                 .task {
                     // Health check in background with lower priority - don't block UI
                     Task.detached(priority: .utility) {
@@ -98,6 +100,8 @@ struct FLYRApp: App {
 struct AuthGate: View {
     @StateObject private var auth = AuthManager.shared
     @EnvironmentObject var uiState: AppUIState
+    @EnvironmentObject var entitlementsService: EntitlementsService
+    @Environment(\.scenePhase) private var scenePhase
 
     private var showMainApp: Bool {
         auth.user != nil
@@ -125,6 +129,9 @@ struct AuthGate: View {
 
             if let userId = auth.user?.id {
                 await uiState.loadAppearancePreference(userID: userId)
+                StoreKitManager.shared.entitlementsService = entitlementsService
+                await entitlementsService.fetchEntitlement()
+                await StoreKitManager.shared.refreshLocalProFromCurrentEntitlements()
             } else if uiState.colorScheme == nil {
                 uiState.detectSystemAppearance()
             }
@@ -133,9 +140,19 @@ struct AuthGate: View {
             if let userId = newUserId {
                 Task {
                     await uiState.loadAppearancePreference(userID: userId)
+                    StoreKitManager.shared.entitlementsService = entitlementsService
+                    await entitlementsService.fetchEntitlement()
+                    await StoreKitManager.shared.refreshLocalProFromCurrentEntitlements()
                 }
             } else {
                 uiState.detectSystemAppearance()
+            }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active, auth.user != nil {
+                Task {
+                    await entitlementsService.fetchEntitlement()
+                }
             }
         }
     }

@@ -10,6 +10,7 @@ struct NewCampaignDetailView: View {
     @State private var isMapFullscreen = false
     @State private var addressStatuses: [String: AddressStatus] = [:]
     @State private var showSessionStart = false
+    @State private var showShareCardView = false
     @State private var selectedAddressId: String? = nil
     @State private var selectedAddressLabel: String = ""
     @State private var isStatusSheetPresented = false
@@ -19,6 +20,12 @@ struct NewCampaignDetailView: View {
     @State private var campaignLeadsCount: Int = 0
     @State private var campaignLeads: [FieldLead] = []
     @State private var leadsLoaded = false
+    @State private var isActivityExpanded = false
+    @State private var campaignActivities: [SessionRecord] = []
+    @State private var activityCount: Int = 0
+    @State private var activitiesLoaded = false
+    /// When set, share card is shown for this specific activity (tapped from Activity list).
+    @State private var selectedSessionForShare: SessionRecord? = nil
     @Namespace private var mapNamespace
     
     // Pro Mode: Campaign markers for map
@@ -46,6 +53,20 @@ struct NewCampaignDetailView: View {
         }
         
         return markers
+    }
+
+    /// Placeholder for share card when no session has ended yet (e.g. opened from Campaign Details).
+    private var placeholderShareCardData: SessionSummaryData {
+        SessionSummaryData(
+            distance: 0,
+            time: 0,
+            goalType: .knocks,
+            goalAmount: 0,
+            pathCoordinates: [],
+            completedCount: 0,
+            conversationsCount: 0,
+            startTime: nil
+        )
     }
     
     var body: some View {
@@ -138,6 +159,7 @@ struct NewCampaignDetailView: View {
                     FullscreenMapView(
                         campaignID: campaignID,
                         namespace: mapNamespace,
+                        isSource: true,
                         onClose: { isMapFullscreen = false }
                     )
                 }
@@ -151,7 +173,7 @@ struct NewCampaignDetailView: View {
                         
                         // General Campaign Analytics
                         VStack(alignment: .leading, spacing: 12) {
-                            StatGrid(stats: generalAnalyticsStats(for: campaign), columns: 2)
+                            StatGrid(stats: generalAnalyticsStats(for: campaign, sessions: campaignActivities), columns: 2)
                         }
                         .padding(16)
                         .background(Color.bgSecondary)
@@ -356,6 +378,117 @@ struct NewCampaignDetailView: View {
                 }
                 .background(Color.bgSecondary)
                 .cornerRadius(12)
+
+                // Activity Section (collapsible, below Addresses)
+                VStack(alignment: .leading, spacing: 0) {
+                    Button(action: {
+                        HapticManager.light()
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            isActivityExpanded.toggle()
+                        }
+                    }) {
+                        HStack {
+                            Image(systemName: "figure.walk")
+                                .font(.subheadline)
+                                .foregroundColor(.accent)
+                            Text("Activity")
+                                .font(.subheading)
+                                .foregroundColor(.text)
+                            Spacer()
+                            Text("\(activityCount) total")
+                                .font(.label)
+                                .foregroundColor(.muted)
+                            Image(systemName: isActivityExpanded ? "chevron.up" : "chevron.down")
+                                .font(.caption)
+                                .fontWeight(.medium)
+                                .foregroundColor(.muted)
+                        }
+                        .padding(16)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .onChange(of: isActivityExpanded) { _, expanded in
+                        if expanded && !activitiesLoaded, let userId = AuthManager.shared.user?.id {
+                            Task {
+                                do {
+                                    let sessions = try await SessionsAPI.shared.fetchSessionsForCampaign(campaignId: campaignID, userId: userId)
+                                    await MainActor.run {
+                                        campaignActivities = sessions
+                                        activityCount = sessions.count
+                                        activitiesLoaded = true
+                                    }
+                                } catch {
+                                    await MainActor.run {
+                                        campaignActivities = []
+                                        activitiesLoaded = true
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if isActivityExpanded {
+                        if !campaignActivities.isEmpty {
+                            VStack(alignment: .leading, spacing: 8) {
+                                ForEach(Array(campaignActivities.prefix(5).enumerated()), id: \.offset) { index, session in
+                                    Button(action: {
+                                        HapticManager.light()
+                                        selectedSessionForShare = session
+                                    }) {
+                                        CampaignActivityRow(session: session, index: index + 1)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                                if campaignActivities.count > 5 {
+                                    Button("See all \(campaignActivities.count) sessions") {
+                                        // TODO: Show full sessions list
+                                    }
+                                    .font(.label)
+                                    .foregroundColor(.accent)
+                                }
+                            }
+                            .padding(12)
+                            .background(Color.bgTertiary)
+                            .cornerRadius(8)
+                            .padding(.horizontal, 16)
+                            .padding(.bottom, 16)
+                        } else if activitiesLoaded {
+                            Text("No activity yet")
+                                .font(.body)
+                                .foregroundColor(.muted)
+                                .frame(maxWidth: .infinity, alignment: .center)
+                                .padding(20)
+                                .background(Color.bgTertiary)
+                                .cornerRadius(8)
+                                .padding(.horizontal, 16)
+                                .padding(.bottom, 16)
+                        } else {
+                            ProgressView()
+                                .frame(maxWidth: .infinity)
+                                .padding(20)
+                                .background(Color.bgTertiary)
+                                .cornerRadius(8)
+                                .padding(.horizontal, 16)
+                                .padding(.bottom, 16)
+                        }
+                    }
+                }
+                .background(Color.bgSecondary)
+                .cornerRadius(12)
+
+                // Session Share Card (underneath Addresses)
+                Button(action: { showShareCardView = true }) {
+                    Label("Session Share Card", systemImage: "square.and.arrow.up")
+                        .font(.label)
+                        .fontWeight(.medium)
+                        .foregroundColor(.flyrPrimary)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 48)
+                        .background(Color.bgSecondary)
+                        .cornerRadius(12)
+                }
+                .buttonStyle(.plain)
+                .padding(.top, 16)
                 
                 Spacer(minLength: 100) // Space for button
             }
@@ -366,7 +499,6 @@ struct NewCampaignDetailView: View {
         .safeAreaInset(edge: .bottom) {
             VStack(spacing: 0) {
                 Divider()
-                
                 Button(action: {
                     showSessionStart = true
                 }) {
@@ -382,6 +514,18 @@ struct NewCampaignDetailView: View {
                 .padding()
             }
             .background(Color.bg)
+        }
+        .fullScreenCover(isPresented: Binding(
+            get: { showShareCardView || selectedSessionForShare != nil },
+            set: { if !$0 { showShareCardView = false; selectedSessionForShare = nil } }
+        )) {
+            ShareActivityGateView(
+                data: selectedSessionForShare?.toSummaryData() ?? SessionManager.lastEndedSummary ?? placeholderShareCardData,
+                onDismiss: {
+                    showShareCardView = false
+                    selectedSessionForShare = nil
+                }
+            )
         }
         .sheet(isPresented: $showSessionStart) {
             SessionStartView(preselectedCampaign: hook.item)
@@ -431,6 +575,22 @@ struct NewCampaignDetailView: View {
                             await MainActor.run { campaignLeadsCount = leads.count }
                         } catch {
                             await MainActor.run { campaignLeadsCount = 0 }
+                        }
+                    }
+                    // Load campaign sessions for Analytics (Doors/Hour) and Activity list
+                    Task {
+                        do {
+                            let sessions = try await SessionsAPI.shared.fetchSessionsForCampaign(campaignId: campaignID, userId: userId)
+                            await MainActor.run {
+                                campaignActivities = sessions
+                                activityCount = sessions.count
+                                activitiesLoaded = true
+                            }
+                        } catch {
+                            await MainActor.run {
+                                campaignActivities = []
+                                activitiesLoaded = true
+                            }
                         }
                     }
                 } else {
@@ -508,21 +668,32 @@ struct NewCampaignDetailView: View {
     
     // MARK: - Analytics Helpers
     
-    private func generalAnalyticsStats(for campaign: CampaignV2) -> [StatPill] {
+    private func generalAnalyticsStats(for campaign: CampaignV2, sessions: [SessionRecord] = []) -> [StatPill] {
+        // Doors = campaign-level aggregate (scans = completed deliveries/doors)
+        let doors = campaign.scans
+        // Doors/hour from session data when available; otherwise 0.0
+        let doorsPerHour: Double = {
+            guard !sessions.isEmpty else { return 0.0 }
+            let totalDoors = sessions.reduce(0) { $0 + $1.doorsCount }
+            let totalSeconds = sessions.reduce(0.0) { acc, s in
+                let end = s.end_time ?? s.start_time
+                return acc + end.timeIntervalSince(s.start_time)
+            }
+            guard totalSeconds > 0 else { return 0.0 }
+            return Double(totalDoors) / (totalSeconds / 3600.0)
+        }()
         // New campaigns show 0.0 km and 0m time; real values when we have session/stats API
         let distanceKm: Double = 0.0   // TODO: from session/stats when available
-        let _: Int = 0     // TODO: time from session/stats when available
         let timeString = "0m"
-        let flyersPerHour = 0.0
 
         return [
             StatPill(
-                value: "\(campaign.scans)",
-                label: "Flyers Delivered"
+                value: "\(doors)",
+                label: "Doors"
             ),
             StatPill(
-                value: String(format: "%.1f", flyersPerHour),
-                label: "Flyers/Hour"
+                value: String(format: "%.1f", doorsPerHour),
+                label: "Doors/Hour"
             ),
             StatPill(
                 value: timeString,
@@ -563,6 +734,48 @@ struct NewCampaignDetailView: View {
     }
     
     // Pro Mode: No need for building outlines rendering - using static map API
+}
+
+// MARK: - Campaign Activity Row
+
+private struct CampaignActivityRow: View {
+    let session: SessionRecord
+    let index: Int
+
+    private static let shortDateTimeFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateStyle = .short
+        f.timeStyle = .short
+        return f
+    }()
+
+    private var countLabel: String {
+        return "\(session.doorsCount) doors"
+    }
+
+    private var distanceLabel: String? {
+        guard let m = session.distance_meters, m > 0 else { return nil }
+        return String(format: "%.1f km", m / 1000.0)
+    }
+
+    private var summaryText: String {
+        var parts = [Self.shortDateTimeFormatter.string(from: session.start_time), countLabel]
+        if let d = distanceLabel { parts.append(d) }
+        return parts.joined(separator: " · ")
+    }
+
+    var body: some View {
+        HStack {
+            Text("\(index).")
+                .font(.flyrCaption)
+                .foregroundColor(.muted)
+                .frame(width: 20, alignment: .leading)
+            Text(summaryText)
+                .font(.body)
+                .foregroundColor(.text)
+            Spacer()
+        }
+    }
 }
 
 // MARK: - Full Addresses Sheet
@@ -612,6 +825,8 @@ private struct FullAddressesSheet: View {
 struct FullscreenMapView: View {
     let campaignID: UUID
     let namespace: Namespace.ID
+    /// When true, this view is the geometry source for the matched effect (inline map uses isSource: false when fullscreen).
+    let isSource: Bool
     let onClose: () -> Void
     @ObservedObject private var sessionManager = SessionManager.shared
 
@@ -620,7 +835,7 @@ struct FullscreenMapView: View {
             CampaignMapView(campaignId: campaignID.uuidString)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .ignoresSafeArea()
-                .matchedGeometryEffect(id: "map", in: namespace, isSource: true)
+                .matchedGeometryEffect(id: "map", in: namespace, isSource: isSource)
 
             // X close button only when no active session (Finish is in map overlay when session active)
             // Top-right, aligned with building toggle (same insets as map overlayUI)

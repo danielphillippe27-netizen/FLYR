@@ -13,7 +13,8 @@ struct ResolvedAddress: Codable, Identifiable, Sendable {
     let postalCode: String
     let houseNumber: String
     let streetName: String
-    let gersId: UUID
+    /// Overture GERS ID string (not a UUID)
+    let gersId: String
     
     enum CodingKeys: String, CodingKey {
         case id
@@ -25,6 +26,44 @@ struct ResolvedAddress: Codable, Identifiable, Sendable {
         case houseNumber = "house_number"
         case streetName = "street_name"
         case gersId = "gers_id"
+    }
+    
+    init(id: UUID, street: String, formatted: String, locality: String, region: String, postalCode: String, houseNumber: String, streetName: String, gersId: String) {
+        self.id = id
+        self.street = street
+        self.formatted = formatted
+        self.locality = locality
+        self.region = region
+        self.postalCode = postalCode
+        self.houseNumber = houseNumber
+        self.streetName = streetName
+        self.gersId = gersId
+    }
+    
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        street = try c.decode(String.self, forKey: .street)
+        formatted = try c.decode(String.self, forKey: .formatted)
+        locality = try c.decode(String.self, forKey: .locality)
+        region = try c.decode(String.self, forKey: .region)
+        postalCode = try c.decode(String.self, forKey: .postalCode)
+        houseNumber = try c.decode(String.self, forKey: .houseNumber)
+        streetName = try c.decode(String.self, forKey: .streetName)
+        gersId = CampaignAddressDecoding.decodeStringIfPresent(c, forKey: .gersId) ?? ""
+    }
+    
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(street, forKey: .street)
+        try c.encode(formatted, forKey: .formatted)
+        try c.encode(locality, forKey: .locality)
+        try c.encode(region, forKey: .region)
+        try c.encode(postalCode, forKey: .postalCode)
+        try c.encode(houseNumber, forKey: .houseNumber)
+        try c.encode(streetName, forKey: .streetName)
+        try c.encode(gersId, forKey: .gersId)
     }
     
     /// Returns a compact display address (street only)
@@ -209,6 +248,12 @@ private enum CampaignAddressDecoding {
         if let s = try? container.decodeIfPresent(String.self, forKey: key), let u = UUID(uuidString: s) { return u }
         return nil
     }
+    /// Decode as String (backend may return gers_id as string or number); for Overture GERS IDs use string.
+    static func decodeStringIfPresent<Key: CodingKey>(_ container: KeyedDecodingContainer<Key>, forKey key: Key) -> String? {
+        if let s = try? container.decodeIfPresent(String.self, forKey: key), !s.isEmpty { return s }
+        if let n = try? container.decodeIfPresent(Int.self, forKey: key) { return String(n) }
+        return nil
+    }
 }
 
 // MARK: - Campaign Address Response (for Supabase queries)
@@ -223,8 +268,9 @@ struct CampaignAddressResponse: Codable {
     let locality: String?
     let region: String?
     let postalCode: String?
-    let gersId: UUID?
-    let buildingGersId: UUID?
+    /// Overture GERS ID string (backend may return string or UUID-shaped string)
+    let gersId: String?
+    let buildingGersId: String?
     let scans: Int?
     let lastScannedAt: Date?
     let qrCodeBase64: String?
@@ -265,8 +311,8 @@ struct CampaignAddressResponse: Codable {
         locality = try c.decodeIfPresent(String.self, forKey: .locality)
         region = try c.decodeIfPresent(String.self, forKey: .region)
         postalCode = try c.decodeIfPresent(String.self, forKey: .postalCode)
-        gersId = CampaignAddressDecoding.decodeUUIDIfPresent(c, forKey: .gersId)
-        buildingGersId = CampaignAddressDecoding.decodeUUIDIfPresent(c, forKey: .buildingGersId)
+        gersId = CampaignAddressDecoding.decodeStringIfPresent(c, forKey: .gersId)
+        buildingGersId = CampaignAddressDecoding.decodeStringIfPresent(c, forKey: .buildingGersId)
         scans = CampaignAddressDecoding.decodeIntIfPresent(c, forKey: .scans)
         lastScannedAt = try c.decodeIfPresent(Date.self, forKey: .lastScannedAt)
         qrCodeBase64 = try c.decodeIfPresent(String.self, forKey: .qrCodeBase64)
@@ -301,7 +347,7 @@ struct CampaignAddressResponse: Codable {
     }
     
     /// Converts to ResolvedAddress
-    func toResolvedAddress(fallbackGersId: UUID) -> ResolvedAddress {
+    func toResolvedAddress(fallbackGersId: String) -> ResolvedAddress {
         let house = houseNumber ?? ""
         let street = streetName ?? ""
         let combinedStreet = "\(house) \(street)".trimmingCharacters(in: .whitespaces)

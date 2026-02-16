@@ -22,7 +22,13 @@ final class LeaderboardViewModel: ObservableObject {
     @Published var timeRange: TimeRange = .monthly
     
     private let leaderboardService = LeaderboardService.shared
+    private let supabase = SupabaseManager.shared.client
     private var cancellables = Set<AnyCancellable>()
+
+    /// Fetched from profiles table so "You" row shows real name, not email.
+    @Published var currentUserProfile: UserProfile?
+    /// Resolved signed URL for profile image (profile_images bucket) so "You" row shows photo.
+    @Published var currentUserProfileImageURL: String?
     
     func loadLeaderboard() async {
         isLoading = true
@@ -195,18 +201,27 @@ final class LeaderboardViewModel: ObservableObject {
                 self.users = result
             }
             
-            // Update current user rank if logged in
+            // Update current user rank and load profile for "You" row (real name, not email)
             if let user = AuthManager.shared.user {
                 let userIDString = user.id.uuidString
                 currentUserRank = result.firstIndex(where: { $0.id == userIDString }).map { $0 + 1 }
+                await loadCurrentUserProfile(userID: user.id)
+            } else {
+                currentUserProfile = nil
             }
         } catch {
+            // Ignore cancellation (view disappeared or metric/timeframe changed); don't show or log error
+            let nsError = error as NSError
+            let isCancelled = (nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled)
+                || error.localizedDescription.lowercased().contains("cancelled")
+            if isCancelled { return }
+
             var errorDetails = "Failed to load leaderboard"
-            
+
             let errorString = String(describing: error)
             let errorDescription = error.localizedDescription
-            
-            if errorString.contains("401") || errorString.contains("Unauthorized") || 
+
+            if errorString.contains("401") || errorString.contains("Unauthorized") ||
                errorString.contains("not authenticated") || errorString.contains("JWT") {
                 errorDetails = "Please sign in to view the leaderboard"
             } else if errorString.contains("404") || errorString.contains("not found") ||
@@ -220,13 +235,43 @@ final class LeaderboardViewModel: ObservableObject {
             } else {
                 errorDetails = "Failed to load leaderboard: \(errorDescription)"
             }
-            
+
             errorMessage = errorDetails
-            
+
             print("❌ Error loading leaderboard:")
             print("   Error type: \(type(of: error))")
             print("   Error description: \(errorDescription)")
             print("   Error string: \(errorString)")
+        }
+    }
+
+    /// Load current user's profile so leaderboard "You" row shows name and photo from profiles.
+    func loadCurrentUserProfile(userID: UUID) async {
+        do {
+            let result: UserProfile = try await supabase
+                .from("profiles")
+                .select()
+                .eq("id", value: userID.uuidString)
+                .single()
+                .execute()
+                .value
+            currentUserProfile = result
+            // Resolve profile image to signed URL so avatar can load (bucket is private)
+            if let path = result.profileImageURL, !path.isEmpty {
+                do {
+                    let signedURL = try await supabase.storage
+                        .from("profile_images")
+                        .createSignedURL(path: path, expiresIn: 60 * 60 * 24 * 7)
+                    currentUserProfileImageURL = signedURL.absoluteString
+                } catch {
+                    currentUserProfileImageURL = nil
+                }
+            } else {
+                currentUserProfileImageURL = nil
+            }
+        } catch {
+            currentUserProfile = nil
+            currentUserProfileImageURL = nil
         }
     }
 }

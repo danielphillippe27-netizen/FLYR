@@ -10,13 +10,13 @@ actor BuildingStatsSubscriber {
     private var channel: RealtimeChannelV2?
     private var pollingTask: Task<Void, Never>?
     private var useWebSocket = true
-    private var lastStats: [UUID: BuildingStatsUpdate] = [:]
+    private var lastStats: [String: BuildingStatsUpdate] = [:]
     
     // MARK: - Callback
     
     /// Called when a building stat is updated
-    /// Parameters: (gersId, status, scansTotal, qrScanned)
-    var onUpdate: (@Sendable (UUID, String, Int, Bool) -> Void)?
+    /// Parameters: (gersId string, status, scansTotal, qrScanned)
+    var onUpdate: (@Sendable (String, String, Int, Bool) -> Void)?
     
     // MARK: - Initialization
     
@@ -28,7 +28,7 @@ actor BuildingStatsSubscriber {
     
     /// Sets the update callback
     /// - Parameter callback: The callback to invoke when updates are received
-    func setUpdateCallback(_ callback: @escaping @Sendable (UUID, String, Int, Bool) -> Void) {
+    func setUpdateCallback(_ callback: @escaping @Sendable (String, String, Int, Bool) -> Void) {
         self.onUpdate = callback
     }
     
@@ -109,21 +109,19 @@ actor BuildingStatsSubscriber {
     }
     
     private func handleWebSocketUpdate<T>(change: T) async {
-        // Extract data from change
-        var gersId: UUID?
+        // Extract data from change (gers_id is string from building_stats table)
+        var gersIdString: String?
         var status: String?
         var scansTotal: Int?
         
         // Try to parse the change payload
         if let mirror = Mirror(reflecting: change).children.first(where: { $0.label == "record" })?.value as? [String: Any] {
-            if let gersIdString = mirror["gers_id"] as? String {
-                gersId = UUID(uuidString: gersIdString)
-            }
+            gersIdString = mirror["gers_id"] as? String
             status = mirror["status"] as? String
             scansTotal = mirror["scans_total"] as? Int
         }
         
-        guard let gersId = gersId,
+        guard let gersId = gersIdString, !gersId.isEmpty,
               let status = status,
               let scansTotal = scansTotal else {
             return
@@ -193,7 +191,7 @@ actor BuildingStatsSubscriber {
 // MARK: - Supporting Types
 
 private struct BuildingStatsUpdate: Codable {
-    let gersId: UUID
+    let gersId: String
     let status: String
     let scansTotal: Int
     let qrScanned: Bool
@@ -204,7 +202,7 @@ private struct BuildingStatsUpdate: Codable {
         case scansTotal = "scans_total"
     }
     
-    init(gersId: UUID, status: String, scansTotal: Int, qrScanned: Bool) {
+    init(gersId: String, status: String, scansTotal: Int, qrScanned: Bool) {
         self.gersId = gersId
         self.status = status
         self.scansTotal = scansTotal
@@ -213,7 +211,7 @@ private struct BuildingStatsUpdate: Codable {
     
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        gersId = try container.decode(UUID.self, forKey: .gersId)
+        gersId = try container.decode(String.self, forKey: .gersId)
         status = try container.decode(String.self, forKey: .status)
         scansTotal = try container.decode(Int.self, forKey: .scansTotal)
         qrScanned = scansTotal > 0

@@ -25,12 +25,12 @@ class BuildingDataService: ObservableObject {
     
     /// Fetches complete building data for a given GERS ID and campaign
     /// - Parameters:
-    ///   - gersId: The Overture Maps GERS ID of the building
+    ///   - gersId: The Overture Maps GERS ID string of the building (from map feature)
     ///   - campaignId: The campaign ID to fetch data for
     ///   - addressId: Optional campaign address ID from the tapped feature; when set, we try direct lookup first so the card shows linked state
-    func fetchBuildingData(gersId: UUID, campaignId: UUID, addressId: UUID? = nil) async {
+    func fetchBuildingData(gersId: String, campaignId: UUID, addressId: UUID? = nil) async {
         // Check cache first (include addressId when present so direct lookups are cached)
-        let cacheKey = addressId.map { "\(campaignId.uuidString):addr:\($0.uuidString)" } ?? "\(campaignId.uuidString):\(gersId.uuidString)"
+        let cacheKey = addressId.map { "\(campaignId.uuidString):addr:\($0.uuidString)" } ?? "\(campaignId.uuidString):\(gersId)"
         if let cached = cache[cacheKey], cached.isValid(ttl: cacheTTL) {
             buildingData = cached.data
             return
@@ -79,7 +79,7 @@ class BuildingDataService: ObservableObject {
                 }
             }
             
-            // Step 1: If no direct match, try lookup by GERS ID
+            // Step 1: If no direct match, try lookup by GERS ID (string) in campaign_addresses
             if resolvedAddress == nil {
                 let addressQuery = supabase
                     .from("campaign_addresses")
@@ -104,7 +104,7 @@ class BuildingDataService: ObservableObject {
                         ai_summary
                     """)
                     .eq("campaign_id", value: campaignId.uuidString)
-                    .or("gers_id.eq.\(gersId.uuidString),building_gers_id.eq.\(gersId.uuidString)")
+                    .or("gers_id.eq.\(gersId),building_gers_id.eq.\(gersId)")
                 
                 let addressResponse = try await addressQuery.execute()
                 let addresses = try decoder.decode([CampaignAddressResponse].self, from: addressResponse.data)
@@ -112,53 +112,41 @@ class BuildingDataService: ObservableObject {
                 buildingExists = resolvedAddress != nil
             }
             
-            // Step 2: If still no match, try via building_address_links
+            // Step 2: If still no match, query building_address_links by GERS ID string (building_id is Overture GERS ID, not buildings.id)
             if resolvedAddress == nil {
-                // First find the building
-                let buildingQuery = supabase
-                    .from("buildings")
-                    .select("id, gers_id")
-                    .eq("gers_id", value: gersId.uuidString)
+                let linkQuery = supabase
+                    .from("building_address_links")
+                    .select("""
+                        address_id,
+                        campaign_addresses!inner (
+                            id,
+                            house_number,
+                            street_name,
+                            formatted,
+                            locality,
+                            region,
+                            postal_code,
+                            gers_id,
+                            building_gers_id,
+                            scans,
+                            last_scanned_at,
+                            qr_code_base64,
+                            contact_name,
+                            lead_status,
+                            product_interest,
+                            follow_up_date,
+                            raw_transcript,
+                            ai_summary
+                        )
+                    """)
+                    .eq("campaign_id", value: campaignId.uuidString)
+                    .eq("building_id", value: gersId)
                 
-                let buildingResponse = try await buildingQuery.execute()
-                let buildings = try decoder.decode([BuildingResponse].self, from: buildingResponse.data)
-                
-                if let building = buildings.first {
+                let linkResponse = try await linkQuery.execute()
+                let links = try decoder.decode([BuildingAddressLinkResponse].self, from: linkResponse.data)
+                if let first = links.first {
+                    resolvedAddress = first.campaignAddress
                     buildingExists = true
-                    
-                    // Find linked address via building_address_links
-                    let linkQuery = supabase
-                        .from("building_address_links")
-                        .select("""
-                            address_id,
-                            campaign_addresses!inner (
-                                id,
-                                house_number,
-                                street_name,
-                                formatted,
-                                locality,
-                                region,
-                                postal_code,
-                                gers_id,
-                                building_gers_id,
-                                scans,
-                                last_scanned_at,
-                                qr_code_base64,
-                                contact_name,
-                                lead_status,
-                                product_interest,
-                                follow_up_date,
-                                raw_transcript,
-                                ai_summary
-                            )
-                        """)
-                        .eq("campaign_id", value: campaignId.uuidString)
-                        .eq("building_id", value: building.id.uuidString)
-                        .eq("is_primary", value: true)
-                    
-                    let linkResponse = try await linkQuery.execute()
-                    let links = try decoder.decode([BuildingAddressLinkResponse].self, from: linkResponse.data)
-                    resolvedAddress = links.first?.campaignAddress
                 }
             }
             
@@ -247,10 +235,10 @@ class BuildingDataService: ObservableObject {
     
     /// Clears a specific cache entry
     /// - Parameters:
-    ///   - gersId: The GERS ID
+    ///   - gersId: The GERS ID string
     ///   - campaignId: The campaign ID
-    func clearCacheEntry(gersId: UUID, campaignId: UUID) {
-        let cacheKey = "\(campaignId.uuidString):\(gersId.uuidString)"
+    func clearCacheEntry(gersId: String, campaignId: UUID) {
+        let cacheKey = "\(campaignId.uuidString):\(gersId)"
         cache.removeValue(forKey: cacheKey)
     }
     

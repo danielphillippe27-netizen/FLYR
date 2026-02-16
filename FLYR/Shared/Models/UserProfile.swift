@@ -12,7 +12,6 @@ struct UserProfile: Identifiable, Codable, Equatable {
     // New profile fields
     var firstName: String?
     var lastName: String?
-    var nickname: String?
     var quote: String?
     var profileImageURL: String?
     
@@ -26,17 +25,12 @@ struct UserProfile: Identifiable, Codable, Equatable {
         case updatedAt = "updated_at"
         case firstName = "first_name"
         case lastName = "last_name"
-        case nickname
         case quote
         case profileImageURL = "profile_image_url"
     }
     
-    // Computed property for display name
-    // Nickname takes priority, then first+last, then fallback
+    // Computed property for display name (first + last, then fallback)
     var displayName: String {
-        if let nickname, !nickname.isEmpty {
-            return nickname
-        }
         let first = firstName ?? ""
         let last = lastName ?? ""
         let full = "\(first) \(last)".trimmingCharacters(in: .whitespaces)

@@ -16,9 +16,36 @@ struct SessionRecord: Codable {
     let campaign_id: UUID?
     let target_building_ids: [String]?
     let completed_count: Int?
+    let flyers_delivered: Int?
     let is_paused: Bool?
     let auto_complete_enabled: Bool?
     let notes: String?
+
+    /// Doors count for display: prefer flyers_delivered (set when ending session) then completed_count.
+    var doorsCount: Int {
+        (flyers_delivered ?? completed_count ?? 0)
+    }
+
+    /// Duration in seconds (from start to end, or 0 if no end).
+    var durationSeconds: TimeInterval {
+        let end = end_time ?? start_time
+        return end.timeIntervalSince(start_time)
+    }
+
+    /// Build summary data for share card / end-session UI. Path and conversations are not stored on record so omitted.
+    func toSummaryData() -> SessionSummaryData {
+        let goal = GoalType(rawValue: goal_type ?? GoalType.flyers.rawValue) ?? .flyers
+        return SessionSummaryData(
+            distance: distance_meters ?? 0,
+            time: durationSeconds,
+            goalType: goal,
+            goalAmount: goal_amount ?? 0,
+            pathCoordinates: [],
+            completedCount: doorsCount,
+            conversationsCount: nil,
+            startTime: start_time
+        )
+    }
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -34,6 +61,7 @@ struct SessionRecord: Codable {
         case campaign_id
         case target_building_ids
         case completed_count
+        case flyers_delivered
         case is_paused
         case auto_complete_enabled
         case notes
@@ -49,12 +77,17 @@ struct SessionSummaryData: Equatable {
     let pathCoordinates: [CLLocationCoordinate2D]
     /// For building sessions: doors completed (captured before manager clears)
     let completedCount: Int?
+    /// Conversations had this session (from SessionManager.conversationsHad).
+    let conversationsCount: Int?
     let startTime: Date?
 
     // MARK: - Strava-style share formatting
 
     /// Doors = count of completed door attempts this session. TODO: derive from SessionEvent/Visit (status != skipped or didAttempt) when available.
     var doorsCount: Int { completedCount ?? 0 }
+
+    /// Conversations count for share card.
+    var conversations: Int { conversationsCount ?? 0 }
 
     /// Distance string e.g. "14.00 km"
     var formattedDistance: String { String(format: "%.2f km", distance / 1000.0) }
@@ -75,8 +108,9 @@ struct SessionSummaryData: Equatable {
 }
 
 /// Identifiable wrapper so we can drive fullScreenCover(item:) from a single optional (bulletproof presentation).
+/// Stable id from data so the same summary never gets two identities (fixes cover dismissing when both onChange and onReceive fire).
 struct EndSessionSummaryItem: Identifiable {
-    let id = UUID()
+    var id: String { "\(data.distance)-\(data.time)-\(data.doorsCount)-\(data.conversations)" }
     let data: SessionSummaryData
 }
 

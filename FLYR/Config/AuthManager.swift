@@ -210,6 +210,35 @@ final class AuthManager: ObservableObject {
         user = appUser
     }
 
+    // MARK: - Email / Password Sign-In (e.g. App Store review account)
+
+    /// Sign in with email and password via Supabase Auth. Persists session to Keychain like Apple/Google.
+    /// TODO: If sign-in fails with provider disabled or invalid credentials, enable Email provider in
+    /// Supabase Dashboard → Authentication → Providers → Email.
+    func signInWithEmail(email: String, password: String) async throws {
+        let session: Session
+        do {
+            session = try await client.auth.signIn(email: email, password: password)
+        } catch {
+            throw error
+        }
+
+        let displayName = (session.user.userMetadata["full_name"] as? String)
+            ?? (session.user.userMetadata["name"] as? String)
+
+        let appUser = AppUser(
+            id: session.user.id,
+            email: session.user.email ?? "",
+            displayName: displayName,
+            photoURL: (session.user.userMetadata["avatar_url"] as? String).flatMap(URL.init)
+        )
+
+        KeychainAuthStorage.saveSession(accessToken: session.accessToken, refreshToken: session.refreshToken ?? "")
+        KeychainAuthStorage.saveAuthProvider(.email)
+        KeychainAuthStorage.saveAppUser(appUser)
+        user = appUser
+    }
+
     private func randomNonceString(length: Int = 32) -> String {
         precondition(length > 0)
         var randomBytes = [UInt8](repeating: 0, count: length)

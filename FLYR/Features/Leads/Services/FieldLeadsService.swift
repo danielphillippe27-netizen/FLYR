@@ -65,6 +65,13 @@ actor FieldLeadsService {
         guard let inserted = response.first else {
             throw NSError(domain: "FieldLeadsService", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to insert field lead"])
         }
+
+        // Sync to CRM integrations (non-blocking), same as FarmLeadService
+        Task.detached(priority: .utility) {
+            let leadModel = LeadModel(from: inserted)
+            await LeadSyncManager.shared.syncLeadToCRM(lead: leadModel, userId: inserted.userId)
+        }
+
         return inserted
     }
     

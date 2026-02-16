@@ -14,7 +14,7 @@ struct LeaderboardView: View {
                     .padding(.top, 24)
             } else if let errorMessage = vm.errorMessage {
                 errorView(message: errorMessage)
-            } else if vm.users.isEmpty {
+            } else if vm.users.isEmpty && auth.user == nil {
                 emptyView
             } else {
                 List {
@@ -29,20 +29,31 @@ struct LeaderboardView: View {
                     .listRowSeparator(.visible)
                     .listRowSeparatorTint(Color.primary.opacity(0.12))
                     .listRowBackground(Color.bg)
+
+                    // Show "You" when current user is not in the leaderboard (no activity in this period)
+                    if let currentUser = auth.user, !vm.users.contains(where: { $0.id == currentUser.id.uuidString }) {
+                        Section {
+                            youRow(currentUser: currentUser)
+                        } footer: {
+                            if !vm.users.isEmpty {
+                                Text("If you see your name above with activity, you may be signed in with a different account. Sign in with that account to see your stats and set up your profile.")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                        .listRowInsets(EdgeInsets())
+                        .listRowSeparator(.visible)
+                        .listRowSeparatorTint(Color.primary.opacity(0.12))
+                        .listRowBackground(Color.bg)
+                    }
                 }
                 .listStyle(.plain)
                 .scrollContentBackground(.hidden)
             }
         }
         .background(Color.bg.ignoresSafeArea())
-        .onAppear {
-            Task { await vm.fetchLeaderboard() }
-        }
-        .onChange(of: vm.metric) { _, _ in
-            Task { await vm.fetchLeaderboard() }
-        }
-        .onChange(of: vm.timeRange) { _, _ in
-            Task { await vm.fetchLeaderboard() }
+        .task(id: "\(vm.metric.rawValue)-\(vm.timeRange.rawValue)") {
+            await vm.fetchLeaderboard()
         }
         .refreshable {
             await vm.fetchLeaderboard()
@@ -54,7 +65,6 @@ struct LeaderboardView: View {
     private func rowContent(for user: LeaderboardUser) -> some View {
         let isCurrentUser = auth.user?.id.uuidString == user.id
         let value = user.value(for: vm.metric.rawValue, timeframe: vm.timeRange.rawValue)
-        let subtitle = subtitleFor(user: user)
 
         Button {
             HapticManager.light()
@@ -68,7 +78,7 @@ struct LeaderboardView: View {
                 rank: user.rank,
                 avatarUrl: user.avatarUrl,
                 name: user.name,
-                subtitle: subtitle,
+                subtitle: nil,
                 value: value,
                 isCurrentUser: isCurrentUser,
                 isActiveMetric: true
@@ -77,16 +87,43 @@ struct LeaderboardView: View {
         .buttonStyle(.plain)
     }
 
-    private func subtitleFor(user: LeaderboardUser) -> String? {
-        let snapshot = user.snapshot(for: vm.timeRange.rawValue)
-        switch vm.metric {
-        case .flyers:
-            return snapshot.flyers > 0 ? "\(snapshot.flyers) flyers" : nil
-        case .conversations:
-            return snapshot.conversations > 0 ? "\(snapshot.conversations) convo's" : nil
-        case .distance:
-            return snapshot.distance > 0 ? String(format: "%.1f km", snapshot.distance) : nil
+    /// Row shown when the current user is not in the leaderboard (no sessions in selected period).
+    /// Uses profile name (from profiles table) or auth display name — never email.
+    private func youRow(currentUser: AppUser) -> some View {
+        let displayName = displayNameForCurrentUser(currentUser: currentUser)
+        return Button {
+            HapticManager.light()
+            toastManager.show(
+                message: "No activity for \(vm.timeRange.displayName) yet",
+                type: .info,
+                duration: 2.0
+            )
+        } label: {
+            LeaderboardRow(
+                rank: 0,
+                avatarUrl: vm.currentUserProfileImageURL ?? vm.currentUserProfile?.avatarURL ?? currentUser.photoURL?.absoluteString,
+                name: displayName,
+                subtitle: "No activity this period",
+                value: 0,
+                valueDisplay: "—",
+                isCurrentUser: true,
+                isActiveMetric: true
+            )
         }
+        .buttonStyle(.plain)
+    }
+
+    /// Prefer profile name (first + last or full_name), then auth display name; never show email.
+    private func displayNameForCurrentUser(currentUser: AppUser) -> String {
+        if let profile = vm.currentUserProfile {
+            let first = profile.firstName ?? ""
+            let last = profile.lastName ?? ""
+            let full = "\(first) \(last)".trimmingCharacters(in: .whitespaces)
+            if !full.isEmpty { return full }
+            if let fn = profile.fullName, !fn.isEmpty { return fn }
+        }
+        if let authName = currentUser.displayName, !authName.isEmpty { return authName }
+        return "You"
     }
 
     private var emptyView: some View {
@@ -160,7 +197,7 @@ struct LeaderboardTableHeaderView: View {
             .buttonStyle(.plain)
             .frame(minWidth: 80, alignment: .trailing)
 
-            // Metric (Flyers / Conversations / Distance)
+            // Metric (Doors / Conversations / Distance)
             Button {
                 withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
                     selectedMetric = selectedMetric.next()

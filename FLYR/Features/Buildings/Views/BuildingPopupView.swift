@@ -221,7 +221,7 @@ final class BuildingPopupView: UIView {
         
         if scans > 0 {
             statusText = "📱 QR Scanned (\(scans))"
-            statusColor = UIColor(hex: "#facc15")! // Yellow
+            statusColor = UIColor(hex: "#8b5cf6")! // Purple
         } else {
             switch status {
             case "hot":

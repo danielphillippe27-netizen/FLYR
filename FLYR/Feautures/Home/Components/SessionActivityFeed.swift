@@ -71,7 +71,7 @@ struct RecentActivityRow: View {
     }
 
     private var activityLabel: String {
-        (session.goal_type ?? "flyers") == "flyers" ? "Flyers" : "Door Knock"
+        (session.goal_type ?? "flyers") == "flyers" ? "Doors" : "Door Knock"
     }
 
     private var iconName: String {
@@ -79,7 +79,7 @@ struct RecentActivityRow: View {
     }
 
     private var countDisplay: Int {
-        session.completed_count ?? session.goal_amount ?? 0
+        session.doorsCount
     }
 
     private var timeFormatter: DateFormatter {

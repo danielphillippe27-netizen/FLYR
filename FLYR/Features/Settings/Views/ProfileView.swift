@@ -87,22 +87,6 @@ struct ProfileView: View {
                             .disableAutocorrection(true)
                     }
                     
-                    // Nickname (optional)
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Text("Nickname")
-                                .font(.flyrSubheadline)
-                                .foregroundColor(.text)
-                            Text("(optional)")
-                                .font(.flyrCaption)
-                                .foregroundColor(.muted)
-                        }
-                        TextField("Nickname (overrides display name)", text: $viewModel.nickname)
-                            .textFieldStyle(.roundedBorder)
-                            .autocapitalization(.words)
-                            .disableAutocorrection(true)
-                    }
-                    
                     // Quote
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Profile Quote")

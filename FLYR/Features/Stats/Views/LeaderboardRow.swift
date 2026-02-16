@@ -31,6 +31,8 @@ struct LeaderboardRow: View {
     let name: String
     let subtitle: String?
     let value: Double
+    /// When set, shown instead of numeric value (e.g. "—" or "No activity")
+    let valueDisplay: String?
     let isCurrentUser: Bool
     let isActiveMetric: Bool
 
@@ -40,6 +42,7 @@ struct LeaderboardRow: View {
         name: String,
         subtitle: String? = nil,
         value: Double,
+        valueDisplay: String? = nil,
         isCurrentUser: Bool = false,
         isActiveMetric: Bool = true
     ) {
@@ -48,6 +51,7 @@ struct LeaderboardRow: View {
         self.name = name
         self.subtitle = subtitle
         self.value = value
+        self.valueDisplay = valueDisplay
         self.isCurrentUser = isCurrentUser
         self.isActiveMetric = isActiveMetric
     }
@@ -93,7 +97,7 @@ struct LeaderboardRow: View {
             .frame(maxWidth: .infinity, alignment: .leading)
 
             // Metric value (monospaced, red when active)
-            Text(formatValue(value))
+            Text(valueDisplay ?? formatValue(value))
                 .font(.system(size: 18, weight: .bold))
                 .monospacedDigit()
                 .foregroundColor(isActiveMetric ? Self.accentRed : .text)
@@ -113,6 +117,10 @@ struct LeaderboardRow: View {
     @ViewBuilder
     private var rankView: some View {
         switch rank {
+        case 0:
+            Text("—")
+                .font(.system(size: 15, weight: .medium))
+                .foregroundColor(.muted)
         case 1:
             ZStack {
                 Image(systemName: "crown.fill")
@@ -158,7 +166,7 @@ struct LeaderboardRow: View {
 #Preview {
     VStack(spacing: 0) {
         LeaderboardRow(rank: 1, name: "Alice", value: 420, isActiveMetric: true)
-        LeaderboardRow(rank: 2, name: "Bob", subtitle: "260 flyers", value: 380, isCurrentUser: true, isActiveMetric: true)
+        LeaderboardRow(rank: 2, name: "Bob", subtitle: "260 doors", value: 380, isCurrentUser: true, isActiveMetric: true)
         LeaderboardRow(rank: 3, name: "Carol", value: 350, isActiveMetric: true)
         LeaderboardRow(rank: 4, avatarUrl: nil, name: "Daniel Phillippe", subtitle: nil, value: 320, isActiveMetric: true)
     }

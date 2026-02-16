@@ -75,9 +75,7 @@ struct MainTabView: View {
         }
         .onChange(of: sessionManager.pendingSessionSummary) { _, newValue in
             guard let data = newValue else { return }
-            if endSessionSummaryItem == nil {
-                endSessionSummaryItem = EndSessionSummaryItem(data: data)
-            }
+            endSessionSummaryItem = EndSessionSummaryItem(data: data)
             sessionManager.pendingSessionSummary = nil
         }
         .onReceive(NotificationCenter.default.publisher(for: .sessionEnded)) { _ in
@@ -87,14 +85,9 @@ struct MainTabView: View {
             }
         }
         .fullScreenCover(item: $endSessionSummaryItem) { item in
-            EndSessionSummaryView(
-                data: item.data,
-                userName: AuthManager.shared.user?.email
-            )
-            .onDisappear {
+            ShareActivityGateView(data: item.data) {
                 endSessionSummaryItem = nil
                 sessionManager.pendingSessionSummary = nil
-                // Leave campaign map only after user dismisses summary so they see SessionStartView next
                 uiState.selectedMapCampaignId = nil
                 uiState.selectedMapCampaignName = nil
             }

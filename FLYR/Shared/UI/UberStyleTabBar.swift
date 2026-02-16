@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Uber-style bottom nav: dark bar, icon above label, active = white, inactive = light gray, no separator.
+/// Uber-style bottom nav: dark bar, icon above label, active = red, inactive = light gray, no separator.
 struct UberStyleTabBar: View {
     let selectedIndex: Int
     let onSelect: (Int) -> Void
@@ -76,7 +76,7 @@ private struct UberTabItem: View {
 
     private var foregroundColor: Color {
         if useAccent { return Color.red }
-        return isSelected ? Color.primary : Color(.secondaryLabel)
+        return isSelected ? Color.red : Color(.secondaryLabel)
     }
 }
 

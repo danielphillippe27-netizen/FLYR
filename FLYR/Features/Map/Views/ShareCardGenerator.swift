@@ -2,42 +2,97 @@ import SwiftUI
 import UIKit
 
 // MARK: - Share Card Generator
-
+/// Helper utilities for sharing session summary cards (used by EndSessionSummaryView).
 enum ShareCardGenerator {
 
-    private static let canvasWidth: CGFloat = 1080
-    private static let canvasHeight: CGFloat = 1920
-
-    /// Generate a PNG for the share card. Transparent when isTransparent is true.
-    static func generateTransparentPNG(stats: ShareCardSessionStats, isTransparent: Bool = true) -> UIImage? {
-        let view = ShareCardView(stats: stats, isTransparent: isTransparent)
-            .frame(width: Self.canvasWidth, height: Self.canvasHeight)
-            .background(Color.clear)
-
-        let renderer = ImageRenderer(content: view)
-        renderer.scale = UIScreen.main.scale
-        if renderer.scale < 2 { renderer.scale = 2 }
-        renderer.isOpaque = !isTransparent
-        return renderer.uiImage
-    }
-
-    /// Share to Instagram Stories (pasteboard + URL scheme). Returns true if IG was opened, false to use fallback.
+    /// Share to Instagram Stories as a sticker (preserves transparency). Returns true if IG was opened, false to use fallback.
+    @MainActor
     static func shareToInstagramStories(_ image: UIImage) -> Bool {
-        guard let imageData = image.pngData() else { return false }
-        let pasteboard = UIPasteboard.general
-        pasteboard.setData(imageData, forPasteboardType: "com.instagram.sharedSticker.backgroundImage")
+        // Check if Instagram is installed
         guard let url = URL(string: "instagram-stories://share"),
               UIApplication.shared.canOpenURL(url) else {
+            print("❌ Instagram not installed or URL scheme not supported")
             return false
         }
-        UIApplication.shared.open(url)
+        
+        // Clear pasteboard and set image data
+        let pasteboard = UIPasteboard.general
+        pasteboard.items = []
+        
+        guard let imageData = image.pngData() else {
+            print("❌ Failed to convert image to PNG")
+            return false
+        }
+        
+        // Set the sticker image data
+        pasteboard.setData(imageData, forPasteboardType: "com.instagram.sharedSticker.stickerImage")
+        
+        // Open Instagram
+        UIApplication.shared.open(url, options: [:]) { success in
+            if !success {
+                print("❌ Failed to open Instagram")
+            }
+        }
         return true
+    }
+
+    /// Share to Instagram Stories as background (fills transparent areas with black).
+    @MainActor
+    static func shareToInstagramStoriesAsBackground(_ image: UIImage) -> Bool {
+        // Check if Instagram is installed
+        guard let url = URL(string: "instagram-stories://share"),
+              UIApplication.shared.canOpenURL(url) else {
+            print("❌ Instagram not installed or URL scheme not supported")
+            return false
+        }
+        
+        // Clear pasteboard and set image data
+        let pasteboard = UIPasteboard.general
+        pasteboard.items = []
+        
+        guard let imageData = image.pngData() else {
+            print("❌ Failed to convert image to PNG")
+            return false
+        }
+        
+        // Set the background image data
+        pasteboard.setData(imageData, forPasteboardType: "com.instagram.sharedSticker.backgroundImage")
+        
+        // Open Instagram
+        UIApplication.shared.open(url, options: [:]) { success in
+            if !success {
+                print("❌ Failed to open Instagram")
+            }
+        }
+        return true
+    }
+
+    /// Composites transparent image onto a solid color background.
+    static func addBackground(to image: UIImage, color: UIColor) -> UIImage? {
+        let size = image.size
+        UIGraphicsBeginImageContextWithOptions(size, false, image.scale)
+        defer { UIGraphicsEndImageContext() }
+        
+        // Fill background
+        color.setFill()
+        UIRectFill(CGRect(origin: .zero, size: size))
+        
+        // Draw image on top
+        image.draw(in: CGRect(origin: .zero, size: size))
+        
+        return UIGraphicsGetImageFromCurrentImageContext()
     }
 
     /// Generic share sheet (fallback when IG not installed or for "Share…").
     static func shareImage(_ image: UIImage, from viewController: UIViewController) {
+        shareImages([image], from: viewController)
+    }
+
+    /// Share multiple images (e.g. both PNG variants) via the system share sheet.
+    static func shareImages(_ images: [UIImage], from viewController: UIViewController) {
+        guard !images.isEmpty else { return }
         let activityVC = UIActivityViewController(
-            activityItems: [image],
+            activityItems: images,
             applicationActivities: nil
         )
         if let popover = activityVC.popoverPresentationController {
@@ -79,6 +134,24 @@ private final class PhotoSaveHandler: NSObject {
 extension ShareCardGenerator {
     fileprivate static func removePhotoSaveHandler(_ handler: PhotoSaveHandler) {
         photoSaveHandlers.removeAll { $0 === handler }
+    }
+
+    /// Generates both PNG variants (doors/distance/time and doors/conversations/distance) for the given session data.
+    @MainActor
+    static func generateShareImages(data: SessionSummaryData) -> [UIImage] {
+        let size = CGSize(width: 1080, height: 1920)
+        var result: [UIImage] = []
+        for metrics in [ShareCardMetrics.doorsDistanceTime, .doorsConvoTime] {
+            let card = SessionShareCardView(data: data, forExport: true, metrics: metrics)
+                .frame(width: size.width, height: size.height)
+            let renderer = ImageRenderer(content: card)
+            renderer.scale = 2
+            renderer.isOpaque = false
+            if let uiImage = renderer.uiImage, let pngData = uiImage.pngData(), let img = UIImage(data: pngData) {
+                result.append(img)
+            }
+        }
+        return result
     }
 
     /// Root view controller for presenting share sheet from SwiftUI.

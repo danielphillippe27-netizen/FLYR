@@ -4,6 +4,31 @@ import Combine
 import Supabase
 import UIKit
 
+// #region agent log
+private func _debugLogDoors(location: String, message: String, data: [String: Any], hypothesisId: String) {
+    let payload: [String: Any] = [
+        "id": "log_\(Int(Date().timeIntervalSince1970 * 1000))_\(UUID().uuidString.prefix(8))",
+        "timestamp": Int(Date().timeIntervalSince1970 * 1000),
+        "location": location,
+        "message": message,
+        "data": data,
+        "hypothesisId": hypothesisId
+    ]
+    guard let json = try? JSONSerialization.data(withJSONObject: payload),
+          let line = String(data: json, encoding: .utf8) else { return }
+    let path = "/Users/danielphillippe/Desktop/FLYR IOS/.cursor/debug.log"
+    let lineWithNewline = line + "\n"
+    guard let dataToWrite = lineWithNewline.data(using: .utf8) else { return }
+    if FileManager.default.fileExists(atPath: path), let handle = FileHandle(forWritingAtPath: path) {
+        handle.seekToEndOfFile()
+        handle.write(dataToWrite)
+        try? handle.close()
+    } else {
+        try? dataToWrite.write(to: URL(fileURLWithPath: path), options: .atomic)
+    }
+}
+// #endregion
+
 @MainActor
 class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
     static let shared = SessionManager()
@@ -45,6 +70,9 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
     /// Centroids for auto-complete: gers_id -> location. Set when starting building session.
     var buildingCentroids: [String: CLLocation] = [:]
 
+    /// Count of addresses user marked as delivered (knocked) this session via the location card. Used for summary "doors" when no building targets.
+    @Published var addressesMarkedDelivered: Int = 0
+
     var targetCount: Int { targetBuildings.count }
     /// When restored from server without event replay, use server value; else use local set count
     private var serverCompletedCount: Int?
@@ -65,7 +93,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
     private var locationManager = CLLocationManager()
     private var lastLocation: CLLocation?
     /// Ignore GPS jitter when stationary: only add a path point if moved at least this many meters from last recorded point.
-    private let minPathMovementMeters: Double = 6.0
+    private let minPathMovementMeters: Double = 3.0
     private let waypointReachedThresholdMeters: Double = 10.0
     private var activeSecondsAccumulator: TimeInterval = 0
     private var pauseStartTime: Date?
@@ -201,6 +229,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         optimizedRoute = nil
         goalType = .knocks
         goalAmount = targetBuildings.count
+        addressesMarkedDelivered = 0
         locationError = currentLocation == nil ? "Searching for GPS..." : nil
 
         let status = locationManager.authorizationStatus
@@ -263,6 +292,12 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
                 metadata: [:]
             ))
         }
+    }
+
+    /// Call when user marks an address as delivered (knocked) in the location card. Used for summary "doors" count.
+    func recordAddressDelivered() {
+        guard sessionId != nil else { return }
+        addressesMarkedDelivered += 1
     }
 
     /// Undo a completion. Idempotent. Queues event if offline.
@@ -378,13 +413,23 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
 
     /// Stop building session and persist (update existing session row, then update user stats)
     func stopBuildingSession() async {
-        guard let sid = sessionId else { return }
+        guard let sid = sessionId else {
+            // #region agent log
+            _debugLogDoors(location: "SessionManager.stopBuildingSession", message: "early return no sessionId", data: [:], hypothesisId: "H1")
+            // #endregion
+            return
+        }
         locationManager.stopUpdatingLocation()
         locationManager.stopUpdatingHeading()
         timer?.invalidate()
         timer = nil
         isActive = false
         isPaused = false
+
+        // #region agent log
+        let doorsForSummaryVal = max(completedCount, addressesMarkedDelivered)
+        _debugLogDoors(location: "SessionManager.stopBuildingSession", message: "building session end", data: ["completedCount": completedCount, "addressesMarkedDelivered": addressesMarkedDelivered, "doorsForSummary": doorsForSummaryVal, "sessionId": sid.uuidString], hypothesisId: "H2")
+        // #endregion
 
         try? await SessionEventsAPI.shared.logLifecycleEvent(
             sessionId: sid,
@@ -394,30 +439,42 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         )
         let pathGeoJSON = coordinatesToGeoJSON(pathCoordinates)
         let activeSecs = Int(elapsedTime)
-        try? await SessionsAPI.shared.updateSession(
-            id: sid,
-            completedCount: completedCount,
-            distanceM: distanceMeters,
-            activeSeconds: activeSecs,
-            pathGeoJSON: pathGeoJSON,
-            endTime: Date()
-        )
-        if let userId = AuthManager.shared.user?.id {
-            await updateUserStats(userId: userId)
+        // Use doors/knocks for both session row and user_stats so leaderboard and "You" stats match
+        let doorsForSummary = max(completedCount, addressesMarkedDelivered)
+        // #region agent log
+        do {
+            try await SessionsAPI.shared.updateSession(
+                id: sid,
+                completedCount: doorsForSummary,
+                distanceM: distanceMeters,
+                activeSeconds: activeSecs,
+                pathGeoJSON: pathGeoJSON,
+                flyersDelivered: doorsForSummary,
+                conversations: conversationsHad,
+                endTime: Date()
+            )
+            _debugLogDoors(location: "SessionManager.stopBuildingSession", message: "updateSession success", data: ["flyersDelivered": doorsForSummary], hypothesisId: "H3")
+        } catch {
+            _debugLogDoors(location: "SessionManager.stopBuildingSession", message: "updateSession failed", data: ["error": String(describing: error), "flyersDelivered": doorsForSummary], hypothesisId: "H3")
         }
-        // Capture summary for end-session sheet before clearing (Strava-style summary)
+        // #endregion
+        if let userId = AuthManager.shared.user?.id {
+            await updateUserStats(userId: userId, flyersOverride: doorsForSummary)
+        }
+        // Capture summary for end-session sheet before clearing (Strava-style summary).
+        // Path is already saved to Supabase above via pathGeoJSON; snapshot uses same pathCoordinates for the summary sheet route mini-map.
         let snapshot = SessionSummaryData(
             distance: distanceMeters,
             time: elapsedTime,
             goalType: goalType,
             goalAmount: goalAmount,
             pathCoordinates: pathCoordinates,
-            completedCount: completedCount,
+            completedCount: doorsForSummary,
+            conversationsCount: conversationsHad,
             startTime: startTime
         )
         SessionManager.lastEndedSummary = snapshot
-        // Clear session state first so MainTabView can clear campaign selection and leave CampaignMapView
-        // (avoid "only presenting a single sheet" by not presenting summary while a sheet may be up)
+        // Clear session state first so any presented sheet (e.g. targets, lead capture) is dismissed when RecordHomeView switches away from CampaignMapView
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             sessionId = nil
@@ -426,10 +483,12 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
             targetBuildings = []
             completedBuildings = []
             buildingCentroids = [:]
+            addressesMarkedDelivered = 0
+            conversationsHad = 0
 
             print("✅ [SessionManager] Building session ended and saved")
-            // Present summary on next run loop so we're no longer on campaign map (no sheet conflict)
-            DispatchQueue.main.async { [weak self] in
+            // Delay summary so CampaignMapView (and any sheet) is torn down first, avoiding "only presenting a single sheet"
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
                 self?.pendingSessionSummary = snapshot
                 NotificationCenter.default.post(name: .sessionEnded, object: nil)
             }
@@ -516,6 +575,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
             goalAmount: goalAmount,
             pathCoordinates: pathCoordinates,
             completedCount: nil,
+            conversationsCount: nil,
             startTime: startTime
         )
         SessionManager.lastEndedSummary = snapshot
@@ -662,7 +722,9 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
             print("⚠️ [SessionManager] Cannot save session: missing user ID or start time")
             return
         }
-        
+        // #region agent log
+        _debugLogDoors(location: "SessionManager.saveToSupabase", message: "non-building session save", data: ["flyersDelivered": flyersDelivered, "userId": userId.uuidString], hypothesisId: "H5")
+        // #endregion
         let endTime = Date()
         let pathGeoJSON = coordinatesToGeoJSON(pathCoordinates)
         
@@ -712,18 +774,19 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
     
     // MARK: - Update User Stats
     
-    /// Updates user_stats with ALL session metrics (flyers, conversations, distance, time)
-    private func updateUserStats(userId: UUID) async {
+    /// Updates user_stats with ALL session metrics (flyers, conversations, distance, time).
+    /// For building sessions, pass flyersOverride (doors/knocks count) so stats reflect delivered flyers.
+    private func updateUserStats(userId: UUID, flyersOverride: Int? = nil) async {
         do {
             let distanceKm = distanceMeters / 1000.0
             let timeMinutes = Int(elapsedTime / 60.0)
-            
-            print("📊 [SessionManager] Updating stats: \(flyersDelivered) flyers, \(conversationsHad) conversations, \(String(format: "%.2f", distanceKm)) km, \(timeMinutes) min")
+            let flyers = flyersOverride ?? flyersDelivered
+            print("📊 [SessionManager] Updating stats: \(flyers) flyers, \(conversationsHad) conversations, \(String(format: "%.2f", distanceKm)) km, \(timeMinutes) min")
             
             // Use RPC for atomic stats update
             let params: [String: AnyCodable] = [
                 "p_user_id": AnyCodable(userId.uuidString),
-                "p_flyers": AnyCodable(flyersDelivered),
+                "p_flyers": AnyCodable(flyers),
                 "p_conversations": AnyCodable(conversationsHad),
                 "p_leads": AnyCodable(0),
                 "p_distance_km": AnyCodable(distanceKm),

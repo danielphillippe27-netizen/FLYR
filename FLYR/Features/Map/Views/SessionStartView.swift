@@ -11,9 +11,7 @@ struct SessionStartView: View {
     
     @State private var selectedCampaign: CampaignV2?
     @State private var targetAmount: Int = 100
-    @State private var sessionNotes: String = ""
-    @FocusState private var isNotesFocused: Bool
-    
+
     // Data loading
     @State private var campaigns: [CampaignV2] = []
     @State private var isLoadingData: Bool = false
@@ -75,8 +73,6 @@ struct SessionStartView: View {
                 campaignList
                     .padding(.horizontal)
 
-                notesSection
-
                 if let errorMessage = errorMessage {
                     Text(errorMessage)
                         .font(.flyrCaption)
@@ -124,23 +120,6 @@ struct SessionStartView: View {
         .padding(.horizontal)
     }
 
-    private var notesSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("NOTES")
-                .font(.flyrHeadline)
-                .foregroundColor(.secondary)
-            TextField("Add notes for this session...", text: $sessionNotes, axis: .vertical)
-                .textFieldStyle(.plain)
-                .font(.flyrBody)
-                .lineLimit(3...6)
-                .padding(12)
-                .background(Color(.systemGray6))
-                .cornerRadius(10)
-                .focused($isNotesFocused)
-        }
-        .padding(.horizontal)
-    }
-
     @ToolbarContentBuilder
     private var sessionToolbar: some ToolbarContent {
         if showCancelButton {
@@ -150,15 +129,6 @@ struct SessionStartView: View {
                     dismiss()
                 }
             }
-        }
-        ToolbarItemGroup(placement: .keyboard) {
-            Spacer()
-            Button("Done") {
-                HapticManager.light()
-                isNotesFocused = false
-            }
-            .fontWeight(.semibold)
-            .foregroundColor(.red)
         }
     }
 
@@ -170,7 +140,7 @@ struct SessionStartView: View {
                 goalType: .flyers,
                 goalAmount: route.stopCount,
                 campaignId: selectedCampaign?.id,
-                sessionNotes: sessionNotes.isEmpty ? nil : sessionNotes,
+                sessionNotes: nil,
                 showCancelButton: showCancelButton
             )
         }
@@ -262,7 +232,6 @@ struct SessionStartView: View {
             if selectedCampaign != nil {
                 Button {
                     HapticManager.medium()
-                    isNotesFocused = false
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
                         showCampaignMap = true
                     }

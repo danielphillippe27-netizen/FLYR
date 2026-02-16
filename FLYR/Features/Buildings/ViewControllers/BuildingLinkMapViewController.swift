@@ -147,9 +147,9 @@ final class BuildingLinkMapViewController: UIViewController {
     
     private func colorExpression() -> Exp {
         Exp(.switchCase) {
-            // Priority 1: QR Scanned (YELLOW)
+            // Priority 1: QR Scanned (purple)
             Exp(.gt) { Exp(.get) { "scans_total" }; 0 }
-            UIColor(hex: "#facc15")!
+            UIColor(hex: "#8b5cf6")!
             
             // Priority 2: Hot/Conversation (BLUE)
             Exp(.eq) { Exp(.get) { "status" }; "hot" }

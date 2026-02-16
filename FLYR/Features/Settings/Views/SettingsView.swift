@@ -5,7 +5,9 @@ struct SettingsView: View {
     @StateObject private var auth = AuthManager.shared
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject var uiState: AppUIState
-    
+    @EnvironmentObject var entitlementsService: EntitlementsService
+
+    @State private var showPaywall = false
     @State private var followUpBossKey: String = ""
     @State private var excludeWeekends: Bool = false
     @State private var darkMode: Bool = true
@@ -19,6 +21,9 @@ struct SettingsView: View {
                     
                     // Integrations Section
                     integrationsSection
+                    
+                    // Subscription (always show paywall entry)
+                    subscriptionSection
                     
                     // Streak Settings
                     streakSettingsSection
@@ -67,6 +72,9 @@ struct SettingsView: View {
                 if let userID = auth.user?.id {
                     Task { await vm.loadProfile(userID: userID) }
                 }
+            }
+            .sheet(isPresented: $showPaywall) {
+                PaywallView()
             }
         }
     }
@@ -139,18 +147,49 @@ struct SettingsView: View {
     
     private var integrationsSection: some View {
         Section {
-            NavigationLink(destination: IntegrationsView()) {
-                HStack {
-                    Image(systemName: "link.circle.fill")
-                        .foregroundColor(.info)
-                    Text("CRM Integrations")
-                        .foregroundColor(.text)
+            if entitlementsService.canUsePro {
+                NavigationLink(destination: IntegrationsView()) {
+                    integrationsRowContent
                 }
+            } else {
+                Button {
+                    showPaywall = true
+                } label: {
+                    integrationsRowContent
+                }
+                .foregroundColor(.text)
             }
         } header: {
             Text("Integrations")
         } footer: {
             Text("Connect your CRM to automatically sync leads from FLYR")
+        }
+    }
+
+    private var integrationsRowContent: some View {
+        HStack {
+            Image(systemName: "link.circle.fill")
+                .foregroundColor(.info)
+            Text("CRM Integrations")
+        }
+    }
+
+    // MARK: - Subscription Section
+
+    private var subscriptionSection: some View {
+        Section {
+            Button {
+                showPaywall = true
+            } label: {
+                HStack {
+                    Image(systemName: "crown.fill")
+                        .foregroundColor(.info)
+                    Text(entitlementsService.canUsePro ? "Manage subscription" : "Upgrade to Pro")
+                        .foregroundColor(.text)
+                }
+            }
+        } header: {
+            Text("Subscription")
         }
     }
     

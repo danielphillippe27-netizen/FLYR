@@ -20,6 +20,8 @@ final class KeychainIdentityTokenProvider: IdentityTokenProvider {
                 throw TranscriptionError.idTokenUnavailable
             }
             return token
+        case .email:
+            throw TranscriptionError.idTokenUnavailable
         case .google:
             let token: String? = await withCheckedContinuation { cont in
                 GIDSignIn.sharedInstance.currentUser?.refreshTokensIfNeeded { user, _ in

@@ -7,7 +7,6 @@ final class ProfileViewModel: ObservableObject {
     @Published var profile: UserProfile?
     @Published var firstName = ""
     @Published var lastName = ""
-    @Published var nickname = ""
     @Published var quote = ""
     @Published var profileImage: UIImage?
     @Published var isLoading = false
@@ -26,12 +25,8 @@ final class ProfileViewModel: ObservableObject {
     // MARK: - Setup
     
     private func setupAutoSave() {
-        // Combine all text field publishers using nested CombineLatest
-        let textFieldsPublisher = Publishers.CombineLatest3(
-            $firstName,
-            $lastName,
-            Publishers.CombineLatest($nickname, $quote)
-        )
+        // Combine all text field publishers
+        let textFieldsPublisher = Publishers.CombineLatest3($firstName, $lastName, $quote)
         .debounce(for: .seconds(debounceInterval), scheduler: DispatchQueue.main)
         .dropFirst() // Skip initial value
         .sink { [weak self] _, _, _ in
@@ -67,7 +62,6 @@ final class ProfileViewModel: ObservableObject {
             self.profile = result
             self.firstName = result.firstName ?? ""
             self.lastName = result.lastName ?? ""
-            self.nickname = result.nickname ?? ""
             self.quote = result.quote ?? ""
             
             // Load profile image if URL exists
@@ -99,7 +93,6 @@ final class ProfileViewModel: ObservableObject {
         // Add optional fields as nil
         newProfile["first_name"] = AnyCodable(NSNull())
         newProfile["last_name"] = AnyCodable(NSNull())
-        newProfile["nickname"] = AnyCodable(NSNull())
         newProfile["quote"] = AnyCodable(NSNull())
         newProfile["profile_image_url"] = AnyCodable(NSNull())
         
@@ -129,7 +122,6 @@ final class ProfileViewModel: ObservableObject {
         var updates: [String: AnyCodable] = [:]
         updates["first_name"] = firstName.isEmpty ? AnyCodable(NSNull()) : AnyCodable(firstName)
         updates["last_name"] = lastName.isEmpty ? AnyCodable(NSNull()) : AnyCodable(lastName)
-        updates["nickname"] = nickname.isEmpty ? AnyCodable(NSNull()) : AnyCodable(nickname)
         updates["quote"] = quote.isEmpty ? AnyCodable(NSNull()) : AnyCodable(quote)
         updates["profile_image_url"] = profile.profileImageURL != nil ? AnyCodable(profile.profileImageURL!) : AnyCodable(NSNull())
         
@@ -144,7 +136,6 @@ final class ProfileViewModel: ObservableObject {
             var updatedProfile = profile
             updatedProfile.firstName = firstName.isEmpty ? nil : firstName
             updatedProfile.lastName = lastName.isEmpty ? nil : lastName
-            updatedProfile.nickname = nickname.isEmpty ? nil : nickname
             updatedProfile.quote = quote.isEmpty ? nil : quote
             self.profile = updatedProfile
             

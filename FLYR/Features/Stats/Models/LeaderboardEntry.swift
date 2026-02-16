@@ -67,7 +67,7 @@ enum LeaderboardSortBy: String, CaseIterable {
     
     var displayName: String {
         switch self {
-        case .flyers: return "Flyers"
+        case .flyers: return "Doors"
         case .conversations: return "Conversations"
         case .leads: return "Leads"
         case .distance: return "Distance"

@@ -20,6 +20,7 @@ private struct MapContentView: View {
     var onStartSession: () -> Void
     var onShowGestureInfo: () -> Void
     var isLocationDenied: Bool = false
+    var currentLocation: CLLocation? = nil
 
     var body: some View {
         ZStack(alignment: .topLeading) {
@@ -30,6 +31,7 @@ private struct MapContentView: View {
                 campaignMarkers: campaignMarkers,
                 farmMarkers: farmMarkers,
                 selectedCampaignId: selectedCampaignId,
+                currentLocation: currentLocation,
                 onMarkerTap: onMarkerTap
             )
             .ignoresSafeArea()
@@ -45,7 +47,14 @@ private struct MapContentView: View {
                     )
                     .frame(maxWidth: .infinity)
 
-                    // Legend/info button removed – legend hidden from every map per design
+                    Button {
+                        onShowGestureInfo()
+                    } label: {
+                        Image(systemName: "info.circle")
+                            .font(.system(size: 22))
+                            .foregroundStyle(.primary)
+                    }
+                    .buttonStyle(.plain)
                 }
                 .padding(.horizontal, 16)
                 .padding(.top, 16)
@@ -160,7 +169,8 @@ struct FullScreenMapView: View {
             },
             onStartSession: { startSessionFromMap() },
             onShowGestureInfo: { showGestureInfoSheet = true },
-            isLocationDenied: locationManager.isLocationDenied
+            isLocationDenied: locationManager.isLocationDenied,
+            currentLocation: locationManager.currentLocation
         )
         .sheet(isPresented: $showGestureInfoSheet) {
             MapGestureInfoSheet()
@@ -181,6 +191,38 @@ struct FullScreenMapView: View {
     private var mainContentView: some View {
         if sessionManager.isActive {
             sessionMapContentView
+        } else if let campaignId = selectedCampaignId {
+            ZStack(alignment: .topTrailing) {
+                CampaignMapView(campaignId: campaignId.uuidString)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .ignoresSafeArea()
+
+                if sessionManager.sessionId == nil {
+                    VStack {
+                        HStack {
+                            Spacer()
+                            Button {
+                                HapticManager.light()
+                                selectedCampaignId = nil
+                                selectedFarmId = nil
+                                syncSelectionToUIState()
+                                Task { await loadSelectedCampaignOrFarm() }
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .font(.system(size: 30))
+                                    .foregroundColor(.white)
+                                    .padding(8)
+                                    .background(Color.black.opacity(0.4))
+                                    .clipShape(Circle())
+                            }
+                            .padding(.trailing, 8)
+                        }
+                        .padding(.top, 52)
+                        Spacer()
+                    }
+                    .ignoresSafeArea(edges: .top)
+                }
+            }
         } else {
             mapContentView
         }
@@ -233,6 +275,13 @@ struct FullScreenMapView: View {
                     await viewModel.loadCampaignsAndFarms()
                     await loadMapMarkers()
                     locationManager.requestLocation()
+                }
+                .onAppear {
+                    // When map tab is shown with no campaign selected, request location and center if we already have it
+                    if selectedCampaignId == nil {
+                        locationManager.requestLocation()
+                        centerOnLocationIfNeeded()
+                    }
                 }
         )
     }
@@ -360,12 +409,18 @@ struct FullScreenMapView: View {
             hasCenteredOnLocation = true
         }
     }
+
+    /// Center on user location when default map appears if we have location but haven't centered yet (e.g. cached location).
+    private func centerOnLocationIfNeeded() {
+        guard selectedCampaignId == nil, let location = locationManager.currentLocation, !hasCenteredOnLocation else { return }
+        centerMapOnLocation(location.coordinate)
+        hasCenteredOnLocation = true
+    }
     
     /// Building sessions set lastEndedSummary; use it when present. Otherwise build summary from current manager state (SessionMapView / non-building flow).
+    /// When lastEndedSummary is set, MainTabView presents the summary via fullScreenCover; do not present the sheet here to avoid double presentation (blank screen + flash).
     private func handleSessionEnded() {
-        if let data = SessionManager.lastEndedSummary {
-            sessionSummaryData = data
-            showSessionSummary = true
+        if SessionManager.lastEndedSummary != nil {
             return
         }
         if sessionManager.startTime != nil {
@@ -376,6 +431,7 @@ struct FullScreenMapView: View {
                 goalAmount: sessionManager.goalAmount,
                 pathCoordinates: sessionManager.pathCoordinates,
                 completedCount: nil,
+                conversationsCount: nil,
                 startTime: sessionManager.startTime
             )
             showSessionSummary = true
@@ -539,9 +595,13 @@ struct SimpleMapViewRepresentable: UIViewRepresentable {
     var campaignMarkers: [CampaignMarker]
     var farmMarkers: [FarmMarker]
     var selectedCampaignId: UUID?
+    var currentLocation: CLLocation?
     var onMarkerTap: (UUID) -> Void
 
     static weak var currentMapView: MapView?
+
+    private static let userLocationSourceId = "user-location-source"
+    private static let userLocationLayerId = "user-location-layer"
 
     private var mapStyleFromScheme: MapStyle {
         colorScheme == .dark ? .dark : .light
@@ -559,6 +619,11 @@ struct SimpleMapViewRepresentable: UIViewRepresentable {
         context.coordinator.mapView = mapView
         Self.currentMapView = mapView
 
+        // Add user location layer once style is loaded (red circle with black outline)
+        mapView.mapboxMap?.onStyleLoaded.observeNext { _ in
+            context.coordinator.addUserLocationLayerIfNeeded(mapView: mapView)
+        }
+
         let tapGesture = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleMapTap(_:)))
         tapGesture.numberOfTapsRequired = 1
         mapView.addGestureRecognizer(tapGesture)
@@ -570,6 +635,7 @@ struct SimpleMapViewRepresentable: UIViewRepresentable {
         context.coordinator.onMarkerTap = onMarkerTap
         context.coordinator.selectedCampaignId = selectedCampaignId
         context.coordinator.updateStyle(mapStyleFromScheme)
+        context.coordinator.updateUserLocation(currentLocation)
 
         if let polygon = campaignPolygon {
             let preferLight = (colorScheme != .dark)
@@ -590,9 +656,39 @@ struct SimpleMapViewRepresentable: UIViewRepresentable {
         private let campaignLayerIds = ["campaign-markers-layer", "campaign-markers-layer-inner", "campaign-markers-layer-text"]
         private var currentStyle: MapStyle?
         private var hasLoadedTargetIcon = false
-
         init(onMarkerTap: @escaping (UUID) -> Void) {
             self.onMarkerTap = onMarkerTap
+        }
+
+        func addUserLocationLayerIfNeeded(mapView: MapView) {
+            guard let map = mapView.mapboxMap else { return }
+            guard !map.style.sourceExists(withId: SimpleMapViewRepresentable.userLocationSourceId) else { return }
+            do {
+                var source = GeoJSONSource(id: SimpleMapViewRepresentable.userLocationSourceId)
+                source.data = .featureCollection(FeatureCollection(features: []))
+                try map.addSource(source)
+
+                var circleLayer = CircleLayer(id: SimpleMapViewRepresentable.userLocationLayerId, source: SimpleMapViewRepresentable.userLocationSourceId)
+                circleLayer.circleRadius = .constant(8)
+                circleLayer.circleColor = .constant(StyleColor(.red))
+                circleLayer.circleStrokeColor = .constant(StyleColor(.black))
+                circleLayer.circleStrokeWidth = .constant(2.5)
+                circleLayer.circleOpacity = .constant(1.0)
+                try map.addLayer(circleLayer)
+            } catch {
+                print("⚠️ [Map] Failed to add user location layer: \(error)")
+            }
+        }
+
+        func updateUserLocation(_ location: CLLocation?) {
+            guard let mapView = mapView, let map = mapView.mapboxMap else { return }
+            guard map.style.sourceExists(withId: SimpleMapViewRepresentable.userLocationSourceId) else { return }
+            if let loc = location {
+                let feature = Feature(geometry: .point(Point(loc.coordinate)))
+                try? map.updateGeoJSONSource(withId: SimpleMapViewRepresentable.userLocationSourceId, geoJSON: .feature(feature))
+            } else {
+                try? map.updateGeoJSONSource(withId: SimpleMapViewRepresentable.userLocationSourceId, geoJSON: .featureCollection(FeatureCollection(features: [])))
+            }
         }
 
         @objc func handleMapTap(_ gesture: UITapGestureRecognizer) {
@@ -633,6 +729,10 @@ struct SimpleMapViewRepresentable: UIViewRepresentable {
                   currentStyle != style else { return }
             currentStyle = style
             map.loadStyle(style.mapboxStyleURI)
+            map.onStyleLoaded.observeNext { [weak self] _ in
+                guard let self = self, let mapView = self.mapView else { return }
+                self.addUserLocationLayerIfNeeded(mapView: mapView)
+            }
         }
     }
 }

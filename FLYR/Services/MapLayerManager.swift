@@ -84,7 +84,7 @@ final class MapLayerManager {
         source.data = .featureCollection(FeatureCollection(features: []))
         
         // Enable promoteId for setFeatureState (real-time updates)
-        source.promoteId = .string("gers_id")
+        source.promoteId2 = .constant("gers_id")
         
         do {
             try mapView.mapboxMap.addSource(source)
@@ -251,7 +251,7 @@ final class MapLayerManager {
         // Add empty GeoJSON source (promoteId so we can use setFeatureState for status colors)
         var source = GeoJSONSource(id: Self.addressesSourceId)
         source.data = .featureCollection(FeatureCollection(features: []))
-        source.promoteId = .string("id")
+        source.promoteId2 = .constant("id")
         
         do {
             try mapView.mapboxMap.addSource(source)
@@ -446,7 +446,7 @@ final class MapLayerManager {
             let filtered = BuildingFeatureCollection(type: "FeatureCollection", features: polygonOnly)
             let filteredData = try JSONEncoder().encode(filtered)
             let geoJSON = try JSONDecoder().decode(GeoJSONObject.self, from: filteredData)
-            try mapView.mapboxMap.updateGeoJSONSource(withId: Self.buildingsSourceId, geoJSON: geoJSON)
+            mapView.mapboxMap.updateGeoJSONSource(withId: Self.buildingsSourceId, geoJSON: geoJSON)
             if polygonOnly.count < collection.features.count {
                 print("✅ [MapLayer] Updated buildings source (\(polygonOnly.count) polygons, filtered \(collection.features.count - polygonOnly.count) non-polygons)")
             } else {
@@ -474,7 +474,7 @@ final class MapLayerManager {
                 print("⚠️ [MapLayer] No circle polygons produced; check Point geometry in address GeoJSON")
             }
             let geoJSON = try JSONDecoder().decode(GeoJSONObject.self, from: polygonData)
-            try mapView.mapboxMap.updateGeoJSONSource(withId: Self.addressesSourceId, geoJSON: geoJSON)
+            mapView.mapboxMap.updateGeoJSONSource(withId: Self.addressesSourceId, geoJSON: geoJSON)
             if polygonCount > 0 {
                 print("✅ [MapLayer] Updated addresses source (\(Self.addressesSourceId)) features=\(polygonCount) (layer minZoom=8)")
             } else {
@@ -563,9 +563,12 @@ final class MapLayerManager {
             guard let coords = centroidFromGeometryCoordinates(geom["coordinates"], geomType: geomType),
                   coords[0].isFinite, coords[1].isFinite, abs(coords[1]) < 89 else { continue }
             var props = (feature["properties"] as? [String: Any]) ?? [:]
-            var idStr = (props["gers_id"] as? String).flatMap { $0.isEmpty ? nil : $0 }
-                ?? (props["id"] as? String).flatMap { $0.isEmpty ? nil : $0 }
-                ?? (feature["id"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            // Prefer address_id so setFeatureState(addressId) matches; fall back to gers_id / id for legacy
+            var idStr: String?
+            if let s = props["address_id"] as? String, !s.isEmpty { idStr = s }
+            if idStr == nil, let s = props["gers_id"] as? String, !s.isEmpty { idStr = s }
+            if idStr == nil, let s = props["id"] as? String, !s.isEmpty { idStr = s }
+            if idStr == nil, let s = feature["id"] as? String, !s.isEmpty { idStr = s }
             if idStr == nil, let idInt = feature["id"] as? Int { idStr = String(idInt) }
             if idStr == nil, let idNum = feature["id"] as? NSNumber { idStr = idNum.stringValue }
             if let id = idStr { props["id"] = id.contains("-") ? id.lowercased() : id }
@@ -587,7 +590,7 @@ final class MapLayerManager {
             print("🔍 [MapLayer] updateAddressesFromBuildingCentroids: no building data")
             return
         }
-        guard let mapView = mapView else { return }
+        guard mapView != nil else { return }
         do {
             let pointData = try Self.pointFeatureCollectionFromBuildingCentroids(data)
             guard let parsed = try? JSONSerialization.jsonObject(with: pointData) as? [String: Any],
@@ -648,10 +651,13 @@ final class MapLayerManager {
             guard ring.count == segments + 1 else { continue }
             var props = (feature["properties"] as? [String: Any]) ?? [:]
             props["height"] = height.isFinite ? height : 8
-            // promoteId is "id" – ensure id is in properties and at root so setFeatureState can match
+            // promoteId is "id" – ensure id is in properties and at root so setFeatureState can match (prefer address_id when present)
             var featureId: String?
             if let existing = props["id"] as? String, !existing.isEmpty {
                 featureId = existing
+            } else if let addressId = props["address_id"] as? String, !addressId.isEmpty {
+                featureId = addressId
+                props["id"] = addressId
             } else if let rootId = feature["id"] as? String, !rootId.isEmpty {
                 featureId = rootId
                 props["id"] = rootId
@@ -691,7 +697,7 @@ final class MapLayerManager {
         
         do {
             let geoJSON = try JSONDecoder().decode(GeoJSONObject.self, from: data)
-            try mapView.mapboxMap.updateGeoJSONSource(withId: Self.roadsSourceId, geoJSON: geoJSON)
+            mapView.mapboxMap.updateGeoJSONSource(withId: Self.roadsSourceId, geoJSON: geoJSON)
             print("✅ [MapLayer] Updated roads source")
         } catch {
             print("❌ [MapLayer] Error updating roads: \(error)")
@@ -897,6 +903,7 @@ final class MapLayerManager {
         case .boolean(let b): return b
         case .object(let o): return unwrapTurfProperties(o)
         case .array(let a): return a.map { elem in elem.map { unwrapTurfValue($0) } ?? NSNull() }
+        @unknown default: return NSNull()
         }
     }
     

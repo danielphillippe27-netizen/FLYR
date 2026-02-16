@@ -7,6 +7,10 @@ struct SignInView: View {
     @Environment(\.colorScheme) private var colorScheme
     @StateObject private var auth = AuthManager.shared
     @State private var isSigningIn = false
+    @State private var isEmailSigningIn = false
+    @State private var email = ""
+    @State private var password = ""
+    @State private var emailSignInError: String?
     @State private var showToast = false
     @State private var toastMessage = ""
     @State private var toastType: ToastType = .success
@@ -33,8 +37,8 @@ struct SignInView: View {
                             .frame(height: 60)
 
                         VStack(spacing: 8) {
-                            LoopingLottieView(name: "splash")
-                                .frame(width: 180, height: 120)
+                            LoopingLottieView(name: colorScheme == .light ? "splash_black" : "splash")
+                                .frame(width: 340, height: 227)
                                 .clipped()
                         }
                         .padding(.top, 40)
@@ -82,6 +86,59 @@ struct SignInView: View {
                         .disabled(isSigningIn)
                         .padding(.horizontal, 32)
                         .padding(.top, 12)
+
+                        // Email / password (e.g. App Store review)
+                        VStack(spacing: 12) {
+                            Text("or sign in here")
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                                .frame(maxWidth: .infinity)
+                                .multilineTextAlignment(.center)
+                            TextField("Email", text: $email)
+                                .padding(.horizontal, 32)
+                                .textContentType(.emailAddress)
+                                .keyboardType(.emailAddress)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                                .textFieldStyle(.roundedBorder)
+                                .onChange(of: email) { _, _ in emailSignInError = nil }
+                            SecureField("Password", text: $password)
+                                .textContentType(.password)
+                                .textFieldStyle(.roundedBorder)
+                                .onChange(of: password) { _, _ in emailSignInError = nil }
+                                .padding(.horizontal, 32)
+                            if !email.trimmingCharacters(in: .whitespaces).isEmpty && !password.isEmpty {
+                                Button {
+                                    Task { await signInWithEmail() }
+                                } label: {
+                                    HStack(spacing: 12) {
+                                        if isEmailSigningIn {
+                                            ProgressView()
+                                                .progressViewStyle(CircularProgressViewStyle(tint: signInProgressTint))
+                                                .scaleEffect(0.8)
+                                        } else {
+                                            Text("Sign In")
+                                                .font(.system(size: 17, weight: .medium))
+                                        }
+                                    }
+                                    .foregroundColor(signInButtonForeground)
+                                    .frame(maxWidth: .infinity)
+                                    .frame(height: 50)
+                                    .background(signInButtonBackground)
+                                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                                }
+                                .disabled(isEmailSigningIn)
+                                .padding(.horizontal, 32)
+                                .padding(.top, 4)
+                                if let error = emailSignInError {
+                                    Text(error)
+                                        .font(.caption)
+                                        .foregroundColor(.red)
+                                        .padding(.horizontal, 32)
+                                }
+                            }
+                        }
+                        .padding(.top, 24)
 
                         Spacer()
                             .frame(height: 40)
@@ -141,6 +198,24 @@ struct SignInView: View {
         isSigningIn = false
     }
     
+    private func signInWithEmail() async {
+        isEmailSigningIn = true
+        emailSignInError = nil
+        do {
+            try await auth.signInWithEmail(email: email.trimmingCharacters(in: .whitespacesAndNewlines), password: password)
+            await MainActor.run {
+                displayToast(message: "Signed in successfully", type: .success)
+                email = ""
+                password = ""
+            }
+        } catch {
+            await MainActor.run {
+                emailSignInError = error.localizedDescription
+            }
+        }
+        isEmailSigningIn = false
+    }
+
     private func handleAppleSignInResult(_ result: Result<ASAuthorization, Error>) async {
         isSigningIn = true
         switch result {

@@ -1,7 +1,7 @@
 {
   "images" : [
     {
-      "filename" : "boyy.png",
+      "filename" : "boyy.jpeg",
       "idiom" : "universal",
       "platform" : "ios",
       "size" : "1024x1024"
@@ -13,7 +13,7 @@
           "value" : "dark"
         }
       ],
-      "filename" : "boyy 1.png",
+      "filename" : "boyy 1.jpeg",
       "idiom" : "universal",
       "platform" : "ios",
       "size" : "1024x1024"
@@ -25,7 +25,7 @@
           "value" : "tinted"
         }
       ],
-      "filename" : "boyy 2.png",
+      "filename" : "boyy 2.jpeg",
       "idiom" : "universal",
       "platform" : "ios",
       "size" : "1024x1024"

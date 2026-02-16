@@ -211,120 +211,129 @@ struct CampaignMapView: View {
     }
 
     private var campaignMapContent: some View {
+        campaignMapGeometry
+            .alert("Are you sure?", isPresented: $showEndSessionConfirmation) {
+                Button("Cancel", role: .cancel) {}
+                Button("End", role: .destructive) { SessionManager.shared.stop() }
+            } message: {
+                Text("This will end your session. You’ll see your summary and can share the transparent card.")
+            }
+            .onAppear {
+                loadCampaignData()
+                setupRealTimeSubscription()
+            }
+            .onChange(of: campaignId) { _, _ in hasFlownToCampaign = false }
+            .onDisappear { Task { await statsSubscriber?.unsubscribe() } }
+            .onChange(of: featuresService.buildings?.features.count ?? 0) { _, _ in updateMapData() }
+            .onChange(of: featuresService.addresses?.features.count ?? 0) { _, _ in updateMapData() }
+            .onChange(of: sessionManager.pathCoordinates.count) { _, _ in updateSessionPathOnMap() }
+            .onReceive(Timer.publish(every: 2.0, on: .main, in: .common).autoconnect()) { _ in
+                guard sessionManager.sessionId != nil else { return }
+                updateSessionPathOnMap()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { notification in
+                guard let frame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
+                withAnimation(.easeOut(duration: 0.25)) { keyboardHeight = frame.height }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+                withAnimation(.easeOut(duration: 0.25)) { keyboardHeight = 0 }
+            }
+            .sheet(isPresented: $showTargetsSheet) { nextTargetsSheetContent }
+            .sheet(isPresented: $showLeadCaptureSheet, onDismiss: { selectedBuilding = nil }) {
+                leadCaptureSheetContent
+            }
+    }
+
+    private var campaignMapGeometry: some View {
         GeometryReader { geometry in
-            ZStack {
-                mapLayer(geometry: geometry)
-                sessionStatsOverlay
-                overlayUI
-                locationCardOverlay
-                loadingOverlay
-            }
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                if sessionManager.sessionId != nil {
-                    BottomActionBar(
-                        sessionManager: sessionManager,
-                        showingTargets: $showTargetsSheet,
-                        statsExpanded: $statsExpanded
-                    )
-                }
-            }
+            campaignMapStack(geometry: geometry)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .ignoresSafeArea(sessionManager.sessionId != nil ? .all : [])  // Force full screen in session mode
-        .alert("Are you sure?", isPresented: $showEndSessionConfirmation) {
-            Button("Cancel", role: .cancel) {}
-            Button("End", role: .destructive) {
-                SessionManager.shared.stop()
+        .ignoresSafeArea(sessionManager.sessionId != nil ? .all : [])
+        .navigationBarBackButtonHidden(sessionManager.sessionId != nil)
+    }
+
+    private var nextTargetsSheetContent: some View {
+        NextTargetsSheet(
+            sessionManager: sessionManager,
+            buildingCentroids: sessionManager.buildingCentroids,
+            targetBuildings: sessionManager.targetBuildings,
+            addressLabels: addressLabelsForTargets(),
+            onBuildingTapped: { buildingId in
+                HapticManager.light()
+                focusBuildingId = buildingId
+                showTargetsSheet = false
+            },
+            onCompleteTapped: { buildingId in
+                HapticManager.soft()
+                Task {
+                    try? await sessionManager.completeBuilding(buildingId)
+                    updateBuildingColorAfterComplete(gersId: buildingId)
+                }
+            },
+            onUndoTapped: { buildingId in
+                HapticManager.light()
+                Task { try? await sessionManager.undoCompletion(buildingId) }
             }
-        } message: {
-            Text("This will end your session. You’ll see your summary and can share the transparent card.")
-        }
-        .onAppear {
-            loadCampaignData()
-            setupRealTimeSubscription()
-        }
-        .onChange(of: campaignId) { _, _ in
-            hasFlownToCampaign = false
-        }
-        .onDisappear {
-            Task {
-                await statsSubscriber?.unsubscribe()
-            }
-        }
-        .onChange(of: featuresService.buildings?.features.count ?? 0) { _, _ in
-            updateMapData()
-        }
-        .onChange(of: featuresService.addresses?.features.count ?? 0) { _, _ in
-            updateMapData()
-        }
-        .onChange(of: sessionManager.pathCoordinates.count) { _, _ in
-            updateSessionPathOnMap()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { notification in
-            guard let frame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
-            withAnimation(.easeOut(duration: 0.25)) {
-                keyboardHeight = frame.height
-            }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
-            withAnimation(.easeOut(duration: 0.25)) {
-                keyboardHeight = 0
-            }
-        }
-        .sheet(isPresented: $showTargetsSheet) {
-            NextTargetsSheet(
-                sessionManager: sessionManager,
-                buildingCentroids: sessionManager.buildingCentroids,
-                targetBuildings: sessionManager.targetBuildings,
-                addressLabels: addressLabelsForTargets(),
-                onBuildingTapped: { buildingId in
-                    HapticManager.light()
-                    focusBuildingId = buildingId
-                    showTargetsSheet = false
+        )
+    }
+
+    @ViewBuilder
+    private var leadCaptureSheetContent: some View {
+        if let building = selectedBuilding,
+           let campId = UUID(uuidString: campaignId) {
+            let gersIdString = building.gersId ?? building.id
+            LeadCaptureSheet(
+                addressDisplay: building.addressText ?? "Address",
+                campaignId: campId,
+                sessionId: sessionManager.sessionId,
+                gersIdString: gersIdString,
+                onSave: { lead in
+                    _ = try? await FieldLeadsService.shared.addLead(lead)
+                    // Count every lead save as a conversation (any status = had contact at door)
+                    await MainActor.run { sessionManager.conversationsHad += 1 }
+                    if let addressId = selectedAddress?.addressId {
+                        let addressStatus = mapFieldLeadStatusToAddressStatus(lead.status)
+                        try? await VisitsAPI.shared.updateStatus(
+                            addressId: addressId,
+                            campaignId: campId,
+                            status: addressStatus,
+                            notes: lead.notes
+                        )
+                        await applyLoadedStatusesToMap()
+                    }
+                    try? await sessionManager.completeBuilding(gersIdString)
+                    await MainActor.run { updateBuildingColorAfterComplete(gersId: gersIdString) }
+                    HapticManager.success()
                 },
-                onCompleteTapped: { buildingId in
+                onJustMark: {
                     HapticManager.soft()
-                    Task {
-                        try? await sessionManager.completeBuilding(buildingId)
-                        updateBuildingColorAfterComplete(gersId: buildingId)
-                    }
+                    try? await sessionManager.completeBuilding(gersIdString)
+                    await MainActor.run { updateBuildingColorAfterComplete(gersId: gersIdString) }
                 },
-                onUndoTapped: { buildingId in
-                    HapticManager.light()
-                    Task {
-                        try? await sessionManager.undoCompletion(buildingId)
-                    }
+                onDismiss: {
+                    showLeadCaptureSheet = false
+                    selectedBuilding = nil
                 }
             )
         }
-        .sheet(isPresented: $showLeadCaptureSheet, onDismiss: { selectedBuilding = nil }) {
-            if let building = selectedBuilding,
-               let campId = UUID(uuidString: campaignId) {
-                let gersIdString = building.gersId ?? building.id
-                LeadCaptureSheet(
-                    addressDisplay: building.addressText ?? "Address",
-                    campaignId: campId,
-                    sessionId: sessionManager.sessionId,
-                    gersIdString: gersIdString,
-                    onSave: { lead in
-                        _ = try? await FieldLeadsService.shared.addLead(lead)
-                        try? await sessionManager.completeBuilding(gersIdString)
-                        await MainActor.run {
-                            updateBuildingColorAfterComplete(gersId: gersIdString)
-                        }
-                        HapticManager.success()
-                    },
-                    onJustMark: {
-                        HapticManager.soft()
-                        try? await sessionManager.completeBuilding(gersIdString)
-                        await MainActor.run {
-                            updateBuildingColorAfterComplete(gersId: gersIdString)
-                        }
-                    },
-                    onDismiss: {
-                        showLeadCaptureSheet = false
-                        selectedBuilding = nil
-                    }
+    }
+
+    @ViewBuilder
+    private func campaignMapStack(geometry: GeometryProxy) -> some View {
+        ZStack {
+            mapLayer(geometry: geometry)
+            sessionStatsOverlay
+            overlayUI
+            locationCardOverlay
+            loadingOverlay
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if sessionManager.sessionId != nil {
+                BottomActionBar(
+                    sessionManager: sessionManager,
+                    showingTargets: $showTargetsSheet,
+                    statsExpanded: $statsExpanded
                 )
             }
         }
@@ -427,15 +436,29 @@ struct CampaignMapView: View {
                let features = featuresService.buildings?.features,
                !features.isEmpty,
                let campId = UUID(uuidString: campaignId) {
-                Button {
-                    HapticManager.medium()
-                    startBuildingSession(campaignId: campId, features: features)
-                } label: {
-                    Label("Start session", systemImage: "play.circle.fill")
-                        .font(.flyrSubheadline)
+                GeometryReader { geo in
+                    HStack {
+                        Spacer()
+                        Button {
+                            HapticManager.medium()
+                            startBuildingSession(campaignId: campId, features: features)
+                        } label: {
+                            Label("Start session", systemImage: "play.circle.fill")
+                                .font(.flyrSubheadline)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.7)
+                                .padding(.horizontal, 24)
+                                .padding(.vertical, 4)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                        .frame(width: geo.size.width * 0.5)
+                        Spacer()
+                    }
                 }
-                .buttonStyle(.borderedProminent)
-                .padding(.bottom, 8)
+                .frame(maxWidth: .infinity)
+                .frame(height: 18)
+                .padding(.bottom, 64)
             }
         }
     }
@@ -491,13 +514,12 @@ struct CampaignMapView: View {
     private var locationCardOverlay: some View {
         if showLocationCard,
            let building = selectedBuilding,
-           let gersIdString = building.gersId,
-           let gersId = UUID(uuidString: gersIdString),
            let campId = UUID(uuidString: campaignId) {
+            let gersIdString = building.gersId ?? building.id ?? ""
             VStack {
                 Spacer()
                 LocationCardView(
-                    gersId: gersId,
+                    gersId: gersIdString,
                     campaignId: campId,
                     addressId: building.addressId.flatMap { UUID(uuidString: $0) },
                     addressText: building.addressText,
@@ -507,6 +529,9 @@ struct CampaignMapView: View {
                         selectedAddress = nil
                     },
                     onStatusUpdated: { addressId, status in
+                        if status == .delivered {
+                            SessionManager.shared.recordAddressDelivered()
+                        }
                         if let map = mapView {
                             MapController.shared.applyStatusFeatureState(statuses: [addressId.uuidString: status], mapView: map)
                         }
@@ -515,6 +540,7 @@ struct CampaignMapView: View {
                         layerManager?.updateAddressState(addressId: addressId.uuidString, status: layerStatus, scansTotal: 0)
                     }
                 )
+                .id("building-\(gersIdString)")
                 .padding()
             }
             .padding(.bottom, keyboardHeight)
@@ -522,12 +548,11 @@ struct CampaignMapView: View {
         } else if showLocationCard,
                   let address = selectedAddress,
                   let campId = UUID(uuidString: campaignId) {
-            let gersId = (address.buildingGersId ?? address.gersId).flatMap({ UUID(uuidString: $0) })
-                ?? UUID(uuidString: "00000000-0000-0000-0000-000000000000")!
+            let gersIdString = address.buildingGersId ?? address.gersId ?? ""
             VStack {
                 Spacer()
                 LocationCardView(
-                    gersId: gersId,
+                    gersId: gersIdString,
                     campaignId: campId,
                     addressId: address.addressId,
                     addressText: address.formatted,
@@ -537,14 +562,18 @@ struct CampaignMapView: View {
                         selectedAddress = nil
                     },
                     onStatusUpdated: { addressId, status in
+                        if status == .delivered {
+                            SessionManager.shared.recordAddressDelivered()
+                        }
                         if let map = mapView {
                             MapController.shared.applyStatusFeatureState(statuses: [addressId.uuidString: status], mapView: map)
                         }
                         let layerStatus: String = (status == .talked || status == .appointment) ? "hot" : "visited"
-                        layerManager?.updateBuildingState(gersId: gersId.uuidString, status: layerStatus, scansTotal: 0)
+                        layerManager?.updateBuildingState(gersId: gersIdString, status: layerStatus, scansTotal: 0)
                         layerManager?.updateAddressState(addressId: addressId.uuidString, status: layerStatus, scansTotal: 0)
                     }
                 )
+                .id("address-\(address.addressId.uuidString)")
                 .padding()
             }
             .padding(.bottom, keyboardHeight)
@@ -625,6 +654,46 @@ struct CampaignMapView: View {
         
         if let map = mapView {
             flyToCampaignCenterIfNeeded(map: map)
+        }
+        
+        // Re-apply loaded campaign statuses after source update (Mapbox clears feature state when GeoJSON source is updated)
+        Task { await applyLoadedStatusesToMap() }
+    }
+    
+    /// Fetch campaign address statuses and apply them to the map so buildings/addresses show correct colors (delivered = green, etc.).
+    /// Call after every source update since Mapbox clears feature state when GeoJSON is replaced.
+    private func applyLoadedStatusesToMap() async {
+        guard let manager = layerManager,
+              let campaignUUID = UUID(uuidString: campaignId) else { return }
+        do {
+            let statuses = try await VisitsAPI.shared.fetchStatuses(campaignId: campaignUUID)
+            guard !statuses.isEmpty else { return }
+            await MainActor.run {
+                for (addressId, row) in statuses {
+                    manager.updateAddressState(addressId: addressId.uuidString, status: row.status.rawValue, scansTotal: 0)
+                }
+                if let buildings = featuresService.buildings?.features {
+                    for building in buildings {
+                        guard let addrIdStr = building.properties.addressId,
+                              let addrId = UUID(uuidString: addrIdStr),
+                              let row = statuses[addrId],
+                              let gersId = building.properties.gersId ?? building.id else { continue }
+                        manager.updateBuildingState(gersId: gersId, status: row.status.rawValue, scansTotal: 0)
+                    }
+                }
+            }
+            print("📊 [CampaignMap] Applied \(statuses.count) loaded statuses to map")
+        } catch {
+            print("⚠️ [CampaignMap] Failed to load/apply statuses: \(error)")
+        }
+    }
+
+    private func mapFieldLeadStatusToAddressStatus(_ status: FieldLeadStatus) -> AddressStatus {
+        switch status {
+        case .notHome: return .noAnswer
+        case .interested: return .hotLead
+        case .noAnswer: return .noAnswer
+        case .qrScanned: return .hotLead
         }
     }
 
@@ -778,13 +847,10 @@ struct CampaignMapView: View {
         }
     }
     
-    private func updateBuildingColor(gersId: UUID, status: String, scansTotal: Int, qrScanned: Bool) {
-        guard layerManager != nil else { return }
-        // TODO: Update the building's feature state in MapLayerManager
+    private func updateBuildingColor(gersId: String, status: String, scansTotal: Int, qrScanned: Bool) {
+        guard let manager = layerManager else { return }
         print("📊 Building stats updated: GERS=\(gersId), status=\(status), scans=\(scansTotal)")
-        
-        // TODO: Implement feature state update in MapLayerManager
-        // manager.updateFeatureState(gersId: gersId, status: status, scansTotal: scansTotal)
+        manager.updateBuildingState(gersId: gersId, status: status, scansTotal: scansTotal)
     }
     
     @State private var cancellables = Set<AnyCancellable>()
@@ -874,7 +940,7 @@ struct MapLegendView: View {
                 .foregroundColor(.secondary)
             
             LegendItem(
-                color: Color(UIColor(hex: "#eab308")!),
+                color: Color(UIColor(hex: "#8b5cf6")!),
                 label: "QR Scanned",
                 isOn: $showQrScanned,
                 onToggle: onFilterChanged
@@ -937,7 +1003,8 @@ struct LegendItem: View {
 // MARK: - Location Card View
 
 struct LocationCardView: View {
-    let gersId: UUID
+    /// Overture GERS ID string (from map feature)
+    let gersId: String
     let campaignId: UUID
     /// Campaign address ID from tapped building (used for direct lookup so card shows linked state)
     let addressId: UUID?
@@ -949,18 +1016,32 @@ struct LocationCardView: View {
     
     @StateObject private var dataService: BuildingDataService
     @StateObject private var voiceRecorder = VoiceRecorderManager()
+    @StateObject private var transcriptionService = TranscriptionService()
     @State private var nameText: String = ""
     @State private var firstName: String = ""
     @State private var lastName: String = ""
     @State private var phoneText: String = ""
     @State private var emailText: String = ""
     @State private var notesText: String = ""
+    @State private var manualAddressText: String = ""
     @State private var showAddResidentSheet = false
     @State private var addResidentAddress: ResolvedAddress?
     @State private var isUploadingVoiceNote = false
     @State private var voiceNoteError: String?
-    
-    init(gersId: UUID, campaignId: UUID, addressId: UUID? = nil, addressText: String? = nil, onClose: @escaping () -> Void, onStatusUpdated: ((UUID, AddressStatus) -> Void)? = nil) {
+    @State private var showContactBlock = false
+    @State private var showTaskBlock = false
+    @State private var showAppointmentBlock = false
+    @State private var showVoiceLogPreviewSheet = false
+    @State private var taskTitle = ""
+    @State private var taskDueText = ""
+    @State private var appointmentTitle = ""
+    @State private var appointmentStartText = ""
+    @State private var appointmentEndText = ""
+    @State private var appointmentLocationText = ""
+    @State private var voiceLogPreviewResult: VoiceLogResponse?
+    @State private var flyrEventIdForRecording: UUID?
+
+    init(gersId: String, campaignId: UUID, addressId: UUID? = nil, addressText: String? = nil, onClose: @escaping () -> Void, onStatusUpdated: ((UUID, AddressStatus) -> Void)? = nil) {
         self.gersId = gersId
         self.campaignId = campaignId
         self.addressId = addressId
@@ -982,11 +1063,59 @@ struct LocationCardView: View {
         return full.trimmingCharacters(in: .whitespaces)
     }
 
+    /// Address string for the card header (same row as Save and X).
+    private var headerAddress: String {
+        if let address = dataService.buildingData.address {
+            return streetOnly(from: address.displayStreet).uppercased()
+        }
+        if let addr = addressText, !addr.isEmpty {
+            return streetOnly(from: addr).uppercased()
+        }
+        return "Loading..."
+    }
+
+    private var needsScroll: Bool {
+        showContactBlock || showTaskBlock || showAppointmentBlock || dataService.buildingData.error != nil
+    }
+
+    @ViewBuilder
+    private var cardContentBody: some View {
+        if needsScroll {
+            ScrollView(.vertical, showsIndicators: false) {
+                cardContentViews
+            }
+            .scrollDismissesKeyboard(.interactively)
+            .frame(maxHeight: 420)
+        } else {
+            cardContentViews
+        }
+    }
+
+    @ViewBuilder
+    private var cardContentViews: some View {
+        if dataService.buildingData.isLoading {
+            loadingView
+        } else if let error = dataService.buildingData.error {
+            errorView(error: error)
+        } else if !dataService.buildingData.addressLinked {
+            unlinkedBuildingView
+        } else if let address = dataService.buildingData.address {
+            mainContentView(address: address)
+        } else if let addressText = addressText, !addressText.isEmpty {
+            universalCardContent(displayAddress: addressText, address: nil)
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Save + Close buttons top right
-            HStack(spacing: 4) {
-                Spacer()
+            // Header: address (leading) + Save + X (trailing)
+            HStack(alignment: .center, spacing: 8) {
+                Text(headerAddress)
+                    .font(.system(size: 17, weight: .bold))
+                    .foregroundColor(.white)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.8)
+                Spacer(minLength: 8)
                 Button("Save") {
                     onSaveForm()
                 }
@@ -999,24 +1128,11 @@ struct LocationCardView: View {
                         .frame(width: 32, height: 32)
                 }
             }
-            .padding(.trailing, 12)
+            .padding(.horizontal, 12)
             .padding(.top, 12)
+            .padding(.bottom, 8)
             
-            ScrollView {
-                if dataService.buildingData.isLoading {
-                    loadingView
-                } else if let error = dataService.buildingData.error {
-                    errorView(error: error)
-                } else if !dataService.buildingData.addressLinked {
-                    unlinkedBuildingView
-                } else if let address = dataService.buildingData.address {
-                    mainContentView(address: address)
-                } else if let addressText = addressText, !addressText.isEmpty {
-                    universalCardContent(displayAddress: addressText, address: nil)
-                }
-            }
-            .scrollDismissesKeyboard(.interactively)
-            .frame(maxHeight: 420)
+            cardContentBody
         }
         .frame(maxWidth: 400)
         .background(cardBackground)
@@ -1047,27 +1163,30 @@ struct LocationCardView: View {
         } message: {
             if let msg = voiceNoteError { Text(msg) }
         }
+        .sheet(isPresented: $showVoiceLogPreviewSheet) {
+            if let result = voiceLogPreviewResult {
+                VoiceLogPreviewSheet(
+                    result: result,
+                    onDismiss: {
+                        showVoiceLogPreviewSheet = false
+                        voiceLogPreviewResult = nil
+                    }
+                )
+            }
+        }
     }
     
     // MARK: - Loading State
     
     private var loadingView: some View {
         VStack(alignment: .leading, spacing: 14) {
-            if let addr = addressText, !addr.isEmpty {
-                Text(streetOnly(from: addr).uppercased())
-                    .font(.system(size: 17, weight: .bold))
-                    .foregroundColor(.white)
-                    .lineLimit(2)
-            }
             ProgressView()
                 .tint(.white)
             Text("Loading...")
                 .foregroundColor(cardPlaceholder)
-            universalFormFields
         }
         .padding(.horizontal, 16)
-        .padding(.bottom, 20)
-        .frame(minHeight: 180)
+        .padding(.bottom, 12)
         .frame(maxWidth: .infinity)
     }
     
@@ -1075,12 +1194,6 @@ struct LocationCardView: View {
     
     private func errorView(error: Error) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            if let addr = addressText, !addr.isEmpty {
-                Text(streetOnly(from: addr).uppercased())
-                    .font(.system(size: 17, weight: .bold))
-                    .foregroundColor(.white)
-                    .lineLimit(2)
-            }
             HStack(spacing: 12) {
                 Image(systemName: "exclamationmark.triangle")
                     .foregroundColor(.red)
@@ -1093,7 +1206,16 @@ struct LocationCardView: View {
                         .foregroundColor(cardPlaceholder)
                 }
             }
-            universalFormFields
+            if showContactBlock {
+                universalFormFields
+            }
+            if showTaskBlock {
+                taskFieldsBlock
+            }
+            if showAppointmentBlock {
+                appointmentFieldsBlock
+            }
+            twoRowActionButtons(address: nil)
             Button("Retry") {
                 Task {
                     await dataService.fetchBuildingData(gersId: gersId, campaignId: campaignId, addressId: addressId)
@@ -1106,43 +1228,56 @@ struct LocationCardView: View {
             .cornerRadius(8)
         }
         .padding(.horizontal, 16)
-        .padding(.bottom, 20)
+        .padding(.bottom, 12)
     }
     
     // MARK: - Unlinked Building State
     
     private var unlinkedBuildingView: some View {
         VStack(alignment: .leading, spacing: 14) {
-            if let addr = addressText, !addr.isEmpty {
-                Text(streetOnly(from: addr).uppercased())
-                    .font(.system(size: 17, weight: .bold))
-                    .foregroundColor(.white)
-                    .lineLimit(2)
+            if addressText?.isEmpty != false {
+                HStack(spacing: 8) {
+                    Image(systemName: "mappin.circle")
+                        .foregroundColor(cardPlaceholder)
+                        .frame(width: 20)
+                    universalTextField(placeholder: "Add address", text: $manualAddressText)
+                }
             }
             Text("No address data for this building")
                 .font(.system(size: 12))
                 .foregroundColor(cardPlaceholder)
-            universalFormFields
+            if showContactBlock {
+                universalFormFields
+            }
+            if showTaskBlock {
+                taskFieldsBlock
+            }
+            if showAppointmentBlock {
+                appointmentFieldsBlock
+            }
+            twoRowActionButtons(address: nil)
         }
         .padding(.horizontal, 16)
-        .padding(.bottom, 20)
+        .padding(.bottom, 12)
     }
     
     // MARK: - Universal card content (dark layout like screenshot)
     
     private func universalCardContent(displayAddress: String, address: ResolvedAddress?) -> some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text(streetOnly(from: displayAddress).uppercased())
-                .font(.system(size: 17, weight: .bold))
-                .foregroundColor(.white)
-                .lineLimit(2)
-            universalFormFields
-            if let address = address {
-                universalActionButtons(address: address)
+            if showContactBlock {
+                universalFormFields
             }
+            if showTaskBlock {
+                taskFieldsBlock
+            }
+            if showAppointmentBlock {
+                appointmentFieldsBlock
+            }
+            twoRowActionButtons(address: address)
         }
         .padding(.horizontal, 16)
-        .padding(.bottom, 20)
+        .padding(.bottom, 12)
     }
 
     private var universalFormFields: some View {
@@ -1181,6 +1316,52 @@ struct LocationCardView: View {
         }
     }
 
+    private var taskFieldsBlock: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "checkmark.circle")
+                    .foregroundColor(cardPlaceholder)
+                    .frame(width: 20)
+                universalTextField(placeholder: "Task title", text: $taskTitle)
+            }
+            HStack(spacing: 8) {
+                Image(systemName: "calendar")
+                    .foregroundColor(cardPlaceholder)
+                    .frame(width: 20)
+                universalTextField(placeholder: "Due (e.g. Tomorrow 6pm)", text: $taskDueText)
+            }
+        }
+    }
+
+    private var appointmentFieldsBlock: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "calendar.badge.clock")
+                    .foregroundColor(cardPlaceholder)
+                    .frame(width: 20)
+                universalTextField(placeholder: "Appointment title", text: $appointmentTitle)
+            }
+            HStack(spacing: 8) {
+                Image(systemName: "clock")
+                    .foregroundColor(cardPlaceholder)
+                    .frame(width: 20)
+                universalTextField(placeholder: "Start (e.g. Fri 2pm)", text: $appointmentStartText)
+            }
+            HStack(spacing: 8) {
+                Image(systemName: "clock.arrow.circlepath")
+                    .foregroundColor(cardPlaceholder)
+                    .frame(width: 20)
+                universalTextField(placeholder: "End (e.g. Fri 3pm)", text: $appointmentEndText)
+            }
+            HStack(spacing: 8) {
+                Image(systemName: "mappin.circle")
+                    .foregroundColor(cardPlaceholder)
+                    .frame(width: 20)
+                universalTextField(placeholder: "Location", text: $appointmentLocationText)
+            }
+        }
+    }
+
     private func universalTextField(placeholder: String, text: Binding<String>) -> some View {
         TextField(placeholder, text: text)
             .padding(10)
@@ -1195,31 +1376,75 @@ struct LocationCardView: View {
             .fill(Color.red)
     }
 
-    private func universalActionButtons(address: ResolvedAddress) -> some View {
-        HStack(spacing: 8) {
-            Button(action: { onClose(); logVisitStatus(address, status: .delivered) }) {
-                Image(systemName: "door.left.hand.closed")
-                    .font(.system(size: 18))
-                    .foregroundColor(.black)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 12)
-                    .background(actionButtonPillStyle)
+    /// Two rows: (Contact, Knock, Conversation) | (Task, Appointment, AI Summary)
+    private func twoRowActionButtons(address: ResolvedAddress?) -> some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 8) {
+                Button(action: { showContactBlock.toggle() }) {
+                    Image(systemName: "person.fill")
+                        .font(.system(size: 18))
+                        .foregroundColor(.black)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                        .background(actionButtonPillStyle)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Contact")
+                if let address = address {
+                    Button(action: { onClose(); logVisitStatus(address, status: .delivered) }) {
+                        Image(systemName: "door.left.hand.closed")
+                            .font(.system(size: 18))
+                            .foregroundColor(.black)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                            .background(actionButtonPillStyle)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Knock")
+                    Button(action: { onClose(); logVisitStatus(address, status: .talked) }) {
+                        Image(systemName: "person.wave.2.fill")
+                            .font(.system(size: 18))
+                            .foregroundColor(.black)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                            .background(actionButtonPillStyle)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Conversation")
+                } else {
+                    Color.clear.frame(maxWidth: .infinity).padding(.vertical, 12)
+                    Color.clear.frame(maxWidth: .infinity).padding(.vertical, 12)
+                }
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Knocked")
-            Button(action: { onClose(); logVisitStatus(address, status: .talked) }) {
-                Image(systemName: "person.wave.2.fill")
-                    .font(.system(size: 18))
-                    .foregroundColor(.black)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 12)
-                    .background(actionButtonPillStyle)
+            HStack(spacing: 8) {
+                Button(action: { showTaskBlock.toggle() }) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 18))
+                        .foregroundColor(.black)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                        .background(actionButtonPillStyle)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Task")
+                Button(action: { showAppointmentBlock.toggle() }) {
+                    Image(systemName: "calendar")
+                        .font(.system(size: 18))
+                        .foregroundColor(.black)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                        .background(actionButtonPillStyle)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Appointment")
+                aiSummaryButton(address: address)
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Conversation")
-            voiceNoteButton(address: address)
         }
         .padding(.top, 8)
+    }
+
+    private func universalActionButtons(address: ResolvedAddress) -> some View {
+        twoRowActionButtons(address: address)
     }
 
     // MARK: - Name Row (legacy / compatibility)
@@ -1240,10 +1465,6 @@ struct LocationCardView: View {
     
     private func mainContentView(address: ResolvedAddress) -> some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text(address.displayStreet.uppercased())
-                .font(.system(size: 17, weight: .bold))
-                .foregroundColor(.white)
-                .lineLimit(2)
             if getStatusText() == "Scanned" {
                 statusBadgeUniversal
             }
@@ -1252,24 +1473,32 @@ struct LocationCardView: View {
                     .font(.system(size: 12))
                     .foregroundColor(cardPlaceholder)
             }
-            universalFormFields
-                .onAppear {
-                    if firstName.isEmpty, lastName.isEmpty {
-                        if let resident = dataService.buildingData.primaryResident {
-                            let parts = resident.displayName.split(separator: " ", maxSplits: 1)
-                            firstName = String(parts.first ?? "")
-                            lastName = parts.count > 1 ? String(parts[1]) : ""
-                        } else if let contact = dataService.buildingData.contactName, !contact.isEmpty {
-                            let parts = contact.split(separator: " ", maxSplits: 1)
-                            firstName = String(parts.first ?? "")
-                            lastName = parts.count > 1 ? String(parts[1]) : ""
-                        }
-                    }
-                }
-            universalActionButtons(address: address)
+            if showContactBlock {
+                universalFormFields
+            }
+            if showTaskBlock {
+                taskFieldsBlock
+            }
+            if showAppointmentBlock {
+                appointmentFieldsBlock
+            }
+            twoRowActionButtons(address: address)
         }
         .padding(.horizontal, 16)
-        .padding(.bottom, 20)
+        .padding(.bottom, 12)
+        .onAppear {
+            if firstName.isEmpty, lastName.isEmpty {
+                if let resident = dataService.buildingData.primaryResident {
+                    let parts = resident.displayName.split(separator: " ", maxSplits: 1)
+                    firstName = String(parts.first ?? "")
+                    lastName = parts.count > 1 ? String(parts[1]) : ""
+                } else if let contact = dataService.buildingData.contactName, !contact.isEmpty {
+                    let parts = contact.split(separator: " ", maxSplits: 1)
+                    firstName = String(parts.first ?? "")
+                    lastName = parts.count > 1 ? String(parts[1]) : ""
+                }
+            }
+        }
     }
 
     private var statusBadgeUniversal: some View {
@@ -1282,10 +1511,10 @@ struct LocationCardView: View {
             .cornerRadius(12)
     }
     
-    private func voiceNoteButton(address: ResolvedAddress) -> some View {
+    private func aiSummaryButton(address: ResolvedAddress?) -> some View {
         Group {
             if voiceRecorder.isRecording {
-                Button(action: { stopAndUploadVoiceNote(address: address) }) {
+                Button(action: { stopAndUploadVoiceLog(address: address) }) {
                     HStack(spacing: 4) {
                         Image(systemName: "stop.circle.fill")
                             .font(.system(size: 18))
@@ -1300,9 +1529,9 @@ struct LocationCardView: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(isUploadingVoiceNote)
-                .accessibilityLabel("Stop and save voice note")
+                .accessibilityLabel("Stop and send to Follow Up Boss")
             } else {
-                Button(action: { startVoiceNote() }) {
+                Button(action: { startAISummaryRecording() }) {
                     Image(systemName: "mic.fill")
                         .font(.system(size: 18))
                         .foregroundColor(.black)
@@ -1311,44 +1540,61 @@ struct LocationCardView: View {
                         .background(actionButtonPillStyle)
                 }
                 .buttonStyle(.plain)
-                .disabled(isUploadingVoiceNote)
-                .accessibilityLabel("Record voice note")
+                .disabled(isUploadingVoiceNote || addressId == nil)
+                .accessibilityLabel("AI Summary")
             }
         }
     }
-    
-    private func startVoiceNote() {
+
+    private func startAISummaryRecording() {
+        flyrEventIdForRecording = UUID()
         Task {
             let granted = await voiceRecorder.requestPermission()
             guard granted else {
                 voiceNoteError = "Microphone access is required for voice notes."
                 return
             }
-            _ = voiceRecorder.startRecording()
+            await MainActor.run {
+                _ = voiceRecorder.startRecording()
+            }
         }
     }
-    
-    private func stopAndUploadVoiceNote(address: ResolvedAddress) {
-        guard let url = voiceRecorder.stopRecording() else { return }
+
+    private func stopAndUploadVoiceLog(address: ResolvedAddress?) {
+        guard let url = voiceRecorder.stopRecording(),
+              let eventId = flyrEventIdForRecording,
+              let addrId = address?.id ?? addressId else {
+            flyrEventIdForRecording = nil
+            return
+        }
+        let addressString = address?.displayFull ?? addressText ?? ""
         isUploadingVoiceNote = true
         Task {
-            defer { Task { @MainActor in isUploadingVoiceNote = false } }
+            defer {
+                Task { @MainActor in
+                    isUploadingVoiceNote = false
+                    flyrEventIdForRecording = nil
+                }
+            }
             do {
-                let result = try await VoiceNoteAPI.processVoiceNote(
-                    audioFileURL: url,
-                    addressId: address.id,
-                    campaignId: campaignId
+                let result = try await VoiceLogAPI.shared.submitVoiceLog(
+                    audioURL: url,
+                    flyrEventId: eventId,
+                    addressId: addrId,
+                    campaignId: campaignId,
+                    address: addressString,
+                    leadId: nil
                 )
                 try? FileManager.default.removeItem(at: url)
-                let mappedStatus = mapLeadStatusToAddressStatus(result.leadStatus ?? "follow_up")
-                dataService.clearCacheEntry(gersId: gersId, campaignId: campaignId)
-                dataService.clearCacheEntry(addressId: address.id, campaignId: campaignId)
-                await dataService.fetchBuildingData(gersId: gersId, campaignId: campaignId, addressId: address.id)
                 await MainActor.run {
-                    onStatusUpdated?(address.id, mappedStatus)
+                    voiceLogPreviewResult = result
+                    showVoiceLogPreviewSheet = true
                 }
             } catch {
-                voiceNoteError = error.localizedDescription
+                try? FileManager.default.removeItem(at: url)
+                await MainActor.run {
+                    voiceNoteError = error.localizedDescription
+                }
             }
         }
     }
@@ -1360,6 +1606,19 @@ struct LocationCardView: View {
         case "follow_up": return .appointment
         case "not_interested": return .doNotKnock
         default: return .talked
+        }
+    }
+    
+    private func mapFieldLeadStatusToAddressStatus(_ status: FieldLeadStatus) -> AddressStatus {
+        switch status {
+        case .notHome:
+            return .noAnswer
+        case .interested:
+            return .hotLead  // Blue = conversation
+        case .noAnswer:
+            return .noAnswer
+        case .qrScanned:
+            return .hotLead  // Blue = conversation
         }
     }
     
@@ -1516,7 +1775,7 @@ struct LocationCardView: View {
     private func getQRStatusColor() -> Color {
         let qrStatus = dataService.buildingData.qrStatus
         if qrStatus.hasFlyer {
-            return qrStatus.totalScans > 0 ? .green : .flyrPrimary
+            return qrStatus.totalScans > 0 ? Color(UIColor(hex: "#8b5cf6")!) : .flyrPrimary
         }
         return .gray
     }
@@ -1651,13 +1910,156 @@ private struct AddResidentSheetView: View {
     }
 }
 
+// MARK: - Lead Task Sheet (MVP: placeholder; can add FUB task create later)
+
+private struct LeadTaskSheetView: View {
+    let addressId: UUID?
+    let campaignId: UUID
+    let addressText: String
+    let onDismiss: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 16) {
+                if !addressText.isEmpty {
+                    Text(addressText)
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                }
+                Text("Add a task for this address. FUB task creation can be wired here.")
+                    .font(.body)
+                    .foregroundColor(.primary)
+            }
+            .padding()
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .navigationTitle("Task")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") {
+                        onDismiss()
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Lead Appointment Sheet (MVP: placeholder; can add FUB appointment create later)
+
+private struct LeadAppointmentSheetView: View {
+    let addressId: UUID?
+    let campaignId: UUID
+    let addressText: String
+    let onDismiss: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 16) {
+                if !addressText.isEmpty {
+                    Text(addressText)
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                }
+                Text("Add an appointment for this address. FUB appointment creation can be wired here.")
+                    .font(.body)
+                    .foregroundColor(.primary)
+            }
+            .padding()
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .navigationTitle("Appointment")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") {
+                        onDismiss()
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Voice Log Preview Sheet (summary, outcome, follow-up, appointment; Done / Cancel)
+
+private struct VoiceLogPreviewSheet: View {
+    let result: VoiceLogResponse
+    let onDismiss: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    if let ai = result.aiJson {
+                        Text(ai.summary)
+                            .font(.body)
+                        if !ai.outcome.isEmpty {
+                            Text(ai.outcome)
+                                .font(.caption)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(Color.secondary.opacity(0.2))
+                                .cornerRadius(8)
+                        }
+                        if let followUp = ai.followUpAt, !followUp.isEmpty {
+                            Text("Follow up: \(followUp)")
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                        }
+                        if let appt = ai.appointment {
+                            Text("Appointment: \(appt.title) \(appt.startAt)")
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                        }
+                        if ai.isLowConfidence {
+                            Text("Low confidence – review before relying on task/appointment.")
+                                .font(.caption)
+                                .foregroundColor(.orange)
+                        }
+                    }
+                    if result.alreadyPushedToFUB {
+                        Text("Sent to Follow Up Boss")
+                            .font(.subheadline)
+                            .foregroundColor(.green)
+                    }
+                }
+                .padding()
+            }
+            .navigationTitle("Voice Log")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        onDismiss()
+                        dismiss()
+                    }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") {
+                        onDismiss()
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+}
+
 struct BuildingStatusBadge: View {
     let status: String
     let scansTotal: Int
     
     var color: Color {
         if scansTotal > 0 {
-            return Color(UIColor(hex: "#eab308")!)
+            return Color(UIColor(hex: "#8b5cf6")!)
         }
         switch status {
         case "hot": return Color(UIColor(hex: "#3b82f6")!)

@@ -36,6 +36,7 @@ enum KeychainAuthStorage {
     enum AuthProvider: String {
         case apple
         case google
+        case email
     }
 
     static func saveAuthProvider(_ provider: AuthProvider) {

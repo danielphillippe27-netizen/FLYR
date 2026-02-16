@@ -4,7 +4,9 @@ import SwiftUI
 struct ContactsHubView: View {
     @StateObject private var leadsViewModel = LeadsViewModel()
     @StateObject private var auth = AuthManager.shared
+    @EnvironmentObject var entitlementsService: EntitlementsService
     @State private var showSyncSettings = false
+    @State private var showPaywall = false
     @State private var showSessionStart = false
     @State private var integrations: [UserIntegration] = []
     @State private var isSyncing = false
@@ -33,7 +35,11 @@ struct ContactsHubView: View {
                     Menu {
                         Button("Sync Settings") {
                             HapticManager.light()
-                            showSyncSettings = true
+                            if entitlementsService.canUsePro {
+                                showSyncSettings = true
+                            } else {
+                                showPaywall = true
+                            }
                         }
                         if hasConnectedCRM, let integration = connectedIntegration {
                             Button("Disconnect", role: .destructive) {
@@ -71,13 +77,25 @@ struct ContactsHubView: View {
             .sheet(isPresented: $showSyncSettings) {
                 SyncSettingsView()
             }
+            .sheet(isPresented: $showPaywall) {
+                PaywallView()
+            }
             .sheet(isPresented: $showSessionStart) {
                 SessionStartView(showCancelButton: true)
             }
             .navigationDestination(item: $leadsViewModel.selectedLead) { lead in
                 LeadDetailView(
                     lead: lead,
-                    onConnectCRM: { showSyncSettings = true }
+                    onConnectCRM: {
+                        if entitlementsService.canUsePro {
+                            showSyncSettings = true
+                        } else {
+                            showPaywall = true
+                        }
+                    },
+                    onLeadUpdated: { updated in
+                        Task { await leadsViewModel.updateLead(updated) }
+                    }
                 )
             }
         }

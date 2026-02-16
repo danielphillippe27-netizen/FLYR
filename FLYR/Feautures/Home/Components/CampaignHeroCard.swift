@@ -97,7 +97,7 @@ struct CampaignHeroCard: View {
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundColor(.muted)
 
-            Text("Start a session to track doors and flyers.")
+            Text("Start a session to track doors.")
                 .font(.system(size: 15, weight: .regular))
                 .foregroundColor(.muted)
 

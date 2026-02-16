@@ -15,7 +15,7 @@ struct LeaderboardDebugView: View {
                     debugSection(title: "Current User Stats") {
                         if let stats = vm.userStats {
                             debugRow("User ID", stats.userId)
-                            debugRow("Flyers", "\(stats.flyers)")
+                            debugRow("Doors", "\(stats.flyers)")
                             debugRow("Conversations", "\(stats.conversations)")
                             debugRow("Distance", String(format: "%.2f km", stats.distance))
                             debugRow("Time", "\(stats.timeMinutes) min")
@@ -37,7 +37,7 @@ struct LeaderboardDebugView: View {
                             ForEach(vm.recentSessions) { session in
                                 VStack(alignment: .leading, spacing: 4) {
                                     debugRow("Started", formattedDate(session.startTime))
-                                    debugRow("Flyers", "\(session.flyersDelivered)")
+                                    debugRow("Doors", "\(session.flyersDelivered)")
                                     debugRow("Conversations", "\(session.conversations)")
                                     debugRow("Distance", String(format: "%.2f m", session.distanceMeters))
                                 }
@@ -60,7 +60,7 @@ struct LeaderboardDebugView: View {
                                 VStack(alignment: .leading, spacing: 4) {
                                     debugRow("Rank", "#\(entry.rank)")
                                     debugRow("Name", entry.name)
-                                    debugRow("Flyers", "\(entry.flyers)")
+                                    debugRow("Doors", "\(entry.flyers)")
                                     debugRow("Conversations", "\(entry.conversations)")
                                 }
                                 .padding(.vertical, 8)

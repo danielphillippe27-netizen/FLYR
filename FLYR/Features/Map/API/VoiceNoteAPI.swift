@@ -26,7 +26,23 @@ struct VoiceNoteErrorResponse: Codable {
 }
 
 /// Calls the process-voice-note Edge Function: uploads audio, returns extracted data or error message.
+/// (Currently unused: voice notes use on-device Apple transcription and save locally.)
 enum VoiceNoteAPI {
+    /// Save a voice note transcript to campaign_addresses (on-device flow; no Whisper/GPT).
+    static func saveVoiceNoteToCampaign(transcript: String, addressId: UUID, campaignId: UUID) async throws {
+        let client = SupabaseManager.shared.client
+        let updateData: [String: AnyCodable] = [
+            "raw_transcript": AnyCodable(transcript),
+            "ai_summary": AnyCodable(transcript)
+        ]
+        _ = try await client
+            .from("campaign_addresses")
+            .update(updateData)
+            .eq("id", value: addressId.uuidString)
+            .eq("campaign_id", value: campaignId.uuidString)
+            .execute()
+    }
+
     static func processVoiceNote(
         audioFileURL: URL,
         addressId: UUID,

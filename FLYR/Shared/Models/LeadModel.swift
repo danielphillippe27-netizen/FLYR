@@ -95,7 +95,7 @@ extension LeadModel {
             id: fieldLead.id,
             name: fieldLead.name,
             phone: fieldLead.phone,
-            email: nil,
+            email: fieldLead.email,
             address: fieldLead.address,
             source: "Field Lead",
             campaignId: fieldLead.campaignId,

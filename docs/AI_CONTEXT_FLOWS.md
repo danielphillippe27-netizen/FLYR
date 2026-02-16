@@ -508,31 +508,7 @@ func generateGeoJSON(from coordinates: [[Double]]) -> [String: Any] {
 
 ### Step 5: iOS Shows Session Summary
 
-**View**:
-```swift
-// SessionSummaryView.swift
-VStack {
-  Text("Session Complete!")
-    .font(.title)
-  
-  HStack {
-    VStack {
-      Text("Distance")
-      Text("\(session.distanceMeters / 1000, specifier: "%.2f") km")
-    }
-    
-    VStack {
-      Text("Duration")
-      Text(formatDuration(session.duration))
-    }
-    
-    VStack {
-      Text("Doors")
-      Text("\(doorsKnocked)")
-    }
-  }
-}
-```
+**View**: The summary is shown by **EndSessionSummaryView** (see `FLYR/Features/Map/Views/EndSessionSummaryView.swift`): dark full-screen with Close/Share, session card (Doors/Distance/Time), and Copy/Save/Share actions.
 
 **Result**: User sees summary of their session
 
