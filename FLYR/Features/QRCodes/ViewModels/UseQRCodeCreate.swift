@@ -30,7 +30,7 @@ class UseQRCodeCreate: ObservableObject {
         defer { isLoadingCampaigns = false }
         
         do {
-            campaigns = try await qrCodeAPI.fetchCampaigns()
+            campaigns = try await qrCodeAPI.fetchCampaigns(workspaceId: WorkspaceContext.shared.workspaceId)
         } catch {
             errorMessage = "Failed to load campaigns: \(error.localizedDescription)"
             print("❌ [QR Create] Error loading campaigns: \(error)")

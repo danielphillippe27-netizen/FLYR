@@ -7,7 +7,7 @@ import type { FieldLead } from '../types/leads'
 import type { CRMConnection } from '../types/leads'
 import type { UserIntegration } from '../types/leads'
 
-export function useLeads(userId: string | undefined) {
+export function useLeads(userId: string | undefined, workspaceId?: string | null) {
   const [leads, setLeads] = useState<FieldLead[]>([])
   const [searchText, setSearchText] = useState('')
   const [loading, setLoading] = useState(false)
@@ -21,7 +21,7 @@ export function useLeads(userId: string | undefined) {
     setError(null)
     try {
       const [leadsData, conns, ints] = await Promise.all([
-        fetchLeads(userId),
+        fetchLeads(userId, undefined, workspaceId),
         fetchCRMConnections(userId),
         fetchUserIntegrations(userId),
       ])
@@ -33,7 +33,7 @@ export function useLeads(userId: string | undefined) {
     } finally {
       setLoading(false)
     }
-  }, [userId])
+  }, [userId, workspaceId])
 
   useEffect(() => {
     load()
@@ -41,7 +41,8 @@ export function useLeads(userId: string | undefined) {
 
   // Realtime: refetch when contacts change so web list stays in sync
   useEffect(() => {
-    if (!supabase || !userId) return
+    if (!supabase || (!userId && !workspaceId)) return
+    const filter = workspaceId ? `workspace_id=eq.${workspaceId}` : `user_id=eq.${userId}`
     const channel = supabase
       .channel('contacts_changes')
       .on(
@@ -50,7 +51,7 @@ export function useLeads(userId: string | undefined) {
           event: '*',
           schema: 'public',
           table: 'contacts',
-          filter: `user_id=eq.${userId}`,
+          filter,
         },
         () => {
           load()
@@ -60,7 +61,7 @@ export function useLeads(userId: string | undefined) {
     return () => {
       supabase.removeChannel(channel)
     }
-  }, [userId, load])
+  }, [userId, workspaceId, load])
 
   const hasConnectedCRM =
     connections.some((c) => c.status === 'connected') ||

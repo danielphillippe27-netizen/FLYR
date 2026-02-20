@@ -196,7 +196,6 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         }
         let newSessionId = UUID()
 
-        // Create session in DB first; only then start timer and location so UI never shows "active" without tracking
         try await SessionsAPI.shared.createSession(
             id: newSessionId,
             userId: userId,
@@ -205,7 +204,8 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
             autoCompleteEnabled: autoCompleteEnabled,
             thresholdMeters: autoCompleteThresholdMeters,
             dwellSeconds: Int(autoCompleteDwellSeconds),
-            notes: notes
+            notes: notes,
+            workspaceId: WorkspaceContext.shared.workspaceId
         )
 
         // Now set state and start tracking (timer + location)
@@ -740,9 +740,11 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
             "path_geojson": pathGeoJSON
         ]
         
-        // Add campaign ID if present
         if let campaignId = campaignId {
             sessionData["campaign_id"] = campaignId.uuidString
+        }
+        if let workspaceId = WorkspaceContext.shared.workspaceId {
+            sessionData["workspace_id"] = workspaceId.uuidString
         }
         
         // Add route data if present

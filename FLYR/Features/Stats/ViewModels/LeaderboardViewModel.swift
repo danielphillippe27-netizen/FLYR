@@ -194,16 +194,17 @@ final class LeaderboardViewModel: ObservableObject {
         defer { isLoading = false }
         
         do {
+            let workspaceIdForTeam = (scope == .team) ? WorkspaceContext.shared.workspaceId : nil
             let result = try await leaderboardService.fetchLeaderboard(
                 metric: metric.rawValue,
-                timeframe: timeRange.rawValue
+                timeframe: timeRange.rawValue,
+                workspaceId: workspaceIdForTeam
             )
             
             withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
                 self.users = result
             }
             
-            // Update current user rank and load profile for "You" row (real name, not email)
             if let user = AuthManager.shared.user {
                 let userIDString = user.id.uuidString
                 currentUserRank = result.firstIndex(where: { $0.id == userIDString }).map { $0 + 1 }

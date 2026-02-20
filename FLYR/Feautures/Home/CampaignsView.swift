@@ -71,11 +71,12 @@ struct CampaignsView: View {
     private var listContent: some View {
         CampaignsListView(
             externalFilter: $campaignFilter,
+            showCreateCampaign: $showingNewCampaign,
             onCreateCampaignTapped: createCampaignTapped,
             onCampaignTapped: { selectedCampaignID = $0 }
         )
     }
-    
+
     /// Same action for toolbar + and empty state "+ Create Campaign" button.
     private func createCampaignTapped() {
         HapticManager.light()

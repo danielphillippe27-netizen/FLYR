@@ -12,11 +12,16 @@ actor FieldLeadsService {
     
     // MARK: - Fetch
     
-    func fetchLeads(userId: UUID, campaignId: UUID? = nil, sessionId: UUID? = nil) async throws -> [FieldLead] {
+    /// - Parameter workspaceId: When non-nil, scope by workspace; when nil, filter by userId only.
+    func fetchLeads(userId: UUID, workspaceId: UUID? = nil, campaignId: UUID? = nil, sessionId: UUID? = nil) async throws -> [FieldLead] {
         var query = client
             .from("field_leads")
             .select()
-            .eq("user_id", value: userId)
+        if let workspaceId = workspaceId {
+            query = query.eq("workspace_id", value: workspaceId)
+        } else {
+            query = query.eq("user_id", value: userId)
+        }
         
         if let campaignId = campaignId {
             query = query.eq("campaign_id", value: campaignId)
@@ -35,7 +40,8 @@ actor FieldLeadsService {
     
     // MARK: - Create
     
-    func addLead(_ lead: FieldLead) async throws -> FieldLead {
+    /// - Parameter workspaceId: When non-nil, set on insert for workspace-scoped lead.
+    func addLead(_ lead: FieldLead, workspaceId: UUID? = nil) async throws -> FieldLead {
         var insertData: [String: AnyCodable] = [
             "id": AnyCodable(lead.id),
             "user_id": AnyCodable(lead.userId),
@@ -44,6 +50,7 @@ actor FieldLeadsService {
             "created_at": AnyCodable(lead.createdAt),
             "updated_at": AnyCodable(lead.updatedAt)
         ]
+        if let workspaceId = workspaceId { insertData["workspace_id"] = AnyCodable(workspaceId) }
         if let name = lead.name { insertData["name"] = AnyCodable(name) }
         if let phone = lead.phone { insertData["phone"] = AnyCodable(phone) }
         if let email = lead.email { insertData["email"] = AnyCodable(email) }

@@ -233,7 +233,7 @@ class CreateQRViewModel: ObservableObject {
         defer { isLoadingCampaigns = false }
         
         do {
-            let dbRows = try await campaignsAPI.fetchCampaignsMetadata()
+            let dbRows = try await campaignsAPI.fetchCampaignsMetadata(workspaceId: WorkspaceContext.shared.workspaceId)
             campaigns = dbRows.map { CampaignListItem(id: $0.id, name: $0.title, addressCount: nil) }
         } catch {
             self.error = "Failed to load campaigns: \(error.localizedDescription)"

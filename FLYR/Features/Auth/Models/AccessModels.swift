@@ -5,8 +5,36 @@ import Foundation
 struct AccessStateResponse: Codable {
     let role: String?
     let workspaceName: String?
+    let workspaceId: String?
+    /// When API omits this (e.g. returns workspace + subscription payload), treat as true if we have a workspace.
     let hasAccess: Bool
     let reason: String?
+
+    enum CodingKeys: String, CodingKey {
+        case role, reason
+        case workspaceName = "name"
+        // Both possible snake_case and camelCase forms for resilience
+        case workspaceId = "workspace_id"
+        case hasAccess = "has_access"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        role = try c.decodeIfPresent(String.self, forKey: .role)
+        workspaceName = try c.decodeIfPresent(String.self, forKey: .workspaceName)
+        workspaceId = try c.decodeIfPresent(String.self, forKey: .workspaceId)
+        hasAccess = try c.decodeIfPresent(Bool.self, forKey: .hasAccess) ?? true
+        reason = try c.decodeIfPresent(String.self, forKey: .reason)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encodeIfPresent(role, forKey: .role)
+        try c.encodeIfPresent(workspaceName, forKey: .workspaceName)
+        try c.encodeIfPresent(workspaceId, forKey: .workspaceId)
+        try c.encode(hasAccess, forKey: .hasAccess)
+        try c.encodeIfPresent(reason, forKey: .reason)
+    }
 }
 
 // MARK: - Access redirect (GET /api/access/redirect)

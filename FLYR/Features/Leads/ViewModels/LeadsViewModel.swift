@@ -41,7 +41,7 @@ final class LeadsViewModel: ObservableObject {
         errorMessage = nil
         defer { isLoading = false }
         do {
-            leads = try await fieldLeadsService.fetchLeads(userId: userId)
+            leads = try await fieldLeadsService.fetchLeads(userId: userId, workspaceId: WorkspaceContext.shared.workspaceId)
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -49,7 +49,7 @@ final class LeadsViewModel: ObservableObject {
     
     func addLead(_ lead: FieldLead) async {
         do {
-            let inserted = try await fieldLeadsService.addLead(lead)
+            let inserted = try await fieldLeadsService.addLead(lead, workspaceId: WorkspaceContext.shared.workspaceId)
             leads.insert(inserted, at: 0)
             selectedLead = inserted
         } catch {

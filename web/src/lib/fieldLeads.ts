@@ -68,23 +68,28 @@ function mapContactToFieldLead(row: ContactRow): FieldLead {
 
 export async function fetchLeads(
   userId: string,
-  filters?: FetchLeadsFilters
+  filters?: FetchLeadsFilters,
+  workspaceId?: string | null
 ): Promise<FieldLead[]> {
   if (!supabase) return []
   let query = supabase
     .from('contacts')
     .select('id,user_id,full_name,phone,email,address,campaign_id,status,notes,created_at,updated_at')
-    .eq('user_id', userId)
     .order('created_at', { ascending: false })
+  if (workspaceId) {
+    query = query.eq('workspace_id', workspaceId)
+  } else {
+    query = query.eq('user_id', userId)
+  }
   if (filters?.campaign_id) query = query.eq('campaign_id', filters.campaign_id)
   const { data, error } = await query
   if (error) throw error
   return ((data ?? []) as ContactRow[]).map(mapContactToFieldLead)
 }
 
-export async function addLead(lead: FieldLeadInsert): Promise<FieldLead> {
+export async function addLead(lead: FieldLeadInsert, workspaceId?: string | null): Promise<FieldLead> {
   if (!supabase) throw new Error('Supabase not configured')
-  const row = {
+  const row: Record<string, unknown> = {
     id: lead.id,
     user_id: lead.user_id,
     full_name: lead.name?.trim() || 'Lead',
@@ -97,6 +102,7 @@ export async function addLead(lead: FieldLeadInsert): Promise<FieldLead> {
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   }
+  if (workspaceId) row.workspace_id = workspaceId
   const { data, error } = await supabase
     .from('contacts')
     .insert(row)

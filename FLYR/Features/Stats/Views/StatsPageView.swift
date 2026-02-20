@@ -156,11 +156,6 @@ struct YouViewContent: View {
             if let userID = auth.user?.id {
                 ScrollView {
                     VStack(spacing: 0) {
-                        // Weekly / All Time rank row (above streak)
-                        rankSection
-                            .padding(.top, 12)
-                            .padding(.bottom, 8)
-
                         // Hero: streak section (slightly smaller)
                         streakRingSection
                             .frame(height: 115)
@@ -244,35 +239,6 @@ struct YouViewContent: View {
         let rate = vm.stats?.conversation_lead_rate ?? 0
         if rate <= 1 { return Int(rate * 100) }
         return Int(rate)
-    }
-
-    // MARK: - Rank section (Weekly Rank | All Time Rank)
-
-    private var rankSection: some View {
-        HStack(spacing: 0) {
-            rankColumn(label: "Weekly Rank", rank: vm.weeklyRank)
-            rankColumn(label: "All Time Rank", rank: vm.allTimeRank)
-        }
-        .frame(maxWidth: .infinity)
-    }
-
-    private func rankColumn(label: String, rank: Int?) -> some View {
-        VStack(spacing: 4) {
-            Text(label)
-                .font(.system(size: 13))
-                .foregroundColor(.gray)
-            if let rank = rank {
-                Text("#\(rank)")
-                    .font(.system(size: 32, weight: .bold))
-                    .monospacedDigit()
-                    .foregroundColor(rank <= 10 ? statsAccentRed : .text)
-            } else {
-                Text("–")
-                    .font(.system(size: 32, weight: .bold))
-                    .foregroundColor(.gray)
-            }
-        }
-        .frame(maxWidth: .infinity)
     }
 
     // MARK: - Streak hero (compact)

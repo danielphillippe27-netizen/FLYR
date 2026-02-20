@@ -21,6 +21,10 @@ final class WorkspaceContext: ObservableObject {
     }
 
     func update(from state: AccessStateResponse) {
+        if let workspaceIdString = state.workspaceId,
+           let parsedWorkspaceId = UUID(uuidString: workspaceIdString) {
+            workspaceId = parsedWorkspaceId
+        }
         workspaceName = state.workspaceName
         role = state.role
         accessReason = state.reason

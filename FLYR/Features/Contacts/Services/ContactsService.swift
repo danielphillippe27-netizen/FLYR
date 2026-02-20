@@ -12,11 +12,18 @@ actor ContactsService {
     
     // MARK: - Fetch Contacts
     
-    func fetchContacts(userID: UUID, filter: ContactFilter? = nil) async throws -> [Contact] {
+    /// - Parameters:
+    ///   - userID: Legacy; used when workspaceId is nil for backward compatibility.
+    ///   - workspaceId: When non-nil, scope by workspace (RLS allows workspace members); when nil, filter by user_id only.
+    func fetchContacts(userID: UUID, workspaceId: UUID? = nil, filter: ContactFilter? = nil) async throws -> [Contact] {
         var query = client
             .from("contacts")
             .select()
-            .eq("user_id", value: userID)
+        if let workspaceId = workspaceId {
+            query = query.eq("workspace_id", value: workspaceId)
+        } else {
+            query = query.eq("user_id", value: userID)
+        }
         
         if let filter = filter {
             if let status = filter.status {
@@ -40,12 +47,12 @@ actor ContactsService {
         return response
     }
     
-    func fetchContactsByCampaign(userID: UUID, campaignID: UUID) async throws -> [Contact] {
-        return try await fetchContacts(userID: userID, filter: ContactFilter(campaignId: campaignID))
+    func fetchContactsByCampaign(userID: UUID, workspaceId: UUID? = nil, campaignID: UUID) async throws -> [Contact] {
+        return try await fetchContacts(userID: userID, workspaceId: workspaceId, filter: ContactFilter(campaignId: campaignID))
     }
     
-    func fetchContactsByFarm(userID: UUID, farmID: UUID) async throws -> [Contact] {
-        return try await fetchContacts(userID: userID, filter: ContactFilter(farmId: farmID))
+    func fetchContactsByFarm(userID: UUID, workspaceId: UUID? = nil, farmID: UUID) async throws -> [Contact] {
+        return try await fetchContacts(userID: userID, workspaceId: workspaceId, filter: ContactFilter(farmId: farmID))
     }
     
     /// Fetches contacts for a specific address using FK relationship
@@ -83,25 +90,9 @@ actor ContactsService {
     
     /// Links a contact to an address via FK
     /// - Parameters:
-    ///   - contactId: The contact ID to link
-    ///   - addressId: The campaign_addresses.id to link to
-    func linkContactToAddress(contactId: UUID, addressId: UUID) async throws {
-        let updateData: [String: AnyCodable] = [
-            "address_id": AnyCodable(addressId)
-        ]
-        
-        try await client
-            .from("contacts")
-            .update(updateData)
-            .eq("id", value: contactId)
-            .execute()
-    }
-    
-    // MARK: - Contact CRUD
-    
-    func addContact(_ contact: Contact, userID: UUID, addressId: UUID? = nil) async throws -> Contact {
+    ///   - workspaceId: When non-nil, set on insert for workspace-scoped contact.
+    func addContact(_ contact: Contact, userID: UUID, workspaceId: UUID? = nil, addressId: UUID? = nil) async throws -> Contact {
         var contactToInsert = contact
-        // Ensure user_id is set
         var insertData: [String: AnyCodable] = [
             "id": AnyCodable(contactToInsert.id),
             "user_id": AnyCodable(userID),
@@ -116,8 +107,9 @@ actor ContactsService {
             "notes": AnyCodable(contactToInsert.notes),
             "reminder_date": AnyCodable(contactToInsert.reminderDate)
         ]
-        
-        // Add address_id if provided
+        if let workspaceId = workspaceId {
+            insertData["workspace_id"] = AnyCodable(workspaceId)
+        }
         if let addressId = addressId {
             insertData["address_id"] = AnyCodable(addressId)
         }
@@ -133,13 +125,28 @@ actor ContactsService {
             throw NSError(domain: "ContactsService", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to insert contact"])
         }
         
-        // Sync to CRM integrations (non-blocking)
         Task.detached(priority: .utility) {
             let leadModel = LeadModel(from: inserted)
             await LeadSyncManager.shared.syncLeadToCRM(lead: leadModel, userId: userID)
         }
         
         return inserted
+    }
+    
+    /// Links a contact to an address via FK
+    /// - Parameters:
+    ///   - contactId: The contact ID to link
+    ///   - addressId: The campaign_addresses.id to link to
+    func linkContactToAddress(contactId: UUID, addressId: UUID) async throws {
+        let updateData: [String: AnyCodable] = [
+            "address_id": AnyCodable(addressId)
+        ]
+        
+        try await client
+            .from("contacts")
+            .update(updateData)
+            .eq("id", value: contactId)
+            .execute()
     }
     
     func updateContact(_ contact: Contact, addressId: UUID? = nil) async throws -> Contact {

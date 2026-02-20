@@ -21,7 +21,7 @@ class QRCodeGeneratorViewModel: ObservableObject {
         
         do {
             // Fetch only campaign metadata (no addresses)
-            let dbRows = try await campaignsAPI.fetchCampaignsMetadata()
+            let dbRows = try await campaignsAPI.fetchCampaignsMetadata(workspaceId: WorkspaceContext.shared.workspaceId)
             campaigns = dbRows.map { CampaignListItem(from: $0) }
             print("✅ [QR] Loaded \(campaigns.count) campaigns (metadata only)")
         } catch {

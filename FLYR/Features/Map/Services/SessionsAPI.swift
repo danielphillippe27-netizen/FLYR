@@ -83,7 +83,8 @@ final class SessionsAPI {
         autoCompleteEnabled: Bool,
         thresholdMeters: Double,
         dwellSeconds: Int,
-        notes: String? = nil
+        notes: String? = nil,
+        workspaceId: UUID? = nil
     ) async throws {
         let emptyPath = "{\"type\":\"LineString\",\"coordinates\":[]}"
         var data: [String: AnyCodable] = [
@@ -101,6 +102,9 @@ final class SessionsAPI {
             "auto_complete_threshold_m": AnyCodable(thresholdMeters),
             "auto_complete_dwell_seconds": AnyCodable(dwellSeconds),
         ]
+        if let workspaceId = workspaceId {
+            data["workspace_id"] = AnyCodable(workspaceId.uuidString)
+        }
         if let notes = notes, !notes.isEmpty {
             data["notes"] = AnyCodable(notes)
         }

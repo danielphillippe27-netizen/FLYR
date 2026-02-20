@@ -40,6 +40,9 @@ final class BuildingLinkService {
         
         // Decode FeatureCollection
         let featureCollection = try JSONDecoder().decode(BuildingFeatureCollection.self, from: data)
+        if featureCollection.features.isEmpty, let body = String(data: data, encoding: .utf8) {
+            print("⚠️ [BuildingLinkService] GET buildings returned 0 features (status=200). Response preview: \(body.prefix(400))...")
+        }
         print("✅ [BuildingLinkService] Fetched \(featureCollection.features.count) buildings")
         return featureCollection.features
     }

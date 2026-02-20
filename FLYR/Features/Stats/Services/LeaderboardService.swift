@@ -122,17 +122,21 @@ actor LeaderboardService {
     
     // MARK: - Fetch Leaderboard with Timeframe (New API)
     
+    /// When workspaceId is non-nil, restricts leaderboard to that workspace (My team).
     func fetchLeaderboard(
         metric: String,
-        timeframe: String
+        timeframe: String,
+        workspaceId: UUID? = nil
     ) async throws -> [LeaderboardUser] {
-        // Must match DB function param names: get_leaderboard(p_metric, p_timeframe)
-        let params: [String: AnyCodable] = [
+        var params: [String: AnyCodable] = [
             "p_metric": AnyCodable(metric),
             "p_timeframe": AnyCodable(timeframe)
         ]
+        if let workspaceId = workspaceId {
+            params["p_workspace_id"] = AnyCodable(workspaceId.uuidString)
+        }
         
-        print("📊 [LeaderboardService] Fetching leaderboard with params: metric=\(metric), timeframe=\(timeframe)")
+        print("📊 [LeaderboardService] Fetching leaderboard with params: metric=\(metric), timeframe=\(timeframe), workspaceId=\(workspaceId?.uuidString ?? "nil")")
         
         do {
             let response = try await client

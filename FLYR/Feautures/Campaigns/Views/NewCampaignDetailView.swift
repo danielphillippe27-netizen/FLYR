@@ -228,7 +228,7 @@ struct NewCampaignDetailView: View {
                         if expanded && !leadsLoaded, let userId = AuthManager.shared.user?.id {
                             Task {
                                 do {
-                                    let leads = try await FieldLeadsService.shared.fetchLeads(userId: userId, campaignId: campaignID)
+                                    let leads = try await FieldLeadsService.shared.fetchLeads(userId: userId, workspaceId: WorkspaceContext.shared.workspaceId, campaignId: campaignID)
                                     await MainActor.run {
                                         campaignLeads = leads
                                         campaignLeadsCount = leads.count
@@ -571,7 +571,7 @@ struct NewCampaignDetailView: View {
                 if let userId = AuthManager.shared.user?.id {
                     Task {
                         do {
-                            let leads = try await FieldLeadsService.shared.fetchLeads(userId: userId, campaignId: campaignID)
+                            let leads = try await FieldLeadsService.shared.fetchLeads(userId: userId, workspaceId: WorkspaceContext.shared.workspaceId, campaignId: campaignID)
                             await MainActor.run { campaignLeadsCount = leads.count }
                         } catch {
                             await MainActor.run { campaignLeadsCount = 0 }

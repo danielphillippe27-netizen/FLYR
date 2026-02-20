@@ -348,7 +348,7 @@ struct CampaignMapView: View {
                 sessionId: sessionManager.sessionId,
                 gersIdString: gersIdString,
                 onSave: { lead in
-                    _ = try? await FieldLeadsService.shared.addLead(lead)
+                    _ = try? await FieldLeadsService.shared.addLead(lead, workspaceId: WorkspaceContext.shared.workspaceId)
                     // Count every lead save as a conversation (any status = had contact at door)
                     await MainActor.run { sessionManager.conversationsHad += 1 }
                     if let addressId = selectedAddress?.addressId {
@@ -2347,7 +2347,7 @@ private struct AddResidentSheetView: View {
                     campaignId: campaignId,
                     status: .new
                 )
-                _ = try await ContactsService.shared.addContact(contact, userID: userId, addressId: address.id)
+                _ = try await ContactsService.shared.addContact(contact, userID: userId, workspaceId: WorkspaceContext.shared.workspaceId, addressId: address.id)
                 await onSave()
                 await MainActor.run {
                     onDismiss()

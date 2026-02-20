@@ -11,6 +11,8 @@ struct CampaignsListView: View {
     @State private var archiveErrorMessage: String?
     @State private var showArchiveError = false
     var externalFilter: Binding<CampaignFilter>? = nil
+    /// When set, empty state and "+ New Campaign" button set this to true (same as toolbar + button).
+    var showCreateCampaign: Binding<Bool>? = nil
     var onCreateCampaignTapped: (() -> Void)?
     var onCampaignTapped: ((UUID) -> Void)?
 
@@ -58,7 +60,7 @@ struct CampaignsListView: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .padding(.top, 60)
                     } else {
-                        CampaignListEmptyView(onCreateTapped: onCreateCampaignTapped)
+                        CampaignListEmptyView(showCreateCampaign: showCreateCampaign, onCreateTapped: onCreateCampaignTapped)
                     }
                 } else {
                     List {
@@ -90,11 +92,15 @@ struct CampaignsListView: View {
                             filter: effectiveFilter,
                             searchText: searchText
                         )
-                        if let onCreateCampaignTapped = onCreateCampaignTapped {
+                        if showCreateCampaign != nil || onCreateCampaignTapped != nil {
                             Section {
                                 Button(action: {
                                     HapticManager.light()
-                                    onCreateCampaignTapped()
+                                    if let showCreateCampaign = showCreateCampaign {
+                                        showCreateCampaign.wrappedValue = true
+                                    } else {
+                                        onCreateCampaignTapped?()
+                                    }
                                 }) {
                                     HStack {
                                         Spacer()
@@ -394,7 +400,10 @@ struct CampaignListEmptyFilteredSection: View {
 // MARK: - Campaign List Empty View (no campaigns at all)
 
 struct CampaignListEmptyView: View {
+    var showCreateCampaign: Binding<Bool>? = nil
     var onCreateTapped: (() -> Void)?
+
+    private var canCreate: Bool { showCreateCampaign != nil || onCreateTapped != nil }
 
     var body: some View {
         VStack(spacing: 24) {
@@ -414,8 +423,15 @@ struct CampaignListEmptyView: View {
                     .multilineTextAlignment(.center)
                     .lineLimit(3)
             }
-            if let onCreateTapped = onCreateTapped {
-                Button(action: onCreateTapped) {
+            if canCreate {
+                Button(action: {
+                    HapticManager.light()
+                    if let showCreateCampaign = showCreateCampaign {
+                        showCreateCampaign.wrappedValue = true
+                    } else {
+                        onCreateTapped?()
+                    }
+                }) {
                     Text("+ Create Campaign")
                 }
                 .primaryButton()

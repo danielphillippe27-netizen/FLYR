@@ -39,13 +39,13 @@ final class CampaignsAPI {
     static let shared = CampaignsAPI()
     private let client = SupabaseManager.shared.client
 
-    // All campaigns
-    func fetchCampaigns() async throws -> [Campaign] {
-        let res: PostgrestResponse<[Campaign]> = try await client
-            .from("campaigns")
-            .select()
-            .order("created_at", ascending: false)
-            .execute()
+    // All campaigns (optionally scoped by workspace)
+    func fetchCampaigns(workspaceId: UUID? = nil) async throws -> [Campaign] {
+        var query = client.from("campaigns").select()
+        if let workspaceId = workspaceId {
+            query = query.eq("workspace_id", value: workspaceId)
+        }
+        let res: PostgrestResponse<[Campaign]> = try await query.order("created_at", ascending: false).execute()
         return res.value
     }
 
@@ -125,6 +125,9 @@ final class CampaignsAPI {
             "conversions": 0,
             "region": sanitizedRegion as Any
         ]
+        if let workspaceId = payload.workspaceId {
+            campaignValues["workspace_id"] = workspaceId.uuidString
+        }
         if let tags = payload.tags, !tags.trimmingCharacters(in: .whitespaces).isEmpty {
             campaignValues["tags"] = tags.trimmingCharacters(in: .whitespaces)
         }
@@ -208,31 +211,26 @@ final class CampaignsAPI {
     }
     
     // Fetch campaigns without addresses (lightweight for lists)
-    func fetchCampaignsMetadata() async throws -> [CampaignDBRow] {
+    func fetchCampaignsMetadata(workspaceId: UUID? = nil) async throws -> [CampaignDBRow] {
         print("🌐 [API DEBUG] Fetching campaigns metadata (no addresses)")
-        
-        let res: PostgrestResponse<[CampaignDBRow]> = try await client
-            .from("campaigns")
-            .select()
-            .order("created_at", ascending: false)
-            .execute()
-        
+        var query = client.from("campaigns").select()
+        if let workspaceId = workspaceId {
+            query = query.eq("workspace_id", value: workspaceId)
+        }
+        let res: PostgrestResponse<[CampaignDBRow]> = try await query.order("created_at", ascending: false).execute()
         print("✅ [API DEBUG] Fetched \(res.value.count) campaigns metadata")
         return res.value
     }
     
     // Fetch Campaigns V2 - REAL SUPABASE INTEGRATION
     // Fetches campaign metadata and address counts so list shows correct house count
-    func fetchCampaignsV2() async throws -> [CampaignV2] {
+    func fetchCampaignsV2(workspaceId: UUID? = nil) async throws -> [CampaignV2] {
         print("🌐 [API DEBUG] Fetching campaigns V2 from Supabase (metadata + address counts)")
-        
-        // 1. Fetch campaigns from DB
-        let res: PostgrestResponse<[CampaignDBRow]> = try await client
-            .from("campaigns")
-            .select()
-            .order("created_at", ascending: false)
-            .execute()
-        
+        var query = client.from("campaigns").select()
+        if let workspaceId = workspaceId {
+            query = query.eq("workspace_id", value: workspaceId)
+        }
+        let res: PostgrestResponse<[CampaignDBRow]> = try await query.order("created_at", ascending: false).execute()
         let dbRows = res.value
         print("✅ [API DEBUG] Fetched \(dbRows.count) campaigns from DB")
         
@@ -506,18 +504,17 @@ struct CampaignProvisionState: Codable {
 
 /// Protocol for CampaignV2 API operations
 protocol CampaignsV2APIType {
-    func fetchCampaigns() async throws -> [CampaignV2]
+    func fetchCampaigns(workspaceId: UUID?) async throws -> [CampaignV2]
     func fetchCampaign(id: UUID) async throws -> CampaignV2
-    func createCampaign(_ draft: CampaignV2Draft) async throws -> CampaignV2
+    func createCampaign(_ draft: CampaignV2Draft, workspaceId: UUID?) async throws -> CampaignV2
 }
 
 /// Mock implementation for CampaignV2 API
 final class CampaignsV2APIMock: CampaignsV2APIType {
     private var mockCampaigns: [CampaignV2] = []
     
-    func fetchCampaigns() async throws -> [CampaignV2] {
-        // Simulate network latency
-        try await Task.sleep(nanoseconds: 150_000_000) // 150ms
+    func fetchCampaigns(workspaceId: UUID? = nil) async throws -> [CampaignV2] {
+        try await Task.sleep(nanoseconds: 150_000_000)
         return mockCampaigns
     }
     
@@ -530,9 +527,8 @@ final class CampaignsV2APIMock: CampaignsV2APIType {
         return campaign
     }
     
-    func createCampaign(_ draft: CampaignV2Draft) async throws -> CampaignV2 {
-        try await Task.sleep(nanoseconds: 150_000_000) // 150ms
-        
+    func createCampaign(_ draft: CampaignV2Draft, workspaceId: UUID? = nil) async throws -> CampaignV2 {
+        try await Task.sleep(nanoseconds: 150_000_000)
         let campaign = CampaignV2(
             name: draft.name,
             type: draft.type,
@@ -551,8 +547,8 @@ final class CampaignsV2APIMock: CampaignsV2APIType {
 final class CampaignsV2APISupabase: CampaignsV2APIType {
     private let api = CampaignsAPI.shared
     
-    func fetchCampaigns() async throws -> [CampaignV2] {
-        return try await api.fetchCampaignsV2()
+    func fetchCampaigns(workspaceId: UUID? = nil) async throws -> [CampaignV2] {
+        return try await api.fetchCampaignsV2(workspaceId: workspaceId)
     }
     
     func fetchCampaign(id: UUID) async throws -> CampaignV2 {
@@ -584,8 +580,7 @@ final class CampaignsV2APISupabase: CampaignsV2APIType {
         )
     }
     
-    func createCampaign(_ draft: CampaignV2Draft) async throws -> CampaignV2 {
-        // Use the real createV2 method
+    func createCampaign(_ draft: CampaignV2Draft, workspaceId: UUID? = nil) async throws -> CampaignV2 {
         let payload = CampaignCreatePayloadV2(
             name: draft.name,
             description: "",
@@ -595,7 +590,8 @@ final class CampaignsV2APISupabase: CampaignsV2APIType {
             seedQuery: nil,
             seedLon: nil,
             seedLat: nil,
-            addressesJSON: draft.addresses
+            addressesJSON: draft.addresses,
+            workspaceId: workspaceId
         )
         return try await api.createV2(payload)
     }

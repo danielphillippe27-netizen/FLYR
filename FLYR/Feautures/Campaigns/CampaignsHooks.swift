@@ -12,10 +12,11 @@ final class CampaignsHooks: ObservableObject {
         defer { isLoading = false }
 
         do {
-            if let userId = userId {
+            let workspaceId = WorkspaceContext.shared.workspaceId
+            if let userId = userId, workspaceId == nil {
                 campaigns = try await CampaignsAPI.shared.fetchCampaignsForUser(userId: userId)
             } else {
-                campaigns = try await CampaignsAPI.shared.fetchCampaigns()
+                campaigns = try await CampaignsAPI.shared.fetchCampaigns(workspaceId: workspaceId)
             }
         } catch {
             if (error as NSError).code == NSURLErrorCancelled {

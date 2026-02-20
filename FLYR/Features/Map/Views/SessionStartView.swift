@@ -22,13 +22,6 @@ enum SessionMethod: String, CaseIterable {
     }
 }
 
-/// Placeholder model for a route in Start Session. Replace with real API model when routes are available.
-struct SessionRouteItem: Identifiable {
-    let id: UUID
-    var name: String
-    var stopCount: Int
-}
-
 struct SessionStartView: View {
     @Environment(\.dismiss) private var dismiss
 
@@ -39,14 +32,13 @@ struct SessionStartView: View {
     var preselectedCampaign: CampaignV2?
     
     @State private var selectedCampaign: CampaignV2?
-    @State private var selectedRoute: SessionRouteItem?
     @State private var targetAmount: Int = 100
     /// Door knock (current flow) vs flyer-only (no knock); flyer path is same as door knock for now, named separately for future differentiation.
     @State private var sessionMethod: SessionMethod = .doorKnock
 
     // Data loading
     @State private var campaigns: [CampaignV2] = []
-    @State private var routes: [SessionRouteItem] = []
+    @State private var routes: [RouteAssignmentSummary] = []
     @State private var isLoadingData: Bool = false
     @State private var isFetchingData: Bool = false
     @State private var lastFetchTime: Date?
@@ -315,43 +307,21 @@ struct SessionStartView: View {
                 .font(.flyrHeadline)
                 .foregroundColor(.secondary)
             
-            if routes.isEmpty {
+            if isLoadingData && routes.isEmpty {
+                ProgressView()
+                    .frame(maxWidth: .infinity)
+                    .padding()
+            } else if routes.isEmpty {
                 Text("No routes available")
                     .foregroundColor(.secondary)
                     .frame(maxWidth: .infinity)
                     .padding()
             } else {
-                let visible = Array(routes.prefix(maxVisibleItems))
-                let remaining = Array(routes.dropFirst(maxVisibleItems))
-                ForEach(visible) { route in
-                    routeRow(route)
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            HapticManager.light()
-                            selectedRoute = route
-                        }
-                }
-                if !remaining.isEmpty {
-                    Menu {
-                        ForEach(remaining) { route in
-                            Button(route.name) {
-                                HapticManager.light()
-                                selectedRoute = route
-                            }
-                        }
+                ForEach(routes) { route in
+                    NavigationLink {
+                        RoutePlanDetailView(routePlanId: route.routePlanId, assignment: route)
                     } label: {
-                        HStack {
-                            Text("More (\(remaining.count) more)")
-                                .font(.flyrHeadline)
-                                .foregroundColor(.primary)
-                            Spacer()
-                            Image(systemName: "chevron.down")
-                                .font(.flyrCaption)
-                                .foregroundColor(.secondary)
-                        }
-                        .padding()
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(RoundedRectangle(cornerRadius: 12).fill(Color(.systemGray6)))
+                        routeRow(route)
                     }
                     .buttonStyle(.plain)
                 }
@@ -360,25 +330,55 @@ struct SessionStartView: View {
         .padding(.horizontal)
     }
     
-    private func routeRow(_ route: SessionRouteItem) -> some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 4) {
+    private func routeRow(_ route: RouteAssignmentSummary) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
                 Text(route.name)
                     .font(.flyrHeadline)
-                Label("\(route.stopCount) stops", systemImage: "map.fill")
+                    .foregroundColor(.primary)
+                    .lineLimit(2)
+                Spacer()
+                Text(route.statusLabel)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(routeStatusColor(route.status))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(routeStatusColor(route.status).opacity(0.15))
+                    .clipShape(Capsule())
+            }
+
+            HStack(spacing: 12) {
+                Label("\(route.totalStops) stops", systemImage: "mappin.and.ellipse")
                     .font(.flyrCaption)
                     .foregroundColor(.secondary)
+                if let estMinutes = route.estMinutes {
+                    Label("\(estMinutes) min", systemImage: "clock")
+                        .font(.flyrCaption)
+                        .foregroundColor(.secondary)
+                }
+                if let meters = route.distanceMeters {
+                    Label(formatDistance(meters), systemImage: "point.topleft.down.curvedto.point.bottomright.up")
+                        .font(.flyrCaption)
+                        .foregroundColor(.secondary)
+                }
             }
-            Spacer()
-            if selectedRoute?.id == route.id {
-                Image(systemName: "checkmark.circle.fill")
-                    .foregroundColor(.red)
+
+            ProgressView(value: route.progressFraction)
+                .tint(.red)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(route.assignedByName.map { "Assigned by \($0)" } ?? "Assigned route")
+                    .font(.flyrCaption)
+                    .foregroundColor(.secondary)
+                Text("\(route.completedStops)/\(max(route.totalStops, 0)) complete")
+                    .font(.flyrCaption)
+                    .foregroundColor(.secondary)
             }
         }
         .padding()
         .background(
             RoundedRectangle(cornerRadius: 12)
-                .fill(selectedRoute?.id == route.id ? Color.red.opacity(0.1) : Color(.systemGray6))
+                .fill(Color(.systemGray6))
         )
     }
     
@@ -463,6 +463,26 @@ struct SessionStartView: View {
         case .archived: return .gray
         }
     }
+
+    private func routeStatusColor(_ status: String) -> Color {
+        switch status.lowercased() {
+        case "completed":
+            return .green
+        case "in_progress":
+            return .orange
+        case "cancelled":
+            return .gray
+        default:
+            return .blue
+        }
+    }
+
+    private func formatDistance(_ meters: Int) -> String {
+        if meters >= 1000 {
+            return String(format: "%.1f km", Double(meters) / 1000.0)
+        }
+        return "\(meters)m"
+    }
     
     // MARK: - Data Loading
     
@@ -478,11 +498,12 @@ struct SessionStartView: View {
         }
         
         await loadCampaigns()
+        await loadAssignedRoutes()
     }
     
     private func loadCampaigns() async {
         do {
-            campaigns = try await CampaignsAPI.shared.fetchCampaignsV2()
+            campaigns = try await CampaignsAPI.shared.fetchCampaignsV2(workspaceId: WorkspaceContext.shared.workspaceId)
             print("✅ Loaded \(campaigns.count) campaigns")
         } catch {
             // CRITICAL: Don't treat cancellation as failure — prevents infinite retry loop
@@ -492,6 +513,24 @@ struct SessionStartView: View {
             }
             print("❌ Failed to load campaigns: \(error)")
             campaigns = []
+        }
+    }
+
+    private func loadAssignedRoutes() async {
+        do {
+            guard let workspaceId = await RoutePlansAPI.shared.resolveWorkspaceId(preferred: WorkspaceContext.shared.workspaceId) else {
+                routes = []
+                return
+            }
+            routes = try await RoutePlansAPI.shared.fetchMyAssignedRoutes(workspaceId: workspaceId)
+            print("✅ Loaded \(routes.count) assigned routes")
+        } catch {
+            if (error as NSError).code == NSURLErrorCancelled {
+                print("Route fetch cancelled (view disposed) - not retrying")
+                return
+            }
+            print("❌ Failed to load assigned routes: \(error)")
+            routes = []
         }
     }
     
@@ -553,5 +592,3 @@ struct SessionStartView: View {
         }
     }
 }
-
-

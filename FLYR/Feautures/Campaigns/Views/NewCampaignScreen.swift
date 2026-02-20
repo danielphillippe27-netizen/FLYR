@@ -8,7 +8,7 @@ struct NewCampaignScreen: View {
     
     @State private var name = ""
     @State private var description = ""
-    @State private var type: CampaignType = .flyer
+    @State private var type: CampaignType? = nil
     @State private var tags = ""
     @State private var source: AddressSource = .map
     @State private var count: AddressCountOption = .c100
@@ -22,13 +22,17 @@ struct NewCampaignScreen: View {
     @StateObject private var createHook = UseCreateCampaign()
     @StateObject private var locationManager = LocationManager()
     @Environment(\.colorScheme) private var colorScheme
+    /// Screen-level lock for the full workflow (create + territory save + provision + navigation).
+    /// Do not use createHook.isCreating for this because createHook resets after insert/createV2 returns.
+    @State private var isSubmittingCampaign = false
 
     private var mapPreviewCenter: CLLocationCoordinate2D {
         selectedCenter ?? locationManager.currentLocation?.coordinate ?? CLLocationCoordinate2D(latitude: 43.65, longitude: -79.38)
     }
 
     private var canCreate: Bool {
-        guard !name.trimmingCharacters(in: .whitespaces).isEmpty else { return false }
+        guard !name.trimmingCharacters(in: .whitespaces).isEmpty,
+              type != nil else { return false }
         return drawnPolygon != nil && drawnPolygon!.count >= 3
     }
     
@@ -48,9 +52,27 @@ struct NewCampaignScreen: View {
                     .background(Color(.secondarySystemBackground))
                     .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                     
-                    FormRowMenuPicker("Type",
-                                       options: CampaignType.ordered,
-                                       selection: $type)
+                    // Type: Flyer or Door Knock only; no default selection
+                    HStack {
+                        Text("Type")
+                        Spacer()
+                        Menu {
+                            Button("Flyer") { type = .flyer }
+                            Button("Door Knock") { type = .doorKnock }
+                        } label: {
+                            HStack(spacing: 4) {
+                                Text(type?.title ?? "Select type")
+                                    .foregroundStyle(type == nil ? .secondary : .primary)
+                                Image(systemName: "chevron.up.chevron.down")
+                                    .font(.flyrCaption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .frame(maxWidth: 200, alignment: .trailing)
+                    }
+                    .padding(12)
+                    .background(Color(.secondarySystemBackground))
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                     
                     // Tags field with consistent styling
                     HStack {
@@ -130,11 +152,11 @@ struct NewCampaignScreen: View {
                 }
                 PrimaryButton(
                     title: "Create Campaign",
-                    enabled: canCreate && !createHook.isCreating,
-                    isLoading: createHook.isCreating
+                    enabled: canCreate && !isSubmittingCampaign,
+                    isLoading: isSubmittingCampaign
                 ) {
-                    guard !createHook.isCreating else { return }
-                    createHook.isCreating = true
+                    guard !isSubmittingCampaign else { return }
+                    isSubmittingCampaign = true
                     Task { await createCampaignTapped() }
                 }
                 .padding(.horizontal, 20)
@@ -144,9 +166,6 @@ struct NewCampaignScreen: View {
         }
                 .onAppear {
                     locationManager.requestLocation()
-                    if name.isEmpty {
-                        name = type.title
-                    }
                 }
                 .sheet(isPresented: $showMapSeed) {
                     MapDrawingView(
@@ -162,14 +181,14 @@ struct NewCampaignScreen: View {
                             self.selectedCenter = nil
                             self.seedLabel = "Polygon (\(vertices.count) points)"
                             self.showMapSeed = false
-                            guard !self.createHook.isCreating else { return }
-                            self.createHook.isCreating = true
+                            guard !self.isSubmittingCampaign else { return }
+                            self.isSubmittingCampaign = true
                             Task { await self.createCampaignTapped(polygonFromSheet: vertices) }
                         }
                     )
                 }
                 .overlay {
-                    if createHook.isCreating {
+                    if isSubmittingCampaign {
                         CampaignCreatingOverlayView(useDarkStyle: colorScheme == .dark)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                             .ignoresSafeArea()
@@ -180,13 +199,14 @@ struct NewCampaignScreen: View {
     
     /// If polygonFromSheet is non-nil, use it for the map flow (avoids relying on state when coming from sheet).
     private func createCampaignTapped(polygonFromSheet: [CLLocationCoordinate2D]? = nil) async {
-        defer { createHook.isCreating = false }
+        defer { isSubmittingCampaign = false }
+        guard let selectedType = type else { return }
         let effectivePolygon = polygonFromSheet ?? drawnPolygon
         let canCreateFromForm = canCreate
         let canCreateFromMapSheet = source == .map && (effectivePolygon?.count ?? 0) >= 3 && !name.trimmingCharacters(in: .whitespaces).isEmpty
         print("🚀 [CAMPAIGN DEBUG] Starting campaign creation workflow")
         print("🚀 [CAMPAIGN DEBUG] Campaign name: '\(name)'")
-        print("🚀 [CAMPAIGN DEBUG] Campaign type: \(type.rawValue)")
+        print("🚀 [CAMPAIGN DEBUG] Campaign type: \(type?.rawValue ?? "nil")")
         print("🚀 [CAMPAIGN DEBUG] Address source: \(source.rawValue)")
         print("🚀 [CAMPAIGN DEBUG] Can create (form): \(canCreateFromForm), (map sheet): \(canCreateFromMapSheet)")
         
@@ -217,17 +237,23 @@ struct NewCampaignScreen: View {
             }
             print("🏠 [CAMPAIGN DEBUG] Seed center: (\(center.latitude), \(center.longitude)), target count: \(count.rawValue)")
 
+            let workspaceId = await RoutePlansAPI.shared.primaryWorkspaceIdForCurrentUser()
+            guard let workspaceId else {
+                createHook.error = "No workspace found. Please sign out and back in, or try again."
+                return
+            }
             let payload = CampaignCreatePayloadV2(
                 name: name,
                 description: description.isEmpty ? "Campaign created from \(source.displayName)" : description,
-                type: type,
+                type: selectedType,
                 addressSource: source,
                 addressTargetCount: count.rawValue,
                 seedQuery: auto.query.isEmpty ? nil : auto.query,
                 seedLon: center.longitude,
                 seedLat: center.latitude,
                 tags: tags.trimmingCharacters(in: .whitespaces).isEmpty ? nil : tags.trimmingCharacters(in: .whitespaces),
-                addressesJSON: []
+                addressesJSON: [],
+                workspaceId: workspaceId
             )
 
             if let created = await createHook.createV2(payload: payload, store: store) {
@@ -251,19 +277,23 @@ struct NewCampaignScreen: View {
             if let polygon = effectivePolygon, polygon.count >= 3 {
                 // Polygon flow: create campaign (minimal addresses), then provision (backend Lambda/S3)
                 print("🗺️ [CAMPAIGN DEBUG] Using drawn polygon (\(polygon.count) points) – will provision after create")
+                let workspaceId = await RoutePlansAPI.shared.primaryWorkspaceIdForCurrentUser()
+                guard let workspaceId else {
+                    createHook.error = "No workspace found. Please sign out and back in, or try again."
+                    return
+                }
                 let payload = CampaignCreatePayloadV2(
                     name: name,
                     description: description.isEmpty ? "Campaign created from polygon" : description,
-                    type: type,
+                    type: selectedType,
                     addressSource: source,
                     addressTargetCount: 0,
-                    // Do not persist polygon summary labels (e.g. "Polygon (9 points)") into campaigns.region.
-                    // Polygon geometry is stored in territory_boundary and is the only source used for provision.
                     seedQuery: nil,
                     seedLon: nil,
                     seedLat: nil,
                     tags: tags.trimmingCharacters(in: .whitespaces).isEmpty ? nil : tags.trimmingCharacters(in: .whitespaces),
-                    addressesJSON: []
+                    addressesJSON: [],
+                    workspaceId: workspaceId
                 )
                 if let created = await createHook.createV2(payload: payload, store: store) {
                     let geoJSON = polygonToGeoJSON(polygon)

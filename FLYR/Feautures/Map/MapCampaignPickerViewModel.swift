@@ -35,7 +35,7 @@ class MapCampaignPickerViewModel: ObservableObject {
     
     private func loadCampaigns() async {
         do {
-            campaigns = try await qrCodeAPI.fetchCampaigns()
+            campaigns = try await qrCodeAPI.fetchCampaigns(workspaceId: WorkspaceContext.shared.workspaceId)
         } catch {
             if (error as NSError).code == NSURLErrorCancelled {
                 return

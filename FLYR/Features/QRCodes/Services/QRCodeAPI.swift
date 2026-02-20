@@ -255,8 +255,8 @@ actor QRCodeAPI {
     
     // MARK: - Campaigns (for selection)
     
-    func fetchCampaigns() async throws -> [CampaignListItem] {
-        let dbRows = try await CampaignsAPI.shared.fetchCampaignsMetadata()
+    func fetchCampaigns(workspaceId: UUID? = nil) async throws -> [CampaignListItem] {
+        let dbRows = try await CampaignsAPI.shared.fetchCampaignsMetadata(workspaceId: workspaceId)
         return dbRows.map { CampaignListItem(from: $0) }
     }
     

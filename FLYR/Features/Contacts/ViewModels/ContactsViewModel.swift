@@ -65,7 +65,7 @@ final class ContactsViewModel: ObservableObject {
                 searchText: nil // Search is done client-side
             )
             
-            contacts = try await contactsService.fetchContacts(userID: userID, filter: filter)
+            contacts = try await contactsService.fetchContacts(userID: userID, workspaceId: WorkspaceContext.shared.workspaceId, filter: filter)
         } catch {
             errorMessage = "Failed to load contacts: \(error.localizedDescription)"
             print("❌ Error loading contacts: \(error)")
@@ -158,7 +158,7 @@ final class ContactsViewModel: ObservableObject {
         defer { isLoading = false }
         
         do {
-            let newContact = try await contactsService.addContact(contact, userID: userID)
+            let newContact = try await contactsService.addContact(contact, userID: userID, workspaceId: WorkspaceContext.shared.workspaceId)
             await loadContacts(for: userID)
             selectedContact = newContact
         } catch {

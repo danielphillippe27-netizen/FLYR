@@ -21,9 +21,9 @@ final class CampaignStore: ObservableObject {
     func loadCampaigns() async {
         isLoading = true
         error = nil
-        
+        let workspaceId = WorkspaceContext.shared.workspaceId
         do {
-            campaigns = try await CampaignsAPI.shared.fetchCampaigns()
+            campaigns = try await CampaignsAPI.shared.fetchCampaigns(workspaceId: workspaceId)
         } catch {
             if (error as NSError).code == NSURLErrorCancelled { isLoading = false; return }
             self.error = "Failed to load campaigns: \(error.localizedDescription)"
@@ -41,9 +41,9 @@ final class CampaignStore: ObservableObject {
     func loadCampaignsV2() async {
         isLoading = true
         error = nil
-        
+        let workspaceId = WorkspaceContext.shared.workspaceId
         do {
-            campaignsV2 = try await CampaignsAPI.shared.fetchCampaignsV2()
+            campaignsV2 = try await CampaignsAPI.shared.fetchCampaignsV2(workspaceId: workspaceId)
         } catch {
             if (error as NSError).code == NSURLErrorCancelled { isLoading = false; return }
             self.error = "Failed to load V2 campaigns: \(error.localizedDescription)"

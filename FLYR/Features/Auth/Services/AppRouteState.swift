@@ -59,6 +59,10 @@ final class AppRouteState: ObservableObject {
             let state = try? await AccessAPI.shared.getState()
             if let state = state {
                 await WorkspaceContext.shared.update(from: state)
+                // If access state didn't include workspace (e.g. legacy response), resolve from DB so campaign creation etc. have a workspace.
+                if WorkspaceContext.shared.workspaceId == nil {
+                    _ = await RoutePlansAPI.shared.resolveWorkspaceId(preferred: nil)
+                }
             }
         } catch let error as AccessAPIError {
             if case .unauthorized = error {

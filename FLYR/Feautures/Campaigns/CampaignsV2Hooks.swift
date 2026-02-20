@@ -26,9 +26,9 @@ final class UseCampaignsV2: ObservableObject {
     private func loadCampaigns(store: CampaignV2Store) async {
         isLoading = true
         error = nil
-        
+        let workspaceId = WorkspaceContext.shared.workspaceId
         do {
-            let campaigns = try await api.fetchCampaigns()
+            let campaigns = try await api.fetchCampaigns(workspaceId: workspaceId)
             store.set(campaigns)
             items = campaigns
         } catch {
@@ -60,11 +60,10 @@ final class UseCreateCampaignV2: ObservableObject {
     func create(draft: CampaignV2Draft, store: CampaignV2Store) async -> CampaignV2? {
         isCreating = true
         error = nil
-        
         defer { isCreating = false }
-        
+        let workspaceId = WorkspaceContext.shared.workspaceId
         do {
-            let campaign = try await api.createCampaign(draft)
+            let campaign = try await api.createCampaign(draft, workspaceId: workspaceId)
             store.append(campaign)
             return campaign
         } catch {

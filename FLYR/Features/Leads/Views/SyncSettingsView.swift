@@ -319,7 +319,7 @@ struct SyncSettingsView: View {
     
     private func loadCampaigns() async {
         do {
-            campaigns = try await CampaignsAPI.shared.fetchCampaignsMetadata()
+            campaigns = try await CampaignsAPI.shared.fetchCampaignsMetadata(workspaceId: WorkspaceContext.shared.workspaceId)
         } catch {
             await MainActor.run { errorMessage = error.localizedDescription }
         }
@@ -348,7 +348,7 @@ struct SyncSettingsView: View {
         isExporting = true
         defer { isExporting = false }
         do {
-            let leads = try await FieldLeadsService.shared.fetchLeads(userId: userId, campaignId: campaignId)
+            let leads = try await FieldLeadsService.shared.fetchLeads(userId: userId, workspaceId: WorkspaceContext.shared.workspaceId, campaignId: campaignId)
             let url = try LeadsExportManager.exportToTempFile(
                 leads: leads,
                 filename: "field_leads_\(campaignId.uuidString.prefix(8)).csv"

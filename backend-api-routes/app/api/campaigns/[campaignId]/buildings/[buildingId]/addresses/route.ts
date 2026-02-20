@@ -37,19 +37,36 @@ function getAuthUser(request: Request) {
   return token;
 }
 
-/** Ensure the campaign exists and is owned by the given user (when using service role). */
-async function ensureCampaignOwnership(
+/** Ensure the campaign exists and the user can access it (owner or workspace member). */
+async function ensureCampaignAccess(
   supabase: ReturnType<typeof createClient>,
   campaignId: string,
   userId: string
 ): Promise<boolean> {
-  const { data, error } = await supabase
+  const { data: campaign, error: campError } = await supabase
     .from("campaigns")
-    .select("id")
+    .select("id, owner_id, workspace_id")
     .eq("id", campaignId)
-    .eq("owner_id", userId)
     .maybeSingle();
-  return !error && data != null;
+  if (campError || !campaign) return false;
+  const row = campaign as { id: string; owner_id: string; workspace_id: string | null };
+  if (row.owner_id === userId) return true;
+  if (row.workspace_id) {
+    const { data: member } = await supabase
+      .from("workspace_members")
+      .select("user_id")
+      .eq("workspace_id", row.workspace_id)
+      .eq("user_id", userId)
+      .maybeSingle();
+    if (member) return true;
+    const { data: workspace } = await supabase
+      .from("workspaces")
+      .select("owner_id")
+      .eq("id", row.workspace_id)
+      .maybeSingle();
+    if (workspace && (workspace as { owner_id: string }).owner_id === userId) return true;
+  }
+  return false;
 }
 
 /** GET /api/campaigns/[campaignId]/buildings/[buildingId]/addresses — all addresses linked to this building */
@@ -71,7 +88,7 @@ export async function GET(request: Request, context: RouteContext) {
     }
 
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
-    const canAccess = await ensureCampaignOwnership(
+    const canAccess = await ensureCampaignAccess(
       supabase,
       campaignId,
       user.id
@@ -172,7 +189,7 @@ export async function POST(request: Request, context: RouteContext) {
     }
 
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
-    const canAccess = await ensureCampaignOwnership(
+    const canAccess = await ensureCampaignAccess(
       supabase,
       campaignId,
       user.id
@@ -248,7 +265,7 @@ export async function DELETE(request: Request, context: RouteContext) {
     }
 
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
-    const canAccess = await ensureCampaignOwnership(
+    const canAccess = await ensureCampaignAccess(
       supabase,
       campaignId,
       user.id

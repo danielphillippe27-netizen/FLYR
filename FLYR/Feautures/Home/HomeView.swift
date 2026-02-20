@@ -5,6 +5,7 @@ private enum HomeRoute: Hashable {
     case routes
     case activity
     case stats
+    case support
 }
 
 struct HomeView: View {
@@ -31,6 +32,17 @@ struct HomeView: View {
             .toolbarBackground(.hidden, for: .navigationBar)
             .toolbarColorScheme(.dark, for: .navigationBar)
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        path.append(.support)
+                    } label: {
+                        Image(systemName: "message.fill")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundColor(colorScheme == .dark ? .white : .black)
+                            .frame(width: 36, height: 36)
+                    }
+                    .buttonStyle(.plain)
+                }
                 ToolbarItem(placement: .principal) {
                     Image(headerLogoName)
                         .resizable()
@@ -56,11 +68,17 @@ struct HomeView: View {
                     case .campaigns:
                         CampaignsView()
                     case .routes:
-                        RoutesPlaceholderView()
+                        RoutesListView()
                     case .activity:
                         ActivityView()
                     case .stats:
                         YouStatsView()
+                    case .support:
+                        SupportChatView()
+                            .transition(.asymmetric(
+                                insertion: .move(edge: .leading).combined(with: .opacity),
+                                removal: .move(edge: .leading).combined(with: .opacity)
+                            ))
                     }
                 }
         }

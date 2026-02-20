@@ -14,6 +14,8 @@ public struct CampaignCreatePayloadV2: Codable, Sendable {
     public var tags: String?
     /// Array of CampaignAddress objects
     public var addressesJSON: [CampaignAddress]
+    /// Optional workspace ID for workspace-scoped campaigns
+    public var workspaceId: UUID?
 
     public init(
         name: String,
@@ -25,7 +27,8 @@ public struct CampaignCreatePayloadV2: Codable, Sendable {
         seedLon: Double? = nil,
         seedLat: Double? = nil,
         tags: String? = nil,
-        addressesJSON: [CampaignAddress]
+        addressesJSON: [CampaignAddress],
+        workspaceId: UUID? = nil
     ) {
         self.name = name
         self.description = description
@@ -37,6 +40,7 @@ public struct CampaignCreatePayloadV2: Codable, Sendable {
         self.seedLat = seedLat
         self.tags = tags
         self.addressesJSON = addressesJSON
+        self.workspaceId = workspaceId
     }
 }
 

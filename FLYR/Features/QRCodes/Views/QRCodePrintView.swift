@@ -116,7 +116,7 @@ final class UseQRCodePrint: ObservableObject {
         defer { isLoadingCampaigns = false }
         
         do {
-            campaigns = try await api.fetchCampaigns()
+            campaigns = try await api.fetchCampaigns(workspaceId: WorkspaceContext.shared.workspaceId)
         } catch {
             errorMessage = "Failed to load campaigns: \(error.localizedDescription)"
             print("❌ [QR Print] Error loading campaigns: \(error)")
