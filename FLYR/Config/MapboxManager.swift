@@ -7,11 +7,11 @@ class MapboxManager {
     let accessToken: String
     
     private init() {
-        // Read from Info.plist
-        guard let path = Bundle.main.path(forResource: "Info", ofType: "plist"),
-              let plist = NSDictionary(contentsOfFile: path),
-              let token = plist["MBXAccessToken"] as? String else {
-            fatalError("Mapbox access token not found in Info.plist")
+        // Use bundle info dictionary (same plist used for Debug and Release; avoid file-path reads)
+        let token = (Bundle.main.object(forInfoDictionaryKey: "MBXAccessToken") as? String)
+            ?? (Bundle.main.object(forInfoDictionaryKey: "MapboxAccessToken") as? String)
+        guard let token = token, !token.isEmpty else {
+            fatalError("Mapbox access token not found in Info.plist (MBXAccessToken or MapboxAccessToken)")
         }
         self.accessToken = token
     }

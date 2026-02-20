@@ -1,9 +1,8 @@
 import SwiftUI
-import AVKit
+import Lottie
 
 /// Full-screen blocking overlay shown while a campaign is being created.
-/// Plays Black.mp4 in dark mode, White.mp4 in light mode; shows "Creating campaign" and "This can take up to 5 minutes".
-/// User cannot dismiss or interact with anything else.
+/// Shows FLYR lottie (same size as login) and "Creating campaign" below. Screen is frozen; user cannot dismiss.
 struct CampaignCreatingOverlayView: View {
     var useDarkStyle: Bool
 
@@ -12,17 +11,16 @@ struct CampaignCreatingOverlayView: View {
             Color(useDarkStyle ? .black : .white)
                 .ignoresSafeArea()
 
-            LoopingVideoView(filename: useDarkStyle ? "Black" : "White", extension: "mp4")
-                .ignoresSafeArea()
+            VStack(spacing: 24) {
+                // FLYR lottie — same size as login screen (SignInView)
+                CampaignCreatingLottieView(name: useDarkStyle ? "splash" : "splash_black")
+                    .frame(width: 340, height: 227)
+                    .clipped()
 
-            VStack(spacing: 20) {
                 Text("Creating campaign")
                     .font(.flyrTitle2)
                     .fontWeight(.semibold)
                     .foregroundColor(useDarkStyle ? .white : .primary)
-                Text("This can take up to 5 minutes")
-                    .font(.flyrSubheadline)
-                    .foregroundColor(useDarkStyle ? .white.opacity(0.9) : .secondary)
             }
             .padding(.horizontal, 24)
         }
@@ -31,64 +29,41 @@ struct CampaignCreatingOverlayView: View {
     }
 }
 
-// MARK: - Looping video (Black.mp4 / White.mp4 from bundle)
+// MARK: - FLYR Lottie (same as login: 340×227)
 
-private struct LoopingVideoView: UIViewRepresentable {
-    let filename: String
-    let `extension`: String
+private struct CampaignCreatingLottieView: UIViewRepresentable {
+    let name: String
 
     func makeUIView(context: Context) -> UIView {
-        let view = PlayerView()
-        view.setup(filename: filename, ext: `extension`)
-        return view
+        let container = UIView()
+        container.clipsToBounds = true
+        let lottie = LottieAnimationView(name: name, bundle: .main)
+        lottie.loopMode = .loop
+        lottie.contentMode = .scaleAspectFit
+        lottie.backgroundBehavior = .pauseAndRestore
+        lottie.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(lottie)
+        NSLayoutConstraint.activate([
+            lottie.topAnchor.constraint(equalTo: container.topAnchor),
+            lottie.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            lottie.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            lottie.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+        ])
+        lottie.play()
+        context.coordinator.lottieView = lottie
+        return container
     }
 
-    func updateUIView(_ uiView: UIView, context: Context) {}
-}
-
-private final class PlayerView: UIView {
-    private var player: AVPlayer?
-    private var playerLayer: AVPlayerLayer?
-    private var loopToken: Any?
-
-    override class var layerClass: AnyClass { AVPlayerLayer.self }
-
-    override init(frame: CGRect) {
-        super.init(frame: frame)
-        backgroundColor = .clear
+    func updateUIView(_ uiView: UIView, context: Context) {
+        context.coordinator.lottieView?.contentMode = .scaleAspectFit
     }
 
-    required init?(coder: NSCoder) {
-        super.init(coder: coder)
-        backgroundColor = .clear
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
     }
 
-    func setup(filename: String, ext: String) {
-        guard let url = Bundle.main.url(forResource: filename, withExtension: ext)
-            ?? Bundle.main.url(forResource: filename, withExtension: ext, subdirectory: "CampaignLoading") else {
-            return
-        }
-        let player = AVPlayer(url: url)
-        player.isMuted = true
-        (layer as? AVPlayerLayer)?.player = player
-        (layer as? AVPlayerLayer)?.videoGravity = .resizeAspectFill
-        self.player = player
-
-        loopToken = NotificationCenter.default.addObserver(
-            forName: .AVPlayerItemDidPlayToEndTime,
-            object: player.currentItem,
-            queue: .main
-        ) { [weak player] _ in
-            player?.seek(to: .zero)
-            player?.play()
-        }
-        player.play()
-    }
-
-    deinit {
-        if let t = loopToken {
-            NotificationCenter.default.removeObserver(t)
-        }
+    class Coordinator {
+        weak var lottieView: LottieAnimationView?
     }
 }
 

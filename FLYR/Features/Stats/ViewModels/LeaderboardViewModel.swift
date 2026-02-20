@@ -20,7 +20,9 @@ final class LeaderboardViewModel: ObservableObject {
     @Published var selectedTab: Int = 0 // 0 = Leaderboard, 1 = You
     @Published var metric: MetricType = .flyers
     @Published var timeRange: TimeRange = .monthly
-    
+    /// Global filter: All or My team (team/workspace name when present).
+    @Published var scope: LeaderboardScope = .all
+
     private let leaderboardService = LeaderboardService.shared
     private let supabase = SupabaseManager.shared.client
     private var cancellables = Set<AnyCancellable>()

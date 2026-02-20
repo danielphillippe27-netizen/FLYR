@@ -30,9 +30,9 @@ final class LocalStorage {
 
     // MARK: - State Tracking
 
+    /// No longer used for routing; routing is backend-driven via access redirect. Kept for debug / legacy.
     var hasCompletedOnboarding: Bool {
-        // Temporary override: bypass onboarding flow app-wide.
-        get { true }
+        get { UserDefaults.standard.bool(forKey: hasCompletedOnboardingKey) }
         set { UserDefaults.standard.set(newValue, forKey: hasCompletedOnboardingKey) }
     }
 

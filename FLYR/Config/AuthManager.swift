@@ -55,6 +55,7 @@ final class AuthManager: ObservableObject {
     func signOut() async {
         KeychainAuthStorage.clearAll()
         do { try await client.auth.signOut() } catch {}
+        WorkspaceContext.shared.clear()
         user = nil
     }
 
@@ -239,6 +240,27 @@ final class AuthManager: ObservableObject {
         user = appUser
     }
 
+    /// Sign up with email and password via Supabase Auth. Persists session to Keychain when returned (e.g. when email confirmation is disabled).
+    func signUpWithEmail(email: String, password: String) async throws {
+        let response = try await client.auth.signUp(email: email, password: password)
+        guard let session = response.session else {
+            // Email confirmation required; no session yet.
+            throw AuthError.emailConfirmationRequired
+        }
+        let displayName = (session.user.userMetadata["full_name"] as? String)
+            ?? (session.user.userMetadata["name"] as? String)
+        let appUser = AppUser(
+            id: session.user.id,
+            email: session.user.email ?? "",
+            displayName: displayName,
+            photoURL: (session.user.userMetadata["avatar_url"] as? String).flatMap(URL.init)
+        )
+        KeychainAuthStorage.saveSession(accessToken: session.accessToken, refreshToken: session.refreshToken ?? "")
+        KeychainAuthStorage.saveAuthProvider(.email)
+        KeychainAuthStorage.saveAppUser(appUser)
+        user = appUser
+    }
+
     private func randomNonceString(length: Int = 32) -> String {
         precondition(length > 0)
         var randomBytes = [UInt8](repeating: 0, count: length)
@@ -312,9 +334,12 @@ enum AuthError: LocalizedError {
     case appleSignInNotConfigured
     case invalidAppleAudience
     case noIdToken
+    case emailConfirmationRequired
 
     var errorDescription: String? {
         switch self {
+        case .emailConfirmationRequired:
+            return "Check your email to confirm your account."
         case .missingGoogleClientID:
             return "Google Sign-In is not configured. Add GOOGLE_CLIENT_ID to Info.plist."
         case .noPresentingViewController:

@@ -133,6 +133,8 @@ struct NewCampaignScreen: View {
                     enabled: canCreate && !createHook.isCreating,
                     isLoading: createHook.isCreating
                 ) {
+                    guard !createHook.isCreating else { return }
+                    createHook.isCreating = true
                     Task { await createCampaignTapped() }
                 }
                 .padding(.horizontal, 20)
@@ -160,7 +162,9 @@ struct NewCampaignScreen: View {
                             self.selectedCenter = nil
                             self.seedLabel = "Polygon (\(vertices.count) points)"
                             self.showMapSeed = false
-                            Task { await self.createCampaignTapped() }
+                            guard !self.createHook.isCreating else { return }
+                            self.createHook.isCreating = true
+                            Task { await self.createCampaignTapped(polygonFromSheet: vertices) }
                         }
                     )
                 }
@@ -174,19 +178,21 @@ struct NewCampaignScreen: View {
                 .hidesTabBar()
     }
     
-    private func createCampaignTapped() async {
-        guard !createHook.isCreating else { return }
-        createHook.isCreating = true
+    /// If polygonFromSheet is non-nil, use it for the map flow (avoids relying on state when coming from sheet).
+    private func createCampaignTapped(polygonFromSheet: [CLLocationCoordinate2D]? = nil) async {
         defer { createHook.isCreating = false }
+        let effectivePolygon = polygonFromSheet ?? drawnPolygon
+        let canCreateFromForm = canCreate
+        let canCreateFromMapSheet = source == .map && (effectivePolygon?.count ?? 0) >= 3 && !name.trimmingCharacters(in: .whitespaces).isEmpty
         print("🚀 [CAMPAIGN DEBUG] Starting campaign creation workflow")
         print("🚀 [CAMPAIGN DEBUG] Campaign name: '\(name)'")
         print("🚀 [CAMPAIGN DEBUG] Campaign type: \(type.rawValue)")
         print("🚀 [CAMPAIGN DEBUG] Address source: \(source.rawValue)")
-        print("🚀 [CAMPAIGN DEBUG] Can create: \(canCreate)")
+        print("🚀 [CAMPAIGN DEBUG] Can create (form): \(canCreateFromForm), (map sheet): \(canCreateFromMapSheet)")
         
-        guard canCreate else { 
+        guard canCreateFromForm || canCreateFromMapSheet else {
             print("❌ [CAMPAIGN DEBUG] Cannot create campaign - validation failed")
-            return 
+            return
         }
         
         switch source {
@@ -242,7 +248,7 @@ struct NewCampaignScreen: View {
             
         case .map:
             print("🗺️ [CAMPAIGN DEBUG] Creating campaign with map source")
-            if let polygon = drawnPolygon, polygon.count >= 3 {
+            if let polygon = effectivePolygon, polygon.count >= 3 {
                 // Polygon flow: create campaign (minimal addresses), then provision (backend Lambda/S3)
                 print("🗺️ [CAMPAIGN DEBUG] Using drawn polygon (\(polygon.count) points) – will provision after create")
                 let payload = CampaignCreatePayloadV2(
@@ -263,17 +269,17 @@ struct NewCampaignScreen: View {
                     let geoJSON = polygonToGeoJSON(polygon)
                     do {
                         try await CampaignsAPI.shared.updateTerritoryBoundary(campaignId: created.id, polygonGeoJSON: geoJSON)
+                        print("🗺️ [CAMPAIGN DEBUG] Territory updated, starting provision...")
                         try await CampaignsAPI.shared.provisionCampaign(campaignId: created.id)
                         let provisionState = try await CampaignsAPI.shared.waitForProvisionReady(campaignId: created.id)
                         if provisionState.provisionStatus != "ready" {
-                            createHook.error = "Campaign created but provisioning did not complete (status: \(provisionState.provisionStatus ?? "unknown")). Please retry from campaign details."
-                            return
+                            createHook.error = "Campaign created but provisioning did not complete (status: \(provisionState.provisionStatus ?? "unknown")). You can retry from campaign details."
                         }
                     } catch {
                         print("❌ [CAMPAIGN DEBUG] Provision failed: \(error)")
-                        createHook.error = "Campaign created but provisioning failed: \(error.localizedDescription)"
-                        return
+                        createHook.error = "Campaign created but provisioning failed: \(error.localizedDescription). You can retry from campaign details."
                     }
+                    // Always dismiss and navigate once campaign exists and territory is set (don't leave user stuck on loading)
                     dismiss()
                     try? await Task.sleep(nanoseconds: 300_000_000)
                     await MainActor.run { store.routeToV2Detail?(created.id) }

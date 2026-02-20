@@ -9,6 +9,9 @@ import Supabase
 final class EntitlementsService: ObservableObject {
     private static let localProUnlockedKey = "flyr_local_pro_unlocked"
 
+    /// Shared instance for UIKit (e.g. BuildingPopupView) to read canUsePro. Set by app root.
+    static weak var sharedInstance: EntitlementsService?
+
     @Published private(set) var entitlement: Entitlement?
     @Published private(set) var isLoading = false
     @Published private(set) var error: String?
@@ -23,6 +26,14 @@ final class EntitlementsService: ObservableObject {
             .trimmingCharacters(in: CharacterSet(charactersIn: "/")) ?? "https://flyrpro.app"
     }
 
+    /// Use www when host is apex to avoid redirect stripping Authorization.
+    private var requestBaseURL: String {
+        guard let components = URLComponents(string: baseURL), components.host == "flyrpro.app" else {
+            return baseURL
+        }
+        return "https://www.flyrpro.app"
+    }
+
     private let decoder: JSONDecoder = {
         let d = JSONDecoder()
         d.dateDecodingStrategy = .iso8601
@@ -31,13 +42,16 @@ final class EntitlementsService: ObservableObject {
 
     init() {
         localProUnlocked = UserDefaults.standard.bool(forKey: Self.localProUnlockedKey)
+        EntitlementsService.sharedInstance = self
     }
 
     /// True if user has Pro: server entitlement (apple/stripe) OR local unlock from StoreKit (Layer 1).
+    /// Temporary: always true so Pro guards are disabled; restore guard when ready to enforce.
     var canUsePro: Bool {
-        if localProUnlocked { return true }
-        guard let e = entitlement else { return false }
-        return e.isActive && (e.plan == "pro" || e.plan == "team")
+        true
+        // if localProUnlocked { return true }
+        // guard let e = entitlement else { return false }
+        // return e.isActive && (e.plan == "pro" || e.plan == "team")
     }
 
     /// Layer 1: Call after successful StoreKit purchase or restore. Later replace with verify + fetch.
@@ -54,7 +68,7 @@ final class EntitlementsService: ObservableObject {
 
         do {
             let session = try await SupabaseManager.shared.client.auth.session
-            let url = URL(string: "\(baseURL)/api/billing/entitlement")!
+            let url = URL(string: "\(requestBaseURL)/api/billing/entitlement")!
             var request = URLRequest(url: url)
             request.httpMethod = "GET"
             request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
@@ -90,7 +104,7 @@ final class EntitlementsService: ObservableObject {
     /// Call after a verified purchase, before transaction.finish().
     func verifyAppleTransaction(transactionId: String, productId: String) async throws {
         let session = try await SupabaseManager.shared.client.auth.session
-        let url = URL(string: "\(baseURL)/api/billing/apple/verify")!
+        let url = URL(string: "\(requestBaseURL)/api/billing/apple/verify")!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")

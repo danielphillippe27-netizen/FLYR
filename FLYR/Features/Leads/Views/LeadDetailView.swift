@@ -6,6 +6,8 @@ struct LeadDetailView: View {
     /// Called after successfully saving edits so the parent can refresh (e.g. update list and selectedLead).
     var onLeadUpdated: ((FieldLead) -> Void)?
     
+    @EnvironmentObject private var entitlementsService: EntitlementsService
+    @State private var showPaywall = false
     @State private var integrations: [UserIntegration] = []
     @State private var showSyncSettings = false
     @State private var showShareSheet = false
@@ -52,8 +54,7 @@ struct LeadDetailView: View {
                 appleStyleHeaderSection
                 contactRowsSection
                 addressSection
-                appointmentSection
-                taskSection
+                appointmentsTasksSection
                 fieldNotesMetadataSection
                 if lead.qrCode != nil { qrSection }
                 syncSection
@@ -96,6 +97,54 @@ struct LeadDetailView: View {
         .sheet(isPresented: $showShareSheet) {
             ShareSheet(activityItems: shareItems)
         }
+        .sheet(isPresented: $showPaywall) {
+            PaywallView()
+        }
+    }
+    
+    /// Appointments & Tasks: show full sections if Pro, else locked CTA that opens Paywall.
+    @ViewBuilder
+    private var appointmentsTasksSection: some View {
+        if entitlementsService.canUsePro {
+            appointmentSection
+            taskSection
+        } else {
+            appointmentsTasksProGate
+        }
+    }
+    
+    private var appointmentsTasksProGate: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                Image(systemName: "lock.circle.fill")
+                    .font(.system(size: 22))
+                    .foregroundColor(.muted)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Appointments & Tasks")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundColor(.text)
+                    Text("Pro feature — set appointments and tasks for CRM sync.")
+                        .font(.system(size: 13))
+                        .foregroundColor(.muted)
+                }
+                Spacer(minLength: 0)
+            }
+            Button {
+                showPaywall = true
+            } label: {
+                Label("Unlock with Pro", systemImage: "crown.fill")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundColor(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                    .background(Color.accent)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(16)
+        .background(Color.gray.opacity(0.12))
+        .cornerRadius(12)
     }
     
     private var displayTitle: String {
@@ -106,7 +155,7 @@ struct LeadDetailView: View {
     
     // MARK: - Apple-style header (name + circular action buttons, no avatar)
     private var appleStyleHeaderSection: some View {
-        VStack(spacing: 20) {
+        VStack(spacing: 36) {
             // Name (editable) — prominent, higher and larger like Apple Contacts
             TextField("Name", text: $editableName)
                 .textFieldStyle(.plain)
@@ -145,7 +194,7 @@ struct LeadDetailView: View {
         Button(action: action) {
             Image(systemName: icon)
                 .font(.system(size: 22))
-                .foregroundColor(isEnabled ? .white : .gray)
+                .foregroundColor(isEnabled ? .black : .gray)
                 .frame(width: 50, height: 50)
                 .background(isEnabled ? Color.accent : Color.gray.opacity(0.3))
                 .clipShape(Circle())
@@ -275,12 +324,15 @@ struct LeadDetailView: View {
     
     private var addressSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Label("Address", systemImage: "mappin.circle.fill")
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundColor(.muted)
-            Text(lead.address)
-                .font(.system(size: 16))
-                .foregroundColor(.text)
+            HStack(alignment: .center, spacing: 8) {
+                Label("Address", systemImage: "mappin.circle.fill")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(.muted)
+                Text(lead.address)
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundColor(.text)
+                    .lineLimit(2)
+            }
             Button("Open in Maps") {
                 let encoded = lead.address.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
                 if let url = URL(string: "http://maps.apple.com/?q=\(encoded)") {

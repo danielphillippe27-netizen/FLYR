@@ -1,5 +1,34 @@
 import SwiftUI
 import CoreLocation
+
+/// Session delivery method: door knock (current flow) or flyer-only (no knock).
+/// Use one process with this mode—same session/map/route; only what we record (flyers distributed vs doors knocked) and counts differ. No need for two separate processes.
+enum SessionMethod: String, CaseIterable {
+    case doorKnock = "door_knock"
+    case flyerNoKnock = "flyer_no_knock"
+
+    var displayName: String {
+        switch self {
+        case .doorKnock: return "Door Knock"
+        case .flyerNoKnock: return "Flyer (no knock)"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .doorKnock: return "Knock and deliver"
+        case .flyerNoKnock: return "Drop flyer only"
+        }
+    }
+}
+
+/// Placeholder model for a route in Start Session. Replace with real API model when routes are available.
+struct SessionRouteItem: Identifiable {
+    let id: UUID
+    var name: String
+    var stopCount: Int
+}
+
 struct SessionStartView: View {
     @Environment(\.dismiss) private var dismiss
 
@@ -10,13 +39,20 @@ struct SessionStartView: View {
     var preselectedCampaign: CampaignV2?
     
     @State private var selectedCampaign: CampaignV2?
+    @State private var selectedRoute: SessionRouteItem?
     @State private var targetAmount: Int = 100
+    /// Door knock (current flow) vs flyer-only (no knock); flyer path is same as door knock for now, named separately for future differentiation.
+    @State private var sessionMethod: SessionMethod = .doorKnock
 
     // Data loading
     @State private var campaigns: [CampaignV2] = []
+    @State private var routes: [SessionRouteItem] = []
     @State private var isLoadingData: Bool = false
     @State private var isFetchingData: Bool = false
     @State private var lastFetchTime: Date?
+    
+    /// Show at most this many items before "More" menu
+    private let maxVisibleItems = 3
     
     // Route optimization
     @State private var isOptimizing: Bool = false
@@ -69,9 +105,9 @@ struct SessionStartView: View {
 
     private var scrollContent: some View {
         ScrollView {
-            VStack(spacing: 24) {
+            VStack(alignment: .leading, spacing: 24) {
                 campaignList
-                    .padding(.horizontal)
+                routesList
 
                 if let errorMessage = errorMessage {
                     Text(errorMessage)
@@ -99,11 +135,6 @@ struct SessionStartView: View {
                     Text("Available: \(maxAvailableAddresses) addresses")
                         .font(.flyrCaption)
                         .foregroundColor(.secondary)
-                    if let estimate = estimatedTime {
-                        Text("Estimated: \(estimate)")
-                            .font(.flyrSubheadline)
-                            .foregroundColor(.red)
-                    }
                 }
                 Spacer(minLength: 12)
                 Stepper(value: $targetAmount, in: 10...max(10, min(1000, maxAvailableAddresses)), step: 10) {
@@ -117,6 +148,65 @@ struct SessionStartView: View {
         .padding(.vertical, 12)
         .background(Color(.systemGray6))
         .cornerRadius(12)
+        .padding(.horizontal)
+    }
+
+    private var methodSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Method")
+                .font(.flyrHeadline)
+                .foregroundColor(.secondary)
+
+            HStack(alignment: .center, spacing: 16) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(sessionMethod.displayName)
+                        .font(.flyrHeadline)
+                    Text(sessionMethod.subtitle)
+                        .font(.flyrCaption)
+                        .foregroundColor(.secondary)
+                }
+                Spacer(minLength: 12)
+                Picker("Method", selection: $sessionMethod) {
+                    ForEach(SessionMethod.allCases, id: \.self) { method in
+                        Text(method.displayName).tag(method)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .onChange(of: sessionMethod) { _, _ in HapticManager.light() }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 12)
+        .background(Color(.systemGray6))
+        .cornerRadius(12)
+        .padding(.horizontal)
+    }
+
+    /// Optimized Route button — wire to route generation / preview when ready.
+    private var optimizedRouteButton: some View {
+        Button {
+            HapticManager.light()
+            // TODO: Wire to optimized route flow (e.g. generateRoute + showRoutePreview)
+        } label: {
+            HStack {
+                Image(systemName: "map.fill")
+                    .foregroundColor(.secondary)
+                Text("Optimized Route")
+                    .font(.flyrHeadline)
+                    .foregroundColor(.primary)
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.flyrCaption)
+                    .foregroundColor(.secondary)
+            }
+            .padding(.horizontal)
+            .padding(.vertical, 12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(.systemGray6))
+            .cornerRadius(12)
+        }
+        .buttonStyle(.plain)
         .padding(.horizontal)
     }
 
@@ -157,7 +247,7 @@ struct SessionStartView: View {
     
     private var campaignList: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("CAMPAIGN")
+            Text("CAMPAIGNS")
                 .font(.flyrHeadline)
                 .foregroundColor(.secondary)
             
@@ -171,7 +261,9 @@ struct SessionStartView: View {
                     .frame(maxWidth: .infinity)
                     .padding()
             } else {
-                ForEach(campaigns) { campaign in
+                let visible = Array(campaigns.prefix(maxVisibleItems))
+                let remaining = Array(campaigns.dropFirst(maxVisibleItems))
+                ForEach(visible) { campaign in
                     VStack(alignment: .leading, spacing: 12) {
                         campaignRow(campaign)
                             .contentShape(Rectangle())
@@ -181,11 +273,113 @@ struct SessionStartView: View {
                             }
                         if selectedCampaign?.id == campaign.id {
                             targetAmountSection
+                            methodSection
+                            optimizedRouteButton
                         }
                     }
                 }
+                if !remaining.isEmpty {
+                    Menu {
+                        ForEach(remaining) { campaign in
+                            Button(campaign.name) {
+                                HapticManager.light()
+                                selectedCampaign = campaign
+                            }
+                        }
+                    } label: {
+                        HStack {
+                            Text("More (\(remaining.count) more)")
+                                .font(.flyrHeadline)
+                                .foregroundColor(.primary)
+                            Spacer()
+                            Image(systemName: "chevron.down")
+                                .font(.flyrCaption)
+                                .foregroundColor(.secondary)
+                        }
+                        .padding()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(RoundedRectangle(cornerRadius: 12).fill(Color(.systemGray6)))
+                    }
+                    .buttonStyle(.plain)
+                }
             }
         }
+        .padding(.horizontal)
+    }
+    
+    // MARK: - Routes List
+    
+    private var routesList: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("ROUTES")
+                .font(.flyrHeadline)
+                .foregroundColor(.secondary)
+            
+            if routes.isEmpty {
+                Text("No routes available")
+                    .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity)
+                    .padding()
+            } else {
+                let visible = Array(routes.prefix(maxVisibleItems))
+                let remaining = Array(routes.dropFirst(maxVisibleItems))
+                ForEach(visible) { route in
+                    routeRow(route)
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            HapticManager.light()
+                            selectedRoute = route
+                        }
+                }
+                if !remaining.isEmpty {
+                    Menu {
+                        ForEach(remaining) { route in
+                            Button(route.name) {
+                                HapticManager.light()
+                                selectedRoute = route
+                            }
+                        }
+                    } label: {
+                        HStack {
+                            Text("More (\(remaining.count) more)")
+                                .font(.flyrHeadline)
+                                .foregroundColor(.primary)
+                            Spacer()
+                            Image(systemName: "chevron.down")
+                                .font(.flyrCaption)
+                                .foregroundColor(.secondary)
+                        }
+                        .padding()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(RoundedRectangle(cornerRadius: 12).fill(Color(.systemGray6)))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .padding(.horizontal)
+    }
+    
+    private func routeRow(_ route: SessionRouteItem) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(route.name)
+                    .font(.flyrHeadline)
+                Label("\(route.stopCount) stops", systemImage: "map.fill")
+                    .font(.flyrCaption)
+                    .foregroundColor(.secondary)
+            }
+            Spacer()
+            if selectedRoute?.id == route.id {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundColor(.red)
+            }
+        }
+        .padding()
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(selectedRoute?.id == route.id ? Color.red.opacity(0.1) : Color(.systemGray6))
+        )
     }
     
     private func campaignRow(_ campaign: CampaignV2) -> some View {
@@ -258,17 +452,6 @@ struct SessionStartView: View {
             return max(campaign.totalFlyers, campaign.addresses.count)
         }
         return 100
-    }
-    
-    private var estimatedTime: String? {
-        let minutes = targetAmount * 2 // 2 minutes per home
-        if minutes < 60 {
-            return "\(minutes)m"
-        } else {
-            let hours = minutes / 60
-            let mins = minutes % 60
-            return "\(hours)h \(mins)m"
-        }
     }
     
     private func statusColor(_ status: CampaignStatus) -> Color {

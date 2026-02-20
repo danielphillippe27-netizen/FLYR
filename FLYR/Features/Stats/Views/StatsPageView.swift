@@ -321,6 +321,47 @@ struct YouViewContent: View {
     }
 }
 
+// MARK: - You Stats View (push from Home grid; no toggle)
+struct YouStatsView: View {
+    @State private var youPeriod: String = "Week"
+
+    var body: some View {
+        VStack(spacing: 0) {
+            TimeFilterPills(period: $youPeriod)
+                .padding(.horizontal, 20)
+                .padding(.top, 8)
+                .padding(.bottom, 12)
+
+            YouViewContent(period: $youPeriod)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.bg)
+        .navigationTitle("Stats")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+// MARK: - Leaderboard Tab View (tab 4 only; no toggle)
+struct LeaderboardTabView: View {
+    @EnvironmentObject var entitlementsService: EntitlementsService
+    @State private var showPaywall = false
+
+    var body: some View {
+        Group {
+            if entitlementsService.canUsePro {
+                LeaderboardView()
+            } else {
+                LeaderboardPaywallGate(showPaywall: $showPaywall)
+            }
+        }
+        .navigationTitle("Leaderboard")
+        .navigationBarTitleDisplayMode(.inline)
+        .sheet(isPresented: $showPaywall) {
+            PaywallView()
+        }
+    }
+}
+
 #Preview {
     NavigationStack {
         StatsPageView()

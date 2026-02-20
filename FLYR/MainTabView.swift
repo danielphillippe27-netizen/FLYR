@@ -8,7 +8,7 @@ struct MainTabView: View {
     @State private var endSessionSummaryItem: EndSessionSummaryItem?
 
     private enum Tab: Int {
-        case campaigns = 0, map = 1, record = 2, leads = 3, stats = 4, settings = 5
+        case home = 0, map = 1, record = 2, leads = 3, leaderboard = 4, settings = 5
     }
 
     private var recordHighlight: Bool {
@@ -19,20 +19,20 @@ struct MainTabView: View {
         VStack(spacing: 0) {
             Group {
                 switch uiState.selectedTabIndex {
-                case Tab.campaigns.rawValue:
-                    NavigationStack { CampaignsView() }
+                case Tab.home.rawValue:
+                    NavigationStack { HomeView() }
                 case Tab.map.rawValue:
                     NavigationStack { FullScreenMapView() }
                 case Tab.record.rawValue:
                     NavigationStack { RecordHomeView() }
                 case Tab.leads.rawValue:
                     NavigationStack { ContactsHubView() }
-                case Tab.stats.rawValue:
-                    NavigationStack { StatsPageView() }
+                case Tab.leaderboard.rawValue:
+                    NavigationStack { LeaderboardTabView() }
                 case Tab.settings.rawValue:
                     NavigationStack { SettingsView() }
                 default:
-                    NavigationStack { CampaignsView() }
+                    NavigationStack { HomeView() }
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)

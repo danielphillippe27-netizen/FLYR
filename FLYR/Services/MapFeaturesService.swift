@@ -427,12 +427,87 @@ final class MapFeaturesService: ObservableObject {
             }
         }
         
-        // Closest-home: if we have addresses but no buildings, fetch buildings per address via Edge Function
+        // Partition Gold RPC result: Polygon -> buildings, Point -> merge into addresses
+        if let buildings = self.buildings, !buildings.features.isEmpty {
+            let (polygons, points) = partitionFeaturesByGeometry(buildings.features)
+            self.buildings = BuildingFeatureCollection(type: "FeatureCollection", features: polygons)
+            let pointAddressFeatures = addressFeaturesFromPointBuildingFeatures(points)
+            if !pointAddressFeatures.isEmpty {
+                let merged = mergeAddressFeatures(existing: self.addresses, additional: pointAddressFeatures)
+                self.addresses = AddressFeatureCollection(type: "FeatureCollection", features: merged)
+            }
+        }
+        
+        // Silver fallback: if no polygon buildings, try S3 snapshot
+        if (buildings?.features.isEmpty ?? true), let silverFeatures = try? await BuildingLinkService.shared.fetchBuildings(campaignId: campaignId) {
+            self.buildings = BuildingFeatureCollection(type: "FeatureCollection", features: silverFeatures)
+            print("✅ [MapFeatures] Silver fallback loaded \(silverFeatures.count) building features")
+        }
+        
+        // Closest-home: if we still have no buildings but have addresses, fetch buildings per address via Edge Function
         if (buildings?.features.isEmpty ?? true) && (addresses?.features.isEmpty == false) {
             await fetchBuildingsForAddressesFallback(campaignId: campaignId)
         }
         
         isLoading = false
+    }
+    
+    /// Partition RPC full-features by geometry: Polygon/MultiPolygon -> buildings, Point -> address fallback.
+    private func partitionFeaturesByGeometry(_ features: [BuildingFeature]) -> (polygons: [BuildingFeature], points: [BuildingFeature]) {
+        var polygons: [BuildingFeature] = []
+        var points: [BuildingFeature] = []
+        for f in features {
+            let geoType = f.geometry.type.lowercased()
+            if geoType == "polygon" || geoType == "multipolygon" {
+                polygons.append(f)
+            } else if geoType == "point" {
+                points.append(f)
+            }
+        }
+        return (polygons, points)
+    }
+    
+    /// Convert Point building features (address_point fallback) to AddressFeature for the addresses layer.
+    private func addressFeaturesFromPointBuildingFeatures(_ points: [BuildingFeature]) -> [AddressFeature] {
+        points.compactMap { feature in
+            guard feature.geometry.asPoint != nil else { return nil }
+            let p = feature.properties
+            let formatted = p.addressText ?? "\(p.houseNumber ?? "") \(p.streetName ?? "")".trimmingCharacters(in: .whitespaces)
+            let addrProps = AddressProperties(
+                id: p.addressId,
+                gersId: p.gersId,
+                buildingGersId: p.buildingId,
+                houseNumber: p.houseNumber,
+                streetName: p.streetName,
+                postalCode: nil,
+                locality: nil,
+                formatted: formatted.isEmpty ? nil : formatted
+            )
+            return AddressFeature(
+                type: "Feature",
+                id: p.addressId ?? feature.id,
+                geometry: feature.geometry,
+                properties: addrProps
+            )
+        }
+    }
+    
+    /// Merge address features: existing plus additional, deduped by address id.
+    private func mergeAddressFeatures(existing: AddressFeatureCollection?, additional: [AddressFeature]) -> [AddressFeature] {
+        var seenIds = Set((existing?.features ?? []).compactMap { $0.properties.id ?? $0.id }.map { $0.lowercased() })
+        var result = existing?.features ?? []
+        for addr in additional {
+            let id = (addr.properties.id ?? addr.id ?? "").lowercased()
+            if !id.isEmpty {
+                if !seenIds.contains(id) {
+                    seenIds.insert(id)
+                    result.append(addr)
+                }
+            } else {
+                result.append(addr)
+            }
+        }
+        return result
     }
     
     /// Fetch building polygons for campaigns that have addresses but no buildings (e.g. closest-home).
@@ -515,6 +590,9 @@ final class MapFeaturesService: ObservableObject {
         }
         func int(_ key: String) -> Int { (p[key]?.value as? Int) ?? (p[key]?.value as? Double).map(Int.init) ?? 0 }
         func double(_ key: String) -> Double { (p[key]?.value as? Double) ?? (p[key]?.value as? Int).map(Double.init) ?? 0 }
+        func bool(_ key: String) -> Bool? {
+            (p[key]?.value as? Bool) ?? (p[key]?.value as? Int).map { $0 != 0 }
+        }
         let fallbackId = (feature.id ?? UUID().uuidString).lowercased()
         let rawGersId = str("gers_id") ?? feature.id ?? UUID().uuidString
         return BuildingProperties(
@@ -534,7 +612,13 @@ final class MapFeaturesService: ObservableObject {
             status: str("status") ?? "not_visited",
             scansToday: int("scans_today"),
             scansTotal: int("scans_total"),
-            lastScanSecondsAgo: (p["last_scan_seconds_ago"]?.value as? Double)
+            lastScanSecondsAgo: (p["last_scan_seconds_ago"]?.value as? Double),
+            houseNumber: str("house_number"),
+            streetName: str("street_name"),
+            confidence: (p["confidence"]?.value as? Double).flatMap { $0 >= 0 ? $0 : nil },
+            source: str("source"),
+            addressCount: int("address_count") > 0 ? int("address_count") : nil,
+            qrScanned: bool("qr_scanned")
         )
     }
     

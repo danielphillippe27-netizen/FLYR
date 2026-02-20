@@ -34,7 +34,7 @@ struct CampaignsView: View {
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
-                    showingNewCampaign = true
+                    createCampaignTapped()
                 } label: {
                     Image(systemName: "plus")
                         .font(.system(size: 18, weight: .semibold))
@@ -71,9 +71,15 @@ struct CampaignsView: View {
     private var listContent: some View {
         CampaignsListView(
             externalFilter: $campaignFilter,
-            onCreateCampaignTapped: { showingNewCampaign = true },
+            onCreateCampaignTapped: createCampaignTapped,
             onCampaignTapped: { selectedCampaignID = $0 }
         )
+    }
+    
+    /// Same action for toolbar + and empty state "+ Create Campaign" button.
+    private func createCampaignTapped() {
+        HapticManager.light()
+        showingNewCampaign = true
     }
 }
 

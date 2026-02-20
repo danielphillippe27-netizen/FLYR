@@ -130,7 +130,7 @@ struct SessionMapboxViewRepresentable: UIViewRepresentable {
             
             // No Mapbox 3D buildings — app shows only "my" (campaign) buildings elsewhere; session map is flat + path only
             
-            // Create empty GeoJSON source for session path (red line like Strava)
+            // Session path: smooth line (round join/cap), red, slight transparency
             do {
                 var source = GeoJSONSource(id: sessionLineSourceId)
                 source.data = .featureCollection(FeatureCollection(features: []))
@@ -139,7 +139,7 @@ struct SessionMapboxViewRepresentable: UIViewRepresentable {
                 var lineLayer = LineLayer(id: sessionLineLayerId, source: sessionLineSourceId)
                 lineLayer.lineColor = .constant(StyleColor(.red))
                 lineLayer.lineWidth = .constant(5.0)
-                lineLayer.lineOpacity = .constant(1.0)
+                lineLayer.lineOpacity = .constant(0.8)
                 lineLayer.lineJoin = .constant(.round)
                 lineLayer.lineCap = .constant(.round)
 
@@ -149,12 +149,26 @@ struct SessionMapboxViewRepresentable: UIViewRepresentable {
                 print("❌ [SessionMap] Failed to add session line: \(error)")
             }
 
-            // User location: arrow that rotates with heading
+            // User location: puck (outer glow + inner circle) then arrow that rotates with heading
             do {
                 try map.addImage(SessionMapArrowImage.makeImage(), id: SessionMapArrowImage.id)
                 var source = GeoJSONSource(id: userLocationSourceId)
                 source.data = .featureCollection(FeatureCollection(features: []))
                 try map.addSource(source)
+
+                var puckOuter = CircleLayer(id: "\(userLocationLayerId)-puck-outer", source: userLocationSourceId)
+                puckOuter.circleRadius = .constant(14)
+                puckOuter.circleColor = .constant(StyleColor(UIColor.red.withAlphaComponent(0.45)))
+                puckOuter.circleOpacity = .constant(1.0)
+                puckOuter.circleStrokeWidth = .constant(0)
+                try map.addLayer(puckOuter)
+
+                var puckInner = CircleLayer(id: "\(userLocationLayerId)-puck-inner", source: userLocationSourceId)
+                puckInner.circleRadius = .constant(6)
+                puckInner.circleColor = .constant(StyleColor(.white))
+                puckInner.circleOpacity = .constant(1.0)
+                puckInner.circleStrokeWidth = .constant(0)
+                try map.addLayer(puckInner)
 
                 var symbolLayer = SymbolLayer(id: userLocationLayerId, source: userLocationSourceId)
                 symbolLayer.iconImage = .constant(.name(SessionMapArrowImage.id))
@@ -165,7 +179,7 @@ struct SessionMapboxViewRepresentable: UIViewRepresentable {
                 symbolLayer.iconAnchor = .constant(.center)
 
                 try map.addLayer(symbolLayer)
-                print("✅ [SessionMap] Added user location arrow layer")
+                print("✅ [SessionMap] Added user location puck + arrow layer")
             } catch {
                 print("❌ [SessionMap] Failed to add user location layer: \(error)")
             }

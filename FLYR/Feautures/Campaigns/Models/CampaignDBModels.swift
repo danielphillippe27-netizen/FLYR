@@ -168,6 +168,15 @@ enum AddressStatus: String, Codable, CaseIterable {
         case .hotLead: return .red
         }
     }
+
+    /// Map status to the map layer's expected values: "hot" (blue), "visited" (green), "not_visited" (red).
+    var mapLayerStatus: String {
+        switch self {
+        case .talked, .appointment, .hotLead: return "hot"
+        case .delivered, .doNotKnock, .futureSeller: return "visited"
+        case .none, .untouched, .noAnswer: return "not_visited"
+        }
+    }
 }
 
 /// Address status row from address_statuses table.

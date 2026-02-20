@@ -139,7 +139,10 @@ struct QRStatus: Codable, Sendable {
 struct BuildingData: Sendable {
     let isLoading: Bool
     let error: Error?
+    /// Primary or selected address (matches preferredAddressId when provided)
     let address: ResolvedAddress?
+    /// All addresses linked to this building (multiple units per building)
+    let addresses: [ResolvedAddress]
     let residents: [Contact]
     let qrStatus: QRStatus
     let buildingExists: Bool
@@ -154,6 +157,11 @@ struct BuildingData: Sendable {
     /// Returns true if this building has valid address data
     var hasAddress: Bool {
         address != nil && addressLinked
+    }
+    
+    /// Returns true when this building has more than one address (multi-address Gold/Silver)
+    var isMultiAddress: Bool {
+        addresses.count > 1
     }
     
     /// Returns the primary resident (first in list)
@@ -177,6 +185,7 @@ struct BuildingData: Sendable {
             isLoading: false,
             error: nil,
             address: nil,
+            addresses: [],
             residents: [],
             qrStatus: .empty,
             buildingExists: false,
@@ -195,6 +204,7 @@ struct BuildingData: Sendable {
             isLoading: true,
             error: nil,
             address: nil,
+            addresses: [],
             residents: [],
             qrStatus: .empty,
             buildingExists: false,

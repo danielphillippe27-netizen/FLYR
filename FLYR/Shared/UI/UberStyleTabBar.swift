@@ -8,27 +8,27 @@ struct UberStyleTabBar: View {
     let accentColor: Color
 
     private enum Tab: Int, CaseIterable {
-        case campaigns = 0, map = 1, record = 2, leads = 3, stats = 4, settings = 5
+        case home = 0, map = 1, record = 2, leads = 3, leaderboard = 4, settings = 5
 
         var title: String {
             switch self {
-            case .campaigns: return "Campaigns"
+            case .home: return "Home"
             case .map: return "Map"
             case .record: return "Session"
             case .leads: return "Leads"
-            case .stats: return "Stats"
+            case .leaderboard: return "Leaderboard"
             case .settings: return "More"
             }
         }
 
         func icon(selected: Bool, recordHighlight: Bool) -> String {
             switch self {
-            case .campaigns: return "scope"
+            case .home: return selected ? "house.fill" : "house"
             case .map: return "map"
             case .record:
                 return recordHighlight ? "record.circle.fill" : (selected ? "record.circle.fill" : "record.circle")
             case .leads: return "tray.full.fill"
-            case .stats: return "chart.bar.fill"
+            case .leaderboard: return "trophy.fill"
             case .settings: return "line.3.horizontal"
             }
         }

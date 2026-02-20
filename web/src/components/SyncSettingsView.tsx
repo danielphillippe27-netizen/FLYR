@@ -102,7 +102,7 @@ export default function SyncSettingsView({ onClose, onSaved }: SyncSettingsViewP
     setExporting(true)
     try {
       const leads = await fetchLeads(user.id)
-      downloadCsv(leads, `field_leads_${new Date().toISOString().slice(0, 10)}.csv`)
+      downloadCsv(leads, `contacts_${new Date().toISOString().slice(0, 10)}.csv`)
     } finally {
       setExporting(false)
     }
@@ -201,7 +201,7 @@ export default function SyncSettingsView({ onClose, onSaved }: SyncSettingsViewP
 
               <section style={{ marginBottom: 24 }}>
                 <h3 style={{ fontSize: 14, fontWeight: 600, color: 'var(--muted)', marginBottom: 8 }}>Manual Export</h3>
-                <p style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 12 }}>Export field leads as CSV.</p>
+                <p style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 12 }}>Export contacts as CSV.</p>
                 <button type="button" onClick={handleExportCsv} disabled={exporting} style={{ width: '100%', padding: 14, background: 'rgba(255,255,255,0.1)', border: '1px solid #333', borderRadius: 12, color: 'var(--accent)', cursor: exporting ? 'not-allowed' : 'pointer', fontSize: 15 }}>Export CSV</button>
               </section>
 

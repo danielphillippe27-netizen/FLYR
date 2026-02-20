@@ -165,6 +165,7 @@ final class BuildingPopupView: UIView {
     
     func configure(
         with buildingData: BuildingWithAddress,
+        canShowScans: Bool,
         onClose: @escaping () -> Void,
         onAction: @escaping () -> Void
     ) {
@@ -180,10 +181,10 @@ final class BuildingPopupView: UIView {
             addressLabel.textColor = .secondaryLabel
         }
         
-        // Status
+        // Status (scan count only shown when canShowScans / Pro)
         let status = buildingData.stats?.status ?? "not_visited"
-        let scans = buildingData.stats?.scansTotal ?? 0
-        configureStatus(status: status, scans: scans)
+        let scans = canShowScans ? (buildingData.stats?.scansTotal ?? 0) : 0
+        configureStatus(status: status, scans: scans, canShowScans: canShowScans)
         
         // Match quality
         if let link = buildingData.link {
@@ -215,11 +216,11 @@ final class BuildingPopupView: UIView {
         }
     }
     
-    private func configureStatus(status: String, scans: Int) {
+    private func configureStatus(status: String, scans: Int, canShowScans: Bool = true) {
         var statusText: String
         var statusColor: UIColor
         
-        if scans > 0 {
+        if canShowScans && scans > 0 {
             statusText = "📱 QR Scanned (\(scans))"
             statusColor = UIColor(hex: "#8b5cf6")! // Purple
         } else {
@@ -238,7 +239,13 @@ final class BuildingPopupView: UIView {
         
         statusLabel.text = statusText
         statusView.backgroundColor = statusColor
-        scansLabel.text = scans > 0 ? "\(scans) scan\(scans == 1 ? "" : "s")" : ""
+        if canShowScans {
+            scansLabel.textColor = .label
+            scansLabel.text = scans > 0 ? "\(scans) scan\(scans == 1 ? "" : "s")" : ""
+        } else {
+            scansLabel.text = "Upgrade to Pro to see scan activity"
+            scansLabel.textColor = .secondaryLabel
+        }
     }
     
     private func formatMatchType(_ type: String) -> String {

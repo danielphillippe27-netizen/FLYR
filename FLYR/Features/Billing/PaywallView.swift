@@ -1,43 +1,60 @@
 import SwiftUI
 import StoreKit
 
-/// Accent color: red (used for CTA, plan border, Most popular pill, feature icons).
-private let paywallAccentRed = Color(red: 1.0, green: 0.22, blue: 0.15)
+/// Accent color: red (used for CTA, plan border, Most popular pill, feature icons, gradient).
+private let paywallAccentRed = Color(red: 1.0, green: 0.05, blue: 0.02)
 
-// MARK: - Fallback pricing (when StoreKit not loaded yet)
+// MARK: - Region/currency helper (Canada = CAD, else USD).
+private var isCanadianLocale: Bool {
+    Locale.current.region?.identifier == "CA" || Locale.current.currency?.identifier == "CAD"
+}
+
+// MARK: - Fallback pricing (when StoreKit not loaded yet). Canada = CAD, US = USD.
 private struct FallbackPricing {
     let monthly: String
     let annualPerMonth: String
     let annualYearTotal: String
-    let currency: String
+    let currencyCode: String
 
     static var current: FallbackPricing {
-        let region = Locale.current.region?.identifier ?? "US"
-        if region == "CA" {
+        if isCanadianLocale {
             return FallbackPricing(
                 monthly: "39.99",
                 annualPerMonth: "34.99",
                 annualYearTotal: "419.99",
-                currency: "CAD"
+                currencyCode: "CAD"
             )
         }
         return FallbackPricing(
             monthly: "29.99",
             annualPerMonth: "24.99",
             annualYearTotal: "299.99",
-            currency: "USD"
+            currencyCode: "USD"
         )
+    }
+
+    /// Formatted price string with correct symbol (e.g. CA$39.99 or $29.99).
+    func formattedPrice(_ amount: String) -> String {
+        let style: Decimal.FormatStyle.Currency = currencyCode == "CAD"
+            ? .currency(code: "CAD")
+            : .currency(code: "USD")
+        return (Decimal(string: amount) ?? 0).formatted(style)
     }
 }
 
 struct PaywallView: View {
+    /// When true, show member-inactive copy (contact workspace owner); hide checkout CTA.
+    var memberInactive: Bool = false
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject var entitlementsService: EntitlementsService
+    @EnvironmentObject var routeState: AppRouteState
     @ObservedObject private var storeKit = StoreKitManager.shared
 
     @State private var selectedPlan: PlanKind = .annual
     @State private var errorMessage: String?
     @State private var showError = false
+    @State private var isWaitingForPayment = false
 
     private let fallback = FallbackPricing.current
 
@@ -77,6 +94,9 @@ struct PaywallView: View {
                 ScrollView(showsIndicators: false) {
                     VStack(spacing: 0) {
                         Color.clear.frame(height: 8)
+                        if memberInactive {
+                            memberInactiveBanner
+                        }
                         headerSection
                         planCardsSection
                         featuresSection
@@ -85,8 +105,12 @@ struct PaywallView: View {
                     .padding(.bottom, 24)
                 }
 
-                // Bottom header: CTA + recurring billing only
-                bottomSubscribeSection
+                // Bottom header: CTA + recurring billing only (hidden when member-inactive)
+                if !memberInactive {
+                    bottomSubscribeSection
+                } else {
+                    bottomMemberInactiveSection
+                }
             }
 
             // Circular X close button
@@ -112,7 +136,12 @@ struct PaywallView: View {
         }
         .preferredColorScheme(.dark)
         .onChange(of: entitlementsService.canUsePro) { _, canUse in
-            if canUse { dismiss() }
+            if canUse, !isWaitingForPayment { dismiss() }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active, isWaitingForPayment {
+                Task { await pollAccessUntilGranted() }
+            }
         }
         .alert("Error", isPresented: $showError) {
             Button("OK") {
@@ -132,31 +161,47 @@ struct PaywallView: View {
     private var paywallBackground: some View {
         ZStack {
             Color.black.ignoresSafeArea()
-            // Red gradient glow at top
+            // Red gradient glow at top (compact, red-toned)
             RadialGradient(
                 colors: [
-                    paywallAccentRed.opacity(0.5),
-                    paywallAccentRed.opacity(0.25),
+                    paywallAccentRed.opacity(0.6),
+                    paywallAccentRed.opacity(0.3),
                     Color.clear
                 ],
                 center: .init(x: 0.5, y: 0),
                 startRadius: 0,
-                endRadius: 400
+                endRadius: 200
             )
             .ignoresSafeArea()
         }
+    }
+
+    // MARK: - Member inactive
+
+    private var memberInactiveBanner: some View {
+        Text("Your workspace doesn't have an active subscription. Contact your workspace owner to activate access.")
+            .font(.subheadline)
+            .foregroundColor(.white.opacity(0.9))
+            .multilineTextAlignment(.center)
+            .padding()
+            .background(Color.orange.opacity(0.3))
+            .cornerRadius(8)
+            .padding(.horizontal, 24)
+            .padding(.bottom, 8)
     }
 
     // MARK: - Header
 
     private var headerSection: some View {
         VStack(spacing: 10) {
-            Text("Unlock your full potential.")
-                .font(.system(size: 28, weight: .bold))
+            Text("Track your outreach.")
+                .font(.system(size: 52, weight: .bold))
                 .foregroundColor(.white)
                 .multilineTextAlignment(.center)
-            Text("Track progress, market smarter, and grow your business with an optimized approach to canvassing")
-                .font(.system(size: 16))
+                .lineLimit(2)
+                .minimumScaleFactor(0.7)
+            Text("Your business will reward you.")
+                .font(.system(size: 20))
                 .foregroundColor(.white.opacity(0.85))
                 .multilineTextAlignment(.center)
         }
@@ -168,14 +213,14 @@ struct PaywallView: View {
 
     private var planCardsSection: some View {
         VStack(spacing: 12) {
-            // Annual (first, larger card)
+            // Annual
             PlanCard(
                 title: "Annual",
                 billedYearText: annualBilledYearText,
                 rightPriceText: annualPerMonthText,
                 isSelected: selectedPlan == .annual,
-                isMostPopular: true,
-                isLarge: true,
+                isMostPopular: false,
+                isLarge: false,
                 onTap: { selectedPlan = .annual }
             )
 
@@ -197,40 +242,45 @@ struct PaywallView: View {
         if let p = annualProduct {
             return "Billed at \(p.displayPrice)/year"
         }
-        return "Billed at $\(fallback.annualYearTotal)/year"
+        return "Billed at \(fallback.formattedPrice(fallback.annualYearTotal))/year"
     }
 
     private var annualPerMonthText: String {
         if let p = annualProduct, p.price > 0 {
             let perMonth = p.price / Decimal(12)
             let formatStyle: Decimal.FormatStyle.Currency =
-                (Locale.current.region?.identifier == "CA")
-                ? .currency(code: "CAD")
-                : .currency(code: "USD")
+                isCanadianLocale ? .currency(code: "CAD") : .currency(code: "USD")
             return "\(perMonth.formatted(formatStyle))/month"
         }
-        return "$\(fallback.annualPerMonth)/month"
+        return "\(fallback.formattedPrice(fallback.annualPerMonth))/month"
     }
 
     private var monthlyPriceText: String {
         if let p = monthlyProduct {
             return "\(p.displayPrice)/month"
         }
-        return "$\(fallback.monthly)/month"
+        return "\(fallback.formattedPrice(fallback.monthly))/month"
     }
 
     // MARK: - Features
 
     private var featuresSection: some View {
-        VStack(spacing: 14) {
-            Text("Everything you need, all in one place")
-                .font(.system(size: 17, weight: .bold))
+        VStack(spacing: 32) {
+            Text("Unlock your full potential")
+                .font(.system(size: 26, weight: .bold))
                 .foregroundColor(.white)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: .infinity)
 
-            VStack(alignment: .leading, spacing: 12) {
-                FeatureRow(icon: "map.fill", text: "Optimized routes & next-door flow")
-                FeatureRow(icon: "link.circle.fill", text: "CRM integrations (Follow Up Boss)")
-                FeatureRow(icon: "chart.bar.fill", text: "Leaderboard + export & sync")
+            VStack(alignment: .leading, spacing: 28) {
+                FeatureRow(icon: "desktopcomputer", text: "Desktop Dashboard")
+                FeatureRow(icon: "flag.fill", text: "Unlimited Campaigns")
+                FeatureRow(icon: "qrcode", text: "Smart QR Codes (see homes that scan)")
+                FeatureRow(icon: "link.circle.fill", text: "CRM Integration")
+                FeatureRow(icon: "calendar", text: "Set Appointments")
+                FeatureRow(icon: "arrow.uturn.right", text: "Create Follow Up's")
+                FeatureRow(icon: "map.fill", text: "Optimized routes using AI")
+                FeatureRow(icon: "ellipsis.circle", text: "& much more")
             }
         }
         .frame(maxWidth: .infinity)
@@ -240,14 +290,23 @@ struct PaywallView: View {
     // MARK: - Bottom section (Subscribe button + recurring billing only)
 
     private var bottomSubscribeSection: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: 4) {
             Button {
                 Task { await performPurchase() }
             } label: {
                 HStack {
-                    if storeKit.isPurchasing {
+                    if storeKit.isPurchasing || isWaitingForPayment {
                         ProgressView()
                             .tint(.white)
+                        if storeKit.isPurchasing {
+                            Text("Complete with Apple…")
+                                .font(.system(size: 14))
+                                .foregroundColor(.white.opacity(0.9))
+                        } else if isWaitingForPayment {
+                            Text("Complete payment in browser…")
+                                .font(.system(size: 14))
+                                .foregroundColor(.white.opacity(0.9))
+                        }
                     } else {
                         Text(ctaTitle)
                             .font(.system(size: 18, weight: .bold))
@@ -260,31 +319,114 @@ struct PaywallView: View {
                 .cornerRadius(14)
             }
             .buttonStyle(.plain)
-            .disabled(storeKit.isPurchasing || selectedProduct == nil)
+            .disabled(storeKit.isPurchasing || selectedProduct == nil || isWaitingForPayment)
 
             Text("Recurring billing. Cancel anytime.")
                 .font(.system(size: 13))
                 .foregroundColor(.white.opacity(0.6))
                 .multilineTextAlignment(.center)
+            Button("Restore purchases") {
+                Task { await restorePurchases() }
+            }
+            .font(.system(size: 14))
+            .foregroundColor(.white.opacity(0.8))
+            .disabled(storeKit.isRestoring)
+
+            Button("Skip for now") {
+                routeState.setRoute(.dashboard)
+            }
+            .font(.system(size: 14))
+            .foregroundColor(.white.opacity(0.6))
         }
         .padding(.horizontal, 24)
-        .padding(.top, 16)
-        .padding(.bottom, 34)
+        .padding(.top, 8)
+        .padding(.bottom, 16)
+        .background(Color.black)
+    }
+
+    private var bottomMemberInactiveSection: some View {
+        VStack(spacing: 12) {
+            Text("Ask your workspace owner to subscribe so you can access the app.")
+                .font(.subheadline)
+                .foregroundColor(.white.opacity(0.7))
+                .multilineTextAlignment(.center)
+            Button("Sign out") {
+                Task {
+                    await AuthManager.shared.signOut()
+                }
+            }
+            .foregroundColor(.white.opacity(0.9))
+        }
+        .padding(24)
         .background(Color.black)
     }
 
     // MARK: - Actions
 
     private func performPurchase() async {
-        guard let product = selectedProduct else { return }
+        guard !memberInactive else { return }
         errorMessage = nil
         do {
-            try await storeKit.purchase(product)
+            // Prefer in-app Pay with Apple (solo users stay in app).
+            if let product = selectedProduct {
+                try await storeKit.purchase(product)
+                await MainActor.run {
+                    routeState.setRoute(.dashboard)
+                }
+                return
+            }
+            // Fallback: Stripe checkout in browser (e.g. products not loaded yet).
+            let plan = selectedPlan == .annual ? "annual" : "monthly"
+            let currency = isCanadianLocale ? "CAD" : "USD"
+            let checkoutURL = try await AccessAPI.shared.createCheckoutSession(plan: plan, currency: currency, priceId: nil)
+            await MainActor.run { isWaitingForPayment = true }
+            _ = await UIApplication.shared.open(checkoutURL)
+            // Polling happens on scenePhase .active when user returns to app
+        } catch {
+            await MainActor.run {
+                errorMessage = error.localizedDescription
+                showError = true
+            }
+        }
+    }
+
+    private func restorePurchases() async {
+        guard !memberInactive else { return }
+        errorMessage = nil
+        do {
+            try await storeKit.restorePurchases()
             if entitlementsService.canUsePro {
-                dismiss()
+                routeState.setRoute(.dashboard)
             }
         } catch {
-            errorMessage = error.localizedDescription
+            await MainActor.run {
+                errorMessage = error.localizedDescription
+                showError = true
+            }
+        }
+    }
+
+    private func pollAccessUntilGranted() async {
+        let maxAttempts = 60
+        let interval: UInt64 = 2_000_000_000 // 2 seconds
+        for _ in 0..<maxAttempts {
+            do {
+                let state = try await AccessAPI.shared.getState()
+                if state.hasAccess {
+                    await MainActor.run {
+                        isWaitingForPayment = false
+                        routeState.setRoute(.dashboard)
+                        dismiss()
+                    }
+                    await entitlementsService.fetchEntitlement()
+                    return
+                }
+            } catch {}
+            try? await Task.sleep(nanoseconds: interval)
+        }
+        await MainActor.run {
+            isWaitingForPayment = false
+            errorMessage = "Payment may still be processing. Check back in a moment."
             showError = true
         }
     }
@@ -355,15 +497,17 @@ private struct FeatureRow: View {
     let text: String
 
     var body: some View {
-        HStack(alignment: .center, spacing: 12) {
+        HStack(alignment: .center, spacing: 14) {
             Image(systemName: icon)
-                .font(.system(size: 18))
+                .font(.system(size: 22))
                 .foregroundColor(paywallAccentRed)
-                .frame(width: 24, alignment: .center)
+                .frame(width: 28, alignment: .center)
             Text(text)
-                .font(.system(size: 16))
+                .font(.system(size: 19))
                 .foregroundColor(.white.opacity(0.9))
+            Spacer(minLength: 0)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -372,4 +516,5 @@ private struct FeatureRow: View {
 #Preview {
     PaywallView()
         .environmentObject(EntitlementsService())
+        .environmentObject(AppRouteState())
 }

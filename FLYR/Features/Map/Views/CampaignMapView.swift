@@ -172,6 +172,42 @@ struct SessionProgressDropdown: View {
     }
 }
 
+// MARK: - Flyer Mode Overlay (Segment + next address only)
+struct FlyerModeOverlay: View {
+    @ObservedObject var flyerModeManager: FlyerModeManager
+    var onAddressCompleted: (UUID) -> Void
+
+    var body: some View {
+        if let addr = flyerModeManager.currentAddress {
+            VStack {
+                Spacer()
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(addr.segmentLabel)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(.secondary)
+                    Text("Next: \(addr.formatted.isEmpty ? "Address" : addr.formatted)")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundColor(.primary)
+                        .lineLimit(2)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+                .background(
+                    RoundedRectangle(cornerRadius: 12)
+                        .fill(Color(.systemBackground))
+                        .shadow(color: .black.opacity(0.15), radius: 6, x: 0, y: 2)
+                )
+                .padding(.horizontal, 12)
+                .padding(.bottom, 100)
+            }
+            .onAppear {
+                flyerModeManager.onAddressCompleted = onAddressCompleted
+            }
+        }
+    }
+}
+
 /// Campaign Map View with 3D buildings, roads, and addresses
 /// Mirrors FLYR-PRO's CampaignDetailMapView.tsx functionality
 struct CampaignMapView: View {
@@ -186,6 +222,8 @@ struct CampaignMapView: View {
     @State private var layerManager: MapLayerManager?
     @State private var selectedBuilding: BuildingProperties?
     @State private var selectedAddress: MapLayerManager.AddressTapResult?
+    /// When the location card shows multiple addresses, the user can pick one; this tracks the selected unit (nil = show list)
+    @State private var selectedAddressIdForCard: UUID?
     @State private var showLocationCard = false
     @State private var showLeadCaptureSheet = false
     @State private var hasFlownToCampaign = false
@@ -205,12 +243,25 @@ struct CampaignMapView: View {
     @State private var displayMode: DisplayMode = .buildings
     @State private var showEndSessionConfirmation = false
     @State private var keyboardHeight: CGFloat = 0
+    /// Per-address visit statuses (populated from VisitsAPI and updated live via onStatusUpdated)
+    @State private var addressStatuses: [UUID: AddressStatus] = [:]
+    /// Maps building gersId → set of address UUIDs (populated when a multi-address card is opened)
+    @State private var buildingAddressMap: [String: Set<UUID>] = [:]
+    @StateObject private var flyerModeManager = FlyerModeManager()
 
     var body: some View {
         campaignMapContent
     }
 
     private var campaignMapContent: some View {
+        campaignMapWithAlertsAndObservers
+            .sheet(isPresented: $showTargetsSheet) { nextTargetsSheetContent }
+            .sheet(isPresented: $showLeadCaptureSheet, onDismiss: { selectedBuilding = nil }) {
+                leadCaptureSheetContent
+            }
+    }
+
+    private var campaignMapWithObservers: some View {
         campaignMapGeometry
             .alert("Are you sure?", isPresented: $showEndSessionConfirmation) {
                 Button("Cancel", role: .cancel) {}
@@ -227,20 +278,28 @@ struct CampaignMapView: View {
             .onChange(of: featuresService.buildings?.features.count ?? 0) { _, _ in updateMapData() }
             .onChange(of: featuresService.addresses?.features.count ?? 0) { _, _ in updateMapData() }
             .onChange(of: sessionManager.pathCoordinates.count) { _, _ in updateSessionPathOnMap() }
+            .onChange(of: sessionManager.sessionId) { _, new in
+                updateSessionPathOnMap()
+                if new == nil {
+                    flyerModeManager.reset()
+                } else {
+                    flyerModeManager.startObservingLocation()
+                }
+            }
             .onReceive(Timer.publish(every: 2.0, on: .main, in: .common).autoconnect()) { _ in
                 guard sessionManager.sessionId != nil else { return }
                 updateSessionPathOnMap()
             }
+    }
+
+    private var campaignMapWithAlertsAndObservers: some View {
+        campaignMapWithObservers
             .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { notification in
                 guard let frame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
                 withAnimation(.easeOut(duration: 0.25)) { keyboardHeight = frame.height }
             }
             .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
                 withAnimation(.easeOut(duration: 0.25)) { keyboardHeight = 0 }
-            }
-            .sheet(isPresented: $showTargetsSheet) { nextTargetsSheetContent }
-            .sheet(isPresented: $showLeadCaptureSheet, onDismiss: { selectedBuilding = nil }) {
-                leadCaptureSheetContent
             }
     }
 
@@ -325,6 +384,7 @@ struct CampaignMapView: View {
             mapLayer(geometry: geometry)
             sessionStatsOverlay
             overlayUI
+            flyerModeOverlay
             locationCardOverlay
             loadingOverlay
         }
@@ -349,6 +409,8 @@ struct CampaignMapView: View {
             CampaignMapboxMapViewRepresentable(
                 preferredSize: size,
                 useDarkStyle: colorScheme == .dark,
+                sessionLocation: sessionManager.sessionId != nil ? sessionManager.currentLocation : nil,
+                showSessionPuck: sessionManager.sessionId != nil,
                 onMapReady: { map in
                     self.mapView = map
                     setupMap(map)
@@ -360,6 +422,20 @@ struct CampaignMapView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .ignoresSafeArea()
         }
+    }
+
+    @ViewBuilder
+    private var flyerModeOverlay: some View {
+        FlyerModeOverlay(
+            flyerModeManager: flyerModeManager,
+            onAddressCompleted: flyerAddressCompleted
+        )
+        .id(layerManager != nil)
+    }
+
+    private func flyerAddressCompleted(addressId: UUID) {
+        layerManager?.updateAddressState(addressId: addressId.uuidString, status: "visited", scansTotal: 0)
+        addressStatuses[addressId] = .delivered
     }
 
     @ViewBuilder
@@ -515,18 +591,27 @@ struct CampaignMapView: View {
         if showLocationCard,
            let building = selectedBuilding,
            let campId = UUID(uuidString: campaignId) {
-            let gersIdString = building.gersId ?? building.id ?? ""
+            let gersIdString = building.gersId ?? building.id
+            let resolvedAddrId = selectedAddress?.addressId ?? building.addressId.flatMap { UUID(uuidString: $0) }
+            let resolvedAddrText = selectedAddress?.formatted ?? building.addressText
             VStack {
                 Spacer()
                 LocationCardView(
                     gersId: gersIdString,
                     campaignId: campId,
-                    addressId: building.addressId.flatMap { UUID(uuidString: $0) },
-                    addressText: building.addressText,
+                    addressId: resolvedAddrId,
+                    addressText: resolvedAddrText,
+                    preferredAddressId: selectedAddressIdForCard,
+                    addressStatuses: addressStatuses,
+                    onSelectAddress: { selectedAddressIdForCard = $0 },
+                    onAddressesResolved: { ids in
+                        buildingAddressMap[gersIdString.lowercased()] = Set(ids)
+                    },
                     onClose: {
                         showLocationCard = false
                         selectedBuilding = nil
                         selectedAddress = nil
+                        selectedAddressIdForCard = nil
                     },
                     onStatusUpdated: { addressId, status in
                         if status == .delivered {
@@ -535,12 +620,18 @@ struct CampaignMapView: View {
                         if let map = mapView {
                             MapController.shared.applyStatusFeatureState(statuses: [addressId.uuidString: status], mapView: map)
                         }
-                        let layerStatus: String = (status == .talked || status == .appointment) ? "hot" : "visited"
-                        layerManager?.updateBuildingState(gersId: gersIdString, status: layerStatus, scansTotal: 0)
-                        layerManager?.updateAddressState(addressId: addressId.uuidString, status: layerStatus, scansTotal: 0)
+                        // Update local status cache
+                        addressStatuses[addressId] = status
+                        let scansTotal = featuresService.buildings?.features.first(where: { $0.properties.gersId == gersIdString })?.properties.scansTotal ?? 0
+                        let layerStatus = status.mapLayerStatus
+                        layerManager?.updateAddressState(addressId: addressId.uuidString, status: layerStatus, scansTotal: scansTotal)
+                        // Building: green only when ALL addresses are visited
+                        let addrIds = addressIdsForBuilding(gersId: gersIdString)
+                        let buildingStatus = addrIds.isEmpty ? layerStatus : computeBuildingLayerStatus(gersId: gersIdString, addressIds: addrIds)
+                        layerManager?.updateBuildingState(gersId: gersIdString, status: buildingStatus, scansTotal: scansTotal)
                     }
                 )
-                .id("building-\(gersIdString)")
+                .id("building-\(gersIdString)-\(resolvedAddrId?.uuidString ?? "")")
                 .padding()
             }
             .padding(.bottom, keyboardHeight)
@@ -556,10 +647,19 @@ struct CampaignMapView: View {
                     campaignId: campId,
                     addressId: address.addressId,
                     addressText: address.formatted,
+                    preferredAddressId: selectedAddressIdForCard,
+                    addressStatuses: addressStatuses,
+                    onSelectAddress: { selectedAddressIdForCard = $0 },
+                    onAddressesResolved: { ids in
+                        if !gersIdString.isEmpty {
+                            buildingAddressMap[gersIdString.lowercased()] = Set(ids)
+                        }
+                    },
                     onClose: {
                         showLocationCard = false
                         selectedBuilding = nil
                         selectedAddress = nil
+                        selectedAddressIdForCard = nil
                     },
                     onStatusUpdated: { addressId, status in
                         if status == .delivered {
@@ -568,9 +668,15 @@ struct CampaignMapView: View {
                         if let map = mapView {
                             MapController.shared.applyStatusFeatureState(statuses: [addressId.uuidString: status], mapView: map)
                         }
-                        let layerStatus: String = (status == .talked || status == .appointment) ? "hot" : "visited"
-                        layerManager?.updateBuildingState(gersId: gersIdString, status: layerStatus, scansTotal: 0)
-                        layerManager?.updateAddressState(addressId: addressId.uuidString, status: layerStatus, scansTotal: 0)
+                        // Update local status cache
+                        addressStatuses[addressId] = status
+                        let scansTotal = featuresService.buildings?.features.first(where: { $0.properties.gersId == gersIdString })?.properties.scansTotal ?? 0
+                        let layerStatus = status.mapLayerStatus
+                        layerManager?.updateAddressState(addressId: addressId.uuidString, status: layerStatus, scansTotal: scansTotal)
+                        // Building: green only when ALL addresses are visited
+                        let addrIds = addressIdsForBuilding(gersId: gersIdString)
+                        let buildingStatus = addrIds.isEmpty ? layerStatus : computeBuildingLayerStatus(gersId: gersIdString, addressIds: addrIds)
+                        layerManager?.updateBuildingState(gersId: gersIdString, status: buildingStatus, scansTotal: scansTotal)
                     }
                 )
                 .id("address-\(address.addressId.uuidString)")
@@ -658,6 +764,10 @@ struct CampaignMapView: View {
         
         // Re-apply loaded campaign statuses after source update (Mapbox clears feature state when GeoJSON source is updated)
         Task { await applyLoadedStatusesToMap() }
+
+        if let campaignUUID = UUID(uuidString: campaignId) {
+            Task { await flyerModeManager.load(campaignId: campaignUUID, featuresService: featuresService) }
+        }
     }
     
     /// Fetch campaign address statuses and apply them to the map so buildings/addresses show correct colors (delivered = green, etc.).
@@ -669,23 +779,70 @@ struct CampaignMapView: View {
             let statuses = try await VisitsAPI.shared.fetchStatuses(campaignId: campaignUUID)
             guard !statuses.isEmpty else { return }
             await MainActor.run {
+                // Populate local status cache
                 for (addressId, row) in statuses {
-                    manager.updateAddressState(addressId: addressId.uuidString, status: row.status.rawValue, scansTotal: 0)
+                    addressStatuses[addressId] = row.status
+                    manager.updateAddressState(addressId: addressId.uuidString, status: row.status.mapLayerStatus, scansTotal: 0)
                 }
                 if let buildings = featuresService.buildings?.features {
                     for building in buildings {
-                        guard let addrIdStr = building.properties.addressId,
-                              let addrId = UUID(uuidString: addrIdStr),
-                              let row = statuses[addrId],
-                              let gersId = building.properties.gersId ?? building.id else { continue }
-                        manager.updateBuildingState(gersId: gersId, status: row.status.rawValue, scansTotal: 0)
+                        guard let gersId = building.properties.gersId ?? building.id else { continue }
+                        let scansTotal = building.properties.scansTotal
+
+                        // Single-address building: use that address's status directly
+                        if let addrIdStr = building.properties.addressId,
+                           let addrId = UUID(uuidString: addrIdStr),
+                           let row = statuses[addrId] {
+                            manager.updateBuildingState(gersId: gersId, status: row.status.mapLayerStatus, scansTotal: scansTotal)
+                            continue
+                        }
+
+                        // Multi-address building: only go green if ALL addresses are visited
+                        let addrIds = addressIdsForBuilding(gersId: gersId)
+                        if !addrIds.isEmpty {
+                            let buildingStatus = computeBuildingLayerStatus(gersId: gersId, addressIds: addrIds)
+                            manager.updateBuildingState(gersId: gersId, status: buildingStatus, scansTotal: scansTotal)
+                        }
                     }
                 }
+                updateFilters()
             }
             print("📊 [CampaignMap] Applied \(statuses.count) loaded statuses to map")
         } catch {
             print("⚠️ [CampaignMap] Failed to load/apply statuses: \(error)")
         }
+    }
+
+    /// Returns address UUIDs for a building by scanning loaded address features for matching building_gers_id.
+    private func addressIdsForBuilding(gersId: String) -> [UUID] {
+        let gersLower = gersId.lowercased()
+        // First check the card-populated map (most accurate for multi-address buildings)
+        if let cached = buildingAddressMap[gersLower], !cached.isEmpty {
+            return Array(cached)
+        }
+        // Fall back to address features that have building_gers_id set
+        guard let addresses = featuresService.addresses?.features else { return [] }
+        return addresses.compactMap { feature -> UUID? in
+            let buildingGers = (feature.properties.buildingGersId ?? "").lowercased()
+            guard buildingGers == gersLower,
+                  let idStr = feature.properties.id ?? feature.id,
+                  let uuid = UUID(uuidString: idStr) else { return nil }
+            return uuid
+        }
+    }
+
+    /// Compute the map layer status for a building based on ALL its address statuses.
+    /// Green only when every address has been visited (delivered / doNotKnock / futureSeller).
+    private func computeBuildingLayerStatus(gersId: String, addressIds: [UUID]) -> String {
+        guard !addressIds.isEmpty else { return "not_visited" }
+        let allVisited = addressIds.allSatisfy {
+            (addressStatuses[$0]?.mapLayerStatus ?? "not_visited") == "visited"
+        }
+        if allVisited { return "visited" }
+        let anyHot = addressIds.contains {
+            (addressStatuses[$0]?.mapLayerStatus ?? "not_visited") == "hot"
+        }
+        return anyHot ? "hot" : "not_visited"
     }
 
     private func mapFieldLeadStatusToAddressStatus(_ status: FieldLeadStatus) -> AddressStatus {
@@ -699,8 +856,11 @@ struct CampaignMapView: View {
 
     private static let sessionLineSourceId = "session-line-source"
     private static let sessionLineLayerId = "session-line-layer"
+    private static let sessionPuckSourceId = "session-puck-source"
+    private static let sessionPuckOuterLayerId = "session-puck-outer"
+    private static let sessionPuckInnerLayerId = "session-puck-inner"
 
-    /// Add session path source and red line layer (breadcrumb trail during building session).
+    /// Add session path source and line layer (breadcrumb trail) + session puck layers.
     private func addSessionPathLayersIfNeeded(map: MapView) {
         guard let mapboxMap = map.mapboxMap else { return }
         do {
@@ -710,16 +870,32 @@ struct CampaignMapView: View {
             var lineLayer = LineLayer(id: Self.sessionLineLayerId, source: Self.sessionLineSourceId)
             lineLayer.lineColor = .constant(StyleColor(.red))
             lineLayer.lineWidth = .constant(5.0)
-            lineLayer.lineOpacity = .constant(1.0)
+            lineLayer.lineOpacity = .constant(0.8)
             lineLayer.lineJoin = .constant(.round)
             lineLayer.lineCap = .constant(.round)
             try mapboxMap.addLayer(lineLayer)
+
+            var puckSource = GeoJSONSource(id: Self.sessionPuckSourceId)
+            puckSource.data = .featureCollection(FeatureCollection(features: []))
+            try mapboxMap.addSource(puckSource)
+            var puckOuter = CircleLayer(id: Self.sessionPuckOuterLayerId, source: Self.sessionPuckSourceId)
+            puckOuter.circleRadius = .constant(14)
+            puckOuter.circleColor = .constant(StyleColor(UIColor.red.withAlphaComponent(0.45)))
+            puckOuter.circleOpacity = .constant(1.0)
+            puckOuter.circleStrokeWidth = .constant(0)
+            try mapboxMap.addLayer(puckOuter)
+            var puckInner = CircleLayer(id: Self.sessionPuckInnerLayerId, source: Self.sessionPuckSourceId)
+            puckInner.circleRadius = .constant(6)
+            puckInner.circleColor = .constant(StyleColor(.white))
+            puckInner.circleOpacity = .constant(1.0)
+            puckInner.circleStrokeWidth = .constant(0)
+            try mapboxMap.addLayer(puckInner)
         } catch {
-            print("⚠️ [CampaignMap] Failed to add session path layer: \(error)")
+            print("⚠️ [CampaignMap] Failed to add session path/puck layers: \(error)")
         }
     }
 
-    /// Update the session path line from current pathCoordinates (so red breadcrumb shows during building session).
+    /// Update the session path line from current pathCoordinates (Strava-style breadcrumb during building session).
     private func updateSessionPathOnMap() {
         guard let map = mapView?.mapboxMap else { return }
         let coords = sessionManager.pathCoordinates
@@ -730,6 +906,21 @@ struct CampaignMapView: View {
             try? map.updateGeoJSONSource(withId: Self.sessionLineSourceId, geoJSON: .feature(feature))
         } else {
             try? map.updateGeoJSONSource(withId: Self.sessionLineSourceId, geoJSON: .featureCollection(FeatureCollection(features: [])))
+        }
+        updateSessionPuckOnMap()
+    }
+
+    /// Show session puck at current location when in a session; hide when not.
+    private func updateSessionPuckOnMap() {
+        guard let map = mapView?.mapboxMap else { return }
+        guard map.sourceExists(withId: Self.sessionPuckSourceId) else { return }
+        let show = sessionManager.sessionId != nil
+        let location = sessionManager.currentLocation
+        if show, let loc = location {
+            let feature = Feature(geometry: .point(Point(loc.coordinate)))
+            try? map.updateGeoJSONSource(withId: Self.sessionPuckSourceId, geoJSON: .feature(feature))
+        } else {
+            try? map.updateGeoJSONSource(withId: Self.sessionPuckSourceId, geoJSON: .featureCollection(FeatureCollection(features: [])))
         }
     }
     
@@ -774,14 +965,110 @@ struct CampaignMapView: View {
             switch result {
             case .building(let building):
                 selectedBuilding = building
-                selectedAddress = nil
+                if let matchedAddress = resolveAddressForBuilding(building: building) {
+                    selectedAddress = matchedAddress
+                    selectedAddressIdForCard = matchedAddress.addressId
+                } else {
+                    selectedAddress = nil
+                    selectedAddressIdForCard = nil
+                }
                 withAnimation { showLocationCard = true }
             case .address(let address):
-                selectedBuilding = nil
                 selectedAddress = address
+                selectedAddressIdForCard = address.addressId
+                let gersIdString = address.buildingGersId ?? address.gersId ?? ""
+                if !gersIdString.isEmpty,
+                   let match = featuresService.buildings?.features.first(where: {
+                       ($0.properties.gersId ?? $0.id ?? "").caseInsensitiveCompare(gersIdString) == .orderedSame
+                   }) {
+                    selectedBuilding = match.properties
+                } else {
+                    selectedBuilding = nil
+                }
                 withAnimation { showLocationCard = true }
             }
         }
+    }
+
+    /// Resolve address(es) from loaded address features for a tapped building.
+    /// Tries multiple matching strategies: addressId, gersId, building id, and address_text.
+    private func resolveAddressForBuilding(building: BuildingProperties) -> MapLayerManager.AddressTapResult? {
+        // Multi-address Gold: address_id is null → don't resolve to a single address; list mode handles it
+        if building.source == "gold",
+           building.addressId == nil || building.addressId?.isEmpty == true {
+            return nil
+        }
+
+        // Fast path: Gold/address_point — feature already has full address in properties
+        if building.source == "gold" || building.source == "address_point",
+           let addrIdStr = building.addressId, !addrIdStr.isEmpty,
+           let addrId = UUID(uuidString: addrIdStr) {
+            let formatted = building.addressText ?? "\(building.houseNumber ?? "") \(building.streetName ?? "")".trimmingCharacters(in: .whitespaces)
+            return MapLayerManager.AddressTapResult(
+                addressId: addrId,
+                formatted: formatted.isEmpty ? "Address" : formatted,
+                gersId: building.gersId,
+                buildingGersId: building.buildingId,
+                houseNumber: building.houseNumber,
+                streetName: building.streetName
+            )
+        }
+
+        guard let addresses = featuresService.addresses?.features, !addresses.isEmpty else { return nil }
+
+        // Collect all building IDs for matching (case-insensitive)
+        var buildingIds: [String] = []
+        if let g = building.gersId, !g.isEmpty { buildingIds.append(g.lowercased()) }
+        if !building.id.isEmpty { buildingIds.append(building.id.lowercased()) }
+        if let bid = building.buildingId, !bid.isEmpty { buildingIds.append(bid.lowercased()) }
+
+        // Strategy 1: Match by building's addressId against address feature id
+        if let addrIdStr = building.addressId, !addrIdStr.isEmpty {
+            for feature in addresses {
+                let featureId = (feature.properties.id ?? feature.id ?? "").lowercased()
+                if featureId == addrIdStr.lowercased() {
+                    if let result = addressTapResult(from: feature) { return result }
+                }
+            }
+        }
+
+        // Strategy 2: Match building IDs against address building_gers_id (case-insensitive)
+        for feature in addresses {
+            let addrBuildingGers = (feature.properties.buildingGersId ?? "").lowercased()
+            if !addrBuildingGers.isEmpty, buildingIds.contains(addrBuildingGers) {
+                if let result = addressTapResult(from: feature) { return result }
+            }
+        }
+
+        // Strategy 3: Match building's addressText against address formatted text
+        if let buildingAddr = building.addressText, !buildingAddr.isEmpty {
+            let normalized = buildingAddr.lowercased().trimmingCharacters(in: .whitespaces)
+            for feature in addresses {
+                let formatted = (feature.properties.formatted ?? "").lowercased().trimmingCharacters(in: .whitespaces)
+                if !formatted.isEmpty, formatted.contains(normalized) || normalized.contains(formatted) {
+                    if let result = addressTapResult(from: feature) { return result }
+                }
+            }
+        }
+
+        return nil
+    }
+
+    /// Convert an address feature into an AddressTapResult
+    private func addressTapResult(from feature: AddressFeature) -> MapLayerManager.AddressTapResult? {
+        let idString = feature.properties.id ?? feature.id ?? ""
+        guard let uuid = UUID(uuidString: idString) else { return nil }
+        let house = feature.properties.houseNumber ?? ""
+        let street = feature.properties.streetName ?? ""
+        let formatted = feature.properties.formatted ?? "\(house) \(street)".trimmingCharacters(in: .whitespaces)
+        return MapLayerManager.AddressTapResult(
+            addressId: uuid,
+            formatted: formatted,
+            gersId: feature.properties.gersId,
+            buildingGersId: feature.properties.buildingGersId,
+            houseNumber: feature.properties.houseNumber,
+            streetName: feature.properties.streetName
+        )
     }
 
     private func updateBuildingColorAfterComplete(gersId: String) {
@@ -861,11 +1148,14 @@ struct CampaignMapView: View {
 struct CampaignMapboxMapViewRepresentable: UIViewRepresentable {
     var preferredSize: CGSize = CGSize(width: 320, height: 260)
     var useDarkStyle: Bool = false
+    var sessionLocation: CLLocation?
+    var showSessionPuck: Bool = false
     let onMapReady: (MapView) -> Void
     let onTap: (CGPoint) -> Void
 
     private static let lightStyleURI = StyleURI(rawValue: "mapbox://styles/fliper27/cml6z0dhg002301qo9xxc08k4")!
     private static let darkStyleURI = StyleURI(rawValue: "mapbox://styles/fliper27/cml6zc5pq002801qo4lh13o19")!
+    private static let sessionPuckSourceId = "session-puck-source"
 
     func makeUIView(context: Context) -> MapView {
         let options = MapInitOptions()
@@ -898,7 +1188,7 @@ struct CampaignMapboxMapViewRepresentable: UIViewRepresentable {
     }
     
     func updateUIView(_ uiView: MapView, context: Context) {
-        // Force layout so map renders when size is set (e.g. inside ScrollView)
+        context.coordinator.updateSessionPuck(location: sessionLocation, show: showSessionPuck)
         uiView.setNeedsLayout()
         uiView.layoutIfNeeded()
     }
@@ -910,11 +1200,22 @@ struct CampaignMapboxMapViewRepresentable: UIViewRepresentable {
     class Coordinator: NSObject {
         weak var mapView: MapView?
         let onTap: (CGPoint) -> Void
-        
+
         init(onTap: @escaping (CGPoint) -> Void) {
             self.onTap = onTap
         }
-        
+
+        func updateSessionPuck(location: CLLocation?, show: Bool) {
+            guard let map = mapView?.mapboxMap else { return }
+            guard map.sourceExists(withId: CampaignMapboxMapViewRepresentable.sessionPuckSourceId) else { return }
+            if show, let loc = location {
+                let feature = Feature(geometry: .point(Point(loc.coordinate)))
+                try? map.updateGeoJSONSource(withId: CampaignMapboxMapViewRepresentable.sessionPuckSourceId, geoJSON: .feature(feature))
+            } else {
+                try? map.updateGeoJSONSource(withId: CampaignMapboxMapViewRepresentable.sessionPuckSourceId, geoJSON: .featureCollection(FeatureCollection(features: [])))
+            }
+        }
+
         @objc func handleTap(_ gesture: UITapGestureRecognizer) {
             guard let mapView = mapView else { return }
             let point = gesture.location(in: mapView)
@@ -1010,11 +1311,22 @@ struct LocationCardView: View {
     let addressId: UUID?
     /// Address from tapped building (shown immediately)
     let addressText: String?
+    /// When multiple addresses exist, which one to show as primary; nil = show list or first
+    var preferredAddressId: UUID?
+    /// Per-address statuses for pill coloring in the multi-address list
+    var addressStatuses: [UUID: AddressStatus] = [:]
+    /// Called when user selects an address from the list (id) or taps "Back to list" (nil)
+    var onSelectAddress: ((UUID?) -> Void)?
+    /// Called once when addresses are resolved, with all address UUIDs for this building
+    var onAddressesResolved: (([UUID]) -> Void)?
     let onClose: () -> Void
     /// Called after status is saved to Supabase so the map can update building color immediately
     var onStatusUpdated: ((UUID, AddressStatus) -> Void)?
     
+    @EnvironmentObject private var entitlementsService: EntitlementsService
     @StateObject private var dataService: BuildingDataService
+    /// Building details from GET /api/buildings/{gersId} (scan data gated by backend for non‑Pro).
+    @State private var buildingDetails: BuildingDetailResponse?
     @StateObject private var voiceRecorder = VoiceRecorderManager()
     @StateObject private var transcriptionService = TranscriptionService()
     @State private var nameText: String = ""
@@ -1040,12 +1352,17 @@ struct LocationCardView: View {
     @State private var appointmentLocationText = ""
     @State private var voiceLogPreviewResult: VoiceLogResponse?
     @State private var flyrEventIdForRecording: UUID?
+    @State private var showPaywall = false
 
-    init(gersId: String, campaignId: UUID, addressId: UUID? = nil, addressText: String? = nil, onClose: @escaping () -> Void, onStatusUpdated: ((UUID, AddressStatus) -> Void)? = nil) {
+    init(gersId: String, campaignId: UUID, addressId: UUID? = nil, addressText: String? = nil, preferredAddressId: UUID? = nil, addressStatuses: [UUID: AddressStatus] = [:], onSelectAddress: ((UUID?) -> Void)? = nil, onAddressesResolved: (([UUID]) -> Void)? = nil, onClose: @escaping () -> Void, onStatusUpdated: ((UUID, AddressStatus) -> Void)? = nil) {
         self.gersId = gersId
         self.campaignId = campaignId
         self.addressId = addressId
         self.addressText = addressText
+        self.preferredAddressId = preferredAddressId
+        self.addressStatuses = addressStatuses
+        self.onSelectAddress = onSelectAddress
+        self.onAddressesResolved = onAddressesResolved
         self.onClose = onClose
         self.onStatusUpdated = onStatusUpdated
         _dataService = StateObject(wrappedValue: BuildingDataService(supabase: SupabaseManager.shared.client))
@@ -1071,7 +1388,10 @@ struct LocationCardView: View {
         if let addr = addressText, !addr.isEmpty {
             return streetOnly(from: addr).uppercased()
         }
-        return "Loading..."
+        if dataService.buildingData.isLoading {
+            return "Loading..."
+        }
+        return "BUILDING"
     }
 
     private var needsScroll: Bool {
@@ -1091,6 +1411,12 @@ struct LocationCardView: View {
         }
     }
 
+    /// Multiple addresses for this building and no unit selected → show list
+    private var showAddressList: Bool {
+        let addresses = dataService.buildingData.addresses
+        return addresses.count > 1 && preferredAddressId == nil
+    }
+
     @ViewBuilder
     private var cardContentViews: some View {
         if dataService.buildingData.isLoading {
@@ -1099,10 +1425,92 @@ struct LocationCardView: View {
             errorView(error: error)
         } else if !dataService.buildingData.addressLinked {
             unlinkedBuildingView
+        } else if showAddressList {
+            multipleAddressesListView
         } else if let address = dataService.buildingData.address {
-            mainContentView(address: address)
+            mainContentViewWithBackToList(address: address)
         } else if let addressText = addressText, !addressText.isEmpty {
             universalCardContent(displayAddress: addressText, address: nil)
+        }
+    }
+
+    /// List of addresses for this building; tap one to select
+    @ViewBuilder
+    private var multipleAddressesListView: some View {
+        let addresses = dataService.buildingData.addresses
+        VStack(alignment: .leading, spacing: 12) {
+            Text("\(addresses.count) addresses")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundColor(.white)
+            ForEach(addresses) { addr in
+                let addrStatus = addressStatuses[addr.id]
+                let isVisited = addrStatus?.mapLayerStatus == "visited"
+                let isHot = addrStatus?.mapLayerStatus == "hot"
+                Button {
+                    onSelectAddress?(addr.id)
+                } label: {
+                    HStack {
+                        Text(streetOnly(from: addr.displayStreet))
+                            .font(.system(size: 14))
+                            .foregroundColor(isVisited ? .green : (isHot ? Color(UIColor(hex: "#3b82f6")!) : .white))
+                        Spacer()
+                        if isVisited {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.system(size: 14))
+                                .foregroundColor(.green)
+                        } else if isHot {
+                            Image(systemName: "flame.fill")
+                                .font(.system(size: 12))
+                                .foregroundColor(Color(UIColor(hex: "#3b82f6")!))
+                        } else {
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundColor(.white.opacity(0.7))
+                        }
+                    }
+                    .padding(.vertical, 10)
+                    .padding(.horizontal, 12)
+                    .background(
+                        isVisited
+                            ? Color.green.opacity(0.15)
+                            : (isHot ? Color(UIColor(hex: "#3b82f6")!).opacity(0.15) : Color.white.opacity(0.08))
+                    )
+                    .cornerRadius(8)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.bottom, 12)
+        .onAppear {
+            let ids = dataService.buildingData.addresses.map { $0.id }
+            if !ids.isEmpty { onAddressesResolved?(ids) }
+        }
+        .onChange(of: dataService.buildingData.addresses.count) { _, _ in
+            let ids = dataService.buildingData.addresses.map { $0.id }
+            if !ids.isEmpty { onAddressesResolved?(ids) }
+        }
+    }
+
+    /// Single-address content; when multiple exist, show "Back to list"
+    @ViewBuilder
+    private func mainContentViewWithBackToList(address: ResolvedAddress) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if dataService.buildingData.addresses.count > 1, onSelectAddress != nil {
+                Button {
+                    onSelectAddress?(nil)
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "chevron.left")
+                        Text("Back to list")
+                            .font(.system(size: 14))
+                    }
+                    .foregroundColor(.white.opacity(0.8))
+                }
+                .padding(.horizontal, 12)
+                .padding(.bottom, 8)
+            }
+            mainContentView(address: address)
         }
     }
 
@@ -1139,7 +1547,13 @@ struct LocationCardView: View {
         .cornerRadius(16)
         .shadow(color: .black.opacity(0.4), radius: 20)
         .task {
-            await dataService.fetchBuildingData(gersId: gersId, campaignId: campaignId, addressId: addressId)
+            await dataService.fetchBuildingData(gersId: gersId, campaignId: campaignId, addressId: addressId, preferredAddressId: preferredAddressId)
+            buildingDetails = try? await BuildingDetailsAPI.shared.fetchBuildingDetails(gersId: gersId, campaignId: campaignId)
+        }
+        .onChange(of: preferredAddressId) { _, newId in
+            Task {
+                await dataService.fetchBuildingData(gersId: gersId, campaignId: campaignId, addressId: addressId, preferredAddressId: newId)
+            }
         }
         .sheet(isPresented: $showAddResidentSheet, onDismiss: { addResidentAddress = nil }) {
             if let address = addResidentAddress {
@@ -1149,7 +1563,7 @@ struct LocationCardView: View {
                     onSave: {
                         dataService.clearCacheEntry(gersId: gersId, campaignId: campaignId)
                         dataService.clearCacheEntry(addressId: address.id, campaignId: campaignId)
-                        await dataService.fetchBuildingData(gersId: gersId, campaignId: campaignId, addressId: address.id)
+                        await dataService.fetchBuildingData(gersId: gersId, campaignId: campaignId, addressId: address.id, preferredAddressId: address.id)
                     },
                     onDismiss: {
                         showAddResidentSheet = false
@@ -1174,6 +1588,91 @@ struct LocationCardView: View {
                 )
             }
         }
+        .sheet(isPresented: $showPaywall) {
+            PaywallView()
+        }
+    }
+
+    // MARK: - QR Scans (Pro-gated)
+
+    /// Display scan count for status/badge: from API when Pro, 0 when not Pro so we don’t leak scan data.
+    private var displayScanCount: Int {
+        guard entitlementsService.canUsePro else { return 0 }
+        return buildingDetails?.scans ?? dataService.buildingData.qrStatus.totalScans
+    }
+
+    @ViewBuilder
+    private var qrScansSection: some View {
+        if entitlementsService.canUsePro {
+            qrScansRowPro
+        } else {
+            qrScansRowUpgrade
+        }
+    }
+
+    private var qrScansRowPro: some View {
+        HStack(spacing: 12) {
+            ZStack {
+                Circle()
+                    .fill(getQRStatusColor().opacity(0.1))
+                    .frame(width: 36, height: 36)
+                Image(systemName: "qrcode")
+                    .foregroundColor(getQRStatusColor())
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(displayScanCount > 0 ? "Scanned \(displayScanCount)×" : "QR scans")
+                    .fontWeight(.medium)
+                    .foregroundColor(.white)
+                Text(
+                    buildingDetails?.lastScannedAt.map { "Last scanned \($0.formatted(date: .abbreviated, time: .shortened))" } ?? "No scans yet"
+                )
+                .font(.flyrCaption)
+                .foregroundColor(.gray)
+            }
+            Spacer()
+            if displayScanCount > 0 {
+                ZStack {
+                    Circle()
+                        .fill(Color.green)
+                        .frame(width: 24, height: 24)
+                    Image(systemName: "checkmark")
+                        .foregroundColor(.white)
+                        .font(.flyrCaption)
+                }
+            }
+        }
+        .padding()
+        .background(Color.gray.opacity(0.05))
+        .cornerRadius(12)
+    }
+
+    private var qrScansRowUpgrade: some View {
+        Button(action: { showPaywall = true }) {
+            HStack(spacing: 12) {
+                ZStack {
+                    Circle()
+                        .fill(Color.gray.opacity(0.2))
+                        .frame(width: 36, height: 36)
+                    Image(systemName: "qrcode")
+                        .foregroundColor(.gray)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("QR scan activity")
+                        .fontWeight(.medium)
+                        .foregroundColor(.white)
+                    Text("Upgrade to Pro to see scan activity")
+                        .font(.flyrCaption)
+                        .foregroundColor(.gray)
+                }
+                Spacer()
+                Image(systemName: "crown.fill")
+                    .foregroundColor(.yellow)
+            }
+            .padding()
+            .background(Color.gray.opacity(0.05))
+            .cornerRadius(12)
+        }
+        .buttonStyle(.plain)
     }
     
     // MARK: - Loading State
@@ -1235,17 +1734,6 @@ struct LocationCardView: View {
     
     private var unlinkedBuildingView: some View {
         VStack(alignment: .leading, spacing: 14) {
-            if addressText?.isEmpty != false {
-                HStack(spacing: 8) {
-                    Image(systemName: "mappin.circle")
-                        .foregroundColor(cardPlaceholder)
-                        .frame(width: 20)
-                    universalTextField(placeholder: "Add address", text: $manualAddressText)
-                }
-            }
-            Text("No address data for this building")
-                .font(.system(size: 12))
-                .foregroundColor(cardPlaceholder)
             if showContactBlock {
                 universalFormFields
             }
@@ -1390,31 +1878,38 @@ struct LocationCardView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Contact")
-                if let address = address {
-                    Button(action: { onClose(); logVisitStatus(address, status: .delivered) }) {
-                        Image(systemName: "door.left.hand.closed")
-                            .font(.system(size: 18))
-                            .foregroundColor(.black)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 12)
-                            .background(actionButtonPillStyle)
+                Button(action: {
+                    if let address = address {
+                        onClose(); logVisitStatus(address, status: .delivered)
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Knock")
-                    Button(action: { onClose(); logVisitStatus(address, status: .talked) }) {
-                        Image(systemName: "person.wave.2.fill")
-                            .font(.system(size: 18))
-                            .foregroundColor(.black)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 12)
-                            .background(actionButtonPillStyle)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Conversation")
-                } else {
-                    Color.clear.frame(maxWidth: .infinity).padding(.vertical, 12)
-                    Color.clear.frame(maxWidth: .infinity).padding(.vertical, 12)
+                }) {
+                    Image(systemName: "door.left.hand.closed")
+                        .font(.system(size: 18))
+                        .foregroundColor(.black)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                        .background(actionButtonPillStyle)
+                        .opacity(address != nil ? 1.0 : 0.4)
                 }
+                .buttonStyle(.plain)
+                .disabled(address == nil)
+                .accessibilityLabel("Knock")
+                Button(action: {
+                    if let address = address {
+                        onClose(); logVisitStatus(address, status: .talked)
+                    }
+                }) {
+                    Image(systemName: "person.wave.2.fill")
+                        .font(.system(size: 18))
+                        .foregroundColor(.black)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                        .background(actionButtonPillStyle)
+                        .opacity(address != nil ? 1.0 : 0.4)
+                }
+                .buttonStyle(.plain)
+                .disabled(address == nil)
+                .accessibilityLabel("Conversation")
             }
             HStack(spacing: 8) {
                 Button(action: { showTaskBlock.toggle() }) {
@@ -1465,9 +1960,6 @@ struct LocationCardView: View {
     
     private func mainContentView(address: ResolvedAddress) -> some View {
         VStack(alignment: .leading, spacing: 14) {
-            if getStatusText() == "Scanned" {
-                statusBadgeUniversal
-            }
             if let lead = dataService.buildingData.leadStatus, !lead.isEmpty, leadStatusDisplay(lead).lowercased() != "new" {
                 Text(leadStatusDisplay(lead))
                     .font(.system(size: 12))
@@ -1712,43 +2204,6 @@ struct LocationCardView: View {
         .cornerRadius(12)
     }
     
-    private var qrStatusRow: some View {
-        HStack(spacing: 12) {
-            ZStack {
-                Circle()
-                    .fill(getQRStatusColor().opacity(0.1))
-                    .frame(width: 36, height: 36)
-                Image(systemName: "qrcode")
-                    .foregroundColor(getQRStatusColor())
-            }
-            
-            VStack(alignment: .leading, spacing: 2) {
-                Text(dataService.buildingData.qrStatus.statusText)
-                    .fontWeight(.medium)
-                
-                Text(dataService.buildingData.qrStatus.subtext)
-                    .font(.flyrCaption)
-                    .foregroundColor(.gray)
-            }
-            
-            Spacer()
-            
-            if dataService.buildingData.qrStatus.isScanned {
-                ZStack {
-                    Circle()
-                        .fill(Color.green)
-                        .frame(width: 24, height: 24)
-                    Image(systemName: "checkmark")
-                        .foregroundColor(.white)
-                        .font(.flyrCaption)
-                }
-            }
-        }
-        .padding()
-        .background(Color.gray.opacity(0.05))
-        .cornerRadius(12)
-    }
-    
     // MARK: - Helper Methods
     
     private func getResidentsText() -> String {
@@ -1759,23 +2214,21 @@ struct LocationCardView: View {
     }
     
     private func getStatusText() -> String {
-        let qrStatus = dataService.buildingData.qrStatus
-        if qrStatus.totalScans > 0 { return "Scanned" }
-        if qrStatus.hasFlyer { return "Target" }
+        if displayScanCount > 0 { return "Scanned" }
+        if dataService.buildingData.qrStatus.hasFlyer { return "Target" }
         return "New"
     }
     
     private func getStatusColor() -> Color {
-        let qrStatus = dataService.buildingData.qrStatus
-        if qrStatus.totalScans > 0 { return .blue }
-        if qrStatus.hasFlyer { return .gray.opacity(0.6) }
+        if displayScanCount > 0 { return .blue }
+        if dataService.buildingData.qrStatus.hasFlyer { return .gray.opacity(0.6) }
         return .gray.opacity(0.4)
     }
     
     private func getQRStatusColor() -> Color {
-        let qrStatus = dataService.buildingData.qrStatus
-        if qrStatus.hasFlyer {
-            return qrStatus.totalScans > 0 ? Color(UIColor(hex: "#8b5cf6")!) : .flyrPrimary
+        let hasFlyer = dataService.buildingData.qrStatus.hasFlyer
+        if hasFlyer {
+            return displayScanCount > 0 ? Color(UIColor(hex: "#8b5cf6")!) : .flyrPrimary
         }
         return .gray
     }
@@ -1792,7 +2245,7 @@ struct LocationCardView: View {
                     notes: notesText.isEmpty ? nil : notesText
                 )
                 dataService.clearCacheEntry(gersId: gersId, campaignId: campaignId)
-                await dataService.fetchBuildingData(gersId: gersId, campaignId: campaignId, addressId: address.id)
+                await dataService.fetchBuildingData(gersId: gersId, campaignId: campaignId, addressId: address.id, preferredAddressId: preferredAddressId ?? address.id)
                 await MainActor.run {
                     onStatusUpdated?(address.id, status)
                 }

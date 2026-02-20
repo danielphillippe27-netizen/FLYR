@@ -92,7 +92,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
     private var timer: Timer?
     private var locationManager = CLLocationManager()
     private var lastLocation: CLLocation?
-    /// Ignore GPS jitter when stationary: only add a path point if moved at least this many meters from last recorded point.
+    /// Ignore GPS jitter when stationary: only add a path point if moved at least this many meters from last recorded point (Strava-style smooth trail; avoids scribble at doors).
     private let minPathMovementMeters: Double = 3.0
     private let waypointReachedThresholdMeters: Double = 10.0
     private var activeSecondsAccumulator: TimeInterval = 0

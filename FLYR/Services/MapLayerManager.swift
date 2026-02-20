@@ -854,6 +854,15 @@ final class MapLayerManager {
         let houseNumber: String?
         let streetName: String?
         
+        init(addressId: UUID, formatted: String, gersId: String?, buildingGersId: String?, houseNumber: String?, streetName: String?) {
+            self.addressId = addressId
+            self.formatted = formatted
+            self.gersId = gersId
+            self.buildingGersId = buildingGersId
+            self.houseNumber = houseNumber
+            self.streetName = streetName
+        }
+        
         enum CodingKeys: String, CodingKey {
             case addressId = "id"
             case addressIdAlt = "address_id"

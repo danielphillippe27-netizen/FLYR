@@ -7,7 +7,7 @@ import CoreLocation
 
 // MARK: - Building Properties (from map RPC / S3)
 
-/// Building feature properties from Supabase RPC
+/// Building feature properties from Supabase RPC (Gold, Silver, address_point)
 struct BuildingProperties: Codable {
     let id: String
     let buildingId: String?
@@ -26,6 +26,18 @@ struct BuildingProperties: Codable {
     let scansToday: Int
     let scansTotal: Int
     let lastScanSecondsAgo: Double?
+    /// Gold/address_point: house number
+    let houseNumber: String?
+    /// Gold/address_point: street name
+    let streetName: String?
+    /// Match confidence 0.5–1.0
+    let confidence: Double?
+    /// "gold", "silver", or "address_point"
+    let source: String?
+    /// Gold multi-address: number of addresses in this building (RPC)
+    let addressCount: Int?
+    /// QR code was scanned
+    let qrScanned: Bool?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -45,10 +57,16 @@ struct BuildingProperties: Codable {
         case scansToday = "scans_today"
         case scansTotal = "scans_total"
         case lastScanSecondsAgo = "last_scan_seconds_ago"
+        case houseNumber = "house_number"
+        case streetName = "street_name"
+        case confidence
+        case source
+        case addressCount = "address_count"
+        case qrScanned = "qr_scanned"
     }
 
     var statusColor: String {
-        if scansTotal > 0 { return "#eab308" }
+        if scansTotal > 0 || (qrScanned ?? false) { return "#8b5cf6" }
         switch status {
         case "hot": return "#3b82f6"
         case "visited": return "#22c55e"

@@ -74,6 +74,33 @@ final class BuildingLinkService {
         return links.first
     }
     
+    /// Get all addresses linked to a building (multiple addresses per building).
+    /// Uses GET /api/campaigns/[campaignId]/buildings/[buildingId]/addresses.
+    func fetchAddressesForBuilding(campaignId: String, buildingId: String) async throws -> [CampaignAddressResponse] {
+        guard let url = URL(string: "\(baseURL)/api/campaigns/\(campaignId)/buildings/\(buildingId)/addresses") else {
+            throw BuildingLinkError.invalidURL
+        }
+        var request = URLRequest(url: url)
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        if let session = try? await supabaseClient.auth.session {
+            request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
+        }
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw BuildingLinkError.fetchFailed
+        }
+        if httpResponse.statusCode == 404 {
+            return []
+        }
+        guard httpResponse.statusCode == 200 else {
+            throw BuildingLinkError.fetchFailed
+        }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let wrapper = try decoder.decode(BuildingAddressesAPIResponse.self, from: data)
+        return wrapper.addresses
+    }
+    
     // MARK: - Fetch Addresses
     
     func fetchAddresses(campaignId: String) async throws -> [CampaignAddress] {
@@ -201,6 +228,11 @@ final class BuildingLinkService {
 }
 
 // MARK: - Supporting Types
+
+/// Response from GET /api/campaigns/[id]/buildings/[id]/addresses
+private struct BuildingAddressesAPIResponse: Codable {
+    let addresses: [CampaignAddressResponse]
+}
 
 enum BuildingLinkError: Error {
     case invalidURL

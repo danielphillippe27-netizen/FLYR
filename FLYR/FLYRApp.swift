@@ -34,11 +34,14 @@ struct FLYRApp: App {
     }
     #endif
 
+    @StateObject private var routeState = AppRouteState()
+
     var body: some Scene {
         WindowGroup {
-            AuthGate()
+            AuthGate(routeState: routeState)
                 .environmentObject(uiState)
                 .environmentObject(entitlementsService)
+                .environmentObject(routeState)
                 .task {
                     // Health check in background with lower priority - don't block UI
                     Task.detached(priority: .utility) {
@@ -49,13 +52,17 @@ struct FLYRApp: App {
                     }
                 }
                 .onOpenURL { url in
-                    Task {
+                    Task { @MainActor in
                         #if DEBUG
                         print("🔗 Received URL: \(url)")
                         #endif
-                        // Handle OAuth redirects for CRM integrations only
                         if url.scheme == "flyr" && url.host == "oauth" {
                             await handleOAuthRedirect(url: url)
+                        } else if url.scheme == "flyr" && url.host == "join" {
+                            guard let comp = URLComponents(url: url, resolvingAgainstBaseURL: false),
+                                  let token = comp.queryItems?.first(where: { $0.name == "token" })?.value else { return }
+                            routeState.pendingJoinToken = token
+                            await routeState.resolveRoute()
                         }
                     }
                 }
@@ -98,21 +105,26 @@ struct FLYRApp: App {
 }
 
 struct AuthGate: View {
+    @ObservedObject var routeState: AppRouteState
     @StateObject private var auth = AuthManager.shared
     @EnvironmentObject var uiState: AppUIState
     @EnvironmentObject var entitlementsService: EntitlementsService
     @Environment(\.scenePhase) private var scenePhase
 
-    private var showMainApp: Bool {
-        auth.user != nil
-    }
-
     var body: some View {
         Group {
-            if showMainApp {
-                MainTabView()
-            } else {
+            switch routeState.route {
+            case .login:
                 SignInView()
+            case .onboarding:
+                WorkspaceOnboardingView()
+            case .join(let token):
+                JoinFlowView(token: token)
+            case .subscribe(let memberInactive):
+                PaywallView(memberInactive: memberInactive)
+                    .environmentObject(entitlementsService)
+            case .dashboard:
+                MainTabView()
             }
         }
         .preferredColorScheme(uiState.colorScheme)
@@ -126,6 +138,7 @@ struct AuthGate: View {
             print("🔍 Loading session in background...")
             #endif
             await auth.loadSession()
+            await routeState.resolveRoute()
 
             if let userId = auth.user?.id {
                 await uiState.loadAppearancePreference(userID: userId)
@@ -137,20 +150,34 @@ struct AuthGate: View {
             }
         }
         .onChange(of: auth.user?.id) { _, newUserId in
-            if let userId = newUserId {
-                Task {
-                    await uiState.loadAppearancePreference(userID: userId)
+            if newUserId == nil {
+                routeState.setRoute(.login)
+            } else {
+                Task { @MainActor in
+                    // Brief delay so Supabase session is fully available before calling redirect API
+                    try? await Task.sleep(nanoseconds: 300_000_000) // 0.3s
+                    await uiState.loadAppearancePreference(userID: newUserId!)
                     StoreKitManager.shared.entitlementsService = entitlementsService
                     await entitlementsService.fetchEntitlement()
                     await StoreKitManager.shared.refreshLocalProFromCurrentEntitlements()
+                    if routeState.pendingJoinToken != nil {
+                        await routeState.acceptPendingInviteAndResolve()
+                    } else {
+                        await routeState.resolveRoute()
+                    }
+                    #if DEBUG
+                    print("🔍 [AuthGate] After sign-in resolveRoute → route: \(routeState.route)")
+                    #endif
                 }
-            } else {
+            }
+            if newUserId == nil, uiState.colorScheme == nil {
                 uiState.detectSystemAppearance()
             }
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active, auth.user != nil {
                 Task {
+                    await routeState.resolveRoute()
                     await entitlementsService.fetchEntitlement()
                 }
             }

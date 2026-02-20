@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect } from 'react'
 import { fetchLeads } from '../lib/fieldLeads'
 import { fetchCRMConnections } from '../lib/integrations'
 import { fetchUserIntegrations } from '../lib/integrations'
+import { supabase } from '../supabase'
 import type { FieldLead } from '../types/leads'
 import type { CRMConnection } from '../types/leads'
 import type { UserIntegration } from '../types/leads'
@@ -37,6 +38,29 @@ export function useLeads(userId: string | undefined) {
   useEffect(() => {
     load()
   }, [load])
+
+  // Realtime: refetch when contacts change so web list stays in sync
+  useEffect(() => {
+    if (!supabase || !userId) return
+    const channel = supabase
+      .channel('contacts_changes')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'contacts',
+          filter: `user_id=eq.${userId}`,
+        },
+        () => {
+          load()
+        }
+      )
+      .subscribe()
+    return () => {
+      supabase.removeChannel(channel)
+    }
+  }, [userId, load])
 
   const hasConnectedCRM =
     connections.some((c) => c.status === 'connected') ||

@@ -1,10 +1,10 @@
 import SwiftUI
 import UIKit
-import AuthenticationServices
 import Lottie
 
 struct SignInView: View {
     @Environment(\.colorScheme) private var colorScheme
+    @EnvironmentObject private var routeState: AppRouteState
     @StateObject private var auth = AuthManager.shared
     @State private var isSigningIn = false
     @State private var isEmailSigningIn = false
@@ -19,11 +19,14 @@ struct SignInView: View {
         case success, error
     }
 
-    /// On white/light background use black buttons with white text for contrast.
     private var isLightBackground: Bool { colorScheme == .light }
     private var signInButtonBackground: Color { isLightBackground ? .black : Color.white }
     private var signInButtonForeground: Color { isLightBackground ? .white : .black }
     private var signInProgressTint: Color { isLightBackground ? .white : .black }
+
+    private var canContinueWithEmail: Bool {
+        !email.trimmingCharacters(in: .whitespaces).isEmpty && !password.isEmpty
+    }
 
     var body: some View {
         NavigationStack {
@@ -34,14 +37,14 @@ struct SignInView: View {
                 ScrollView {
                     VStack(spacing: 32) {
                         Spacer()
-                            .frame(height: 60)
+                            .frame(height: 24)
 
                         VStack(spacing: 8) {
                             LoopingLottieView(name: colorScheme == .light ? "splash_black" : "splash")
                                 .frame(width: 340, height: 227)
                                 .clipped()
                         }
-                        .padding(.top, 40)
+                        .padding(.top, 16)
 
                         Button {
                             Task { await signInWithGoogle() }
@@ -54,7 +57,7 @@ struct SignInView: View {
                                 } else {
                                     Image(systemName: "g.circle.fill")
                                         .font(.system(size: 22))
-                                    Text("Sign in with Google")
+                                    Text("Continue with Google")
                                         .font(.system(size: 17, weight: .medium))
                                 }
                             }
@@ -68,28 +71,33 @@ struct SignInView: View {
                         .padding(.horizontal, 32)
                         .padding(.top, 24)
 
-                        // Official Sign in with Apple Button
-                        SignInWithAppleButton(
-                            .signIn,
-                            onRequest: { request in
-                                request.requestedScopes = [.fullName, .email]
-                            },
-                            onCompletion: { result in
-                                Task {
-                                    await handleAppleSignInResult(result)
+                        Button {
+                            Task { await signInWithApple() }
+                        } label: {
+                            HStack(spacing: 12) {
+                                if isSigningIn {
+                                    ProgressView()
+                                        .progressViewStyle(CircularProgressViewStyle(tint: signInProgressTint))
+                                        .scaleEffect(0.8)
+                                } else {
+                                    Image(systemName: "apple.logo")
+                                        .font(.system(size: 22))
+                                    Text("Continue with Apple")
+                                        .font(.system(size: 17, weight: .medium))
                                 }
                             }
-                        )
-                        .signInWithAppleButtonStyle(colorScheme == .light ? .black : .white)
-                        .frame(height: 50)
-                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                            .foregroundColor(signInButtonForeground)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 50)
+                            .background(signInButtonBackground)
+                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        }
                         .disabled(isSigningIn)
                         .padding(.horizontal, 32)
                         .padding(.top, 12)
 
-                        // Email / password (e.g. App Store review)
                         VStack(spacing: 12) {
-                            Text("or sign in here")
+                            Text("or continue with email")
                                 .font(.subheadline)
                                 .foregroundColor(.secondary)
                                 .frame(maxWidth: .infinity)
@@ -107,35 +115,33 @@ struct SignInView: View {
                                 .textFieldStyle(.roundedBorder)
                                 .onChange(of: password) { _, _ in emailSignInError = nil }
                                 .padding(.horizontal, 32)
-                            if !email.trimmingCharacters(in: .whitespaces).isEmpty && !password.isEmpty {
-                                Button {
-                                    Task { await signInWithEmail() }
-                                } label: {
-                                    HStack(spacing: 12) {
-                                        if isEmailSigningIn {
-                                            ProgressView()
-                                                .progressViewStyle(CircularProgressViewStyle(tint: signInProgressTint))
-                                                .scaleEffect(0.8)
-                                        } else {
-                                            Text("Sign In")
-                                                .font(.system(size: 17, weight: .medium))
-                                        }
+                            Button {
+                                Task { await continueWithEmail() }
+                            } label: {
+                                HStack(spacing: 12) {
+                                    if isEmailSigningIn {
+                                        ProgressView()
+                                            .progressViewStyle(CircularProgressViewStyle(tint: canContinueWithEmail ? .black : Color(.secondaryLabel)))
+                                            .scaleEffect(0.8)
+                                    } else {
+                                        Text("Continue")
+                                            .font(.system(size: 17, weight: .medium))
                                     }
-                                    .foregroundColor(signInButtonForeground)
-                                    .frame(maxWidth: .infinity)
-                                    .frame(height: 50)
-                                    .background(signInButtonBackground)
-                                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                                 }
-                                .disabled(isEmailSigningIn)
-                                .padding(.horizontal, 32)
-                                .padding(.top, 4)
-                                if let error = emailSignInError {
-                                    Text(error)
-                                        .font(.caption)
-                                        .foregroundColor(.red)
-                                        .padding(.horizontal, 32)
-                                }
+                                .foregroundColor(canContinueWithEmail ? .black : Color(.secondaryLabel))
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 50)
+                                .background(canContinueWithEmail ? Color.white : Color(.tertiarySystemFill))
+                                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                            }
+                            .disabled(isEmailSigningIn || !canContinueWithEmail)
+                            .padding(.horizontal, 32)
+                            .padding(.top, 4)
+                            if let error = emailSignInError {
+                                Text(error)
+                                    .font(.caption)
+                                    .foregroundColor(.red)
+                                    .padding(.horizontal, 32)
                             }
                         }
                         .padding(.top, 24)
@@ -198,43 +204,43 @@ struct SignInView: View {
         isSigningIn = false
     }
     
-    private func signInWithEmail() async {
+    /// Try sign-in first; if invalid credentials, try sign-up. New accounts are sent to onboarding.
+    private func continueWithEmail() async {
+        let trimmedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedEmail.isEmpty, !password.isEmpty else { return }
         isEmailSigningIn = true
         emailSignInError = nil
         do {
-            try await auth.signInWithEmail(email: email.trimmingCharacters(in: .whitespacesAndNewlines), password: password)
+            try await auth.signInWithEmail(email: trimmedEmail, password: password)
             await MainActor.run {
                 displayToast(message: "Signed in successfully", type: .success)
                 email = ""
                 password = ""
             }
         } catch {
-            await MainActor.run {
-                emailSignInError = error.localizedDescription
+            let msg = error.localizedDescription.lowercased()
+            let isInvalidCredentials = msg.contains("invalid") || msg.contains("credentials") || msg.contains("invalid login")
+            if isInvalidCredentials {
+                do {
+                    try await auth.signUpWithEmail(email: trimmedEmail, password: password)
+                    await MainActor.run {
+                        routeState.setRouteToOnboardingFromSignUp()
+                        displayToast(message: "Account created", type: .success)
+                        email = ""
+                        password = ""
+                    }
+                } catch let signUpError {
+                    await MainActor.run {
+                        emailSignInError = signUpError.localizedDescription
+                    }
+                }
+            } else {
+                await MainActor.run {
+                    emailSignInError = error.localizedDescription
+                }
             }
         }
         isEmailSigningIn = false
-    }
-
-    private func handleAppleSignInResult(_ result: Result<ASAuthorization, Error>) async {
-        isSigningIn = true
-        switch result {
-        case .success(let authorization):
-            do {
-                try await auth.handleAppleSignInAuthorization(authorization)
-                await MainActor.run { displayToast(message: "Signed in successfully", type: .success) }
-            } catch {
-                await MainActor.run {
-                    let msg = error.localizedDescription
-                    displayToast(message: msg.isEmpty ? "Sign-in failed. Try again." : msg, type: .error)
-                }
-            }
-        case .failure(let error):
-            await MainActor.run {
-                displayToast(message: error.localizedDescription, type: .error)
-            }
-        }
-        isSigningIn = false
     }
 
     private func displayToast(message: String, type: ToastType) {

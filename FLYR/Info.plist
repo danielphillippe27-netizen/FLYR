@@ -49,7 +49,7 @@
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>MBXAccessToken</key>
-	<string>YOUR_MAPBOX_PUBLIC_TOKEN</string>
+	<string>REPLACE_WITH_YOUR_MAPBOX_PUBLIC_TOKEN</string>
 	<key>NSHealthShareUsageDescription</key>
 	<string>We use your step count to show activity progress in the app.</string>
 	<key>NSHealthUpdateUsageDescription</key>

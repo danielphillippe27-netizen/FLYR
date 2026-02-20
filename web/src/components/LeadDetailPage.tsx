@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
-import { supabase } from '../supabase'
+import { fetchLeadById } from '../lib/fieldLeads'
 import { fetchCRMConnections } from '../lib/integrations'
 import { fetchUserIntegrations } from '../lib/integrations'
 import { FIELD_LEAD_STATUS_LABELS } from '../lib/leadDisplay'
@@ -44,15 +44,14 @@ export default function LeadDetailPage() {
   const [showSyncSettings, setShowSyncSettings] = useState(false)
 
   useEffect(() => {
-    if (!id || !supabase) return
-    supabase
-      .from('field_leads')
-      .select('*')
-      .eq('id', id)
-      .maybeSingle()
-      .then(({ data, error: err }) => {
-        if (err) setError(err.message)
-        else setLead(data as FieldLead | null)
+    if (!id) return
+    fetchLeadById(id)
+      .then((data) => {
+        setLead(data)
+        setLoading(false)
+      })
+      .catch((err: unknown) => {
+        setError(err instanceof Error ? err.message : 'Failed to load lead')
         setLoading(false)
       })
   }, [id])

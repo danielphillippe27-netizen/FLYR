@@ -195,21 +195,23 @@ final class BuildingLinkMapViewController: UIViewController {
         // Remove existing popup
         popupView?.removeFromSuperview()
         
-        // Create and show popup
-        let popup = BuildingPopupView(frame: view.bounds)
-        popup.configure(
-            with: buildingData,
-            onClose: { [weak self] in
-                self?.popupView?.removeFromSuperview()
-                self?.popupView = nil
-            },
-            onAction: { [weak self] in
-                self?.handleBuildingAction(buildingData: buildingData)
-            }
-        )
-        
-        view.addSubview(popup)
-        popupView = popup
+        Task { @MainActor in
+            let canShowScans = EntitlementsService.sharedInstance?.canUsePro ?? false
+            let popup = BuildingPopupView(frame: self.view.bounds)
+            popup.configure(
+                with: buildingData,
+                canShowScans: canShowScans,
+                onClose: { [weak self] in
+                    self?.popupView?.removeFromSuperview()
+                    self?.popupView = nil
+                },
+                onAction: { [weak self] in
+                    self?.handleBuildingAction(buildingData: buildingData)
+                }
+            )
+            self.view.addSubview(popup)
+            self.popupView = popup
+        }
     }
     
     private func handleBuildingAction(buildingData: BuildingWithAddress) {
