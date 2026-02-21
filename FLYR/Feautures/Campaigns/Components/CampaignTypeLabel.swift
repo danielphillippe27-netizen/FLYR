@@ -51,6 +51,7 @@ struct CampaignTypeLabel: View {
         case .gift: return .pink
         case .popBy: return .cyan
         case .openHouse: return .brown
+        case .letters: return .orange
         }
     }
 }

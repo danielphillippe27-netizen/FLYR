@@ -84,7 +84,8 @@ final class SessionsAPI {
         thresholdMeters: Double,
         dwellSeconds: Int,
         notes: String? = nil,
-        workspaceId: UUID? = nil
+        workspaceId: UUID? = nil,
+        goalType: GoalType = .knocks
     ) async throws {
         let emptyPath = "{\"type\":\"LineString\",\"coordinates\":[]}"
         var data: [String: AnyCodable] = [
@@ -92,12 +93,15 @@ final class SessionsAPI {
             "user_id": AnyCodable(userId.uuidString),
             "campaign_id": AnyCodable(campaignId.uuidString),
             "start_time": AnyCodable(ISO8601DateFormatter().string(from: Date())),
+            "doors_hit": AnyCodable(0),
             "distance_meters": AnyCodable(0),
-            "goal_type": AnyCodable("knocks"),
+            "goal_type": AnyCodable(goalType.rawValue),
             "goal_amount": AnyCodable(targetBuildingIds.count),
             "path_geojson": AnyCodable(emptyPath),
             "target_building_ids": AnyCodable(targetBuildingIds),
             "completed_count": AnyCodable(0),
+            "flyers_delivered": AnyCodable(0),
+            "conversations": AnyCodable(0),
             "auto_complete_enabled": AnyCodable(autoCompleteEnabled),
             "auto_complete_threshold_m": AnyCodable(thresholdMeters),
             "auto_complete_dwell_seconds": AnyCodable(dwellSeconds),
@@ -125,6 +129,7 @@ final class SessionsAPI {
         pathGeoJSON: String? = nil,
         flyersDelivered: Int? = nil,
         conversations: Int? = nil,
+        doorsHit: Int? = nil,
         isPaused: Bool? = nil,
         endTime: Date? = nil
     ) async throws {
@@ -150,6 +155,9 @@ final class SessionsAPI {
         if let conversations = conversations {
             data["conversations"] = AnyCodable(conversations)
         }
+        if let doorsHit = doorsHit ?? flyersDelivered ?? completedCount {
+            data["doors_hit"] = AnyCodable(doorsHit)
+        }
         if let isPaused = isPaused {
             data["is_paused"] = AnyCodable(isPaused)
         }
@@ -170,7 +178,7 @@ final class SessionsAPI {
             .from("sessions")
             .select()
             .eq("user_id", value: userId.uuidString)
-            .is("end_time", value: true)  // IS NULL for active sessions
+            .is("end_time", value: nil)  // IS NULL for active sessions
             .order("start_time", ascending: false)
             .limit(1)
             .execute()
@@ -179,4 +187,3 @@ final class SessionsAPI {
         return sessions.first
     }
 }
-

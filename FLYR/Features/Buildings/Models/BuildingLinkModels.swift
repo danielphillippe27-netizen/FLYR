@@ -65,6 +65,90 @@ struct BuildingProperties: Codable {
         case qrScanned = "qr_scanned"
     }
 
+    init(
+        id: String,
+        buildingId: String?,
+        addressId: String?,
+        gersId: String?,
+        height: Double,
+        heightM: Double?,
+        minHeight: Double,
+        isTownhome: Bool,
+        unitsCount: Int,
+        addressText: String?,
+        matchMethod: String?,
+        featureStatus: String?,
+        featureType: String?,
+        status: String,
+        scansToday: Int,
+        scansTotal: Int,
+        lastScanSecondsAgo: Double?,
+        houseNumber: String?,
+        streetName: String?,
+        confidence: Double?,
+        source: String?,
+        addressCount: Int?,
+        qrScanned: Bool?
+    ) {
+        self.id = id
+        self.buildingId = buildingId
+        self.addressId = addressId
+        self.gersId = gersId
+        self.height = height
+        self.heightM = heightM
+        self.minHeight = minHeight
+        self.isTownhome = isTownhome
+        self.unitsCount = unitsCount
+        self.addressText = addressText
+        self.matchMethod = matchMethod
+        self.featureStatus = featureStatus
+        self.featureType = featureType
+        self.status = status
+        self.scansToday = scansToday
+        self.scansTotal = scansTotal
+        self.lastScanSecondsAgo = lastScanSecondsAgo
+        self.houseNumber = houseNumber
+        self.streetName = streetName
+        self.confidence = confidence
+        self.source = source
+        self.addressCount = addressCount
+        self.qrScanned = qrScanned
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+
+        func decodeDouble(_ key: CodingKeys, default fallback: Double) -> Double {
+            if let value = try? c.decode(Double.self, forKey: key) { return value }
+            if let value = try? c.decode(Int.self, forKey: key) { return Double(value) }
+            return fallback
+        }
+
+        id = (try? c.decode(String.self, forKey: .id)) ?? UUID().uuidString
+        buildingId = try? c.decodeIfPresent(String.self, forKey: .buildingId)
+        addressId = try? c.decodeIfPresent(String.self, forKey: .addressId)
+        gersId = try? c.decodeIfPresent(String.self, forKey: .gersId)
+        height = decodeDouble(.height, default: 10)
+        heightM = (try? c.decodeIfPresent(Double.self, forKey: .heightM)) ?? (try? c.decodeIfPresent(Int.self, forKey: .heightM)).map(Double.init)
+        minHeight = decodeDouble(.minHeight, default: 0)
+        isTownhome = (try? c.decodeIfPresent(Bool.self, forKey: .isTownhome)) ?? false
+        unitsCount = (try? c.decodeIfPresent(Int.self, forKey: .unitsCount)) ?? 1
+        addressText = try? c.decodeIfPresent(String.self, forKey: .addressText)
+        matchMethod = try? c.decodeIfPresent(String.self, forKey: .matchMethod)
+        featureStatus = try? c.decodeIfPresent(String.self, forKey: .featureStatus)
+        featureType = try? c.decodeIfPresent(String.self, forKey: .featureType)
+        status = (try? c.decodeIfPresent(String.self, forKey: .status)) ?? "not_visited"
+        scansToday = (try? c.decodeIfPresent(Int.self, forKey: .scansToday)) ?? 0
+        scansTotal = (try? c.decodeIfPresent(Int.self, forKey: .scansTotal)) ?? 0
+        lastScanSecondsAgo = (try? c.decodeIfPresent(Double.self, forKey: .lastScanSecondsAgo)) ?? (try? c.decodeIfPresent(Int.self, forKey: .lastScanSecondsAgo)).map(Double.init)
+        houseNumber = try? c.decodeIfPresent(String.self, forKey: .houseNumber)
+        streetName = try? c.decodeIfPresent(String.self, forKey: .streetName)
+        confidence = (try? c.decodeIfPresent(Double.self, forKey: .confidence)) ?? (try? c.decodeIfPresent(Int.self, forKey: .confidence)).map(Double.init)
+        source = try? c.decodeIfPresent(String.self, forKey: .source)
+        addressCount = try? c.decodeIfPresent(Int.self, forKey: .addressCount)
+        qrScanned = try? c.decodeIfPresent(Bool.self, forKey: .qrScanned)
+    }
+
     var statusColor: String {
         if scansTotal > 0 || (qrScanned ?? false) { return "#8b5cf6" }
         switch status {

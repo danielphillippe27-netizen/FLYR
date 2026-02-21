@@ -15,24 +15,29 @@ struct SupabaseClientShim {
     func insertReturning<T: Decodable>(_ table: String, values: [String: Any]) async throws -> T {
         print("🔷 [SHIM] INSERT INTO \(table)")
         
-        // More aggressive filtering of nil values
+        // More aggressive filtering of nil values and Optional<Wrapped> in Any payloads.
+        func unwrapOptional(_ any: Any) -> Any? {
+            let mirror = Mirror(reflecting: any)
+            guard mirror.displayStyle == .optional else { return any }
+            return mirror.children.first?.value
+        }
+
         let filteredValues = values.compactMapValues { (value: Any) -> Any? in
+            guard let unwrapped = unwrapOptional(value) else {
+                return nil
+            }
+
             // Skip nil values entirely
-            if value is NSNull {
+            if unwrapped is NSNull {
                 return nil
             }
             
             // Skip empty strings for optional fields
-            if let stringValue = value as? String, stringValue.isEmpty {
+            if let stringValue = unwrapped as? String, stringValue.isEmpty {
                 return nil
             }
-            
-            // Skip nil optionals
-            if case Optional<Any>.none = value {
-                return nil
-            }
-            
-            return value
+
+            return unwrapped
         }
         
         print("🔷 [SHIM] Filtered values: \(filteredValues)")
@@ -415,4 +420,3 @@ public struct AnyCodable: Codable, Equatable, @unchecked Sendable {
         return false
     }
 }
-

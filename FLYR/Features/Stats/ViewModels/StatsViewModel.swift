@@ -6,7 +6,6 @@ final class StatsViewModel: ObservableObject {
     @Published var stats: UserStats?
     @Published var isLoading = false
     @Published var errorMessage: String?
-    @Published var selectedTab = "Week" // "Week" or "All Time"
     @Published var weeklyRank: Int?
     @Published var allTimeRank: Int?
 

@@ -38,6 +38,9 @@ struct Contact: Codable, Identifiable, Equatable {
     var address: String
     var campaignId: UUID?
     var farmId: UUID?
+    var gersId: String?
+    var addressId: UUID?
+    var tags: String?
     var status: ContactStatus
     var lastContacted: Date?
     var notes: String?
@@ -53,6 +56,9 @@ struct Contact: Codable, Identifiable, Equatable {
         case address
         case campaignId = "campaign_id"
         case farmId = "farm_id"
+        case gersId = "gers_id"
+        case addressId = "address_id"
+        case tags
         case status
         case lastContacted = "last_contacted"
         case notes
@@ -69,6 +75,9 @@ struct Contact: Codable, Identifiable, Equatable {
         address: String,
         campaignId: UUID? = nil,
         farmId: UUID? = nil,
+        gersId: String? = nil,
+        addressId: UUID? = nil,
+        tags: String? = nil,
         status: ContactStatus = .new,
         lastContacted: Date? = nil,
         notes: String? = nil,
@@ -83,6 +92,9 @@ struct Contact: Codable, Identifiable, Equatable {
         self.address = address
         self.campaignId = campaignId
         self.farmId = farmId
+        self.gersId = gersId
+        self.addressId = addressId
+        self.tags = tags
         self.status = status
         self.lastContacted = lastContacted
         self.notes = notes
@@ -158,4 +170,3 @@ extension Contact {
         )
     ]
 }
-

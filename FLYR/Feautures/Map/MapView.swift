@@ -307,6 +307,20 @@ struct FullScreenMapView: View {
         )
     }
     
+    /// When user opens the Map tab, center map on user location (if no campaign selected).
+    private func applyMapTabFocus<V: View>(to view: V) -> AnyView {
+        AnyView(
+            view
+                .onChange(of: uiState.selectedTabIndex) { _, newIndex in
+                    guard newIndex == 1, selectedCampaignId == nil else { return }
+                    locationManager.requestLocation()
+                    if let location = locationManager.currentLocation {
+                        centerMapOnLocation(location.coordinate)
+                    }
+                }
+        )
+    }
+    
     private func applyNotifications<V: View>(to view: V) -> AnyView {
         AnyView(
             view
@@ -322,7 +336,8 @@ struct FullScreenMapView: View {
         let step3 = applyTask(to: step2)
         let step4 = applyViewModelChanges(to: step3)
         let step5 = applyLocationChanges(to: step4)
-        return applyNotifications(to: step5)
+        let step6 = applyMapTabFocus(to: step5)
+        return applyNotifications(to: step6)
     }
     
     var body: some View {

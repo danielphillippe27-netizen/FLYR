@@ -92,7 +92,7 @@ final class CampaignsAPI {
     func createV2(_ payload: CampaignCreatePayloadV2) async throws -> CampaignV2 {
         print("🌐 [API DEBUG] Creating campaign V2 with payload")
         print("🌐 [API DEBUG] Campaign name: '\(payload.name)'")
-        print("🌐 [API DEBUG] Campaign type: \(payload.type.rawValue)")
+        print("🌐 [API DEBUG] Campaign type: \(payload.type.rawValue) -> db: \(payload.type.dbValue)")
         print("🌐 [API DEBUG] Address source: \(payload.addressSource.rawValue)")
         print("🌐 [API DEBUG] Target count: \(payload.addressTargetCount)")
         print("🌐 [API DEBUG] Seed query: \(payload.seedQuery ?? "nil")")
@@ -118,22 +118,42 @@ final class CampaignsAPI {
             "title": payload.name,
             "name": payload.name,
             "description": payload.description,
-            "type": payload.type.rawValue,
+            "type": payload.type.dbValue,
             "address_source": payload.addressSource.rawValue,
             "status": "draft",
             "scans": 0,
-            "conversions": 0,
-            "region": sanitizedRegion as Any
+            "conversions": 0
         ]
+        if let sanitizedRegion {
+            campaignValues["region"] = sanitizedRegion
+        }
         if let workspaceId = payload.workspaceId {
             campaignValues["workspace_id"] = workspaceId.uuidString
         }
         if let tags = payload.tags, !tags.trimmingCharacters(in: .whitespaces).isEmpty {
             campaignValues["tags"] = tags.trimmingCharacters(in: .whitespaces)
         }
+
+        // Defensive check so we fail with a clear client-side message before DB constraint errors.
+        let allowedTypes: Set<String> = [
+            "flyer", "door_knock", "event", "survey", "gift", "pop_by", "open_house", "letters"
+        ]
+        if !allowedTypes.contains(payload.type.dbValue) {
+            throw NSError(
+                domain: "CampaignsAPI",
+                code: 400,
+                userInfo: [NSLocalizedDescriptionKey: "Unsupported campaign type '\(payload.type.dbValue)'. Allowed: \(allowedTypes.sorted().joined(separator: ", "))"]
+            )
+        }
         
         print("🌐 [API DEBUG] Inserting campaign into DB...")
-        let dbRow: CampaignDBRow = try await shim.insertReturning("campaigns", values: campaignValues)
+        let dbRow: CampaignDBRow
+        do {
+            dbRow = try await shim.insertReturning("campaigns", values: campaignValues)
+        } catch {
+            print("❌ [API DEBUG] Campaign insert failed: \(error)")
+            throw error
+        }
         print("✅ [API DEBUG] Campaign inserted with ID: \(dbRow.id)")
         
         // 3. Bulk insert addresses via RPC

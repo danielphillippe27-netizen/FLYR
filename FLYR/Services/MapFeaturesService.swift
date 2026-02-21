@@ -226,8 +226,18 @@ final class MapFeaturesService: ObservableObject {
     @Published var roads: RoadFeatureCollection?
     @Published var isLoading = false
     @Published var error: Error?
+
+    // Campaign-scoped prewarmed building polygons (e.g. Quick Start ensure response before DB links are ready).
+    private var prewarmedBuildingsByCampaign: [String: BuildingFeatureCollection] = [:]
     
     private init() {}
+
+    func primeBuildingPolygons(campaignId: String, features: [GeoJSONFeature]) {
+        let collection = buildingFeatureCollectionFromGeoJSON(GeoJSONFeatureCollection(features: features))
+        guard !collection.features.isEmpty else { return }
+        prewarmedBuildingsByCampaign[campaignId.lowercased()] = collection
+        print("✅ [MapFeatures] Primed \(collection.features.count) prewarmed building polygons for campaign \(campaignId)")
+    }
     
     // MARK: - Campaign Full Features (Fetch Once, Render Forever)
     
@@ -437,6 +447,14 @@ final class MapFeaturesService: ObservableObject {
                 self.addresses = AddressFeatureCollection(type: "FeatureCollection", features: merged)
             }
         }
+
+        // If campaign RPC only returned address points, use prewarmed polygons captured during ensureBuildingPolygons.
+        if (self.buildings?.features.isEmpty ?? true),
+           let prewarmed = prewarmedBuildingsByCampaign[campaignId.lowercased()],
+           !prewarmed.features.isEmpty {
+            self.buildings = prewarmed
+            print("✅ [MapFeatures] Using prewarmed building polygons (\(prewarmed.features.count)) for campaign \(campaignId)")
+        }
         
         // Silver fallback: if no polygon buildings, try S3 snapshot
         if (buildings?.features.isEmpty ?? true), let silverFeatures = try? await BuildingLinkService.shared.fetchBuildings(campaignId: campaignId) {
@@ -520,21 +538,32 @@ final class MapFeaturesService: ObservableObject {
         
         do {
             print("🗺️ [MapFeatures] Closest-home fallback: ensuring building polygons for \(addressRows.count) addresses")
-            _ = try await BuildingsAPI.shared.ensureBuildingPolygons(addresses: addressRows)
-            
-            // Fetch buildings by campaign ID (queries buildings table where data exists)
-            let collection: GeoJSONFeatureCollection
-            if let campaignUUID = UUID(uuidString: campaignId) {
+            let ensureResponse = try await BuildingsAPI.shared.ensureBuildingPolygons(addresses: addressRows)
+
+            // If edge function returned features directly, render those immediately.
+            if let ensureFeatures = ensureResponse.features, !ensureFeatures.isEmpty {
+                let immediate = buildingFeatureCollectionFromGeoJSON(GeoJSONFeatureCollection(features: ensureFeatures))
+                if !immediate.features.isEmpty {
+                    self.buildings = immediate
+                    print("✅ [MapFeatures] Immediate ensure render loaded \(immediate.features.count) building features")
+                }
+            }
+
+            // Prefer address-id fetch first (works immediately after ensureBuildingPolygons),
+            // then fallback to campaign fetch/snapshot path.
+            let addressIds = addressRows.map(\.id)
+            var collection = try await BuildingsAPI.shared.fetchBuildingPolygons(addressIds: addressIds)
+            if collection.features.isEmpty, let campaignUUID = UUID(uuidString: campaignId) {
                 collection = try await BuildingsAPI.shared.fetchBuildingPolygons(campaignId: campaignUUID)
-            } else {
-                // Fallback: fetch by address IDs (legacy)
-                let addressIds = addressRows.map(\.id)
-                collection = try await BuildingsAPI.shared.fetchBuildingPolygons(addressIds: addressIds)
             }
             
             let buildingCollection = buildingFeatureCollectionFromGeoJSON(collection)
             self.buildings = buildingCollection
             print("✅ [MapFeatures] Fallback loaded \(buildingCollection.features.count) building features")
+
+            if !buildingCollection.features.isEmpty {
+                prewarmedBuildingsByCampaign[campaignId.lowercased()] = buildingCollection
+            }
         } catch {
             print("❌ [MapFeatures] Fallback buildings fetch failed: \(error)")
             // Leave buildings empty; map still shows addresses

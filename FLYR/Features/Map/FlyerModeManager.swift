@@ -37,6 +37,7 @@ final class FlyerModeManager: ObservableObject {
     var onAddressCompleted: ((UUID) -> Void)?
 
     private var currentIndex: Int = 0
+    private var requiresOrderedProgression = true
     private var locationCancellable: AnyCancellable?
     private let client = SupabaseManager.shared.client
 
@@ -44,6 +45,7 @@ final class FlyerModeManager: ObservableObject {
         addresses = []
         currentIndex = 0
         currentAddress = nil
+        requiresOrderedProgression = true
 
         let routeRows: [CampaignAddressRouteRow]
         do {
@@ -87,21 +89,40 @@ final class FlyerModeManager: ObservableObject {
             }
         }
 
-        var list: [FlyerAddress] = []
-        for row in ordered {
-            guard let clusterId = row.clusterId,
-                  let coord = idToCoordinate[row.id] else { continue }
-            list.append(FlyerAddress(
-                id: row.id,
-                formatted: idToFormatted[row.id] ?? "",
-                clusterId: clusterId,
-                coordinate: coord,
-                segmentLabel: ""
-            ))
+        if !ordered.isEmpty {
+            var list: [FlyerAddress] = []
+            for row in ordered {
+                guard let clusterId = row.clusterId,
+                      let coord = idToCoordinate[row.id] else { continue }
+                list.append(FlyerAddress(
+                    id: row.id,
+                    formatted: idToFormatted[row.id] ?? "",
+                    clusterId: clusterId,
+                    coordinate: coord,
+                    segmentLabel: ""
+                ))
+            }
+            addresses = Self.assignSegmentLabels(to: list, idToStreetName: idToStreetName, idToHouseNumber: idToHouseNumber)
+            requiresOrderedProgression = true
+        } else {
+            // Quick Start / no route clustering: proximity marks any remaining nearby address.
+            let fallback = addressFeatures.compactMap { feature -> FlyerAddress? in
+                guard let idStr = feature.properties.id ?? feature.id,
+                      let id = UUID(uuidString: idStr),
+                      let coord = idToCoordinate[id] else { return nil }
+                return FlyerAddress(
+                    id: id,
+                    formatted: idToFormatted[id] ?? "",
+                    clusterId: 0,
+                    coordinate: coord,
+                    segmentLabel: "Nearby"
+                )
+            }
+            addresses = fallback
+            requiresOrderedProgression = false
         }
-        addresses = Self.assignSegmentLabels(to: list, idToStreetName: idToStreetName, idToHouseNumber: idToHouseNumber)
         currentIndex = 0
-        currentAddress = list.isEmpty ? nil : list[0]
+        currentAddress = addresses.first
     }
 
     func startObservingLocation() {
@@ -124,16 +145,35 @@ final class FlyerModeManager: ObservableObject {
         addresses = []
         currentIndex = 0
         currentAddress = nil
+        requiresOrderedProgression = true
     }
 
     private func checkProximity(location: CLLocation) async {
-        guard currentIndex < addresses.count else { return }
-        let addr = addresses[currentIndex]
-        let addrLocation = CLLocation(latitude: addr.coordinate.latitude, longitude: addr.coordinate.longitude)
-        let distance = location.distance(from: addrLocation)
-        guard distance <= Self.proximityThresholdMeters else { return }
+        guard !addresses.isEmpty else {
+            currentAddress = nil
+            return
+        }
 
-        let addressId = addr.id
+        let matchedIndex: Int?
+        if requiresOrderedProgression {
+            guard currentIndex < addresses.count else {
+                currentAddress = nil
+                return
+            }
+            let addr = addresses[currentIndex]
+            let addrLocation = CLLocation(latitude: addr.coordinate.latitude, longitude: addr.coordinate.longitude)
+            let distance = location.distance(from: addrLocation)
+            matchedIndex = distance <= Self.proximityThresholdMeters ? currentIndex : nil
+        } else {
+            matchedIndex = addresses.firstIndex(where: { addr in
+                let addrLocation = CLLocation(latitude: addr.coordinate.latitude, longitude: addr.coordinate.longitude)
+                return location.distance(from: addrLocation) <= Self.proximityThresholdMeters
+            })
+        }
+
+        guard let matchedIndex else { return }
+
+        let addressId = addresses[matchedIndex].id
         onAddressCompleted?(addressId)
 
         guard let campaignId = SessionManager.shared.campaignId else { return }
@@ -144,8 +184,17 @@ final class FlyerModeManager: ObservableObject {
             notes: nil
         )
 
-        currentIndex += 1
-        currentAddress = currentIndex < addresses.count ? addresses[currentIndex] : nil
+        if requiresOrderedProgression {
+            currentIndex += 1
+            currentAddress = currentIndex < addresses.count ? addresses[currentIndex] : nil
+        } else {
+            addresses.remove(at: matchedIndex)
+            currentAddress = addresses.min(by: { lhs, rhs in
+                let l = location.distance(from: CLLocation(latitude: lhs.coordinate.latitude, longitude: lhs.coordinate.longitude))
+                let r = location.distance(from: CLLocation(latitude: rhs.coordinate.latitude, longitude: rhs.coordinate.longitude))
+                return l < r
+            })
+        }
     }
 
     /// Fills segmentLabel for each address: "Street Name Odd #" or "Street Name Even #" per cluster.

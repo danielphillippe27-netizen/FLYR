@@ -7,7 +7,9 @@ struct SessionRecord: Codable {
     let user_id: UUID
     let start_time: Date
     let end_time: Date?  // null when session is still active
+    let doors_hit: Int?
     let distance_meters: Double?
+    let conversations: Int?
     let goal_type: String?
     let goal_amount: Int?
     let path_geojson: String?
@@ -23,7 +25,7 @@ struct SessionRecord: Codable {
 
     /// Doors count for display: prefer flyers_delivered (set when ending session) then completed_count.
     var doorsCount: Int {
-        (flyers_delivered ?? completed_count ?? 0)
+        (doors_hit ?? flyers_delivered ?? completed_count ?? 0)
     }
 
     /// Duration in seconds (from start to end, or 0 if no end).
@@ -42,7 +44,7 @@ struct SessionRecord: Codable {
             goalAmount: goal_amount ?? 0,
             pathCoordinates: [],
             completedCount: doorsCount,
-            conversationsCount: nil,
+            conversationsCount: conversations,
             startTime: start_time
         )
     }
@@ -52,7 +54,9 @@ struct SessionRecord: Codable {
         case user_id
         case start_time
         case end_time
+        case doors_hit
         case distance_meters
+        case conversations
         case goal_type
         case goal_amount
         case path_geojson
@@ -113,4 +117,3 @@ struct EndSessionSummaryItem: Identifiable {
     var id: String { "\(data.distance)-\(data.time)-\(data.doorsCount)-\(data.conversations)" }
     let data: SessionSummaryData
 }
-

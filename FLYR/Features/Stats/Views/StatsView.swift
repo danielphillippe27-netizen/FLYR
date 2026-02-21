@@ -19,9 +19,6 @@ struct StatsView: View {
                             // Streaks
                             streaksSection
                             
-                            // Time Period Toggle
-                            timePeriodToggle
-                            
                             // Stats Grid
                             statsGridSection
                             
@@ -114,16 +111,6 @@ struct StatsView: View {
                 value: vm.stats?.best_streak ?? 0
             )
         }
-    }
-    
-    // MARK: - Time Period Toggle
-    
-    private var timePeriodToggle: some View {
-        Picker("Time Period", selection: $vm.selectedTab) {
-            Text("Week").tag("Week")
-            Text("All Time").tag("All Time")
-        }
-        .pickerStyle(.segmented)
     }
     
     // MARK: - Stats Grid Section

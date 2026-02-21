@@ -17,7 +17,6 @@ private let statsAccentRed = Color(hex: "#FF4F4F")
 struct StatsPageView: View {
     @EnvironmentObject var entitlementsService: EntitlementsService
     @State private var selectedTab: StatsPageTab = .leaderboard
-    @State private var youPeriod: String = "Week"
     @State private var showPaywall = false
 
     var body: some View {
@@ -27,15 +26,6 @@ struct StatsPageView: View {
                 .padding(.top, 8)
                 .padding(.bottom, 4)
                 .onChange(of: selectedTab) { _, _ in HapticManager.light() }
-
-            // Time filter pills – directly below toggle, only when You is selected
-            if selectedTab == .you {
-                TimeFilterPills(period: $youPeriod)
-                    .padding(.horizontal, 20)
-                    .padding(.top, 8)
-                    .padding(.bottom, 12)
-                    .transition(.opacity.combined(with: .move(edge: .top)))
-            }
 
             // Content with smooth transition
             Group {
@@ -49,7 +39,7 @@ struct StatsPageView: View {
                             .transition(.opacity.combined(with: .move(edge: .leading)))
                     }
                 case .you:
-                    YouViewContent(period: $youPeriod)
+                    YouViewContent()
                         .transition(.opacity.combined(with: .move(edge: .trailing)))
                 }
             }
@@ -136,14 +126,15 @@ private enum StatsProgressMax {
     static let doors = 200.0
     static let flyers = 200.0
     static let conversations = 100.0
+    static let leads = 100.0
+    static let appointments = 50.0
     static let distance = 20.0
     static let qrScans = 50.0
 }
 
-// MARK: - You View Content (fixed single-screen dashboard)
+// MARK: - You View Content (All Time only)
 
 struct YouViewContent: View {
-    @Binding var period: String
     @StateObject private var vm = StatsViewModel()
     @StateObject private var auth = AuthManager.shared
 
@@ -161,8 +152,8 @@ struct YouViewContent: View {
                             .frame(height: 115)
                             .padding(.top, 16)
 
-                        // 4-column summary row
-                        fourColumnRow
+                        // 4 percentage blocks
+                        fourPercentRow
                             .frame(height: 64)
                             .padding(.top, 16)
 
@@ -171,8 +162,8 @@ struct YouViewContent: View {
                             CompactStatRow(
                                 icon: "door.left.hand.open",
                                 label: "Doors",
-                                progress: progress(actual: Double(vm.stats?.flyers ?? 0), max: StatsProgressMax.flyers),
-                                value: "\(vm.stats?.flyers ?? 0)"
+                                progress: progress(actual: Double(vm.stats?.doors_knocked ?? 0), max: StatsProgressMax.doors),
+                                value: "\(vm.stats?.doors_knocked ?? 0)"
                             )
                             CompactStatRow(
                                 icon: "bubble.left.and.bubble.right.fill",
@@ -181,10 +172,28 @@ struct YouViewContent: View {
                                 value: "\(vm.stats?.conversations ?? 0)"
                             )
                             CompactStatRow(
+                                icon: "person.badge.plus",
+                                label: "Leads",
+                                progress: progress(actual: Double(vm.stats?.leads_created ?? 0), max: StatsProgressMax.leads),
+                                value: "\(vm.stats?.leads_created ?? 0)"
+                            )
+                            CompactStatRow(
+                                icon: "calendar",
+                                label: "Appointments",
+                                progress: progress(actual: Double(vm.stats?.appointments ?? 0), max: StatsProgressMax.appointments),
+                                value: "\(vm.stats?.appointments ?? 0)"
+                            )
+                            CompactStatRow(
                                 icon: "figure.walk",
                                 label: "Distance",
                                 progress: progress(actual: vm.stats?.distance_walked ?? 0, max: StatsProgressMax.distance),
                                 value: String(format: "%.1f mi", vm.stats?.distance_walked ?? 0)
+                            )
+                            CompactStatRow(
+                                icon: "doc.text",
+                                label: "Flyers",
+                                progress: progress(actual: Double(vm.stats?.flyers ?? 0), max: StatsProgressMax.flyers),
+                                value: "\(vm.stats?.flyers ?? 0)"
                             )
                             CompactStatRow(
                                 icon: "qrcode",
@@ -195,14 +204,7 @@ struct YouViewContent: View {
                         }
                         .padding(.top, 16)
                         .padding(.horizontal, 20)
-
-                        // Success rate footer (extra bottom padding so it clears tab bar when scrolled)
-                        Text("Success Rate: \(successRatePercent)%")
-                            .font(.system(size: 18, weight: .semibold))
-                            .foregroundColor(.text)
-                            .frame(maxWidth: .infinity)
-                            .padding(.top, 24)
-                            .padding(.bottom, 48)
+                        .padding(.bottom, 48)
                     }
                     .padding(.horizontal, 20)
                 }
@@ -213,12 +215,6 @@ struct YouViewContent: View {
                 }
                 .task {
                     await vm.loadStats(for: userID)
-                }
-                .onChange(of: period) { _, newValue in
-                    vm.selectedTab = newValue
-                }
-                .onAppear {
-                    vm.selectedTab = period
                 }
             } else {
                 VStack(spacing: 16) {
@@ -235,10 +231,13 @@ struct YouViewContent: View {
         return min(1.0, actual / max)
     }
 
-    private var successRatePercent: Int {
-        let rate = vm.stats?.conversation_lead_rate ?? 0
-        if rate <= 1 { return Int(rate * 100) }
-        return Int(rate)
+    private func safePercent(numerator: Double, denominator: Double) -> Double {
+        guard denominator > 0 else { return 0 }
+        return (numerator / denominator) * 100
+    }
+
+    private func formatPercent(_ value: Double) -> String {
+        String(format: "%.1f%%", value)
     }
 
     // MARK: - Streak hero (compact)
@@ -261,14 +260,20 @@ struct YouViewContent: View {
         .frame(maxWidth: .infinity)
     }
 
-    // MARK: - 4-column summary
+    // MARK: - 4 percentage blocks
 
-    private var fourColumnRow: some View {
-        HStack(spacing: 0) {
-            miniColumn(label: "Streak", value: "\(vm.stats?.day_streak ?? 0)")
-            miniColumn(label: "Best", value: "\(vm.stats?.best_streak ?? 0)")
-            miniColumn(label: "Doors", value: "\(vm.stats?.flyers ?? 0)")
-            miniColumn(label: "Conv", value: "\(vm.stats?.conversations ?? 0)")
+    private var fourPercentRow: some View {
+        let doors = Double(vm.stats?.doors_knocked ?? 0)
+        let conv = Double(vm.stats?.conversations ?? 0)
+        let leads = Double(vm.stats?.leads_created ?? 0)
+        let appts = Double(vm.stats?.appointments ?? 0)
+        let flyers = Double(vm.stats?.flyers ?? 0)
+        let qr = Double(vm.stats?.qr_codes_scanned ?? 0)
+        return HStack(spacing: 0) {
+            miniColumn(label: "D→C %", value: formatPercent(safePercent(numerator: conv, denominator: doors)))
+            miniColumn(label: "C→L %", value: formatPercent(safePercent(numerator: leads, denominator: conv)))
+            miniColumn(label: "C→A %", value: formatPercent(safePercent(numerator: appts, denominator: conv)))
+            miniColumn(label: "F→Q %", value: formatPercent(safePercent(numerator: qr, denominator: flyers)))
         }
         .padding(.horizontal, 8)
     }
@@ -287,23 +292,14 @@ struct YouViewContent: View {
     }
 }
 
-// MARK: - You Stats View (push from Home grid; no toggle)
+// MARK: - You Stats View (push from Home grid; All Time only)
 struct YouStatsView: View {
-    @State private var youPeriod: String = "Week"
-
     var body: some View {
-        VStack(spacing: 0) {
-            TimeFilterPills(period: $youPeriod)
-                .padding(.horizontal, 20)
-                .padding(.top, 8)
-                .padding(.bottom, 12)
-
-            YouViewContent(period: $youPeriod)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.bg)
-        .navigationTitle("Stats")
-        .navigationBarTitleDisplayMode(.inline)
+        YouViewContent()
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color.bg)
+            .navigationTitle("Stats")
+            .navigationBarTitleDisplayMode(.inline)
     }
 }
 

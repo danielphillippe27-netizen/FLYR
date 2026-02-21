@@ -116,41 +116,45 @@ private struct RouteAssignmentCard: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .center, spacing: 8) {
-                Text(route.name)
-                    .font(.flyrHeadline)
-                    .foregroundStyle(.primary)
-                    .lineLimit(2)
-                Spacer()
-                Text(route.statusLabel)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(statusColor)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 5)
-                    .background(statusColor.opacity(0.14))
-                    .clipShape(Capsule())
-            }
+        HStack(alignment: .top, spacing: 12) {
+            RouteCardEmblem()
 
-            HStack(spacing: 12) {
-                RouteMetaPill(text: "\(route.totalStops) stops", icon: "mappin.and.ellipse")
-                if let estMinutes = route.estMinutes {
-                    RouteMetaPill(text: "\(estMinutes) min", icon: "clock")
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .center, spacing: 8) {
+                    Text(route.name)
+                        .font(.flyrHeadline)
+                        .foregroundStyle(.primary)
+                        .lineLimit(2)
+                    Spacer()
+                    Text(route.statusLabel)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(statusColor)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(statusColor.opacity(0.14))
+                        .clipShape(Capsule())
                 }
-                if let distanceMeters = route.distanceMeters {
-                    RouteMetaPill(text: formatDistance(distanceMeters), icon: "point.topleft.down.curvedto.point.bottomright.up")
+
+                HStack(spacing: 12) {
+                    RouteMetaPill(text: "\(route.totalStops) stops", icon: "mappin.and.ellipse")
+                    if let estMinutes = route.estMinutes {
+                        RouteMetaPill(text: "\(estMinutes) min", icon: "clock")
+                    }
+                    if let distanceMeters = route.distanceMeters {
+                        RouteMetaPill(text: formatDistance(distanceMeters), icon: "point.topleft.down.curvedto.point.bottomright.up")
+                    }
                 }
+
+                Text(route.assignedByName.map { "Assigned by \($0)" } ?? "Assigned route")
+                    .font(.flyrCaption)
+                    .foregroundStyle(.secondary)
+
+                ProgressView(value: route.progressFraction)
+                    .tint(.red)
+                Text(progressLine)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.secondary)
             }
-
-            Text(route.assignedByName.map { "Assigned by \($0)" } ?? "Assigned route")
-                .font(.flyrCaption)
-                .foregroundStyle(.secondary)
-
-            ProgressView(value: route.progressFraction)
-                .tint(.red)
-            Text(progressLine)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(.secondary)
         }
         .padding(14)
         .background(
@@ -178,6 +182,21 @@ private struct RouteMetaPill: View {
         }
         .font(.system(size: 12, weight: .medium))
         .foregroundStyle(.secondary)
+    }
+}
+
+private struct RouteCardEmblem: View {
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color.black.opacity(0.9))
+                .frame(width: 44, height: 44)
+
+            Image(systemName: "point.3.connected.trianglepath.dotted")
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(.white)
+        }
+        .accessibilityHidden(true)
     }
 }
 

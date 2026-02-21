@@ -10,6 +10,7 @@ public enum CampaignType: String, CaseIterable, Identifiable, Codable {
   case gift
   case popBy
   case openHouse
+  case letters
 
   public var id: String { rawValue }
 
@@ -22,6 +23,7 @@ public enum CampaignType: String, CaseIterable, Identifiable, Codable {
       case .gift:             "Gift"
       case .popBy:            "Pop-By"
       case .openHouse:        "Open House"
+      case .letters:          "Letters"
     }
   }
 
@@ -30,6 +32,20 @@ public enum CampaignType: String, CaseIterable, Identifiable, Codable {
   /// Picker options: Flyer and Door Knock only.
   public static var ordered: [CampaignType] {
     [.flyer, .doorKnock]
+  }
+
+  /// Canonical value expected by Supabase `campaigns.type` constraints.
+  var dbValue: String {
+    switch self {
+      case .flyer: return "flyer"
+      case .doorKnock: return "door_knock"
+      case .event: return "event"
+      case .survey: return "survey"
+      case .gift: return "gift"
+      case .popBy: return "pop_by"
+      case .openHouse: return "open_house"
+      case .letters: return "letters"
+    }
   }
 }
 

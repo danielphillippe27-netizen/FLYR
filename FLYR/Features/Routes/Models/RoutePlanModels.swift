@@ -89,39 +89,47 @@ struct RoutePlanDetail: Identifiable, Equatable, Sendable {
     let stops: [RoutePlanStop]
 
     init?(_ json: [String: Any]) {
-        let routePlanObject = RouteJSON.dictionary(from: RouteJSON.value(in: json, keys: ["route_plan", "routePlan"]))
+        let payload: [String: Any]
+        if let wrapped = RouteJSON.dictionary(from: RouteJSON.value(in: json, keys: ["get_route_plan_detail", "getRoutePlanDetail", "data", "result"])),
+           RouteJSON.value(in: wrapped, keys: ["plan", "route_plan", "routePlan", "stops", "segments"]) != nil {
+            payload = wrapped
+        } else {
+            payload = json
+        }
+
+        let routePlanObject = RouteJSON.dictionary(from: RouteJSON.value(in: payload, keys: ["route_plan", "routePlan", "plan"]))
 
         guard
-            let id = RouteJSON.uuid(from: RouteJSON.value(in: json, keys: ["route_plan_id", "routePlanId", "id"]))
+            let id = RouteJSON.uuid(from: RouteJSON.value(in: payload, keys: ["route_plan_id", "routePlanId", "id"]))
                 ?? RouteJSON.uuid(from: RouteJSON.value(in: routePlanObject, keys: ["id"]))
         else {
             return nil
         }
 
         self.id = id
-        self.workspaceId = RouteJSON.uuid(from: RouteJSON.value(in: json, keys: ["workspace_id", "workspaceId"]))
+        self.workspaceId = RouteJSON.uuid(from: RouteJSON.value(in: payload, keys: ["workspace_id", "workspaceId"]))
             ?? RouteJSON.uuid(from: RouteJSON.value(in: routePlanObject, keys: ["workspace_id", "workspaceId"]))
-        self.campaignId = RouteJSON.uuid(from: RouteJSON.value(in: json, keys: ["campaign_id", "campaignId"]))
+        self.campaignId = RouteJSON.uuid(from: RouteJSON.value(in: payload, keys: ["campaign_id", "campaignId"]))
             ?? RouteJSON.uuid(from: RouteJSON.value(in: routePlanObject, keys: ["campaign_id", "campaignId"]))
-        self.name = RouteJSON.string(from: RouteJSON.value(in: json, keys: ["name"]))
+        self.name = RouteJSON.string(from: RouteJSON.value(in: payload, keys: ["name"]))
             ?? RouteJSON.string(from: RouteJSON.value(in: routePlanObject, keys: ["name"]))
             ?? "Route Plan"
-        self.totalStops = RouteJSON.int(from: RouteJSON.value(in: json, keys: ["total_stops", "totalStops"]))
+        self.totalStops = RouteJSON.int(from: RouteJSON.value(in: payload, keys: ["total_stops", "totalStops"]))
             ?? RouteJSON.int(from: RouteJSON.value(in: routePlanObject, keys: ["total_stops", "totalStops"]))
             ?? 0
-        self.estMinutes = RouteJSON.int(from: RouteJSON.value(in: json, keys: ["est_minutes", "estMinutes"]))
+        self.estMinutes = RouteJSON.int(from: RouteJSON.value(in: payload, keys: ["est_minutes", "estMinutes"]))
             ?? RouteJSON.int(from: RouteJSON.value(in: routePlanObject, keys: ["est_minutes", "estMinutes"]))
-        self.distanceMeters = RouteJSON.int(from: RouteJSON.value(in: json, keys: ["distance_meters", "distanceMeters"]))
+        self.distanceMeters = RouteJSON.int(from: RouteJSON.value(in: payload, keys: ["distance_meters", "distanceMeters"]))
             ?? RouteJSON.int(from: RouteJSON.value(in: routePlanObject, keys: ["distance_meters", "distanceMeters"]))
 
-        let rawSegments = RouteJSON.value(in: json, keys: ["segments"])
+        let rawSegments = RouteJSON.value(in: payload, keys: ["segments"])
             ?? RouteJSON.value(in: routePlanObject, keys: ["segments"])
         let parsedSegments = RouteJSON.dictionaryArray(from: rawSegments)
             .enumerated()
             .map { RoutePlanSegment($0.element, index: $0.offset) }
         self.segments = parsedSegments
 
-        let rawStops = RouteJSON.value(in: json, keys: ["stops", "ordered_stops", "route_stops"])
+        let rawStops = RouteJSON.value(in: payload, keys: ["stops", "ordered_stops", "route_stops"])
         let parsedStops = RouteJSON.dictionaryArray(from: rawStops)
             .enumerated()
             .map { RoutePlanStop($0.element, index: $0.offset) }

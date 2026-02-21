@@ -102,6 +102,9 @@ actor ContactsService {
             "address": AnyCodable(contactToInsert.address),
             "campaign_id": AnyCodable(contactToInsert.campaignId),
             "farm_id": AnyCodable(contactToInsert.farmId),
+            "gers_id": AnyCodable(contactToInsert.gersId),
+            "address_id": AnyCodable(contactToInsert.addressId),
+            "tags": AnyCodable(contactToInsert.tags),
             "status": AnyCodable(contactToInsert.status.rawValue),
             "last_contacted": AnyCodable(contactToInsert.lastContacted),
             "notes": AnyCodable(contactToInsert.notes),
@@ -157,6 +160,9 @@ actor ContactsService {
             "address": AnyCodable(contact.address),
             "campaign_id": AnyCodable(contact.campaignId),
             "farm_id": AnyCodable(contact.farmId),
+            "gers_id": AnyCodable(contact.gersId),
+            "address_id": AnyCodable(contact.addressId),
+            "tags": AnyCodable(contact.tags),
             "status": AnyCodable(contact.status.rawValue),
             "last_contacted": AnyCodable(contact.lastContacted),
             "notes": AnyCodable(contact.notes),
@@ -194,11 +200,12 @@ actor ContactsService {
     // MARK: - Activities
     
     func logActivity(contactID: UUID, type: ActivityType, note: String?) async throws -> ContactActivity {
+        let timestamp = ISO8601DateFormatter().string(from: Date())
         let activityData: [String: AnyCodable] = [
             "contact_id": AnyCodable(contactID),
             "type": AnyCodable(type.rawValue),
             "note": AnyCodable(note),
-            "timestamp": AnyCodable(Date())
+            "timestamp": AnyCodable(timestamp)
         ]
         
         let response: [ContactActivity] = try await client
@@ -236,4 +243,3 @@ struct ContactFilter {
     var farmId: UUID? = nil
     var searchText: String? = nil
 }
-

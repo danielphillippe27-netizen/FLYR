@@ -212,6 +212,7 @@ struct FlyerModeOverlay: View {
 /// Mirrors FLYR-PRO's CampaignDetailMapView.tsx functionality
 struct CampaignMapView: View {
     let campaignId: String
+    let quickStartEnabled: Bool
     @Environment(\.colorScheme) private var colorScheme
 
     /// Default center when no campaign data yet (Toronto)
@@ -248,6 +249,12 @@ struct CampaignMapView: View {
     /// Maps building gersId → set of address UUIDs (populated when a multi-address card is opened)
     @State private var buildingAddressMap: [String: Set<UUID>] = [:]
     @StateObject private var flyerModeManager = FlyerModeManager()
+    @State private var quickStartStartingMode: SessionMode?
+
+    init(campaignId: String, quickStartEnabled: Bool = false) {
+        self.campaignId = campaignId
+        self.quickStartEnabled = quickStartEnabled
+    }
 
     var body: some View {
         campaignMapContent
@@ -262,7 +269,7 @@ struct CampaignMapView: View {
     }
 
     private var campaignMapWithObservers: some View {
-        campaignMapGeometry
+        let baseView = campaignMapGeometry
             .alert("Are you sure?", isPresented: $showEndSessionConfirmation) {
                 Button("Cancel", role: .cancel) {}
                 Button("End", role: .destructive) { SessionManager.shared.stop() }
@@ -275,21 +282,51 @@ struct CampaignMapView: View {
             }
             .onChange(of: campaignId) { _, _ in hasFlownToCampaign = false }
             .onDisappear { Task { await statsSubscriber?.unsubscribe() } }
-            .onChange(of: featuresService.buildings?.features.count ?? 0) { _, _ in updateMapData() }
+        return applyFeatureAndSessionObservers(to: baseView)
+    }
+
+    private func applyFeatureAndSessionObservers<V: View>(to view: V) -> some View {
+        view
+            .onChange(of: featuresService.isLoading) { _, isLoading in
+                if !isLoading { updateMapData() }
+            }
+            .onChange(of: buildingsRenderSignature) { _, _ in updateMapData() }
             .onChange(of: featuresService.addresses?.features.count ?? 0) { _, _ in updateMapData() }
             .onChange(of: sessionManager.pathCoordinates.count) { _, _ in updateSessionPathOnMap() }
             .onChange(of: sessionManager.sessionId) { _, new in
                 updateSessionPathOnMap()
                 if new == nil {
                     flyerModeManager.reset()
-                } else {
+                    quickStartStartingMode = nil
+                } else if sessionManager.sessionMode == .flyer {
                     flyerModeManager.startObservingLocation()
+                } else {
+                    flyerModeManager.stopObservingLocation()
+                }
+            }
+            .onChange(of: sessionManager.sessionMode) { _, mode in
+                guard sessionManager.sessionId != nil else { return }
+                if mode == .flyer {
+                    flyerModeManager.startObservingLocation()
+                } else {
+                    flyerModeManager.stopObservingLocation()
                 }
             }
             .onReceive(Timer.publish(every: 2.0, on: .main, in: .common).autoconnect()) { _ in
                 guard sessionManager.sessionId != nil else { return }
                 updateSessionPathOnMap()
             }
+    }
+
+    private var buildingsRenderSignature: String {
+        guard let features = featuresService.buildings?.features else { return "none" }
+        let polygonCount = features.reduce(into: 0) { partial, feature in
+            let type = feature.geometry.type.lowercased()
+            if type == "polygon" || type == "multipolygon" {
+                partial += 1
+            }
+        }
+        return "\(features.count)-\(polygonCount)"
     }
 
     private var campaignMapWithAlertsAndObservers: some View {
@@ -426,16 +463,19 @@ struct CampaignMapView: View {
 
     @ViewBuilder
     private var flyerModeOverlay: some View {
-        FlyerModeOverlay(
-            flyerModeManager: flyerModeManager,
-            onAddressCompleted: flyerAddressCompleted
-        )
-        .id(layerManager != nil)
+        if sessionManager.sessionId != nil, sessionManager.sessionMode == .flyer {
+            FlyerModeOverlay(
+                flyerModeManager: flyerModeManager,
+                onAddressCompleted: flyerAddressCompleted
+            )
+            .id(layerManager != nil)
+        }
     }
 
     private func flyerAddressCompleted(addressId: UUID) {
         layerManager?.updateAddressState(addressId: addressId.uuidString, status: "visited", scansTotal: 0)
         addressStatuses[addressId] = .delivered
+        SessionManager.shared.recordAddressDelivered()
     }
 
     @ViewBuilder
@@ -512,29 +552,58 @@ struct CampaignMapView: View {
                let features = featuresService.buildings?.features,
                !features.isEmpty,
                let campId = UUID(uuidString: campaignId) {
-                GeometryReader { geo in
-                    HStack {
-                        Spacer()
-                        Button {
+                if quickStartEnabled {
+                    QuickStartBottomBar(
+                        isStartingDoor: quickStartStartingMode == .doorKnocking,
+                        isStartingFlyers: quickStartStartingMode == .flyer,
+                        onStartDoorKnocking: {
+                            guard quickStartStartingMode == nil else { return }
                             HapticManager.medium()
-                            startBuildingSession(campaignId: campId, features: features)
-                        } label: {
-                            Label("Start session", systemImage: "play.circle.fill")
-                                .font(.flyrSubheadline)
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.7)
-                                .padding(.horizontal, 24)
-                                .padding(.vertical, 4)
+                            quickStartStartingMode = .doorKnocking
+                            startBuildingSession(
+                                campaignId: campId,
+                                features: features,
+                                mode: .doorKnocking,
+                                onFinished: { quickStartStartingMode = nil }
+                            )
+                        },
+                        onStartFlyers: {
+                            guard quickStartStartingMode == nil else { return }
+                            HapticManager.medium()
+                            quickStartStartingMode = .flyer
+                            startBuildingSession(
+                                campaignId: campId,
+                                features: features,
+                                mode: .flyer,
+                                onFinished: { quickStartStartingMode = nil }
+                            )
                         }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.small)
-                        .frame(width: geo.size.width * 0.5)
-                        Spacer()
+                    )
+                } else {
+                    GeometryReader { geo in
+                        HStack {
+                            Spacer()
+                            Button {
+                                HapticManager.medium()
+                                startBuildingSession(campaignId: campId, features: features)
+                            } label: {
+                                Label("Start session", systemImage: "play.circle.fill")
+                                    .font(.flyrSubheadline)
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.7)
+                                    .padding(.horizontal, 24)
+                                    .padding(.vertical, 4)
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
+                            .frame(width: geo.size.width * 0.5)
+                            Spacer()
+                        }
                     }
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 18)
+                    .padding(.bottom, 64)
                 }
-                .frame(maxWidth: .infinity)
-                .frame(height: 18)
-                .padding(.bottom, 64)
             }
         }
     }
@@ -736,6 +805,7 @@ struct CampaignMapView: View {
     private func loadCampaignData() {
         Task {
             await featuresService.fetchAllCampaignFeatures(campaignId: campaignId)
+            updateMapData()
         }
     }
     
@@ -1086,9 +1156,17 @@ struct CampaignMapView: View {
         return labels
     }
 
-    private func startBuildingSession(campaignId: UUID, features: [BuildingFeature]) {
+    private func startBuildingSession(
+        campaignId: UUID,
+        features: [BuildingFeature],
+        mode: SessionMode = .doorKnocking,
+        onFinished: (() -> Void)? = nil
+    ) {
         let targetIds = features.compactMap { f in f.properties.gersId ?? f.id }
-        guard !targetIds.isEmpty else { return }
+        guard !targetIds.isEmpty else {
+            onFinished?()
+            return
+        }
         var centroids: [String: CLLocationCoordinate2D] = [:]
         for f in features {
             guard let gersId = f.properties.gersId ?? f.id else { continue }
@@ -1106,12 +1184,20 @@ struct CampaignMapView: View {
             }
         }
         Task {
-            try? await sessionManager.startBuildingSession(
-                campaignId: campaignId,
-                targetBuildings: targetIds,
-                autoCompleteEnabled: false,
-                centroids: centroids
-            )
+            do {
+                try await sessionManager.startBuildingSession(
+                    campaignId: campaignId,
+                    targetBuildings: targetIds,
+                    autoCompleteEnabled: false,
+                    centroids: centroids,
+                    mode: mode
+                )
+            } catch {
+                print("⚠️ [CampaignMap] Failed to start session: \(error)")
+            }
+            await MainActor.run {
+                onFinished?()
+            }
         }
     }
     
@@ -1353,6 +1439,9 @@ struct LocationCardView: View {
     @State private var voiceLogPreviewResult: VoiceLogResponse?
     @State private var flyrEventIdForRecording: UUID?
     @State private var showPaywall = false
+    @State private var showTranscribedNoteSheet = false
+    @State private var transcribedNoteText = ""
+    @State private var isTranscribing = false
 
     init(gersId: String, campaignId: UUID, addressId: UUID? = nil, addressText: String? = nil, preferredAddressId: UUID? = nil, addressStatuses: [UUID: AddressStatus] = [:], onSelectAddress: ((UUID?) -> Void)? = nil, onAddressesResolved: (([UUID]) -> Void)? = nil, onClose: @escaping () -> Void, onStatusUpdated: ((UUID, AddressStatus) -> Void)? = nil) {
         self.gersId = gersId
@@ -1372,9 +1461,12 @@ struct LocationCardView: View {
     private var cardFieldBorder: Color { Color(white: 0.28) }
     private var cardPlaceholder: Color { Color(white: 0.5) }
     
-    /// Street number/name only from a full address string (e.g. "74 MADDEN PL , BOWMANVILLE, ON" -> "74 MADDEN PL")
+    /// Street number and name only (e.g. "9 LIVING N, CLARINGTON, ON, CA" or "74 MADDEN PL , BOWMANVILLE, ON" -> "9 LIVING N" / "74 MADDEN PL")
     private func streetOnly(from full: String) -> String {
         if let idx = full.range(of: " , ")?.lowerBound {
+            return String(full[..<idx]).trimmingCharacters(in: .whitespaces)
+        }
+        if let idx = full.range(of: ",")?.lowerBound {
             return String(full[..<idx]).trimmingCharacters(in: .whitespaces)
         }
         return full.trimmingCharacters(in: .whitespaces)
@@ -1587,6 +1679,14 @@ struct LocationCardView: View {
                     }
                 )
             }
+        }
+        .sheet(isPresented: $showTranscribedNoteSheet) {
+            TranscribedNoteSheet(
+                text: $transcribedNoteText,
+                addressId: addressId,
+                campaignId: campaignId,
+                onDismiss: { showTranscribedNoteSheet = false }
+            )
         }
         .sheet(isPresented: $showPaywall) {
             PaywallView()
@@ -2006,12 +2106,12 @@ struct LocationCardView: View {
     private func aiSummaryButton(address: ResolvedAddress?) -> some View {
         Group {
             if voiceRecorder.isRecording {
-                Button(action: { stopAndUploadVoiceLog(address: address) }) {
+                Button(action: { stopAndTranscribeToNote(address: address) }) {
                     HStack(spacing: 4) {
                         Image(systemName: "stop.circle.fill")
                             .font(.system(size: 18))
                             .foregroundColor(.black)
-                        Text("\(Int(voiceRecorder.recordingDuration))s")
+                        Text(isTranscribing ? "Transcribing…" : "\(Int(voiceRecorder.recordingDuration))s")
                             .font(.system(size: 12))
                             .foregroundColor(.black)
                     }
@@ -2020,20 +2120,28 @@ struct LocationCardView: View {
                     .background(actionButtonPillStyle)
                 }
                 .buttonStyle(.plain)
-                .disabled(isUploadingVoiceNote)
-                .accessibilityLabel("Stop and send to Follow Up Boss")
+                .disabled(isTranscribing)
+                .accessibilityLabel("Stop and transcribe to note")
             } else {
                 Button(action: { startAISummaryRecording() }) {
-                    Image(systemName: "mic.fill")
-                        .font(.system(size: 18))
-                        .foregroundColor(.black)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
-                        .background(actionButtonPillStyle)
+                    Group {
+                        if isTranscribing {
+                            Text("Transcribing…")
+                                .font(.system(size: 12))
+                                .foregroundColor(.black)
+                        } else {
+                            Image(systemName: "mic.fill")
+                                .font(.system(size: 18))
+                                .foregroundColor(.black)
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                    .background(actionButtonPillStyle)
                 }
                 .buttonStyle(.plain)
-                .disabled(isUploadingVoiceNote || addressId == nil)
-                .accessibilityLabel("AI Summary")
+                .disabled(isTranscribing || addressId == nil)
+                .accessibilityLabel(isTranscribing ? "Transcribing" : "Record voice note")
             }
         }
     }
@@ -2041,9 +2149,14 @@ struct LocationCardView: View {
     private func startAISummaryRecording() {
         flyrEventIdForRecording = UUID()
         Task {
-            let granted = await voiceRecorder.requestPermission()
-            guard granted else {
+            let micGranted = await voiceRecorder.requestPermission()
+            guard micGranted else {
                 voiceNoteError = "Microphone access is required for voice notes."
+                return
+            }
+            let speechGranted = await transcriptionService.requestSpeechPermission()
+            if !speechGranted {
+                voiceNoteError = "Speech recognition is required to transcribe to a note."
                 return
             }
             await MainActor.run {
@@ -2052,40 +2165,27 @@ struct LocationCardView: View {
         }
     }
 
-    private func stopAndUploadVoiceLog(address: ResolvedAddress?) {
-        guard let url = voiceRecorder.stopRecording(),
-              let eventId = flyrEventIdForRecording,
-              let addrId = address?.id ?? addressId else {
+    private func stopAndTranscribeToNote(address: ResolvedAddress?) {
+        guard let url = voiceRecorder.stopRecording() else {
             flyrEventIdForRecording = nil
             return
         }
-        let addressString = address?.displayFull ?? addressText ?? ""
-        isUploadingVoiceNote = true
+        flyrEventIdForRecording = nil
+        isTranscribing = true
         Task {
-            defer {
-                Task { @MainActor in
-                    isUploadingVoiceNote = false
-                    flyrEventIdForRecording = nil
-                }
-            }
             do {
-                let result = try await VoiceLogAPI.shared.submitVoiceLog(
-                    audioURL: url,
-                    flyrEventId: eventId,
-                    addressId: addrId,
-                    campaignId: campaignId,
-                    address: addressString,
-                    leadId: nil
-                )
+                let text = try await transcriptionService.transcribeWithDevice(audioURL: url)
                 try? FileManager.default.removeItem(at: url)
                 await MainActor.run {
-                    voiceLogPreviewResult = result
-                    showVoiceLogPreviewSheet = true
+                    transcribedNoteText = text
+                    showTranscribedNoteSheet = true
+                    isTranscribing = false
                 }
             } catch {
                 try? FileManager.default.removeItem(at: url)
                 await MainActor.run {
-                    voiceNoteError = error.localizedDescription
+                    voiceNoteError = "Transcription failed: \(error.localizedDescription)"
+                    isTranscribing = false
                 }
             }
         }
@@ -2500,6 +2600,66 @@ private struct VoiceLogPreviewSheet: View {
                         onDismiss()
                         dismiss()
                     }
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Transcribed Note Sheet (voice → on-device transcript; edit and optionally save to address)
+
+private struct TranscribedNoteSheet: View {
+    @Binding var text: String
+    let addressId: UUID?
+    let campaignId: UUID
+    let onDismiss: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var isSaving = false
+
+    var body: some View {
+        NavigationStack {
+            TextEditor(text: $text)
+                .font(.body)
+                .padding()
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .scrollContentBackground(.hidden)
+                .background(Color(.systemBackground))
+                .navigationTitle("Voice note")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Done") {
+                            onDismiss()
+                            dismiss()
+                        }
+                    }
+                    if addressId != nil {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Save") {
+                                saveToAddress()
+                            }
+                            .disabled(text.isEmpty || isSaving)
+                        }
+                    }
+                }
+        }
+    }
+
+    private func saveToAddress() {
+        guard let addrId = addressId, !text.isEmpty else { return }
+        isSaving = true
+        Task {
+            do {
+                try await VoiceNoteAPI.saveVoiceNoteToCampaign(transcript: text, addressId: addrId, campaignId: campaignId)
+                await MainActor.run {
+                    isSaving = false
+                    onDismiss()
+                    dismiss()
+                }
+            } catch {
+                await MainActor.run {
+                    isSaving = false
                 }
             }
         }

@@ -331,48 +331,52 @@ struct SessionStartView: View {
     }
     
     private func routeRow(_ route: RouteAssignmentSummary) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text(route.name)
-                    .font(.flyrHeadline)
-                    .foregroundColor(.primary)
-                    .lineLimit(2)
-                Spacer()
-                Text(route.statusLabel)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(routeStatusColor(route.status))
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 5)
-                    .background(routeStatusColor(route.status).opacity(0.15))
-                    .clipShape(Capsule())
-            }
+        HStack(alignment: .top, spacing: 12) {
+            RouteCardEmblem()
 
-            HStack(spacing: 12) {
-                Label("\(route.totalStops) stops", systemImage: "mappin.and.ellipse")
-                    .font(.flyrCaption)
-                    .foregroundColor(.secondary)
-                if let estMinutes = route.estMinutes {
-                    Label("\(estMinutes) min", systemImage: "clock")
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text(route.name)
+                        .font(.flyrHeadline)
+                        .foregroundColor(.primary)
+                        .lineLimit(2)
+                    Spacer()
+                    Text(route.statusLabel)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(routeStatusColor(route.status))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(routeStatusColor(route.status).opacity(0.15))
+                        .clipShape(Capsule())
+                }
+
+                HStack(spacing: 12) {
+                    Label("\(route.totalStops) stops", systemImage: "mappin.and.ellipse")
+                        .font(.flyrCaption)
+                        .foregroundColor(.secondary)
+                    if let estMinutes = route.estMinutes {
+                        Label("\(estMinutes) min", systemImage: "clock")
+                            .font(.flyrCaption)
+                            .foregroundColor(.secondary)
+                    }
+                    if let meters = route.distanceMeters {
+                        Label(formatDistance(meters), systemImage: "point.topleft.down.curvedto.point.bottomright.up")
+                            .font(.flyrCaption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                ProgressView(value: route.progressFraction)
+                    .tint(.red)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(route.assignedByName.map { "Assigned by \($0)" } ?? "Assigned route")
+                        .font(.flyrCaption)
+                        .foregroundColor(.secondary)
+                    Text("\(route.completedStops)/\(max(route.totalStops, 0)) complete")
                         .font(.flyrCaption)
                         .foregroundColor(.secondary)
                 }
-                if let meters = route.distanceMeters {
-                    Label(formatDistance(meters), systemImage: "point.topleft.down.curvedto.point.bottomright.up")
-                        .font(.flyrCaption)
-                        .foregroundColor(.secondary)
-                }
-            }
-
-            ProgressView(value: route.progressFraction)
-                .tint(.red)
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(route.assignedByName.map { "Assigned by \($0)" } ?? "Assigned route")
-                    .font(.flyrCaption)
-                    .foregroundColor(.secondary)
-                Text("\(route.completedStops)/\(max(route.totalStops, 0)) complete")
-                    .font(.flyrCaption)
-                    .foregroundColor(.secondary)
             }
         }
         .padding()
@@ -482,6 +486,20 @@ struct SessionStartView: View {
             return String(format: "%.1f km", Double(meters) / 1000.0)
         }
         return "\(meters)m"
+    }
+
+    @ViewBuilder
+    private func RouteCardEmblem() -> some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color.black.opacity(0.9))
+                .frame(width: 44, height: 44)
+
+            Image(systemName: "point.3.connected.trianglepath.dotted")
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(.white)
+        }
+        .accessibilityHidden(true)
     }
     
     // MARK: - Data Loading

@@ -2,7 +2,7 @@ import SwiftUI
 
 private enum HomeRoute: Hashable {
     case campaigns
-    case routes
+    case quickStart
     case activity
     case stats
     case support
@@ -13,8 +13,11 @@ struct HomeView: View {
     @State private var path: [HomeRoute] = []
     @State private var showingNewCampaign = false
     @StateObject private var storeV2 = CampaignV2Store.shared
+    @StateObject private var auth = AuthManager.shared
+    @StateObject private var reportsViewModel = IndividualPerformanceReportViewModel()
     @State private var dailyContent = DailyContentService.shared
     @State private var selectedCampaignID: UUID?
+    @State private var showingPerformanceReports = false
 
     /// PNG from asset catalog: white logo for dark mode, black logo for light mode.
     private var headerLogoName: String {
@@ -23,7 +26,16 @@ struct HomeView: View {
 
     var body: some View {
         NavigationStack(path: $path) {
-            homeGrid
+            ZStack {
+                homeGrid
+                    .blur(radius: showingPerformanceReports ? 8 : 0)
+                    .disabled(showingPerformanceReports)
+
+                if showingPerformanceReports {
+                    performanceReportsOverlay
+                        .zIndex(50)
+                }
+            }
             .safeAreaInset(edge: .top, spacing: 0) {
                 Color.clear.frame(height: 12)
             }
@@ -67,8 +79,8 @@ struct HomeView: View {
                     switch route {
                     case .campaigns:
                         CampaignsView()
-                    case .routes:
-                        RoutesListView()
+                    case .quickStart:
+                        QuickStartMapView()
                     case .activity:
                         ActivityView()
                     case .stats:
@@ -81,6 +93,14 @@ struct HomeView: View {
                             ))
                     }
                 }
+        }
+        .task(id: auth.user?.id) {
+            guard let userID = auth.user?.id else { return }
+            await reportsViewModel.refreshUnreadIndicator(for: userID)
+        }
+        .onChange(of: showingPerformanceReports) { _, isPresented in
+            guard !isPresented, let userID = auth.user?.id else { return }
+            Task { await reportsViewModel.refreshUnreadIndicator(for: userID) }
         }
         .fullScreenCover(isPresented: $showingNewCampaign) {
             NavigationStack {
@@ -114,8 +134,11 @@ struct HomeView: View {
                         HomeGridTile(title: "Campaigns", icon: "scope") {
                             path.append(.campaigns)
                         }
-                        HomeGridTile(title: "Routes", icon: "point.topleft.down.curvedto.point.bottomright.up") {
-                            path.append(.routes)
+                        HomeGridTile(title: "Quick Start", icon: "bolt.fill") {
+                            // Guard against rapid double-taps pushing duplicate quick-start screens.
+                            if path.last != .quickStart {
+                                path.append(.quickStart)
+                            }
                         }
                         HomeGridTile(title: "Activity", icon: "figure.walk") {
                             path.append(.activity)
@@ -126,7 +149,9 @@ struct HomeView: View {
                     }
                     .padding(.top, 4)
 
-                    WeeklyReportPlaceholder()
+                    WeeklyReportButton(hasUnread: reportsViewModel.hasUnread) {
+                        openPerformanceReports()
+                    }
                         .padding(.top, 16)
                         .padding(.bottom, 24)
                 }
@@ -137,6 +162,56 @@ struct HomeView: View {
         .background(HomeGradientBackground())
         .task(id: "dailyContent") {
             await dailyContent.fetch()
+        }
+    }
+
+    private var performanceReportsOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.30)
+                .ignoresSafeArea()
+                .background(.ultraThinMaterial)
+                .onTapGesture {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        showingPerformanceReports = false
+                    }
+                }
+
+            IndividualPerformanceReportModal(
+                reports: reportsViewModel.reports,
+                isLoading: reportsViewModel.isLoading,
+                errorMessage: reportsViewModel.errorMessage,
+                onRefresh: {
+                    guard let userID = auth.user?.id else { return }
+                    Task {
+                        await reportsViewModel.loadReports(
+                            userID: userID,
+                            workspaceID: WorkspaceContext.shared.workspaceId
+                        )
+                    }
+                },
+                onDismiss: {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        showingPerformanceReports = false
+                    }
+                }
+            )
+            .transition(.opacity.combined(with: .scale(scale: 0.98)))
+        }
+    }
+
+    private func openPerformanceReports() {
+        guard let userID = auth.user?.id else { return }
+
+        HapticManager.light()
+        withAnimation(.easeInOut(duration: 0.2)) {
+            showingPerformanceReports = true
+        }
+
+        Task {
+            await reportsViewModel.openAndMarkRead(
+                userID: userID,
+                workspaceID: WorkspaceContext.shared.workspaceId
+            )
         }
     }
 }
@@ -235,25 +310,43 @@ private struct HomeGridTile: View {
     }
 }
 
-// MARK: - Weekly Performance Report (liquid glass; black text light / white text dark)
-private struct WeeklyReportPlaceholder: View {
+// MARK: - Individual Performance Reports CTA
+private struct WeeklyReportButton: View {
     @Environment(\.colorScheme) private var colorScheme
+    let hasUnread: Bool
+    let action: () -> Void
 
     private var foreground: Color {
         colorScheme == .dark ? .white : .black
     }
 
     var body: some View {
-        Text("Weekly Performance Report")
-            .font(.system(size: 14, weight: .medium))
-            .foregroundStyle(foreground)
-            .frame(maxWidth: .infinity)
-            .frame(height: 44)
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
-            .overlay(
-                RoundedRectangle(cornerRadius: 12)
-                    .strokeBorder(Color.primary.opacity(colorScheme == .dark ? 0.2 : 0.15), lineWidth: 1)
-            )
+        Button(action: action) {
+            ZStack(alignment: .topTrailing) {
+                Text("Performance Reports")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(foreground)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 44)
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12)
+                            .strokeBorder(Color.primary.opacity(colorScheme == .dark ? 0.2 : 0.15), lineWidth: 1)
+                    )
+
+                if hasUnread {
+                    Circle()
+                        .fill(Color.flyrPrimary)
+                        .frame(width: 10, height: 10)
+                        .overlay(
+                            Circle()
+                                .stroke(Color.white.opacity(0.85), lineWidth: 1)
+                        )
+                        .offset(x: -10, y: 8)
+                }
+            }
+        }
+        .buttonStyle(.plain)
     }
 }
 

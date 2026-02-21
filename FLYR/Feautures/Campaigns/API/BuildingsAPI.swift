@@ -321,6 +321,7 @@ final class BuildingsAPI {
         var totalProxies = 0
         var totalMatched = 0
         var totalTimeMs = 0
+        var aggregatedFeatures: [GeoJSONFeature] = []
         
         for chunkIndex in stride(from: 0, to: addresses.count, by: chunkSize) {
             let chunk = Array(addresses[chunkIndex..<min(chunkIndex + chunkSize, addresses.count)])
@@ -403,6 +404,9 @@ final class BuildingsAPI {
                 totalProxies += result.proxies
                 totalMatched += result.matched
                 totalTimeMs += result.total_ms
+                if let features = result.features, !features.isEmpty {
+                    aggregatedFeatures.append(contentsOf: features)
+                }
                 
                 print("✅ [BUILDINGS] Chunk processed: \(result.matched)/\(result.addresses) matched, \(result.proxies) proxies, \(result.total_ms)ms total (\(result.per_addr_ms)ms/addr)")
                 
@@ -441,7 +445,7 @@ final class BuildingsAPI {
             maxTilesPerAddr: 5,
             style_used: nil, // Aggregated from chunks - could be enhanced to track
             results: nil, // Aggregated from chunks - could be enhanced to track
-            features: nil // Aggregated from chunks - could be enhanced to track
+            features: aggregatedFeatures.isEmpty ? nil : aggregatedFeatures
         )
     }
     
@@ -645,6 +649,29 @@ final class BuildingsAPI {
             // Log raw response for debugging
             if let text = String(data: response.data, encoding: .utf8) {
                 print("🔎 [RPC RAW] \(text.prefix(500))")
+            }
+
+            // Newer backends return GeoJSON directly (or wrapped by PostgREST in an array row).
+            let decoder = JSONDecoder()
+
+            if let directCollection = try? decoder.decode(GeoJSONFeatureCollection.self, from: response.data) {
+                print("📦 [FEATURES DEBUG] Decoded direct FeatureCollection with \(directCollection.features.count) features")
+                return normalizeFeatureIdentity(
+                    collection: directCollection,
+                    source: "db_fallback:get_buildings_by_address_ids:direct"
+                )
+            }
+
+            struct RPCCollectionRow: Decodable {
+                let get_buildings_by_address_ids: GeoJSONFeatureCollection?
+            }
+            if let wrappedRows = try? decoder.decode([RPCCollectionRow].self, from: response.data),
+               let wrappedCollection = wrappedRows.first?.get_buildings_by_address_ids {
+                print("📦 [FEATURES DEBUG] Decoded wrapped FeatureCollection with \(wrappedCollection.features.count) features")
+                return normalizeFeatureIdentity(
+                    collection: wrappedCollection,
+                    source: "db_fallback:get_buildings_by_address_ids:wrapped"
+                )
             }
             
             // Decode RPC table response (array of rows with address_id, geom_geom, geom)

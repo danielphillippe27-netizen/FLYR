@@ -4,6 +4,20 @@ import Combine
 import Supabase
 import UIKit
 
+enum SessionMode: String, Codable {
+    case doorKnocking = "door_knocking"
+    case flyer = "flyer"
+
+    var goalType: GoalType {
+        switch self {
+        case .doorKnocking:
+            return .knocks
+        case .flyer:
+            return .flyers
+        }
+    }
+}
+
 // #region agent log
 private func _debugLogDoors(location: String, message: String, data: [String: Any], hypothesisId: String) {
     let payload: [String: Any] = [
@@ -44,6 +58,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
     @Published var startTime: Date?
     @Published var elapsedTime: TimeInterval = 0
     @Published var goalType: GoalType = .flyers
+    @Published var sessionMode: SessionMode = .doorKnocking
     @Published var goalAmount: Int = 0
     @Published var currentLocation: CLLocation?
     @Published var currentHeading: CLLocationDirection = 0
@@ -108,6 +123,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
     
     func start(goalType: GoalType, goalAmount: Int) {
         self.goalType = goalType
+        self.sessionMode = (goalType == .flyers) ? .flyer : .doorKnocking
         self.goalAmount = goalAmount
         self.startTime = Date()
         self.pathCoordinates = []
@@ -144,6 +160,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
     /// Start a route-based session with optimized waypoints
     func start(goalType: GoalType, goalAmount: Int? = nil, route: OptimizedRoute, campaignId: UUID?) {
         self.goalType = goalType
+        self.sessionMode = (goalType == .flyers) ? .flyer : .doorKnocking
         self.goalAmount = goalAmount ?? route.stopCount
         self.startTime = Date()
         self.pathCoordinates = []
@@ -188,7 +205,8 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         targetBuildings: [String],
         autoCompleteEnabled: Bool = false,
         centroids: [String: CLLocationCoordinate2D] = [:],
-        notes: String? = nil
+        notes: String? = nil,
+        mode: SessionMode = .doorKnocking
     ) async throws {
         guard let userId = AuthManager.shared.user?.id else {
             print("⚠️ [SessionManager] Cannot start building session: not authenticated")
@@ -205,7 +223,8 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
             thresholdMeters: autoCompleteThresholdMeters,
             dwellSeconds: Int(autoCompleteDwellSeconds),
             notes: notes,
-            workspaceId: WorkspaceContext.shared.workspaceId
+            workspaceId: WorkspaceContext.shared.workspaceId,
+            goalType: mode.goalType
         )
 
         // Now set state and start tracking (timer + location)
@@ -216,6 +235,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         serverCompletedCount = nil
         self.autoCompleteEnabled = autoCompleteEnabled
         self.sessionNotes = notes
+        self.sessionMode = mode
         buildingCentroids = centroids.mapValues { CLLocation(latitude: $0.latitude, longitude: $0.longitude) }
         dwellTracker = [:]
         lastAutoCompleteTime = nil
@@ -227,7 +247,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         activeSecondsAccumulator = 0
         isPaused = false
         optimizedRoute = nil
-        goalType = .knocks
+        goalType = mode.goalType
         goalAmount = targetBuildings.count
         addressesMarkedDelivered = 0
         locationError = currentLocation == nil ? "Searching for GPS..." : nil
@@ -369,6 +389,11 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
             isActive = true
             isPaused = session.is_paused ?? false
             autoCompleteEnabled = session.auto_complete_enabled ?? false
+            if let rawGoal = session.goal_type, rawGoal == GoalType.flyers.rawValue {
+                sessionMode = .flyer
+            } else {
+                sessionMode = .doorKnocking
+            }
             buildingCentroids = [:]
             await flushPendingEvents()
             print("✅ [SessionManager] Restored active session \(sid)")
@@ -451,6 +476,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
                 pathGeoJSON: pathGeoJSON,
                 flyersDelivered: doorsForSummary,
                 conversations: conversationsHad,
+                doorsHit: doorsForSummary,
                 endTime: Date()
             )
             _debugLogDoors(location: "SessionManager.stopBuildingSession", message: "updateSession success", data: ["flyersDelivered": doorsForSummary], hypothesisId: "H3")
@@ -480,6 +506,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
             sessionId = nil
             campaignId = nil
             sessionNotes = nil
+            sessionMode = .doorKnocking
             targetBuildings = []
             completedBuildings = []
             buildingCentroids = [:]
@@ -567,6 +594,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         timer?.invalidate()
         timer = nil
         isActive = false
+        sessionMode = .doorKnocking
 
         let snapshot = SessionSummaryData(
             distance: distanceMeters,
@@ -732,6 +760,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
             "user_id": userId.uuidString,
             "start_time": ISO8601DateFormatter().string(from: startTime),
             "end_time": ISO8601DateFormatter().string(from: endTime),
+            "doors_hit": flyersDelivered,
             "distance_meters": distanceMeters,
             "flyers_delivered": flyersDelivered,
             "conversations": conversationsHad,
