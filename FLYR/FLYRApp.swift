@@ -179,6 +179,7 @@ struct AuthGate: View {
                 Task {
                     await routeState.resolveRoute()
                     await entitlementsService.fetchEntitlement()
+                    await StoreKitManager.shared.refreshLocalProFromCurrentEntitlements()
                 }
             }
         }

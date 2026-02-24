@@ -8,16 +8,25 @@ private enum HomeRoute: Hashable {
     case support
 }
 
+private enum PendingAfterPaywall {
+    case none
+    case quickStart
+    case performanceReports
+}
+
 struct HomeView: View {
     @Environment(\.colorScheme) private var colorScheme
+    @EnvironmentObject private var entitlementsService: EntitlementsService
     @State private var path: [HomeRoute] = []
     @State private var showingNewCampaign = false
+    @State private var showPaywall = false
     @StateObject private var storeV2 = CampaignV2Store.shared
     @StateObject private var auth = AuthManager.shared
     @StateObject private var reportsViewModel = IndividualPerformanceReportViewModel()
     @State private var dailyContent = DailyContentService.shared
     @State private var selectedCampaignID: UUID?
     @State private var showingPerformanceReports = false
+    @State private var pendingAfterPaywall: PendingAfterPaywall = .none
 
     /// PNG from asset catalog: white logo for dark mode, black logo for light mode.
     private var headerLogoName: String {
@@ -60,10 +69,11 @@ struct HomeView: View {
                         .resizable()
                         .scaledToFit()
                         .frame(maxWidth: 360, maxHeight: 80)
+                        .offset(y: 6)
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
-                        showingNewCampaign = true
+                        createCampaignTapped()
                     } label: {
                         Image(systemName: "plus")
                             .font(.system(size: 18, weight: .semibold))
@@ -109,10 +119,28 @@ struct HomeView: View {
                         ToolbarItem(placement: .topBarLeading) {
                             Button("Cancel") {
                                 showingNewCampaign = false
-                            }
-                        }
-                    }
+                }
             }
+        }
+        .fullScreenCover(isPresented: $showPaywall, onDismiss: {
+            switch pendingAfterPaywall {
+            case .quickStart:
+                if entitlementsService.canUsePro, path.last != .quickStart {
+                    path.append(.quickStart)
+                }
+            case .performanceReports:
+                if entitlementsService.canUsePro {
+                    performOpenPerformanceReports()
+                }
+            case .none:
+                break
+            }
+            pendingAfterPaywall = .none
+        }) {
+            PaywallView()
+                .environmentObject(entitlementsService)
+        }
+    }
         }
     }
 
@@ -135,10 +163,7 @@ struct HomeView: View {
                             path.append(.campaigns)
                         }
                         HomeGridTile(title: "Quick Start", icon: "bolt.fill") {
-                            // Guard against rapid double-taps pushing duplicate quick-start screens.
-                            if path.last != .quickStart {
-                                path.append(.quickStart)
-                            }
+                            quickStartTapped()
                         }
                         HomeGridTile(title: "Activity", icon: "figure.walk") {
                             path.append(.activity)
@@ -150,7 +175,8 @@ struct HomeView: View {
                     .padding(.top, 4)
 
                     WeeklyReportButton(hasUnread: reportsViewModel.hasUnread) {
-                        openPerformanceReports()
+                        pendingAfterPaywall = .performanceReports
+                        showPaywall = true
                     }
                         .padding(.top, 16)
                         .padding(.bottom, 24)
@@ -199,19 +225,71 @@ struct HomeView: View {
         }
     }
 
-    private func openPerformanceReports() {
+    private func performOpenPerformanceReports() {
         guard let userID = auth.user?.id else { return }
-
         HapticManager.light()
         withAnimation(.easeInOut(duration: 0.2)) {
             showingPerformanceReports = true
         }
-
         Task {
             await reportsViewModel.openAndMarkRead(
                 userID: userID,
                 workspaceID: WorkspaceContext.shared.workspaceId
             )
+        }
+    }
+
+    /// One free Quick Start; after that require Pro.
+    private func quickStartTapped() {
+        if entitlementsService.canUsePro {
+            if path.last != .quickStart {
+                path.append(.quickStart)
+            }
+            return
+        }
+        Task {
+            let workspaceId = await RoutePlansAPI.shared.resolveWorkspaceId(preferred: WorkspaceContext.shared.workspaceId)
+            let hasUsedFreeQuickStart = (try? await CampaignsAPI.shared.hasQuickStartCampaign(workspaceId: workspaceId)) ?? false
+            await MainActor.run {
+                if hasUsedFreeQuickStart {
+                    pendingAfterPaywall = .quickStart
+                    showPaywall = true
+                } else {
+                    if path.last != .quickStart {
+                        path.append(.quickStart)
+                    }
+                }
+            }
+        }
+    }
+
+    private func createCampaignTapped() {
+        HapticManager.light()
+        Task {
+            let canCreate = await canCreateCampaignInCurrentPlan()
+            await MainActor.run {
+                if canCreate {
+                    showingNewCampaign = true
+                } else {
+                    showPaywall = true
+                }
+            }
+        }
+    }
+
+    private func canCreateCampaignInCurrentPlan() async -> Bool {
+        if entitlementsService.canUsePro {
+            return true
+        }
+        if !storeV2.campaigns.isEmpty {
+            return false
+        }
+        let workspaceId = await RoutePlansAPI.shared.resolveWorkspaceId(preferred: WorkspaceContext.shared.workspaceId)
+        do {
+            let campaigns = try await CampaignsAPI.shared.fetchCampaignsMetadata(workspaceId: workspaceId)
+            return campaigns.isEmpty
+        } catch {
+            return storeV2.campaigns.isEmpty
         }
     }
 }

@@ -4,10 +4,12 @@ import Supabase
 struct CreateHubView: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var uiState: AppUIState
+    @EnvironmentObject private var entitlementsService: EntitlementsService
     @StateObject private var storeV2 = CampaignV2Store.shared
     
     @State private var navigateToCampaign = false
     @State private var navigateToFarm = false
+    @State private var showPaywall = false
     
     var body: some View {
         ZStack {
@@ -64,14 +66,42 @@ struct CreateHubView: View {
                     .environmentObject(AuthManager.shared)
             }
         }
+        .sheet(isPresented: $showPaywall) {
+            PaywallView()
+        }
     }
     
     private func handleTap(_ option: CreateHubOption) {
         switch option {
         case .campaign:
-            navigateToCampaign = true
+            Task {
+                let canCreate = await canCreateCampaignInCurrentPlan()
+                await MainActor.run {
+                    if canCreate {
+                        navigateToCampaign = true
+                    } else {
+                        showPaywall = true
+                    }
+                }
+            }
         case .farm:
             navigateToFarm = true
+        }
+    }
+
+    private func canCreateCampaignInCurrentPlan() async -> Bool {
+        if entitlementsService.canUsePro {
+            return true
+        }
+        if !storeV2.campaigns.isEmpty {
+            return false
+        }
+        let workspaceId = await RoutePlansAPI.shared.resolveWorkspaceId(preferred: WorkspaceContext.shared.workspaceId)
+        do {
+            let campaigns = try await CampaignsAPI.shared.fetchCampaignsMetadata(workspaceId: workspaceId)
+            return campaigns.isEmpty
+        } catch {
+            return storeV2.campaigns.isEmpty
         }
     }
 }
@@ -93,7 +123,6 @@ enum CreateHubOption: String, CaseIterable, Identifiable {
             .environmentObject(AppUIState())
     }
 }
-
 
 
 

@@ -12,6 +12,8 @@ final class AppRouteState: ObservableObject {
 
     /// When true, the next resolveRoute() will keep onboarding and not call the API (avoids overwriting route right after sign-up).
     private var skipNextResolveForOnboarding = false
+    /// When true, the next resolveRoute() will not overwrite .subscribe (so paywall stays visible after onboarding Continue).
+    private var skipNextResolveForSubscribe = false
 
     private let auth = AuthManager.shared
 
@@ -19,6 +21,12 @@ final class AppRouteState: ObservableObject {
     func setRouteToOnboardingFromSignUp() {
         route = .onboarding
         skipNextResolveForOnboarding = true
+    }
+
+    /// Set route to subscribe and ignore the next resolve so paywall is not immediately replaced (e.g. after onboarding).
+    func setRouteToSubscribe(memberInactive: Bool) {
+        route = .subscribe(memberInactive: memberInactive)
+        skipNextResolveForSubscribe = true
     }
 
     /// Call after loadSession() and on auth.user change / scenePhase .active. Resolves route via GET /api/access/redirect or pending join.
@@ -36,6 +44,11 @@ final class AppRouteState: ObservableObject {
         if skipNextResolveForOnboarding {
             skipNextResolveForOnboarding = false
             route = .onboarding
+            return
+        }
+
+        if skipNextResolveForSubscribe {
+            skipNextResolveForSubscribe = false
             return
         }
 

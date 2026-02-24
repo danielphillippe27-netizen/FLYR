@@ -19,20 +19,29 @@ except ImportError:
     print("Install: pip install pyjwt cryptography", file=sys.stderr)
     sys.exit(1)
 
-# Key ID from your .p8 filename (e.g. AuthKey_MN2S8MNF4A.p8 -> MN2S8MNF4A)
-KEY_ID = "MN2S8MNF4A"
+# Fallback Key ID if not derived from filename (e.g. AuthKey_MN2S8MNF4A.p8 -> MN2S8MNF4A)
+DEFAULT_KEY_ID = "MN2S8MNF4A"
 # Issuer ID from App Store Connect → Users and Access → Integrations (top of page)
 ISSUER_ID = os.environ.get("APP_STORE_CONNECT_ISSUER_ID", "")
 
 # Default key path
 DEFAULT_KEY_PATH = Path.home() / "Downloads" / "AuthKey_MN2S8MNF4A.p8"
 
-USAGE = "Usage: python3 app_store_connect_jwt.py [key.p8] <ISSUER_ID>"
+USAGE = "Usage: python3 app_store_connect_jwt.py [key.p8] [ISSUER_ID]"
+
+
+def key_id_from_path(path: Path) -> str:
+    """Derive Key ID from filename AuthKey_<KEYID>.p8"""
+    name = path.stem  # e.g. AuthKey_63C75WXTLF
+    if name.startswith("AuthKey_") and len(name) > 8:
+        return name[8:]
+    return DEFAULT_KEY_ID
 
 
 def main():
     args = sys.argv[1:]
     key_path = Path(args[0]) if args and not args[0].startswith("-") else DEFAULT_KEY_PATH
+    key_id = key_id_from_path(key_path)
     issuer_id = None
     if len(args) >= 2:
         issuer_id = args[1]
@@ -66,7 +75,7 @@ def main():
         payload,
         private_key,
         algorithm="ES256",
-        headers={"kid": KEY_ID},
+        headers={"kid": key_id},
     )
     if hasattr(token, "decode"):
         token = token.decode("utf-8")

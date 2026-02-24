@@ -1,113 +1,18 @@
 import Foundation
 import CoreLocation
-import Supabase
-
-struct NearbyHome: Identifiable, Codable {
-    let addressId: UUID
-    let lat: Double
-    let lng: Double
-    let displayAddress: String
-    let distanceM: Double?
-
-    enum CodingKeys: String, CodingKey {
-        case addressId = "address_id"
-        case lat
-        case lng
-        case displayAddress = "display_address"
-        case distanceM = "distance_m"
-    }
-
-    var id: UUID { addressId }
-
-    var coordinate: CLLocationCoordinate2D {
-        CLLocationCoordinate2D(latitude: lat, longitude: lng)
-    }
-}
 
 @MainActor
 final class HomesService {
     static let shared = HomesService()
 
-    private let client = SupabaseManager.shared.client
-
     private init() {}
-
-    func fetchNearbyHomes(
-        center: CLLocationCoordinate2D,
-        radiusMeters: Int = 500,
-        limit: Int = 300,
-        workspaceId: UUID?
-    ) async throws -> [NearbyHome] {
-        var params: [String: AnyCodable] = [
-            "lat": AnyCodable(center.latitude),
-            "lng": AnyCodable(center.longitude),
-            "radius_m": AnyCodable(radiusMeters),
-            "limit_n": AnyCodable(limit)
-        ]
-        if let workspaceId {
-            params["p_workspace_id"] = AnyCodable(workspaceId.uuidString)
-        }
-
-        let response = try await client
-            .rpc("homes_nearby", params: params)
-            .execute()
-
-        let decoder = JSONDecoder()
-        let homes = try decoder.decode([NearbyHome].self, from: response.data)
-        if homes.isEmpty {
-            return try await fetchNearbyHomesSilverFallback(
-                center: center,
-                radiusMeters: radiusMeters,
-                limit: limit
-            )
-        }
-        return homes.sorted {
-            let lhs = $0.distanceM ?? CLLocation(latitude: center.latitude, longitude: center.longitude)
-                .distance(from: CLLocation(latitude: $0.lat, longitude: $0.lng))
-            let rhs = $1.distanceM ?? CLLocation(latitude: center.latitude, longitude: center.longitude)
-                .distance(from: CLLocation(latitude: $1.lat, longitude: $1.lng))
-            if lhs == rhs {
-                return $0.addressId.uuidString < $1.addressId.uuidString
-            }
-            return lhs < rhs
-        }
-    }
-
-    private func fetchNearbyHomesSilverFallback(
-        center: CLLocationCoordinate2D,
-        radiusMeters: Int,
-        limit: Int
-    ) async throws -> [NearbyHome] {
-        let candidates = try await GeoAPI.shared.nearbyAddresses(
-            around: center,
-            limit: max(limit, 50)
-        )
-        let radius = Double(max(1, radiusMeters))
-        let filtered = candidates
-            .filter { $0.distanceMeters <= radius }
-            .prefix(limit)
-            .map { candidate in
-                NearbyHome(
-                    addressId: candidate.id,
-                    lat: candidate.coordinate.latitude,
-                    lng: candidate.coordinate.longitude,
-                    displayAddress: candidate.address,
-                    distanceM: candidate.distanceMeters
-                )
-            }
-        return Array(filtered)
-    }
 
     func createQuickStartCampaign(
         center: CLLocationCoordinate2D,
         radiusMeters: Int,
-        homes: [NearbyHome],
+        limitHomes: Int,
         workspaceId: UUID
     ) async throws -> CampaignV2 {
-        let addresses = homes.map {
-            CampaignAddress(address: $0.displayAddress, coordinate: $0.coordinate)
-        }
-
         let name = quickStartCampaignName(radiusMeters: radiusMeters)
         let description = String(
             format: "source=quick_start radius_m=%d center_lat=%.6f center_lng=%.6f",
@@ -121,59 +26,105 @@ final class HomesService {
             description: description,
             type: .doorKnock,
             addressSource: .closestHome,
-            addressTargetCount: addresses.count,
+            addressTargetCount: limitHomes,
             seedQuery: "Quick Start",
             seedLon: center.longitude,
             seedLat: center.latitude,
             tags: "quick_start",
-            addressesJSON: addresses,
+            addressesJSON: [],
             workspaceId: workspaceId
         )
 
-        print("🌐 [QuickStart] Creating campaign with \(addresses.count) homes")
+        print("🌐 [QuickStart] Creating campaign shell for closest-home flow")
         let campaign = try await CampaignsAPI.shared.createV2(payload)
 
-        // Best-effort: link quick-start addresses to Gold buildings so map can use the same building path.
         let polygonGeoJSON = quickStartPolygonGeoJSON(center: center, radiusMeters: radiusMeters)
-        let linkParams: [String: AnyCodable] = [
-            "p_campaign_id": AnyCodable(campaign.id.uuidString),
-            "p_polygon_geojson": AnyCodable(polygonGeoJSON)
-        ]
-        do {
-            _ = try await client.rpc("link_campaign_addresses_gold", params: linkParams).execute()
-        } catch {
-            print("⚠️ [QuickStart] Gold linking skipped: \(error)")
+        try await CampaignsAPI.shared.updateTerritoryBoundary(
+            campaignId: campaign.id,
+            polygonGeoJSON: polygonGeoJSON
+        )
+
+        let provision = try await CampaignsAPI.shared.provisionCampaign(campaignId: campaign.id)
+        let state = try await CampaignsAPI.shared.waitForProvisionReady(campaignId: campaign.id)
+
+        if state.provisionStatus == "failed" {
+            let detail = provision?.message ?? "Provision status failed"
+            throw NSError(
+                domain: "QuickStart",
+                code: 500,
+                userInfo: [NSLocalizedDescriptionKey: "Quick Start provisioning failed: \(detail)"]
+            )
         }
 
-        // Run the same building-materialization path used by campaign map workflows.
+        if state.provisionStatus != "ready" {
+            print("⚠️ [QuickStart] Provision status did not reach ready: \(state.provisionStatus ?? "unknown")")
+        }
+
+        let campaignAddresses = try await fetchCampaignAddressesWithRetry(campaignId: campaign.id)
+        guard !campaignAddresses.isEmpty else {
+            throw NSError(
+                domain: "QuickStart",
+                code: 404,
+                userInfo: [NSLocalizedDescriptionKey: "No homes were found within \(radiusMeters)m of your current location."]
+            )
+        }
+
+        // Best-effort building prewarm so quick start lands with populated map layers.
         do {
-            let campaignAddresses = try await CampaignsAPI.shared.fetchAddresses(campaignId: campaign.id)
-            if !campaignAddresses.isEmpty {
-                let ensure = try await BuildingsAPI.shared.ensureBuildingPolygons(addresses: campaignAddresses)
-                print("✅ [QuickStart] Building ensure complete: matched=\(ensure.matched) proxies=\(ensure.proxies) addresses=\(ensure.addresses)")
-                if let features = ensure.features, !features.isEmpty {
+            let byCampaign = try await BuildingsAPI.shared.fetchBuildingPolygons(campaignId: campaign.id)
+            if !byCampaign.features.isEmpty {
+                MapFeaturesService.shared.primeBuildingPolygons(
+                    campaignId: campaign.id.uuidString,
+                    features: byCampaign.features
+                )
+                print("✅ [QuickStart] Campaign building fetch loaded \(byCampaign.features.count) features")
+            } else {
+                print("⚠️ [QuickStart] Campaign building fetch empty, trying address-id fallback")
+                let byAddress = try await BuildingsAPI.shared.fetchBuildingPolygons(addressIds: campaignAddresses.map(\.id))
+                if !byAddress.features.isEmpty {
                     MapFeaturesService.shared.primeBuildingPolygons(
                         campaignId: campaign.id.uuidString,
-                        features: features
+                        features: byAddress.features
                     )
                 }
-
-                // Warm building fetch using campaign path, then fallback to address-id path if needed.
-                let byCampaign = try await BuildingsAPI.shared.fetchBuildingPolygons(campaignId: campaign.id)
-                if byCampaign.features.isEmpty {
-                    let byAddress = try await BuildingsAPI.shared.fetchBuildingPolygons(addressIds: campaignAddresses.map(\.id))
-                    print("✅ [QuickStart] Address-id building fallback loaded \(byAddress.features.count) features")
-                } else {
-                    print("✅ [QuickStart] Campaign building fetch loaded \(byCampaign.features.count) features")
-                }
-            } else {
-                print("⚠️ [QuickStart] No campaign addresses found to ensure buildings")
+                print("✅ [QuickStart] Address-id building fallback loaded \(byAddress.features.count) features")
             }
         } catch {
-            print("⚠️ [QuickStart] Building ensure/fetch skipped: \(error)")
+            print("⚠️ [QuickStart] Building prewarm skipped: \(error)")
         }
 
         return campaign
+    }
+
+    private func fetchCampaignAddressesWithRetry(
+        campaignId: UUID,
+        attempts: Int = 8,
+        delayMs: UInt64 = 350
+    ) async throws -> [CampaignAddressRow] {
+        var lastError: Error?
+
+        for attempt in 1...max(attempts, 1) {
+            do {
+                let addresses = try await CampaignsAPI.shared.fetchAddresses(campaignId: campaignId)
+                if !addresses.isEmpty {
+                    print("✅ [QuickStart] Loaded \(addresses.count) addresses after provision (attempt \(attempt))")
+                    return addresses
+                }
+                print("⚠️ [QuickStart] No addresses yet for campaign \(campaignId) (attempt \(attempt)/\(attempts))")
+            } catch {
+                lastError = error
+                print("⚠️ [QuickStart] Address fetch attempt \(attempt)/\(attempts) failed: \(error)")
+            }
+
+            if attempt < attempts {
+                try? await Task.sleep(nanoseconds: delayMs * 1_000_000)
+            }
+        }
+
+        if let lastError {
+            throw lastError
+        }
+        return []
     }
 
     private func quickStartCampaignName(radiusMeters: Int) -> String {

@@ -34,13 +34,6 @@ struct FieldSection<Content: View>: View {
             VStack(spacing: 12) {
                 TextField("Campaign name", text: .constant("Sample Campaign"))
                     .textFieldStyle(RoundedBorderTextFieldStyle())
-                
-                Picker("Type", selection: .constant(CampaignType.flyer)) {
-                    ForEach(Array(CampaignType.allCases), id: \.id) { type in
-                        Text(type.title).tag(type)
-                    }
-                }
-                .pickerStyle(MenuPickerStyle())
             }
         }
         

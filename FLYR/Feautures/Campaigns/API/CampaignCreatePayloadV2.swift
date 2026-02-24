@@ -4,7 +4,7 @@ import CoreLocation
 public struct CampaignCreatePayloadV2: Codable, Sendable {
     public var name: String
     public var description: String          // Required for DB
-    public var type: CampaignType
+    public var type: CampaignType?
     public var addressSource: AddressSource
     public var addressTargetCount: Int
     public var seedQuery: String?           // Maps to DB region field
@@ -20,7 +20,7 @@ public struct CampaignCreatePayloadV2: Codable, Sendable {
     public init(
         name: String,
         description: String,
-        type: CampaignType,
+        type: CampaignType? = nil,
         addressSource: AddressSource,
         addressTargetCount: Int,
         seedQuery: String? = nil,

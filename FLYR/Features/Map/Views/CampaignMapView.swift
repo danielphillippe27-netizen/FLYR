@@ -182,9 +182,6 @@ struct FlyerModeOverlay: View {
             VStack {
                 Spacer()
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(addr.segmentLabel)
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundColor(.secondary)
                     Text("Next: \(addr.formatted.isEmpty ? "Address" : addr.formatted)")
                         .font(.system(size: 17, weight: .semibold))
                         .foregroundColor(.primary)
@@ -204,6 +201,8 @@ struct FlyerModeOverlay: View {
             .onAppear {
                 flyerModeManager.onAddressCompleted = onAddressCompleted
             }
+            // Informational overlay only; allow top session controls and map gestures to remain interactive.
+            .allowsHitTesting(false)
         }
     }
 }
@@ -213,6 +212,7 @@ struct FlyerModeOverlay: View {
 struct CampaignMapView: View {
     let campaignId: String
     let quickStartEnabled: Bool
+    let showPreSessionStartButton: Bool
     @Environment(\.colorScheme) private var colorScheme
 
     /// Default center when no campaign data yet (Toronto)
@@ -251,9 +251,14 @@ struct CampaignMapView: View {
     @StateObject private var flyerModeManager = FlyerModeManager()
     @State private var quickStartStartingMode: SessionMode?
 
-    init(campaignId: String, quickStartEnabled: Bool = false) {
+    init(
+        campaignId: String,
+        quickStartEnabled: Bool = false,
+        showPreSessionStartButton: Bool = true
+    ) {
         self.campaignId = campaignId
         self.quickStartEnabled = quickStartEnabled
+        self.showPreSessionStartButton = showPreSessionStartButton
     }
 
     var body: some View {
@@ -296,6 +301,11 @@ struct CampaignMapView: View {
             .onChange(of: sessionManager.sessionId) { _, new in
                 updateSessionPathOnMap()
                 if new == nil {
+                    // Ensure any map-local modal UI is dismissed before global end-session cover presents.
+                    showTargetsSheet = false
+                    showLeadCaptureSheet = false
+                    showEndSessionConfirmation = false
+                    selectedBuilding = nil
                     flyerModeManager.reset()
                     quickStartStartingMode = nil
                 } else if sessionManager.sessionMode == .flyer {
@@ -473,9 +483,11 @@ struct CampaignMapView: View {
     }
 
     private func flyerAddressCompleted(addressId: UUID) {
+        // Update map to green in real time
         layerManager?.updateAddressState(addressId: addressId.uuidString, status: "visited", scansTotal: 0)
         addressStatuses[addressId] = .delivered
         SessionManager.shared.recordAddressDelivered()
+        HapticManager.success()
     }
 
     @ViewBuilder
@@ -548,7 +560,8 @@ struct CampaignMapView: View {
             
             Spacer()
             
-            if sessionManager.sessionId == nil,
+            if showPreSessionStartButton,
+               sessionManager.sessionId == nil,
                let features = featuresService.buildings?.features,
                !features.isEmpty,
                let campId = UUID(uuidString: campaignId) {
@@ -587,22 +600,22 @@ struct CampaignMapView: View {
                                 HapticManager.medium()
                                 startBuildingSession(campaignId: campId, features: features)
                             } label: {
-                                Label("Start session", systemImage: "play.circle.fill")
-                                    .font(.flyrSubheadline)
+                                Text("Start session")
+                                    .font(.system(size: 18, weight: .semibold))
                                     .lineLimit(1)
                                     .minimumScaleFactor(0.7)
-                                    .padding(.horizontal, 24)
-                                    .padding(.vertical, 4)
+                                    .padding(.horizontal, 30)
+                                    .padding(.vertical, 9)
                             }
                             .buttonStyle(.borderedProminent)
-                            .controlSize(.small)
-                            .frame(width: geo.size.width * 0.5)
+                            .controlSize(.regular)
+                            .frame(width: geo.size.width * 0.56)
                             Spacer()
                         }
                     }
                     .frame(maxWidth: .infinity)
                     .frame(height: 18)
-                    .padding(.bottom, 64)
+                    .padding(.bottom, 82)
                 }
             }
         }
@@ -662,7 +675,15 @@ struct CampaignMapView: View {
            let campId = UUID(uuidString: campaignId) {
             let gersIdString = building.gersId ?? building.id
             let resolvedAddrId = selectedAddress?.addressId ?? building.addressId.flatMap { UUID(uuidString: $0) }
-            let resolvedAddrText = selectedAddress?.formatted ?? building.addressText
+            let resolvedAddrText = nonEmptyAddressText(
+                formatted: selectedAddress?.formatted,
+                houseNumber: selectedAddress?.houseNumber,
+                streetName: selectedAddress?.streetName
+            ) ?? nonEmptyAddressText(
+                formatted: building.addressText,
+                houseNumber: building.houseNumber,
+                streetName: building.streetName
+            )
             VStack {
                 Spacer()
                 LocationCardView(
@@ -715,7 +736,11 @@ struct CampaignMapView: View {
                     gersId: gersIdString,
                     campaignId: campId,
                     addressId: address.addressId,
-                    addressText: address.formatted,
+                    addressText: nonEmptyAddressText(
+                        formatted: address.formatted,
+                        houseNumber: address.houseNumber,
+                        streetName: address.streetName
+                    ),
                     preferredAddressId: selectedAddressIdForCard,
                     addressStatuses: addressStatuses,
                     onSelectAddress: { selectedAddressIdForCard = $0 },
@@ -1069,14 +1094,17 @@ struct CampaignMapView: View {
             return nil
         }
 
-        // Fast path: Gold/address_point — feature already has full address in properties
-        if building.source == "gold" || building.source == "address_point",
-           let addrIdStr = building.addressId, !addrIdStr.isEmpty,
+        // Fast path: if feature includes a campaign address ID, use it directly.
+        if let addrIdStr = building.addressId, !addrIdStr.isEmpty,
            let addrId = UUID(uuidString: addrIdStr) {
-            let formatted = building.addressText ?? "\(building.houseNumber ?? "") \(building.streetName ?? "")".trimmingCharacters(in: .whitespaces)
+            let formatted = nonEmptyAddressText(
+                formatted: building.addressText,
+                houseNumber: building.houseNumber,
+                streetName: building.streetName
+            ) ?? "Address"
             return MapLayerManager.AddressTapResult(
                 addressId: addrId,
-                formatted: formatted.isEmpty ? "Address" : formatted,
+                formatted: formatted,
                 gersId: building.gersId,
                 buildingGersId: building.buildingId,
                 houseNumber: building.houseNumber,
@@ -1128,9 +1156,11 @@ struct CampaignMapView: View {
     private func addressTapResult(from feature: AddressFeature) -> MapLayerManager.AddressTapResult? {
         let idString = feature.properties.id ?? feature.id ?? ""
         guard let uuid = UUID(uuidString: idString) else { return nil }
-        let house = feature.properties.houseNumber ?? ""
-        let street = feature.properties.streetName ?? ""
-        let formatted = feature.properties.formatted ?? "\(house) \(street)".trimmingCharacters(in: .whitespaces)
+        let formatted = nonEmptyAddressText(
+            formatted: feature.properties.formatted,
+            houseNumber: feature.properties.houseNumber,
+            streetName: feature.properties.streetName
+        ) ?? "Address"
         return MapLayerManager.AddressTapResult(
             addressId: uuid,
             formatted: formatted,
@@ -1139,6 +1169,18 @@ struct CampaignMapView: View {
             houseNumber: feature.properties.houseNumber,
             streetName: feature.properties.streetName
         )
+    }
+
+    /// Prefer explicit formatted value, then fall back to "house number + street name".
+    private func nonEmptyAddressText(formatted: String?, houseNumber: String?, streetName: String?) -> String? {
+        let formattedValue = formatted?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !formattedValue.isEmpty {
+            return formattedValue
+        }
+        let house = houseNumber?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let street = streetName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let combined = "\(house) \(street)".trimmingCharacters(in: .whitespacesAndNewlines)
+        return combined.isEmpty ? nil : combined
     }
 
     private func updateBuildingColorAfterComplete(gersId: String) {

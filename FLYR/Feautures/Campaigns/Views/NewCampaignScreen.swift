@@ -5,10 +5,11 @@ import CoreLocation
 struct NewCampaignScreen: View {
     @ObservedObject var store: CampaignV2Store
     @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var uiState: AppUIState
+    @EnvironmentObject private var entitlementsService: EntitlementsService
     
     @State private var name = ""
     @State private var description = ""
-    @State private var type: CampaignType? = nil
     @State private var tags = ""
     @State private var source: AddressSource = .map
     @State private var count: AddressCountOption = .c100
@@ -25,14 +26,14 @@ struct NewCampaignScreen: View {
     /// Screen-level lock for the full workflow (create + territory save + provision + navigation).
     /// Do not use createHook.isCreating for this because createHook resets after insert/createV2 returns.
     @State private var isSubmittingCampaign = false
+    @State private var showPaywall = false
 
     private var mapPreviewCenter: CLLocationCoordinate2D {
         selectedCenter ?? locationManager.currentLocation?.coordinate ?? CLLocationCoordinate2D(latitude: 43.65, longitude: -79.38)
     }
 
     private var canCreate: Bool {
-        guard !name.trimmingCharacters(in: .whitespaces).isEmpty,
-              type != nil else { return false }
+        guard !name.trimmingCharacters(in: .whitespaces).isEmpty else { return false }
         return drawnPolygon != nil && drawnPolygon!.count >= 3
     }
     
@@ -41,34 +42,12 @@ struct NewCampaignScreen: View {
             VStack(spacing: 28) {
                 
                 FormSection("Campaign") {
-                    // Title field — user enters manually; not auto-filled from Type
+                    // Title field
                     HStack {
                         TextField("Title", text: $name)
                             .textInputAutocapitalization(.words)
                             .font(.system(size: 16))
                         Spacer()
-                    }
-                    .padding(12)
-                    .background(Color(.secondarySystemBackground))
-                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    
-                    // Type: Flyer or Door Knock only; no default selection
-                    HStack {
-                        Text("Type")
-                        Spacer()
-                        Menu {
-                            Button("Flyer") { type = .flyer }
-                            Button("Door Knock") { type = .doorKnock }
-                        } label: {
-                            HStack(spacing: 4) {
-                                Text(type?.title ?? "Select type")
-                                    .foregroundStyle(type == nil ? .secondary : .primary)
-                                Image(systemName: "chevron.up.chevron.down")
-                                    .font(.flyrCaption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        .frame(maxWidth: 200, alignment: .trailing)
                     }
                     .padding(12)
                     .background(Color(.secondarySystemBackground))
@@ -187,6 +166,9 @@ struct NewCampaignScreen: View {
                         }
                     )
                 }
+                .sheet(isPresented: $showPaywall) {
+                    PaywallView()
+                }
                 .overlay {
                     if isSubmittingCampaign {
                         CampaignCreatingOverlayView(useDarkStyle: colorScheme == .dark)
@@ -200,13 +182,15 @@ struct NewCampaignScreen: View {
     /// If polygonFromSheet is non-nil, use it for the map flow (avoids relying on state when coming from sheet).
     private func createCampaignTapped(polygonFromSheet: [CLLocationCoordinate2D]? = nil) async {
         defer { isSubmittingCampaign = false }
-        guard let selectedType = type else { return }
+        guard await canCreateCampaignInCurrentPlan() else {
+            await MainActor.run { showPaywall = true }
+            return
+        }
         let effectivePolygon = polygonFromSheet ?? drawnPolygon
         let canCreateFromForm = canCreate
         let canCreateFromMapSheet = source == .map && (effectivePolygon?.count ?? 0) >= 3 && !name.trimmingCharacters(in: .whitespaces).isEmpty
         print("🚀 [CAMPAIGN DEBUG] Starting campaign creation workflow")
         print("🚀 [CAMPAIGN DEBUG] Campaign name: '\(name)'")
-        print("🚀 [CAMPAIGN DEBUG] Campaign type: \(type?.rawValue ?? "nil")")
         print("🚀 [CAMPAIGN DEBUG] Address source: \(source.rawValue)")
         print("🚀 [CAMPAIGN DEBUG] Can create (form): \(canCreateFromForm), (map sheet): \(canCreateFromMapSheet)")
         
@@ -245,7 +229,7 @@ struct NewCampaignScreen: View {
             let payload = CampaignCreatePayloadV2(
                 name: name,
                 description: description.isEmpty ? "Campaign created from \(source.displayName)" : description,
-                type: selectedType,
+                type: nil,
                 addressSource: source,
                 addressTargetCount: count.rawValue,
                 seedQuery: auto.query.isEmpty ? nil : auto.query,
@@ -265,9 +249,7 @@ struct NewCampaignScreen: View {
                     print("⚠️ [CAMPAIGN DEBUG] generate-address-list failed: \(error)")
                     createHook.error = "Campaign created. Address list is still loading or failed; check the campaign in a moment."
                 }
-                dismiss()
-                try? await Task.sleep(nanoseconds: 300_000_000)
-                await MainActor.run { store.routeToV2Detail?(created.id) }
+                await routeToCampaignMap(created)
             } else {
                 print("❌ [CAMPAIGN DEBUG] Campaign creation failed")
             }
@@ -277,6 +259,7 @@ struct NewCampaignScreen: View {
             if let polygon = effectivePolygon, polygon.count >= 3 {
                 // Polygon flow: create campaign (minimal addresses), then provision (backend Lambda/S3)
                 print("🗺️ [CAMPAIGN DEBUG] Using drawn polygon (\(polygon.count) points) – will provision after create")
+                print("🗺️ [CAMPAIGN DEBUG] Polygon bounds: \(polygonBoundsSummary(for: polygon))")
                 let workspaceId = await RoutePlansAPI.shared.primaryWorkspaceIdForCurrentUser()
                 guard let workspaceId else {
                     createHook.error = "No workspace found. Please sign out and back in, or try again."
@@ -285,7 +268,7 @@ struct NewCampaignScreen: View {
                 let payload = CampaignCreatePayloadV2(
                     name: name,
                     description: description.isEmpty ? "Campaign created from polygon" : description,
-                    type: selectedType,
+                    type: nil,
                     addressSource: source,
                     addressTargetCount: 0,
                     seedQuery: nil,
@@ -296,23 +279,44 @@ struct NewCampaignScreen: View {
                     workspaceId: workspaceId
                 )
                 if let created = await createHook.createV2(payload: payload, store: store) {
+                    print("✅ [CAMPAIGN DEBUG] Campaign created with ID: \(created.id)")
                     let geoJSON = polygonToGeoJSON(polygon)
+                    var shouldNavigateToDetails = true
                     do {
                         try await CampaignsAPI.shared.updateTerritoryBoundary(campaignId: created.id, polygonGeoJSON: geoJSON)
+                        print("🗺️ [CAMPAIGN DEBUG] Territory updated, calling generate-address-list (polygon mode)...")
+                        do {
+                            let preview = try await OvertureAddressService.shared.getAddressesInPolygon(
+                                polygonGeoJSON: geoJSON,
+                                campaignId: created.id
+                            )
+                            print("✅ [CAMPAIGN DEBUG] generate-address-list completed, preview_count=\(preview.count)")
+                        } catch {
+                            print("⚠️ [CAMPAIGN DEBUG] generate-address-list (polygon) failed: \(error)")
+                        }
                         print("🗺️ [CAMPAIGN DEBUG] Territory updated, starting provision...")
-                        try await CampaignsAPI.shared.provisionCampaign(campaignId: created.id)
+                        let provisionResponse = try await CampaignsAPI.shared.provisionCampaign(campaignId: created.id)
                         let provisionState = try await CampaignsAPI.shared.waitForProvisionReady(campaignId: created.id)
                         if provisionState.provisionStatus != "ready" {
                             createHook.error = "Campaign created but provisioning did not complete (status: \(provisionState.provisionStatus ?? "unknown")). You can retry from campaign details."
+                            shouldNavigateToDetails = false
+                        } else {
+                            let dbAddressCount = (try? await CampaignsAPI.shared.fetchAddresses(campaignId: created.id).count) ?? 0
+                            let addressesSaved = provisionResponse?.addressesSaved ?? dbAddressCount
+                            let buildingsSaved = provisionResponse?.buildingsSaved ?? 0
+                            print("🗺️ [CAMPAIGN DEBUG] Provision result: addresses=\(addressesSaved), buildings=\(buildingsSaved), dbAddresses=\(dbAddressCount)")
+                            if addressesSaved == 0 && buildingsSaved == 0 {
+                                createHook.error = "Campaign was created, but no addresses/buildings were found in this area. Try drawing a larger polygon or a different location."
+                                shouldNavigateToDetails = false
+                            }
                         }
                     } catch {
                         print("❌ [CAMPAIGN DEBUG] Provision failed: \(error)")
                         createHook.error = "Campaign created but provisioning failed: \(error.localizedDescription). You can retry from campaign details."
+                        shouldNavigateToDetails = false
                     }
-                    // Always dismiss and navigate once campaign exists and territory is set (don't leave user stuck on loading)
-                    dismiss()
-                    try? await Task.sleep(nanoseconds: 300_000_000)
-                    await MainActor.run { store.routeToV2Detail?(created.id) }
+                    guard shouldNavigateToDetails else { return }
+                    await routeToCampaignMap(created)
                 } else {
                     print("❌ [CAMPAIGN DEBUG] Campaign creation failed")
                 }
@@ -323,6 +327,22 @@ struct NewCampaignScreen: View {
         case .sameStreet, .importList:
             print("📋 [CAMPAIGN DEBUG] Import list functionality not implemented")
             // TODO: Implement import list functionality if needed
+        }
+    }
+
+    private func canCreateCampaignInCurrentPlan() async -> Bool {
+        if entitlementsService.canUsePro {
+            return true
+        }
+        if !store.campaigns.isEmpty {
+            return false
+        }
+        let workspaceId = await RoutePlansAPI.shared.resolveWorkspaceId(preferred: WorkspaceContext.shared.workspaceId)
+        do {
+            let campaigns = try await CampaignsAPI.shared.fetchCampaignsMetadata(workspaceId: workspaceId)
+            return campaigns.isEmpty
+        } catch {
+            return store.campaigns.isEmpty
         }
     }
 
@@ -339,10 +359,37 @@ struct NewCampaignScreen: View {
         let data = (try? JSONSerialization.data(withJSONObject: geoJSON)) ?? Data()
         return String(data: data, encoding: .utf8) ?? "{}"
     }
+
+    private func polygonBoundsSummary(for polygon: [CLLocationCoordinate2D]) -> String {
+        guard let first = polygon.first else { return "empty" }
+        var minLat = first.latitude
+        var maxLat = first.latitude
+        var minLon = first.longitude
+        var maxLon = first.longitude
+        for coord in polygon {
+            minLat = min(minLat, coord.latitude)
+            maxLat = max(maxLat, coord.latitude)
+            minLon = min(minLon, coord.longitude)
+            maxLon = max(maxLon, coord.longitude)
+        }
+        return "lat[\(minLat), \(maxLat)] lon[\(minLon), \(maxLon)]"
+    }
+
+    /// After successful creation/provision, close create flow and open the new campaign in map mode.
+    private func routeToCampaignMap(_ campaign: CampaignV2) async {
+        dismiss()
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        await MainActor.run {
+            uiState.selectedMapCampaignId = campaign.id
+            uiState.selectedMapCampaignName = campaign.name
+            uiState.selectedTabIndex = 1
+        }
+    }
 }
 
 #Preview {
     NavigationStack {
         NewCampaignScreen(store: CampaignV2Store.shared)
     }
+    .environmentObject(AppUIState())
 }

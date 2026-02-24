@@ -74,6 +74,8 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
     @Published var sessionNotes: String?
 
     // MARK: - Building session (session recording)
+    /// When true, tab bar stays visible so user can navigate after app open (session was restored, not started this launch).
+    @Published var sessionRestoredThisLaunch = false
     @Published var sessionId: UUID?
     @Published var targetBuildings: [String] = [] // gers_ids
     @Published var completedBuildings: Set<String> = []
@@ -208,6 +210,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         notes: String? = nil,
         mode: SessionMode = .doorKnocking
     ) async throws {
+        sessionRestoredThisLaunch = false
         guard let userId = AuthManager.shared.user?.id else {
             print("⚠️ [SessionManager] Cannot start building session: not authenticated")
             return
@@ -386,6 +389,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
             pathCoordinates = []
             distanceMeters = session.distance_meters ?? 0
             elapsedTime = Date().timeIntervalSince(session.start_time)
+            sessionRestoredThisLaunch = true
             isActive = true
             isPaused = session.is_paused ?? false
             autoCompleteEnabled = session.auto_complete_enabled ?? false
@@ -514,8 +518,8 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
             conversationsHad = 0
 
             print("✅ [SessionManager] Building session ended and saved")
-            // Delay summary so CampaignMapView (and any sheet) is torn down first, avoiding "only presenting a single sheet"
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+            // Post summary on the next runloop tick so local map sheets/alerts can tear down first.
+            DispatchQueue.main.async { [weak self] in
                 self?.pendingSessionSummary = snapshot
                 NotificationCenter.default.post(name: .sessionEnded, object: nil)
             }

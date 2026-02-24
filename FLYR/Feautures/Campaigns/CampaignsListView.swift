@@ -96,10 +96,10 @@ struct CampaignsListView: View {
                             Section {
                                 Button(action: {
                                     HapticManager.light()
-                                    if let showCreateCampaign = showCreateCampaign {
+                                    if let onCreateCampaignTapped {
+                                        onCreateCampaignTapped()
+                                    } else if let showCreateCampaign = showCreateCampaign {
                                         showCreateCampaign.wrappedValue = true
-                                    } else {
-                                        onCreateCampaignTapped?()
                                     }
                                 }) {
                                     HStack {
@@ -426,10 +426,10 @@ struct CampaignListEmptyView: View {
             if canCreate {
                 Button(action: {
                     HapticManager.light()
-                    if let showCreateCampaign = showCreateCampaign {
+                    if let onCreateTapped {
+                        onCreateTapped()
+                    } else if let showCreateCampaign = showCreateCampaign {
                         showCreateCampaign.wrappedValue = true
-                    } else {
-                        onCreateTapped?()
                     }
                 }) {
                     Text("+ Create Campaign")

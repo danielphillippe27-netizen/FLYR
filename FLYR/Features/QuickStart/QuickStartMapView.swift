@@ -6,28 +6,56 @@ import Lottie
 
 struct QuickStartMapView: View {
     @Environment(\.colorScheme) private var colorScheme
+    @EnvironmentObject private var entitlementsService: EntitlementsService
     @StateObject private var locationManager = LocationManager()
 
     @State private var createdCampaignId: UUID?
     @State private var isPreparingCampaign = false
     @State private var errorMessage: String?
     @State private var hasAttemptedPreparation = false
+    @State private var showPaywall = false
+    /// When false: not Pro and already used free Quick Start → show locked. When nil: still resolving.
+    @State private var isFreeQuickStartEligible: Bool?
 
     private let radiusMeters = 500
     private let limitHomes = 300
 
+    /// Pro users always allowed; non-Pro allowed for their first Quick Start only.
+    private var canUseQuickStart: Bool {
+        entitlementsService.canUsePro || isFreeQuickStartEligible == true
+    }
+
     var body: some View {
         Group {
-            if let campaignId = createdCampaignId {
-                CampaignMapView(campaignId: campaignId.uuidString, quickStartEnabled: true)
+            if canUseQuickStart {
+                if let campaignId = createdCampaignId {
+                    CampaignMapView(campaignId: campaignId.uuidString, quickStartEnabled: true)
+                } else {
+                    loadingOrErrorView
+                }
+            } else if isFreeQuickStartEligible == false {
+                quickStartLockedView
             } else {
-                loadingOrErrorView
+                ProgressView("Loading…")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .navigationTitle("Quick Start")
         .navigationBarTitleDisplayMode(.inline)
         .task {
-            locationManager.requestLocation()
+            if entitlementsService.canUsePro {
+                isFreeQuickStartEligible = true
+                locationManager.requestLocation()
+                return
+            }
+            let workspaceId = await RoutePlansAPI.shared.resolveWorkspaceId(preferred: WorkspaceContext.shared.workspaceId)
+            let hasUsed = (try? await CampaignsAPI.shared.hasQuickStartCampaign(workspaceId: workspaceId)) ?? true
+            await MainActor.run {
+                isFreeQuickStartEligible = !hasUsed
+                if isFreeQuickStartEligible == true {
+                    locationManager.requestLocation()
+                }
+            }
         }
         .onReceive(
             locationManager.$currentLocation
@@ -37,7 +65,35 @@ struct QuickStartMapView: View {
                     abs(lhs.coordinate.longitude - rhs.coordinate.longitude) < 0.000001
                 })
         ) { newLocation in
+            guard canUseQuickStart else { return }
             prepareCampaignIfNeeded(from: newLocation)
+        }
+        .sheet(isPresented: $showPaywall) {
+            PaywallView()
+                .environmentObject(entitlementsService)
+        }
+    }
+
+    private var quickStartLockedView: some View {
+        ZStack {
+            Color(.systemBackground).ignoresSafeArea()
+            VStack(spacing: 14) {
+                Image(systemName: "lock.fill")
+                    .font(.system(size: 42, weight: .semibold))
+                    .foregroundColor(.red)
+                Text("Quick Start is a Pro feature")
+                    .font(.flyrHeadline)
+                Text("Upgrade to Pro to auto-create and launch a nearby campaign.")
+                    .font(.flyrCaption)
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal)
+                Button("View Pro") {
+                    showPaywall = true
+                }
+                .buttonStyle(.borderedProminent)
+            }
+            .padding(20)
         }
     }
 
@@ -129,26 +185,10 @@ struct QuickStartMapView: View {
             }
 
             do {
-                let nearbyHomes = try await HomesService.shared.fetchNearbyHomes(
-                    center: location.coordinate,
-                    radiusMeters: radiusMeters,
-                    limit: limitHomes,
-                    workspaceId: workspaceId
-                )
-
-                guard !nearbyHomes.isEmpty else {
-                    await MainActor.run {
-                        errorMessage = "No homes were found within 500m of your current location."
-                        isPreparingCampaign = false
-                        hasAttemptedPreparation = false
-                    }
-                    return
-                }
-
                 let campaign = try await HomesService.shared.createQuickStartCampaign(
                     center: location.coordinate,
                     radiusMeters: radiusMeters,
-                    homes: nearbyHomes,
+                    limitHomes: limitHomes,
                     workspaceId: workspaceId
                 )
 

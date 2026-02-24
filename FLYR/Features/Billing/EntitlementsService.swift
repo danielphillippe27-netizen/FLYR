@@ -46,12 +46,16 @@ final class EntitlementsService: ObservableObject {
     }
 
     /// True if user has Pro: server entitlement (apple/stripe) OR local unlock from StoreKit (Layer 1).
-    /// Temporary: always true so Pro guards are disabled; restore guard when ready to enforce.
     var canUsePro: Bool {
-        true
-        // if localProUnlocked { return true }
-        // guard let e = entitlement else { return false }
-        // return e.isActive && (e.plan == "pro" || e.plan == "team")
+        if localProUnlocked { return true }
+        guard let e = entitlement else { return false }
+        guard e.isActive else { return false }
+        let plan = e.plan.lowercased()
+        guard plan == "pro" || plan == "team" else { return false }
+        if let periodEnd = e.currentPeriodEnd {
+            return periodEnd > Date()
+        }
+        return true
     }
 
     /// Layer 1: Call after successful StoreKit purchase or restore. Later replace with verify + fetch.

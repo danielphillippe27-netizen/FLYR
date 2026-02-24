@@ -53,12 +53,12 @@ struct MainTabView: View {
         .campaignContext(campaignContext)
         .onChange(of: sessionManager.isActive) { _, isActive in
             withAnimation(.easeInOut(duration: 0.25)) {
-                uiState.showTabBar = !isActive
+                uiState.showTabBar = !isActive || sessionManager.sessionRestoredThisLaunch
             }
         }
         .onChange(of: sessionManager.sessionId) { _, newId in
             withAnimation(.easeInOut(duration: 0.25)) {
-                uiState.showTabBar = (newId == nil && !sessionManager.isActive)
+                uiState.showTabBar = (newId == nil && !sessionManager.isActive) || sessionManager.sessionRestoredThisLaunch
             }
             // Clear campaign selection only when starting a session (so Record stays on map when ending; we clear on summary dismiss)
             if newId != nil {
@@ -68,7 +68,11 @@ struct MainTabView: View {
         }
         .onAppear {
             let inSession = sessionManager.isActive || sessionManager.sessionId != nil
-            if inSession { uiState.showTabBar = false }
+            if inSession, !sessionManager.sessionRestoredThisLaunch {
+                uiState.showTabBar = false
+            } else {
+                uiState.showTabBar = true
+            }
         }
         .task {
             await sessionManager.restoreActiveSessionIfNeeded()

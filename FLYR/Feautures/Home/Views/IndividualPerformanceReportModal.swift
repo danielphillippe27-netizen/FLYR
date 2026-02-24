@@ -137,8 +137,11 @@ private struct IndividualReportCard: View {
         .init(key: "conversations", label: "Convos"),
         .init(key: "leads_created", label: "Leads"),
         .init(key: "appointments_set", label: "Appts"),
+        .init(key: "distance_walked", label: "Distance"),
         .init(key: "time_spent_seconds", label: "Time"),
         .init(key: "sessions_count", label: "Sessions"),
+        .init(key: "conversation_to_lead_rate", label: "C-Lead %"),
+        .init(key: "conversation_to_appointment_rate", label: "C-Appt %"),
     ]
 
     private var foreground: Color {
@@ -197,7 +200,7 @@ private struct IndividualReportCard: View {
                 .font(.system(size: 19, weight: .semibold))
                 .foregroundStyle(foreground)
 
-            Text(formatDelta(delta))
+            Text(formatDelta(delta, for: spec.key))
                 .font(.system(size: 11, weight: .regular))
                 .foregroundStyle(deltaColor(trend))
                 .lineLimit(1)
@@ -236,22 +239,44 @@ private struct IndividualReportCard: View {
             return "\(minutes)m"
         }
 
+        if key == "distance_walked" {
+            return String(format: "%.1f km", value)
+        }
+
+        if key.contains("rate") {
+            return String(format: "%.1f%%", value)
+        }
+
         return "\(Int(value.rounded()))"
     }
 
-    private func formatDelta(_ delta: IndividualMetricDelta?) -> String {
+    private func formatDelta(_ delta: IndividualMetricDelta?, for key: String) -> String {
         guard let delta else { return "flat" }
 
         let absValue = delta.abs ?? 0
         let sign = absValue > 0 ? "+" : absValue < 0 ? "-" : ""
-        let absLabel = "\(sign)\(abs(Int(absValue.rounded())))"
+        let baseLabel: String
 
-        guard let pctValue = delta.pct else { return absLabel }
+        if key == "time_spent_seconds" {
+            let secs = Int(abs(absValue).rounded())
+            let hours = secs / 3600
+            let minutes = (secs % 3600) / 60
+            let duration = hours > 0 ? "\(hours)h \(minutes)m" : "\(minutes)m"
+            baseLabel = "\(sign)\(duration)"
+        } else if key == "distance_walked" {
+            baseLabel = String(format: "%@%.1f km", sign, abs(absValue))
+        } else if key.contains("rate") {
+            baseLabel = String(format: "%@%.1f%%", sign, abs(absValue))
+        } else {
+            baseLabel = "\(sign)\(abs(Int(absValue.rounded())))"
+        }
+
+        guard let pctValue = delta.pct else { return baseLabel }
 
         let pctSign = pctValue > 0 ? "+" : pctValue < 0 ? "-" : ""
         let pctLabel = String(format: "%.1f", abs(pctValue))
 
-        return "\(absLabel) (\(pctSign)\(pctLabel)%)"
+        return "\(baseLabel) (\(pctSign)\(pctLabel)%)"
     }
 
     private func deltaColor(_ trend: IndividualMetricTrend) -> Color {

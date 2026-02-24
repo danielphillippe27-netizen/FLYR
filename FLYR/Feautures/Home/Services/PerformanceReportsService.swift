@@ -30,6 +30,8 @@ struct IndividualPerformanceMetric: Identifiable, Hashable {
         case "appointments_set": return "Appointments Set"
         case "time_spent_seconds": return "Time Spent"
         case "sessions_count": return "Sessions"
+        case "conversation_to_lead_rate": return "Conversation -> Lead"
+        case "conversation_to_appointment_rate": return "Conversation -> Appointment"
         case "leads": return "Leads"
         case "conversion_rate": return "Conversion Rate"
         case "flyers": return "Flyers"
@@ -146,9 +148,12 @@ actor PerformanceReportsService {
     private init() {}
 
     func fetchLatestIndividualReports(userID: UUID, workspaceID: UUID?) async throws -> [IndividualPerformanceReport] {
+        await triggerReportGeneration(workspaceID: workspaceID)
+
         // Try stable FLYR-PRO schema first, then richer schema if available.
         let selectCandidates = [
             "id, scope, period, period_start, period_end, metrics, deltas, created_at, subject_user_id, workspace_id",
+            "id, scope, period_type, period_start, period_end, metrics, deltas, created_at, subject_user_id, workspace_id",
             "id, scope, period_type, period_start, period_end, metrics, deltas, llm_summary, recommendations, generated_at, created_at, subject_user_id, workspace_id",
             "id, scope, period, period_start, period_end, metrics, deltas, llm_summary, recommendations, generated_at, created_at, subject_user_id, workspace_id"
         ]
@@ -168,6 +173,24 @@ actor PerformanceReportsService {
         }
 
         return IndividualReportPeriod.displayOrder.compactMap { latestByPeriod[$0] }
+    }
+
+    private func triggerReportGeneration(workspaceID: UUID?) async {
+        var params: [String: AnyCodable] = [
+            "p_force": AnyCodable(false)
+        ]
+
+        if let workspaceID {
+            params["p_workspace_id"] = AnyCodable(workspaceID.uuidString)
+        }
+
+        do {
+            _ = try await client
+                .rpc("generate_my_performance_reports", params: params)
+                .execute()
+        } catch {
+            // Best effort: report rows may already exist or RPC may not be deployed yet.
+        }
     }
 
     private func fetchRows(

@@ -90,11 +90,12 @@ final class StoreKitManager: ObservableObject {
         for await result in Transaction.currentEntitlements {
             guard case .verified(let transaction) = result else { continue }
             guard ProductId.all.contains(transaction.productID) else { continue }
-            entitlementsService?.setLocalProUnlocked(true)
+            guard Self.isActiveSubscription(transaction) else { continue }
             if latest == nil || transaction.purchaseDate > latest!.transaction.purchaseDate {
                 latest = (transaction, transaction.productID)
             }
         }
+        entitlementsService?.setLocalProUnlocked(latest != nil)
         if let (transaction, productId) = latest, let entitlements = entitlementsService {
             Task {
                 try? await entitlements.verifyAppleTransaction(
@@ -108,12 +109,15 @@ final class StoreKitManager: ObservableObject {
 
     /// Layer 1: On launch, set local Pro unlock if StoreKit reports an active subscription.
     func refreshLocalProFromCurrentEntitlements() async {
+        var hasActiveSubscription = false
         for await result in Transaction.currentEntitlements {
             guard case .verified(let transaction) = result else { continue }
             guard ProductId.all.contains(transaction.productID) else { continue }
-            entitlementsService?.setLocalProUnlocked(true)
-            return
+            guard Self.isActiveSubscription(transaction) else { continue }
+            hasActiveSubscription = true
+            break
         }
+        entitlementsService?.setLocalProUnlocked(hasActiveSubscription)
     }
 
     /// Listen for transaction updates (e.g. renewals). Verify first, then finish. Debounce by transaction id.
@@ -133,14 +137,12 @@ final class StoreKitManager: ObservableObject {
                 lastVerifiedTransactionIds.removeAll()
                 lastDebounceClear = Date()
             }
-            guard let entitlements = entitlementsService else {
+            guard entitlementsService != nil else {
                 await transaction.finish()
                 continue
             }
             await transaction.finish()
-            await MainActor.run {
-                entitlementsService?.setLocalProUnlocked(true)
-            }
+            await refreshLocalProFromCurrentEntitlements()
             lastVerifiedTransactionIds.insert(transaction.id)
             Task {
                 try? await entitlementsService?.verifyAppleTransaction(
@@ -150,5 +152,15 @@ final class StoreKitManager: ObservableObject {
                 await entitlementsService?.fetchEntitlement()
             }
         }
+    }
+
+    private static func isActiveSubscription(_ transaction: Transaction) -> Bool {
+        if transaction.revocationDate != nil {
+            return false
+        }
+        if let expirationDate = transaction.expirationDate {
+            return expirationDate > Date()
+        }
+        return true
     }
 }

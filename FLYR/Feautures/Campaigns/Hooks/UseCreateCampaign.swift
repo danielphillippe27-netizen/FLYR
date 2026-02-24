@@ -9,7 +9,7 @@ final class UseCreateCampaign: ObservableObject {
     func createV2(payload: CampaignCreatePayloadV2, store: CampaignV2Store) async -> CampaignV2? {
         print("🎣 [HOOK DEBUG] UseCreateCampaign.createV2 called")
         print("🎣 [HOOK DEBUG] Payload name: '\(payload.name)'")
-        print("🎣 [HOOK DEBUG] Payload type: \(payload.type.rawValue)")
+        print("🎣 [HOOK DEBUG] Payload type: \(payload.type?.rawValue ?? "nil")")
         print("🎣 [HOOK DEBUG] Address count: \(payload.addressesJSON.count)")
         
         isCreating = true

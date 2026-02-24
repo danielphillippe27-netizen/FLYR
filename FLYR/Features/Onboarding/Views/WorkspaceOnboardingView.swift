@@ -26,30 +26,34 @@ struct WorkspaceOnboardingView: View {
         // Solo: no backend; go straight to in-app paywall (Pay with Apple).
         if viewModel.useCase == .solo {
             await MainActor.run {
-                routeState.setRoute(.subscribe(memberInactive: false))
+                routeState.setRouteToSubscribe(memberInactive: false)
             }
             return
         }
 
-        // Team: call backend to complete onboarding, then paywall.
-        guard let request = viewModel.buildRequest() else { return }
+        // Team: call backend to complete onboarding, then always show paywall.
+        guard let request = viewModel.buildRequest() else {
+            await MainActor.run { routeState.setRouteToSubscribe(memberInactive: false) }
+            return
+        }
         do {
             await ensureFreshSession()
             _ = try await AccessAPI.shared.completeOnboarding(request)
             await MainActor.run {
-                routeState.setRoute(.subscribe(memberInactive: false))
+                routeState.setRouteToSubscribe(memberInactive: false)
             }
         } catch {
             do {
                 await ensureFreshSession()
                 _ = try await AccessAPI.shared.completeOnboarding(request)
                 await MainActor.run {
-                    routeState.setRoute(.subscribe(memberInactive: false))
+                    routeState.setRouteToSubscribe(memberInactive: false)
                 }
                 return
             } catch {
                 await MainActor.run {
                     viewModel.errorMessage = error.localizedDescription
+                    routeState.setRouteToSubscribe(memberInactive: false)
                 }
             }
         }

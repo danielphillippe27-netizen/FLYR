@@ -1,4 +1,6 @@
 import SwiftUI
+import StoreKit
+import UIKit
 
 struct SettingsView: View {
     @StateObject private var vm = SettingsViewModel()
@@ -179,7 +181,11 @@ struct SettingsView: View {
     private var subscriptionSection: some View {
         Section {
             Button {
-                showPaywall = true
+                if entitlementsService.canUsePro {
+                    Task { await openManageSubscriptions() }
+                } else {
+                    showPaywall = true
+                }
             } label: {
                 HStack {
                     Image(systemName: "crown.fill")
@@ -191,6 +197,24 @@ struct SettingsView: View {
         } header: {
             Text("Subscription")
         }
+    }
+
+    private func openManageSubscriptions() async {
+        if let scene = UIApplication.shared.connectedScenes
+            .compactMap({ $0 as? UIWindowScene })
+            .first {
+            do {
+                try await AppStore.showManageSubscriptions(in: scene)
+                return
+            } catch {
+                #if DEBUG
+                print("⚠️ [Settings] Failed to open App Store subscriptions sheet: \(error)")
+                #endif
+            }
+        }
+
+        guard let url = URL(string: "https://apps.apple.com/account/subscriptions") else { return }
+        await UIApplication.shared.open(url)
     }
     
     // MARK: - Streak Settings Section
@@ -331,4 +355,3 @@ struct SettingsView: View {
         }
     }
 }
-

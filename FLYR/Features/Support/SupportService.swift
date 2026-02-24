@@ -11,29 +11,14 @@ final class SupportService {
 
     // MARK: - Thread
 
-    /// Get existing support thread for user, or create one.
+    /// Get existing support thread for user, or create one. Uses RPC so creation succeeds regardless of RLS.
     func getOrCreateThread(userId: UUID) async throws -> SupportThread {
-        let existing: [SupportThread] = try await client
-            .from("support_threads")
-            .select()
-            .eq("user_id", value: userId)
-            .limit(1)
+        // PostgREST returns a single object for RPC that returns one row, not an array.
+        let thread: SupportThread = try await client
+            .rpc("get_or_create_support_thread")
             .execute()
             .value
-
-        if let thread = existing.first {
-            return thread
-        }
-
-        let insert = SupportThreadInsert(userId: userId)
-        let created: SupportThread = try await client
-            .from("support_threads")
-            .insert(insert)
-            .select()
-            .single()
-            .execute()
-            .value
-        return created
+        return thread
     }
 
     // MARK: - Messages
@@ -113,11 +98,6 @@ final class SupportService {
 }
 
 // MARK: - Insert DTOs
-
-private struct SupportThreadInsert: Encodable {
-    let userId: UUID
-    enum CodingKeys: String, CodingKey { case userId = "user_id" }
-}
 
 private struct SupportMessageInsert: Encodable {
     let threadId: UUID

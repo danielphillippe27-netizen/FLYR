@@ -473,7 +473,7 @@ private struct ValuePropStepView: View {
     }
 }
 
-// MARK: - Page 5: Features + Start trial
+// MARK: - Page 5: Features + Continue
 
 private struct FeaturesStepView: View {
     @ObservedObject var viewModel: WorkspaceOnboardingViewModel
@@ -519,7 +519,7 @@ private struct FeaturesStepView: View {
 
                             OnboardingBackButton(action: onBack)
                             Button(action: onStartTrial) {
-                                Text("Start trial")
+                                Text("Continue")
                                     .font(.headline)
                                     .foregroundColor(.white)
                                     .frame(maxWidth: .infinity)

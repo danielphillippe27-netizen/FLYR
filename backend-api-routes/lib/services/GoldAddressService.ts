@@ -52,6 +52,69 @@ function adminClient() {
   return createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 }
 
+function isMissingProvinceSignatureError(message: string): boolean {
+  return (
+    message.includes(
+      "Could not find the function public.get_gold_addresses_in_polygon_geojson"
+    ) && message.includes("p_province")
+  );
+}
+
+function parseGoldRows(raw: unknown): GoldAddressRow[] {
+  if (!raw) return [];
+
+  if (Array.isArray(raw)) {
+    return raw as GoldAddressRow[];
+  }
+
+  if (typeof raw === "string") {
+    try {
+      return parseGoldRows(JSON.parse(raw));
+    } catch {
+      return [];
+    }
+  }
+
+  if (typeof raw === "object") {
+    const obj = raw as Record<string, unknown>;
+
+    if ("get_gold_addresses_in_polygon_geojson" in obj) {
+      return parseGoldRows(obj.get_gold_addresses_in_polygon_geojson);
+    }
+
+    if ("street_name" in obj || "street_number" in obj || "id" in obj) {
+      return [obj as unknown as GoldAddressRow];
+    }
+  }
+
+  return [];
+}
+
+async function queryGoldAddressesRPC(
+  polygonGeoJSON: string,
+  province?: string
+) {
+  const supabase = adminClient();
+  const normalizedProvince = province?.trim().toUpperCase();
+
+  if (normalizedProvince) {
+    const twoArg = await supabase.rpc("get_gold_addresses_in_polygon_geojson", {
+      p_polygon_geojson: polygonGeoJSON,
+      p_province: normalizedProvince,
+    });
+
+    if (!twoArg.error) return twoArg;
+
+    if (!isMissingProvinceSignatureError(twoArg.error.message ?? "")) {
+      return twoArg;
+    }
+  }
+
+  return supabase.rpc("get_gold_addresses_in_polygon_geojson", {
+    p_polygon_geojson: polygonGeoJSON,
+  });
+}
+
 function formatAddress(row: GoldAddressRow): string {
   const parts: string[] = [];
   if (row.street_number) parts.push(row.street_number);
@@ -87,8 +150,9 @@ function normalizeGoldRow(
 /**
  * Queries ref_addresses_gold within a polygon and returns normalized campaign addresses.
  *
- * If the Gold count is below GOLD_THRESHOLD, returns source: 'lambda' with an empty
- * addresses array so the caller falls through to the Lambda/S3 path.
+ * If the Gold count is below GOLD_THRESHOLD, returns source: 'lambda' so the caller
+ * can continue with Lambda/S3 path, but still includes the Gold rows so the caller
+ * can merge them with Lambda results.
  */
 export async function getGoldAddressesForPolygon(
   campaignId: string,
@@ -96,33 +160,46 @@ export async function getGoldAddressesForPolygon(
   polygonGeoJSON: string,
   province?: string
 ): Promise<GoldAddressResult> {
-  const supabase = adminClient();
-
-  const params: Record<string, string> = {
-    p_polygon_geojson: polygonGeoJSON,
-  };
-  if (province) params.p_province = province;
-
-  const { data, error } = await supabase
-    .rpc("get_gold_addresses_in_polygon_geojson", params)
-    .single();
+  const normalizedProvince = province?.trim().toUpperCase();
+  const { data, error } = await queryGoldAddressesRPC(
+    polygonGeoJSON,
+    normalizedProvince
+  );
 
   if (error) {
-    console.error("[GoldAddressService] RPC error:", error);
+    console.error("[GoldAddressService] RPC error:", error, {
+      campaignId,
+      province: normalizedProvince ?? null,
+    });
     return { addresses: [], source: "lambda", goldCount: 0 };
   }
 
-  const rows: GoldAddressRow[] = Array.isArray(data) ? data : [];
+  let rows: GoldAddressRow[] = parseGoldRows(data);
+
+  // If a region filter was applied and yielded zero, retry unfiltered once.
+  if (rows.length === 0 && normalizedProvince) {
+    const fallback = await queryGoldAddressesRPC(polygonGeoJSON);
+    if (!fallback.error) {
+      const unfilteredRows = parseGoldRows(fallback.data);
+      if (unfilteredRows.length > 0) {
+        console.warn(
+          `[GoldAddressService] Province-filtered Gold query returned 0 for ${normalizedProvince}; unfiltered returned ${unfilteredRows.length}`
+        );
+        rows = unfilteredRows;
+      }
+    }
+  }
+
   const goldCount = rows.length;
+  const addresses = rows.map((r) => normalizeGoldRow(r, campaignId, ownerId));
 
   if (goldCount < GOLD_THRESHOLD) {
     console.log(
-      `[GoldAddressService] Gold count ${goldCount} < ${GOLD_THRESHOLD}, using Lambda path`
+      `[GoldAddressService] Gold count ${goldCount} < ${GOLD_THRESHOLD}, using Lambda path (with Gold merge candidates)`
     );
-    return { addresses: [], source: "lambda", goldCount };
+    return { addresses, source: "lambda", goldCount };
   }
 
-  const addresses = rows.map((r) => normalizeGoldRow(r, campaignId, ownerId));
   console.log(
     `[GoldAddressService] Gold path: ${goldCount} addresses for campaign ${campaignId}`
   );

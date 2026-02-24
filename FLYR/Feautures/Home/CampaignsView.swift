@@ -3,10 +3,12 @@ import SwiftUI
 struct CampaignsView: View {
     @State private var campaignFilter: CampaignFilter = .active
     @State private var showingNewCampaign = false
+    @State private var showPaywall = false
     @State private var selectedCampaignID: UUID?
 
     @StateObject private var storeV2 = CampaignV2Store.shared
     @EnvironmentObject private var uiState: AppUIState
+    @EnvironmentObject private var entitlementsService: EntitlementsService
 
     var body: some View {
         VStack(spacing: 0) {
@@ -58,8 +60,11 @@ struct CampaignsView: View {
                                 showingNewCampaign = false
                             }
                         }
-                    }
+                }
             }
+        }
+        .sheet(isPresented: $showPaywall) {
+            PaywallView()
         }
         .onAppear {
             storeV2.routeToV2Detail = { campaignID in
@@ -80,7 +85,32 @@ struct CampaignsView: View {
     /// Same action for toolbar + and empty state "+ Create Campaign" button.
     private func createCampaignTapped() {
         HapticManager.light()
-        showingNewCampaign = true
+        Task {
+            let canCreate = await canCreateCampaignInCurrentPlan()
+            await MainActor.run {
+                if canCreate {
+                    showingNewCampaign = true
+                } else {
+                    showPaywall = true
+                }
+            }
+        }
+    }
+
+    private func canCreateCampaignInCurrentPlan() async -> Bool {
+        if entitlementsService.canUsePro {
+            return true
+        }
+        if !storeV2.campaigns.isEmpty {
+            return false
+        }
+        let workspaceId = await RoutePlansAPI.shared.resolveWorkspaceId(preferred: WorkspaceContext.shared.workspaceId)
+        do {
+            let campaigns = try await CampaignsAPI.shared.fetchCampaignsMetadata(workspaceId: workspaceId)
+            return campaigns.isEmpty
+        } catch {
+            return storeV2.campaigns.isEmpty
+        }
     }
 }
 

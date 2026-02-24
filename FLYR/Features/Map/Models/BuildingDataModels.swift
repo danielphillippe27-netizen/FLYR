@@ -68,7 +68,20 @@ struct ResolvedAddress: Codable, Identifiable, Sendable {
     
     /// Returns a compact display address (street only)
     var displayStreet: String {
-        !street.isEmpty ? street : formatted
+        let streetValue = street.trimmingCharacters(in: .whitespacesAndNewlines)
+        let formattedValue = formatted.trimmingCharacters(in: .whitespacesAndNewlines)
+        let streetHasLetters = streetValue.range(of: "[A-Za-z]", options: .regularExpression) != nil
+
+        if !streetValue.isEmpty, streetHasLetters {
+            return streetValue
+        }
+        if !formattedValue.isEmpty {
+            if let comma = formattedValue.firstIndex(of: ",") {
+                return String(formattedValue[..<comma]).trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            return formattedValue
+        }
+        return streetValue
     }
     
     /// Returns full display address with city/state
@@ -358,19 +371,34 @@ struct CampaignAddressResponse: Codable {
     
     /// Converts to ResolvedAddress
     func toResolvedAddress(fallbackGersId: String) -> ResolvedAddress {
-        let house = houseNumber ?? ""
-        let street = streetName ?? ""
-        let combinedStreet = "\(house) \(street)".trimmingCharacters(in: .whitespaces)
+        let house = (houseNumber ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let street = (streetName ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let formattedValue = (formatted ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let combinedStreet = "\(house) \(street)".trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // If street_name is missing, prefer the formatted address so UI headers show
+        // "number + street" instead of just a house number.
+        let resolvedStreet: String
+        if !street.isEmpty {
+            resolvedStreet = combinedStreet
+        } else if !formattedValue.isEmpty {
+            resolvedStreet = formattedValue
+        } else if !combinedStreet.isEmpty {
+            resolvedStreet = combinedStreet
+        } else {
+            resolvedStreet = "Unknown Address"
+        }
+        let resolvedFormatted = !formattedValue.isEmpty ? formattedValue : combinedStreet
         
         return ResolvedAddress(
             id: id,
-            street: !combinedStreet.isEmpty ? combinedStreet : (formatted ?? "Unknown Address"),
-            formatted: formatted ?? combinedStreet,
+            street: resolvedStreet,
+            formatted: resolvedFormatted,
             locality: locality ?? "",
             region: region ?? "",
             postalCode: postalCode ?? "",
-            houseNumber: houseNumber ?? "",
-            streetName: streetName ?? "",
+            houseNumber: house,
+            streetName: street,
             gersId: gersId ?? buildingGersId ?? fallbackGersId
         )
     }

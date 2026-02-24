@@ -123,9 +123,6 @@ struct FullScreenMapView: View {
     @StateObject private var viewModel = MapCampaignPickerViewModel()
     @ObservedObject private var sessionManager = SessionManager.shared
 
-    @State private var showSessionSummary = false
-    @State private var sessionSummaryData: SessionSummaryData?
-
     @State private var showSessionStartSheet = false
     @State private var sessionStartPreselectedCampaign: CampaignV2?
     @State private var isPreparingSessionStart = false
@@ -181,6 +178,12 @@ struct FullScreenMapView: View {
         uiState.selectedMapCampaignId = selectedCampaignId
         uiState.selectedMapCampaignName = selectedCampaignName
     }
+
+    private func syncSelectionFromUIState() {
+        if selectedCampaignId != uiState.selectedMapCampaignId {
+            selectedCampaignId = uiState.selectedMapCampaignId
+        }
+    }
     
     private var sessionMapContentView: some View {
         SessionMapView()
@@ -234,9 +237,6 @@ struct FullScreenMapView: View {
                 .sheet(isPresented: $showCampaignPicker) {
                     campaignPickerSheet
                 }
-                .sheet(isPresented: $showSessionSummary) {
-                    sessionSummarySheet
-                }
                 .sheet(isPresented: $showSessionStartSheet) {
                     SessionStartView(
                         showCancelButton: true,
@@ -277,6 +277,7 @@ struct FullScreenMapView: View {
                     locationManager.requestLocation()
                 }
                 .onAppear {
+                    syncSelectionFromUIState()
                     // When map tab is shown with no campaign selected, request location and center if we already have it
                     if selectedCampaignId == nil {
                         locationManager.requestLocation()
@@ -311,6 +312,9 @@ struct FullScreenMapView: View {
     private func applyMapTabFocus<V: View>(to view: V) -> AnyView {
         AnyView(
             view
+                .onChange(of: uiState.selectedMapCampaignId) { _, _ in
+                    syncSelectionFromUIState()
+                }
                 .onChange(of: uiState.selectedTabIndex) { _, newIndex in
                     guard newIndex == 1, selectedCampaignId == nil else { return }
                     locationManager.requestLocation()
@@ -321,23 +325,13 @@ struct FullScreenMapView: View {
         )
     }
     
-    private func applyNotifications<V: View>(to view: V) -> AnyView {
-        AnyView(
-            view
-                .onReceive(NotificationCenter.default.publisher(for: .sessionEnded)) { _ in
-                    handleSessionEnded()
-                }
-        )
-    }
-    
     private func buildBody() -> AnyView {
         let step1 = applySheets(to: mainContentView)
         let step2 = applySelectionChanges(to: step1)
         let step3 = applyTask(to: step2)
         let step4 = applyViewModelChanges(to: step3)
         let step5 = applyLocationChanges(to: step4)
-        let step6 = applyMapTabFocus(to: step5)
-        return applyNotifications(to: step6)
+        return applyMapTabFocus(to: step5)
     }
     
     var body: some View {
@@ -353,17 +347,6 @@ struct FullScreenMapView: View {
             showCampaignPicker = false
             Task {
                 await loadSelectedCampaignOrFarm()
-            }
-        }
-    }
-    
-    private var sessionSummarySheet: some View {
-        Group {
-            if let summaryData = sessionSummaryData {
-                EndSessionSummaryView(
-                    data: summaryData,
-                    userName: AuthManager.shared.user?.email
-                )
             }
         }
     }
@@ -430,27 +413,6 @@ struct FullScreenMapView: View {
         guard selectedCampaignId == nil, let location = locationManager.currentLocation, !hasCenteredOnLocation else { return }
         centerMapOnLocation(location.coordinate)
         hasCenteredOnLocation = true
-    }
-    
-    /// Building sessions set lastEndedSummary; use it when present. Otherwise build summary from current manager state (SessionMapView / non-building flow).
-    /// When lastEndedSummary is set, MainTabView presents the summary via fullScreenCover; do not present the sheet here to avoid double presentation (blank screen + flash).
-    private func handleSessionEnded() {
-        if SessionManager.lastEndedSummary != nil {
-            return
-        }
-        if sessionManager.startTime != nil {
-            sessionSummaryData = SessionSummaryData(
-                distance: sessionManager.distanceMeters,
-                time: sessionManager.elapsedTime,
-                goalType: sessionManager.goalType,
-                goalAmount: sessionManager.goalAmount,
-                pathCoordinates: sessionManager.pathCoordinates,
-                completedCount: nil,
-                conversationsCount: nil,
-                startTime: sessionManager.startTime
-            )
-            showSessionSummary = true
-        }
     }
     
     private func loadSelectedCampaignOrFarm() async {

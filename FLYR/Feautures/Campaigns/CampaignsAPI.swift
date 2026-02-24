@@ -92,7 +92,11 @@ final class CampaignsAPI {
     func createV2(_ payload: CampaignCreatePayloadV2) async throws -> CampaignV2 {
         print("🌐 [API DEBUG] Creating campaign V2 with payload")
         print("🌐 [API DEBUG] Campaign name: '\(payload.name)'")
-        print("🌐 [API DEBUG] Campaign type: \(payload.type.rawValue) -> db: \(payload.type.dbValue)")
+        if let type = payload.type {
+            print("🌐 [API DEBUG] Campaign type: \(type.rawValue) -> db: \(type.dbValue)")
+        } else {
+            print("🌐 [API DEBUG] Campaign type: nil (optional)")
+        }
         print("🌐 [API DEBUG] Address source: \(payload.addressSource.rawValue)")
         print("🌐 [API DEBUG] Target count: \(payload.addressTargetCount)")
         print("🌐 [API DEBUG] Seed query: \(payload.seedQuery ?? "nil")")
@@ -113,12 +117,12 @@ final class CampaignsAPI {
         
         // 2. Insert campaign row into campaigns table
         let sanitizedRegion = Self.sanitizeRegionForStorage(payload.seedQuery)
+        let dbType = payload.type?.dbValue
         var campaignValues: [String: Any] = [
             "owner_id": userId.uuidString,
             "title": payload.name,
             "name": payload.name,
             "description": payload.description,
-            "type": payload.type.dbValue,
             "address_source": payload.addressSource.rawValue,
             "status": "draft",
             "scans": 0,
@@ -134,16 +138,19 @@ final class CampaignsAPI {
             campaignValues["tags"] = tags.trimmingCharacters(in: .whitespaces)
         }
 
-        // Defensive check so we fail with a clear client-side message before DB constraint errors.
-        let allowedTypes: Set<String> = [
-            "flyer", "door_knock", "event", "survey", "gift", "pop_by", "open_house", "letters"
-        ]
-        if !allowedTypes.contains(payload.type.dbValue) {
-            throw NSError(
-                domain: "CampaignsAPI",
-                code: 400,
-                userInfo: [NSLocalizedDescriptionKey: "Unsupported campaign type '\(payload.type.dbValue)'. Allowed: \(allowedTypes.sorted().joined(separator: ", "))"]
-            )
+        if let dbType {
+            // Defensive check so we fail with a clear client-side message before DB constraint errors.
+            let allowedTypes: Set<String> = [
+                "flyer", "door_knock", "event", "survey", "gift", "pop_by", "open_house", "letters"
+            ]
+            if !allowedTypes.contains(dbType) {
+                throw NSError(
+                    domain: "CampaignsAPI",
+                    code: 400,
+                    userInfo: [NSLocalizedDescriptionKey: "Unsupported campaign type '\(dbType)'. Allowed: \(allowedTypes.sorted().joined(separator: ", "))"]
+                )
+            }
+            campaignValues["type"] = dbType
         }
         
         print("🌐 [API DEBUG] Inserting campaign into DB...")
@@ -173,7 +180,7 @@ final class CampaignsAPI {
         let campaign = CampaignV2(
             id: dbRow.id,
             name: dbRow.title,
-            type: payload.type,
+            type: payload.type ?? .flyer,
             addressSource: payload.addressSource,
             addresses: payload.addressesJSON,
             totalFlyers: payload.addressesJSON.count, // Use addresses count instead of DB field
@@ -241,6 +248,13 @@ final class CampaignsAPI {
         print("✅ [API DEBUG] Fetched \(res.value.count) campaigns metadata")
         return res.value
     }
+
+    /// True if the workspace has at least one campaign created via Quick Start (tags contain "quick_start").
+    /// Used to enforce "one free Quick Start, then Pro required".
+    func hasQuickStartCampaign(workspaceId: UUID?) async throws -> Bool {
+        let rows = try await fetchCampaignsMetadata(workspaceId: workspaceId)
+        return rows.contains { ($0.tags ?? "").lowercased().contains("quick_start") }
+    }
     
     // Fetch Campaigns V2 - REAL SUPABASE INTEGRATION
     // Fetches campaign metadata and address counts so list shows correct house count
@@ -304,17 +318,15 @@ final class CampaignsAPI {
     
     /// Bulk add addresses to a campaign using Supabase RPC
     func bulkAddAddresses(campaignID: UUID, records: [[String: Any]]) async throws -> Int {
-        // Convert to JSON-encodable
-        let payload = try JSONSerialization.data(withJSONObject: records)
-        let jsonb = String(data: payload, encoding: .utf8)!
+        guard !records.isEmpty else { return 0 }
 
-        struct RPCResult: Decodable { let add_addresses_to_campaign: Int }
-        let res: PostgrestResponse<RPCResult> = try await client
-            .rpc("add_addresses_to_campaign",
-                 params: ["p_campaign_id": campaignID.uuidString,
-                          "p_addresses": jsonb])
-            .execute()
-        return res.value.add_addresses_to_campaign
+        let shim = SupabaseClientShim()
+        let params: [String: Any] = [
+            "p_campaign_id": campaignID.uuidString,
+            "p_addresses": records
+        ]
+        try await shim.callRPC("add_campaign_addresses", params: params)
+        return records.count
     }
     
     // Fetch addresses for a campaign - REAL SUPABASE INTEGRATION
@@ -378,6 +390,14 @@ final class CampaignsAPI {
         (Bundle.main.object(forInfoDictionaryKey: "FLYR_PRO_API_URL") as? String)?.trimmingCharacters(in: CharacterSet(charactersIn: "/")) ?? "https://flyrpro.app"
     }
 
+    /// Use www when host is apex to avoid redirect stripping Authorization.
+    private static var provisionRequestBaseURL: String {
+        guard let components = URLComponents(string: provisionBaseURL), components.host == "flyrpro.app" else {
+            return provisionBaseURL
+        }
+        return "https://www.flyrpro.app"
+    }
+
     /// Update campaign's territory boundary (polygon). Backend reads this when provisioning (Lambda/S3 server-side).
     func updateTerritoryBoundary(campaignId: UUID, polygonGeoJSON: String) async throws {
         guard let data = polygonGeoJSON.data(using: .utf8) else {
@@ -410,17 +430,29 @@ final class CampaignsAPI {
         print("✅ [API] Updated campaign \(campaignId) status to \(status.rawValue)")
     }
 
-    /// Trigger provision: backend reads territory_boundary, calls Lambda/S3, ingests into Supabase. Frontend only calls this API.
-    func provisionCampaign(campaignId: UUID) async throws {
-        let url = URL(string: "\(Self.provisionBaseURL)/api/campaigns/provision")!
+    /// Trigger provision: backend reads territory_boundary, calls Lambda/S3, ingests into Supabase.
+    /// Returns decoded response when available so callers can inspect addresses/buildings counts.
+    @discardableResult
+    func provisionCampaign(campaignId: UUID) async throws -> CampaignProvisionResponse? {
+        let url = URL(string: "\(Self.provisionRequestBaseURL)/api/campaigns/provision")!
+        print("🌐 [API DEBUG] Provision URL: \(url.absoluteString)")
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let session = try? await client.auth.session {
+            request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
+        }
         request.httpBody = try JSONSerialization.data(withJSONObject: ["campaign_id": campaignId.uuidString])
 
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw NSError(domain: "CampaignsAPI", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid response"])
+        }
+        if let body = String(data: data, encoding: .utf8), !body.isEmpty {
+            let preview = body.count > 1000 ? String(body.prefix(1000)) + "…" : body
+            print("🌐 [API DEBUG] Provision raw response (\(http.statusCode)): \(preview)")
+        } else {
+            print("🌐 [API DEBUG] Provision raw response (\(http.statusCode)): <empty>")
         }
         guard (200...299).contains(http.statusCode) else {
             let bodyStr = String(data: data, encoding: .utf8) ?? ""
@@ -428,11 +460,183 @@ final class CampaignsAPI {
             let displayMessage = userMessage ?? bodyStr
             throw NSError(domain: "CampaignsAPI", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: "Provision failed: \(displayMessage.prefix(300))"])
         }
-        if let provisionResponse = try? JSONDecoder().decode(ProvisionResponse.self, from: data) {
+        if var provisionResponse = try? JSONDecoder().decode(CampaignProvisionResponse.self, from: data) {
+            if (provisionResponse.addressesSaved ?? 0) == 0 {
+                let backfilled = await backfillGoldAddressesIfNeeded(campaignId: campaignId)
+                if backfilled > 0 {
+                    provisionResponse.addressesSaved = backfilled
+                    if let existingMessage = provisionResponse.message, !existingMessage.isEmpty {
+                        provisionResponse.message = "\(existingMessage) Gold backfill inserted \(backfilled) addresses."
+                    } else {
+                        provisionResponse.message = "Gold backfill inserted \(backfilled) addresses."
+                    }
+                }
+            }
             print("✅ [API] Provision completed for campaign \(campaignId): addresses=\(provisionResponse.addressesSaved ?? 0), buildings=\(provisionResponse.buildingsSaved ?? 0), roads=\(provisionResponse.roadsSaved ?? 0)")
+            return provisionResponse
         } else {
             print("✅ [API] Provision completed for campaign \(campaignId) (response not decoded)")
+            return nil
         }
+    }
+
+    private func backfillGoldAddressesIfNeeded(campaignId: UUID) async -> Int {
+        do {
+            let shim = SupabaseClientShim()
+            let campaignRes = try await client
+                .from("campaigns")
+                .select("territory_boundary,region")
+                .eq("id", value: campaignId.uuidString)
+                .single()
+                .execute()
+
+            guard
+                let campaignJSON = try JSONSerialization.jsonObject(with: campaignRes.data) as? [String: Any],
+                let territory = campaignJSON["territory_boundary"]
+            else {
+                print("⚠️ [API DEBUG] Gold backfill skipped: missing territory_boundary")
+                return 0
+            }
+
+            let territoryData = try JSONSerialization.data(withJSONObject: territory)
+            guard let polygonGeoJSON = String(data: territoryData, encoding: .utf8), !polygonGeoJSON.isEmpty else {
+                print("⚠️ [API DEBUG] Gold backfill skipped: invalid polygon JSON")
+                return 0
+            }
+
+            let region = (campaignJSON["region"] as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .uppercased()
+
+            var goldRows: [[String: Any]] = []
+
+            if let region, !region.isEmpty {
+                do {
+                    let rawWithProvince = try await shim.callRPCData(
+                        "get_gold_addresses_in_polygon_geojson",
+                        params: [
+                            "p_polygon_geojson": polygonGeoJSON,
+                            "p_province": region
+                        ]
+                    )
+                    goldRows = Self.parseGoldAddressRPCPayload(rawWithProvince)
+                } catch {
+                    print("⚠️ [API DEBUG] Gold backfill province-filtered RPC failed: \(error.localizedDescription)")
+                }
+            }
+
+            if goldRows.isEmpty {
+                do {
+                    let rawUnfiltered = try await shim.callRPCData(
+                        "get_gold_addresses_in_polygon_geojson",
+                        params: ["p_polygon_geojson": polygonGeoJSON]
+                    )
+                    goldRows = Self.parseGoldAddressRPCPayload(rawUnfiltered)
+                } catch {
+                    print("⚠️ [API DEBUG] Gold backfill unfiltered RPC failed: \(error.localizedDescription)")
+                }
+            }
+
+            guard !goldRows.isEmpty else {
+                print("⚠️ [API DEBUG] Gold backfill found 0 rows")
+                return 0
+            }
+
+            let addressesPayload = goldRows.compactMap(Self.mapGoldRowToCampaignAddressPayload)
+            guard !addressesPayload.isEmpty else {
+                print("⚠️ [API DEBUG] Gold backfill produced 0 valid address payload rows")
+                return 0
+            }
+
+            let inserted = try await bulkAddAddresses(campaignID: campaignId, records: addressesPayload)
+
+            print("✅ [API DEBUG] Gold backfill inserted \(inserted) addresses for campaign \(campaignId)")
+            return inserted
+
+        } catch {
+            print("⚠️ [API DEBUG] Gold backfill skipped due to error: \(String(describing: error))")
+            return 0
+        }
+    }
+
+    private static func parseGoldAddressRPCPayload(_ data: Data) -> [[String: Any]] {
+        guard let json = try? JSONSerialization.jsonObject(with: data) else { return [] }
+
+        if let rows = json as? [[String: Any]] {
+            return rows
+        }
+
+        if let wrapper = json as? [String: Any] {
+            if let nestedRows = wrapper["get_gold_addresses_in_polygon_geojson"] as? [[String: Any]] {
+                return nestedRows
+            }
+            if wrapper["street_name"] != nil || wrapper["street_number"] != nil || wrapper["id"] != nil {
+                return [wrapper]
+            }
+        }
+
+        return []
+    }
+
+    private static func mapGoldRowToCampaignAddressPayload(_ row: [String: Any]) -> [String: Any]? {
+        let streetNumber = (row["street_number"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let streetName = (row["street_name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let city = (row["city"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let province = (row["province"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let zip = (row["zip"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let country = (row["country"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        var parts: [String] = []
+        if let streetNumber, !streetNumber.isEmpty { parts.append(streetNumber) }
+        if let streetName, !streetName.isEmpty { parts.append(streetName) }
+        if let city, !city.isEmpty { parts.append(city) }
+        if let province, !province.isEmpty { parts.append(province) }
+        if let zip, !zip.isEmpty { parts.append(zip) }
+        let formatted = parts.joined(separator: ", ")
+        if formatted.isEmpty { return nil }
+
+        var payload: [String: Any] = [
+            "formatted": formatted,
+            "source": "gold",
+            "seq": 0,
+            "visited": false
+        ]
+
+        if let lat = row["lat"] as? Double, let lon = row["lon"] as? Double {
+            payload["lat"] = lat
+            payload["lon"] = lon
+        }
+
+        if let geom = row["geom_geojson"] {
+            if let geomString = geom as? String {
+                payload["geom"] = geomString
+                if payload["lat"] == nil || payload["lon"] == nil,
+                   let geomData = geomString.data(using: .utf8),
+                   let geo = try? JSONSerialization.jsonObject(with: geomData) as? [String: Any],
+                   let coords = geo["coordinates"] as? [Double],
+                   coords.count >= 2 {
+                    payload["lon"] = coords[0]
+                    payload["lat"] = coords[1]
+                }
+            } else if JSONSerialization.isValidJSONObject(geom),
+                      let geomData = try? JSONSerialization.data(withJSONObject: geom),
+                      let geomString = String(data: geomData, encoding: .utf8) {
+                payload["geom"] = geomString
+                if payload["lat"] == nil || payload["lon"] == nil,
+                   let geo = geom as? [String: Any],
+                   let coords = geo["coordinates"] as? [Double],
+                   coords.count >= 2 {
+                    payload["lon"] = coords[0]
+                    payload["lat"] = coords[1]
+                }
+            }
+        }
+
+        guard payload["lat"] != nil, payload["lon"] != nil else {
+            return nil
+        }
+
+        return payload
     }
 
     /// Poll campaign provision state until ready/failed/timeout so UI can gate map routing.
@@ -484,12 +688,12 @@ final class CampaignsAPI {
 // MARK: - Provision response (backend contract)
 
 /// Response from POST /api/campaigns/provision (optional decode for logging/UI).
-private struct ProvisionResponse: Codable {
-    let success: Bool?
-    let addressesSaved: Int?
-    let buildingsSaved: Int?
-    let roadsSaved: Int?
-    let message: String?
+struct CampaignProvisionResponse: Codable {
+    var success: Bool?
+    var addressesSaved: Int?
+    var buildingsSaved: Int?
+    var roadsSaved: Int?
+    var message: String?
 
     enum CodingKeys: String, CodingKey {
         case success
@@ -499,6 +703,7 @@ private struct ProvisionResponse: Codable {
         case message
     }
 }
+
 
 struct CampaignProvisionState: Codable {
     let id: UUID

@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Container for workspace onboarding steps. Presents 5-page flow and calls onComplete when user taps Start trial.
+/// Container for workspace onboarding steps. Presents 5-page flow and calls onComplete when user taps Continue.
 struct WorkspaceOnboardingContainerView: View {
     @ObservedObject var viewModel: WorkspaceOnboardingViewModel
     var onComplete: () -> Void

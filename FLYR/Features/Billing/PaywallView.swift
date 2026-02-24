@@ -47,6 +47,7 @@ struct PaywallView: View {
     var memberInactive: Bool = false
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.openURL) private var openURL
     @EnvironmentObject var entitlementsService: EntitlementsService
     @EnvironmentObject var routeState: AppRouteState
     @ObservedObject private var storeKit = StoreKitManager.shared
@@ -332,6 +333,23 @@ struct PaywallView: View {
             .foregroundColor(.white.opacity(0.8))
             .disabled(storeKit.isRestoring)
 
+            HStack(spacing: 12) {
+                Button("Terms") {
+                    openLegalURL("https://www.flyrpro.app/terms")
+                }
+                .font(.system(size: 13))
+                .foregroundColor(.white.opacity(0.7))
+
+                Text("•")
+                    .foregroundColor(.white.opacity(0.4))
+
+                Button("Privacy") {
+                    openLegalURL("https://www.flyrpro.app/privacy")
+                }
+                .font(.system(size: 13))
+                .foregroundColor(.white.opacity(0.7))
+            }
+
             Button("Skip for now") {
                 routeState.setRoute(.dashboard)
             }
@@ -375,19 +393,22 @@ struct PaywallView: View {
                 }
                 return
             }
-            // Fallback: Stripe checkout in browser (e.g. products not loaded yet).
-            let plan = selectedPlan == .annual ? "annual" : "monthly"
-            let currency = isCanadianLocale ? "CAD" : "USD"
-            let checkoutURL = try await AccessAPI.shared.createCheckoutSession(plan: plan, currency: currency, priceId: nil)
-            await MainActor.run { isWaitingForPayment = true }
-            _ = await UIApplication.shared.open(checkoutURL)
-            // Polling happens on scenePhase .active when user returns to app
+            await storeKit.loadProducts()
+            await MainActor.run {
+                errorMessage = "Unable to load App Store products. Please try again."
+                showError = true
+            }
         } catch {
             await MainActor.run {
                 errorMessage = error.localizedDescription
                 showError = true
             }
         }
+    }
+
+    private func openLegalURL(_ value: String) {
+        guard let url = URL(string: value) else { return }
+        openURL(url)
     }
 
     private func restorePurchases() async {

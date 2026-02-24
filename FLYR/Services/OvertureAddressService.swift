@@ -1,5 +1,7 @@
 import Foundation
 import CoreLocation
+import Auth
+import Supabase
 
 // MARK: - Overture Address Row (backend response)
 
@@ -133,9 +135,21 @@ final class OvertureAddressService {
 
     private init() {}
 
+    private struct AuthHandoffResponse: Decodable {
+        let code: String
+    }
+
     /// Backend base URL (e.g. https://flyrpro.app).
     private var baseURL: String {
         (Bundle.main.object(forInfoDictionaryKey: "FLYR_PRO_API_URL") as? String)?.trimmingCharacters(in: CharacterSet(charactersIn: "/")) ?? "https://flyrpro.app"
+    }
+
+    /// Base URL used for authenticated requests. Uses `www` when host is apex to avoid redirects stripping Authorization.
+    private var requestBaseURL: String {
+        guard let components = URLComponents(string: baseURL), components.host == "flyrpro.app" else {
+            return baseURL
+        }
+        return "https://www.flyrpro.app"
     }
 
     /// Whether base URL came from Info.plist (true) or default (false). For diagnostics.
@@ -146,8 +160,9 @@ final class OvertureAddressService {
     /// Log backend connection diagnostics (no secrets). Call when a request is about to run or when it fails.
     private func logBackendDiagnostics(path: String, error: Error? = nil) {
         let connPath = "HTTP backend (FLYR_PRO_API_URL)"
-        let url = "\(baseURL)\(path)"
-        print("🔍 [ADDRESS BACKEND] connector=\(connPath) base_url=\(baseURL) url=\(url) from_plist=\(baseURLFromPlist)")
+        let baseURLForRequest = requestBaseURL
+        let url = "\(baseURLForRequest)\(path)"
+        print("🔍 [ADDRESS BACKEND] connector=\(connPath) base_url=\(baseURL) request_base_url=\(baseURLForRequest) url=\(url) from_plist=\(baseURLFromPlist)")
         if let e = error {
             print("❌ [ADDRESS BACKEND] request_failed error=\(e.localizedDescription)")
             let desc = e.localizedDescription.lowercased()
@@ -193,17 +208,20 @@ final class OvertureAddressService {
     private func postDecodeGenerateAddressList(path: String, body: [String: Any]) async throws -> [AddressCandidate] {
         logBackendDiagnostics(path: path)
 
-        let url = URL(string: "\(baseURL)\(path)")!
+        let url = URL(string: "\(requestBaseURL)\(path)")!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        var authMode = "none"
+        if let session = try? await SupabaseManager.shared.client.auth.session {
+            request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
+            authMode = "bearer"
+        }
+        print("🔍 [ADDRESS BACKEND] auth_mode=\(authMode) path=\(path)")
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         do {
-            let (responseData, response) = try await URLSession.shared.data(for: request)
-            guard let http = response as? HTTPURLResponse else {
-                throw OvertureAddressError.invalidResponse
-            }
+            let (responseData, http) = try await performRequestWithHandoffRetry(request, path: path)
             guard (200...299).contains(http.statusCode) else {
                 let bodyStr = String(data: responseData, encoding: .utf8) ?? ""
                 let userMessage = Self.extractMessageFromErrorBody(responseData)
@@ -263,17 +281,20 @@ final class OvertureAddressService {
     private func postDecode(path: String, body: [String: Any]) async throws -> [OvertureAddressRow] {
         logBackendDiagnostics(path: path)
 
-        let url = URL(string: "\(baseURL)\(path)")!
+        let url = URL(string: "\(requestBaseURL)\(path)")!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        var authMode = "none"
+        if let session = try? await SupabaseManager.shared.client.auth.session {
+            request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
+            authMode = "bearer"
+        }
+        print("🔍 [ADDRESS BACKEND] auth_mode=\(authMode) path=\(path)")
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         do {
-            let (responseData, response) = try await URLSession.shared.data(for: request)
-            guard let http = response as? HTTPURLResponse else {
-                throw OvertureAddressError.invalidResponse
-            }
+            let (responseData, http) = try await performRequestWithHandoffRetry(request, path: path)
             guard (200...299).contains(http.statusCode) else {
                 let bodyStr = String(data: responseData, encoding: .utf8) ?? ""
                 let userMessage = Self.extractMessageFromErrorBody(responseData)
@@ -286,6 +307,74 @@ final class OvertureAddressService {
         } catch {
             logBackendDiagnostics(path: path, error: error)
             throw error
+        }
+    }
+
+    /// Executes a backend request and retries once after auth handoff if backend returns 401.
+    private func performRequestWithHandoffRetry(_ request: URLRequest, path: String) async throws -> (Data, HTTPURLResponse) {
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw OvertureAddressError.invalidResponse
+        }
+
+        guard http.statusCode == 401 else {
+            return (data, http)
+        }
+
+        print("⚠️ [ADDRESS BACKEND] 401 on \(path); attempting auth handoff retry...")
+        let handoffReady = await establishBackendSessionViaHandoff()
+        guard handoffReady else {
+            return (data, http)
+        }
+
+        let (retryData, retryResponse) = try await URLSession.shared.data(for: request)
+        guard let retryHTTP = retryResponse as? HTTPURLResponse else {
+            throw OvertureAddressError.invalidResponse
+        }
+        print("🔍 [ADDRESS BACKEND] retry_status=\(retryHTTP.statusCode) path=\(path)")
+        return (retryData, retryHTTP)
+    }
+
+    /// Creates a short-lived web session cookie on flyrpro.app from Supabase bearer token.
+    private func establishBackendSessionViaHandoff() async -> Bool {
+        do {
+            let session = try await SupabaseManager.shared.client.auth.session
+            let token = session.accessToken
+            guard !token.isEmpty else { return false }
+
+            let handoffURL = URL(string: "\(requestBaseURL)/api/auth/handoff")!
+            var handoffRequest = URLRequest(url: handoffURL)
+            handoffRequest.httpMethod = "POST"
+            handoffRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+
+            let (handoffData, handoffResponse) = try await URLSession.shared.data(for: handoffRequest)
+            guard let handoffHTTP = handoffResponse as? HTTPURLResponse, (200...299).contains(handoffHTTP.statusCode) else {
+                let body = String(data: handoffData, encoding: .utf8) ?? ""
+                print("⚠️ [ADDRESS BACKEND] auth handoff failed status=\((handoffResponse as? HTTPURLResponse)?.statusCode ?? -1) body=\(body)")
+                return false
+            }
+
+            let handoff = try JSONDecoder().decode(AuthHandoffResponse.self, from: handoffData)
+            guard !handoff.code.isEmpty else { return false }
+
+            let redeemURL = URL(string: "\(requestBaseURL)/api/auth/redeem-handoff")!
+            var redeemRequest = URLRequest(url: redeemURL)
+            redeemRequest.httpMethod = "POST"
+            redeemRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            redeemRequest.httpBody = try JSONSerialization.data(withJSONObject: ["code": handoff.code])
+
+            let (redeemData, redeemResponse) = try await URLSession.shared.data(for: redeemRequest)
+            guard let redeemHTTP = redeemResponse as? HTTPURLResponse, (200...299).contains(redeemHTTP.statusCode) else {
+                let body = String(data: redeemData, encoding: .utf8) ?? ""
+                print("⚠️ [ADDRESS BACKEND] auth redeem failed status=\((redeemResponse as? HTTPURLResponse)?.statusCode ?? -1) body=\(body)")
+                return false
+            }
+
+            print("✅ [ADDRESS BACKEND] auth handoff session established")
+            return true
+        } catch {
+            print("⚠️ [ADDRESS BACKEND] auth handoff error: \(error.localizedDescription)")
+            return false
         }
     }
 

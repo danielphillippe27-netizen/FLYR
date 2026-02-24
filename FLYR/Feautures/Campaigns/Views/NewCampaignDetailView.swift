@@ -5,11 +5,12 @@ import CoreLocation
 struct NewCampaignDetailView: View {
     let campaignID: UUID
     @ObservedObject var store: CampaignV2Store
+    @EnvironmentObject private var uiState: AppUIState
+    @Environment(\.dismiss) private var dismiss
     @StateObject private var hook = UseCampaignV2()
     @State private var mapCenter: CLLocationCoordinate2D = CLLocationCoordinate2D(latitude: 43.65, longitude: -79.38) // Toronto default
     @State private var isMapFullscreen = false
     @State private var addressStatuses: [String: AddressStatus] = [:]
-    @State private var showSessionStart = false
     @State private var showShareCardView = false
     @State private var selectedAddressId: String? = nil
     @State private var selectedAddressLabel: String = ""
@@ -125,7 +126,10 @@ struct NewCampaignDetailView: View {
                         .foregroundColor(.text)
                     
                     ZStack {
-                        CampaignMapView(campaignId: campaignID.uuidString)
+                        CampaignMapView(
+                            campaignId: campaignID.uuidString,
+                            showPreSessionStartButton: false
+                        )
                             .frame(height: 260)
                             .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                             .matchedGeometryEffect(id: "map", in: mapNamespace, isSource: !isMapFullscreen)
@@ -496,11 +500,25 @@ struct NewCampaignDetailView: View {
         }
         .navigationTitle("Campaign Details")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button {
+                    dismiss()
+                } label: {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundColor(.flyrPrimary)
+                }
+            }
+        }
         .safeAreaInset(edge: .bottom) {
             VStack(spacing: 0) {
                 Divider()
                 Button(action: {
-                    showSessionStart = true
+                    HapticManager.medium()
+                    uiState.selectedMapCampaignId = campaignID
+                    uiState.selectedMapCampaignName = hook.item?.name
+                    uiState.selectedTabIndex = 1
                 }) {
                     Text("Start Session")
                         .font(.label)
@@ -526,9 +544,6 @@ struct NewCampaignDetailView: View {
                     selectedSessionForShare = nil
                 }
             )
-        }
-        .sheet(isPresented: $showSessionStart) {
-            SessionStartView(preselectedCampaign: hook.item)
         }
         .sheet(isPresented: $showFullAddressesSheet) {
             if let campaign = hook.item {
@@ -863,6 +878,11 @@ struct FullscreenMapView: View {
                 .ignoresSafeArea(edges: .top)
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .sessionEnded)) { _ in
+            // If a session ends while this fullscreen map is presented, dismiss it so
+            // MainTabView can present the global Share Activity full-screen cover.
+            onClose()
+        }
     }
 }
 
@@ -877,6 +897,3 @@ struct FullscreenMapView: View {
         NewCampaignDetailView(campaignID: mockCampaign.id, store: store)
     }
 }
-
-
-

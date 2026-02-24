@@ -17,7 +17,6 @@ private let statsAccentRed = Color(hex: "#FF4F4F")
 struct StatsPageView: View {
     @EnvironmentObject var entitlementsService: EntitlementsService
     @State private var selectedTab: StatsPageTab = .leaderboard
-    @State private var showPaywall = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -31,13 +30,8 @@ struct StatsPageView: View {
             Group {
                 switch selectedTab {
                 case .leaderboard:
-                    if entitlementsService.canUsePro {
-                        LeaderboardView()
-                            .transition(.opacity.combined(with: .move(edge: .leading)))
-                    } else {
-                        LeaderboardPaywallGate(showPaywall: $showPaywall)
-                            .transition(.opacity.combined(with: .move(edge: .leading)))
-                    }
+                    LeaderboardView()
+                        .transition(.opacity.combined(with: .move(edge: .leading)))
                 case .you:
                     YouViewContent()
                         .transition(.opacity.combined(with: .move(edge: .trailing)))
@@ -48,45 +42,6 @@ struct StatsPageView: View {
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .navigationBar)
-        .sheet(isPresented: $showPaywall) {
-            PaywallView()
-        }
-    }
-}
-
-// MARK: - Leaderboard Pro gate (upgrade CTA when not Pro)
-private struct LeaderboardPaywallGate: View {
-    @Binding var showPaywall: Bool
-
-    var body: some View {
-        VStack(spacing: 20) {
-            Spacer(minLength: 40)
-            Image(systemName: "trophy.fill")
-                .font(.system(size: 56))
-                .foregroundColor(.muted)
-            Text("Leaderboard is a Pro feature")
-                .font(.system(size: 20, weight: .semibold))
-                .foregroundColor(.text)
-                .multilineTextAlignment(.center)
-            Text("Upgrade to see how you rank.")
-                .font(.system(size: 16))
-                .foregroundColor(.muted)
-            Button {
-                showPaywall = true
-            } label: {
-                Text("Upgrade to Pro")
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundColor(.white)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 14)
-                    .background(Color(hex: "#FF4F4F"))
-                    .cornerRadius(12)
-            }
-            .padding(.horizontal, 32)
-            .padding(.top, 8)
-            Spacer(minLength: 40)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
@@ -187,7 +142,7 @@ struct YouViewContent: View {
                                 icon: "figure.walk",
                                 label: "Distance",
                                 progress: progress(actual: vm.stats?.distance_walked ?? 0, max: StatsProgressMax.distance),
-                                value: String(format: "%.1f mi", vm.stats?.distance_walked ?? 0)
+                                value: String(format: "%.1f mi", Double(vm.stats?.distance_walked ?? 0.0))
                             )
                             CompactStatRow(
                                 icon: "doc.text",
@@ -305,22 +260,10 @@ struct YouStatsView: View {
 
 // MARK: - Leaderboard Tab View (tab 4 only; no toggle)
 struct LeaderboardTabView: View {
-    @EnvironmentObject var entitlementsService: EntitlementsService
-    @State private var showPaywall = false
-
     var body: some View {
-        Group {
-            if entitlementsService.canUsePro {
-                LeaderboardView()
-            } else {
-                LeaderboardPaywallGate(showPaywall: $showPaywall)
-            }
-        }
-        .navigationTitle("Leaderboard")
-        .navigationBarTitleDisplayMode(.inline)
-        .sheet(isPresented: $showPaywall) {
-            PaywallView()
-        }
+        LeaderboardView()
+            .navigationTitle("Leaderboard")
+            .navigationBarTitleDisplayMode(.inline)
     }
 }
 
@@ -329,4 +272,3 @@ struct LeaderboardTabView: View {
         StatsPageView()
     }
 }
-

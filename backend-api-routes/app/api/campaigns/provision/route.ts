@@ -8,6 +8,7 @@ import {
 import {
   generateSnapshots,
   fetchGeoJSONFromUrl,
+  type GeoJSONFeature,
   type GeoJSONFeatureCollection,
 } from "../../../../lib/services/TileLambdaService";
 import {
@@ -139,6 +140,9 @@ export async function POST(request: Request): Promise<Response> {
       : JSON.stringify(c.territory_boundary);
 
   const province = c.region ?? undefined;
+  console.log(
+    `[Provision] Campaign context: boundary_type=${typeof c.territory_boundary} province=${province ?? "null"}`
+  );
 
   try {
     // -------------------------------------------------------------------------
@@ -164,32 +168,42 @@ export async function POST(request: Request): Promise<Response> {
       const { data: goldBuildingsRaw, error: bErr } = await supabase
         .rpc("get_gold_buildings_in_polygon_geojson", {
           p_polygon_geojson: polygonGeoJSON,
-        })
-        .single();
+        });
 
       if (bErr) {
         console.warn("[Provision] Gold buildings RPC error:", bErr);
       }
 
-      const goldBuildingsGeo = goldBuildingsRaw as GeoJSONFeatureCollection | null;
+      const goldBuildingsGeo = normalizeGoldBuildingsRpc(goldBuildingsRaw);
       buildingsSaved = goldBuildingsGeo?.features.length ?? 0;
 
       // Insert addresses
       addressesSaved = await insertCampaignAddresses(campaignId, goldResult.addresses);
 
       // Run Gold linker (SQL, sets campaign_addresses.building_id)
-      const { data: linkResult, error: linkErr } = await supabase
+      let { data: linkResult, error: linkErr } = await supabase
         .rpc("link_campaign_addresses_gold", {
           p_campaign_id:     campaignId,
           p_polygon_geojson: polygonGeoJSON,
-        })
-        .single();
+        });
+
+      if (linkErr && isMissingTwoArgLinkerError(linkErr.message ?? "")) {
+        const oneArg = await supabase.rpc("link_campaign_addresses_gold", {
+          p_campaign_id: campaignId,
+        });
+        linkResult = oneArg.data;
+        linkErr = oneArg.error;
+      }
 
       if (linkErr) {
         console.warn("[Provision] Gold linker error:", linkErr);
       } else {
-        const linked = (linkResult as { total_linked?: number } | null)?.total_linked ?? 0;
-        console.log(`[Provision] Gold linker linked ${linked} addresses`);
+        const linked = parseTotalLinked(linkResult);
+        if (linked !== null) {
+          console.log(`[Provision] Gold linker linked ${linked} addresses`);
+        } else {
+          console.log("[Provision] Gold linker completed");
+        }
       }
 
     } else {
@@ -235,6 +249,14 @@ export async function POST(request: Request): Promise<Response> {
         goldResult.goldCount > 0
           ? mergeAddresses(goldResult.addresses, lambdaAddresses)
           : lambdaAddresses;
+      console.log(
+        `[Provision] Lambda merge: gold_candidates=${goldResult.addresses.length} lambda_addresses=${lambdaAddresses.length} merged=${allAddresses.length}`
+      );
+      if (allAddresses.length === 0) {
+        console.warn(
+          `[Provision] No addresses returned by Gold or Lambda for campaign ${campaignId}`
+        );
+      }
 
       addressesSaved = await insertCampaignAddresses(campaignId, allAddresses);
 
@@ -329,4 +351,129 @@ function mergeAddresses(
     }
   }
   return merged;
+}
+
+function parseNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const n = Number(value);
+    if (Number.isFinite(n)) return n;
+  }
+  return null;
+}
+
+function parseTotalLinked(raw: unknown): number | null {
+  const row = (Array.isArray(raw) ? raw[0] : raw) as Record<string, unknown> | null | undefined;
+  if (!row || typeof row !== "object") return null;
+
+  const total = parseNumber(row.total_linked);
+  if (total !== null) return total;
+
+  const exact = parseNumber(row.linked_exact) ?? parseNumber(row.exact_matches) ?? 0;
+  const proximity = parseNumber(row.linked_proximity) ?? parseNumber(row.proximity_matches) ?? 0;
+  return exact + proximity;
+}
+
+function isMissingTwoArgLinkerError(message: string): boolean {
+  return (
+    message.includes("Could not find the function public.link_campaign_addresses_gold") &&
+    message.includes("p_polygon_geojson")
+  );
+}
+
+function normalizeGoldBuildingsRpc(raw: unknown): GeoJSONFeatureCollection | null {
+  if (!raw) return null;
+
+  if (typeof raw === "string") {
+    try {
+      return normalizeGoldBuildingsRpc(JSON.parse(raw));
+    } catch {
+      return null;
+    }
+  }
+
+  if (Array.isArray(raw)) {
+    if (raw.length === 0) {
+      return { type: "FeatureCollection", features: [] };
+    }
+
+    const first = raw[0] as Record<string, unknown>;
+    if (first?.type === "Feature") {
+      return { type: "FeatureCollection", features: raw as GeoJSONFeature[] };
+    }
+
+    const features: GeoJSONFeature[] = raw
+      .map((entry) => toFeatureFromGoldBuildingRow(entry as Record<string, unknown>))
+      .filter((f): f is GeoJSONFeature => f !== null);
+
+    return { type: "FeatureCollection", features };
+  }
+
+  if (typeof raw === "object") {
+    const obj = raw as Record<string, unknown>;
+
+    if ("get_gold_buildings_in_polygon_geojson" in obj) {
+      return normalizeGoldBuildingsRpc(obj.get_gold_buildings_in_polygon_geojson);
+    }
+
+    if (obj.type === "FeatureCollection" && Array.isArray(obj.features)) {
+      return {
+        type: "FeatureCollection",
+        features: obj.features as GeoJSONFeature[],
+      };
+    }
+
+    if (obj.type === "Feature") {
+      return {
+        type: "FeatureCollection",
+        features: [obj as unknown as GeoJSONFeature],
+      };
+    }
+  }
+
+  return null;
+}
+
+function toFeatureFromGoldBuildingRow(
+  row: Record<string, unknown>
+): GeoJSONFeature | null {
+  const rawGeom = row.geom_geojson ?? row.geometry;
+  const geometry = parseGeometry(rawGeom);
+  if (!geometry) return null;
+
+  return {
+    type: "Feature",
+    id: (row.id as string | number | undefined) ?? undefined,
+    geometry,
+    properties: {
+      ...row,
+      source: "gold",
+    } as Record<string, unknown>,
+  };
+}
+
+function parseGeometry(
+  raw: unknown
+): { type: string; coordinates: unknown } | null {
+  if (!raw) return null;
+
+  if (typeof raw === "string") {
+    try {
+      return parseGeometry(JSON.parse(raw));
+    } catch {
+      return null;
+    }
+  }
+
+  if (typeof raw === "object") {
+    const obj = raw as Record<string, unknown>;
+    if (typeof obj.type === "string" && "coordinates" in obj) {
+      return {
+        type: obj.type,
+        coordinates: obj.coordinates,
+      };
+    }
+  }
+
+  return null;
 }
