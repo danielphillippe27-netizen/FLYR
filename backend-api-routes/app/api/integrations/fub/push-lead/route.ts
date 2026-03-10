@@ -1,6 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
-import { getFubApiKeyForUser } from "../../../../lib/crm-auth";
+import { getFubAuthForUser } from "../../../../lib/crm-auth";
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY!;
@@ -75,11 +75,11 @@ export async function POST(request: Request) {
       return NextResponse.json({ success: false, error: "Invalid or expired token" }, { status: 401 });
     }
 
-    const apiKey = await getFubApiKeyForUser(
+    const fubAuth = await getFubAuthForUser(
       createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY),
       user.id
     );
-    if (!apiKey) {
+    if (!fubAuth) {
       return NextResponse.json(
         { success: false, error: "Follow Up Boss not connected" },
         { status: 400 }
@@ -95,12 +95,11 @@ export async function POST(request: Request) {
       return NextResponse.json({ success: false, error: msg }, { status: 400 });
     }
 
-    const basicAuth = Buffer.from(`${apiKey}:`).toString("base64");
     const res = await fetch(`${FUB_API_BASE}/events`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Basic ${basicAuth}`,
+        ...fubAuth.headers,
       },
       body: JSON.stringify(event),
     });

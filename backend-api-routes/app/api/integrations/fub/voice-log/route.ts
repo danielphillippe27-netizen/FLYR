@@ -1,13 +1,13 @@
 import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
-import { getFubApiKeyForUser } from "../../../../../lib/crm-auth";
+import { getFubAuthForUser } from "../../../../lib/crm-auth";
 import {
   createOrUpdateLeadViaEvents,
   createNote,
   createTask,
   createAppointment,
   type FubPersonPayload,
-} from "../../../../../lib/followupboss";
+} from "../../../../lib/followupboss";
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY!;
@@ -103,11 +103,11 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Invalid or expired token" }, { status: 401 });
     }
 
-    const apiKey = await getFubApiKeyForUser(
+    const fubAuth = await getFubAuthForUser(
       createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY),
       user.id
     );
-    if (!apiKey) {
+    if (!fubAuth) {
       return NextResponse.json(
         { error: "Follow Up Boss not connected" },
         { status: 400 }
@@ -317,18 +317,18 @@ export async function POST(request: Request) {
         personPayload.emails = [{ value: `lead+${addressIdUuid}@flyr.placeholder` }];
       }
 
-      const { personId: createdPersonId } = await createOrUpdateLeadViaEvents(apiKey, personPayload);
+      const { personId: createdPersonId } = await createOrUpdateLeadViaEvents(fubAuth.headers, personPayload);
       personId = createdPersonId;
       fubResults.personId = personId;
 
       // Note (summary + optional transcript snippet)
       const noteBody = [aiJson.summary].concat(transcript ? [`\n\nTranscript: ${transcript.slice(0, 2000)}`] : []).join("");
-      const { id: noteId } = await createNote(apiKey, personId, noteBody, "Voice log");
+      const { id: noteId } = await createNote(fubAuth.headers, personId, noteBody, "Voice log");
       fubResults.noteId = noteId;
 
       if (!lowConfidence && aiJson.follow_up_at) {
         const { id: taskId } = await createTask(
-          apiKey,
+          fubAuth.headers,
           personId,
           aiJson.follow_up_at,
           `Follow up: ${aiJson.summary.slice(0, 80)}`,
@@ -339,7 +339,7 @@ export async function POST(request: Request) {
 
       if (!lowConfidence && aiJson.appointment?.start_at && aiJson.appointment?.end_at) {
         const { id: appointmentId } = await createAppointment(
-          apiKey,
+          fubAuth.headers,
           personId,
           aiJson.appointment.start_at,
           aiJson.appointment.end_at,

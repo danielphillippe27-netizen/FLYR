@@ -3,7 +3,7 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 serve(async (req)=>{
   try {
     // Parse request
-    const { lead, user_id } = await req.json();
+    const { lead, user_id, exclude_providers } = await req.json();
     if (!lead || !user_id) {
       return new Response(JSON.stringify({
         error: "Missing lead or user_id"
@@ -42,8 +42,8 @@ serve(async (req)=>{
         }
       });
     }
+    const excludedProviders = Array.isArray(exclude_providers) ? exclude_providers.filter((p)=>typeof p === "string").map((p)=>String(p).toLowerCase()) : [];
     // Create authenticated client
-    const token = authHeader.replace("Bearer ", "");
     const supabaseAuth = createClient(supabaseUrl, supabaseKey, {
       global: {
         headers: {
@@ -64,8 +64,14 @@ serve(async (req)=>{
         }
       });
     }
-    console.log("Found integrations:", integrations);
-    if (!integrations || integrations.length === 0) {
+    const integrationRows = integrations ?? [];
+    const activeIntegrations = excludedProviders.length > 0 ? integrationRows.filter((integration)=>!excludedProviders.includes(String(integration.provider).toLowerCase())) : integrationRows;
+    console.log("Found integrations:", {
+      total: integrationRows.length,
+      active: activeIntegrations.length,
+      excludedProviders
+    });
+    if (!activeIntegrations || activeIntegrations.length === 0) {
       return new Response(JSON.stringify({
         message: "No integrations found",
         synced: []
@@ -78,7 +84,7 @@ serve(async (req)=>{
     }
     // Sync to each connected integration
     const results = [];
-    for (const integration of integrations){
+    for (const integration of activeIntegrations){
       try {
         let success = false;
         let error;

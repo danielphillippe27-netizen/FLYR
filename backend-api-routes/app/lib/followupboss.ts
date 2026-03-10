@@ -6,12 +6,21 @@
 const FUB_API_BASE = "https://api.followupboss.com/v1";
 const X_SYSTEM = "FLYR";
 
-function authHeaders(apiKey: string): Record<string, string> {
-  const basicAuth = Buffer.from(`${apiKey}:`).toString("base64");
+type FubAuthInput = string | Record<string, string>;
+
+function authHeaders(auth: FubAuthInput): Record<string, string> {
+  if (typeof auth === "string") {
+    const basicAuth = Buffer.from(`${auth}:`).toString("base64");
+    return {
+      "Content-Type": "application/json",
+      Authorization: `Basic ${basicAuth}`,
+      "X-System": X_SYSTEM,
+    };
+  }
   return {
     "Content-Type": "application/json",
-    Authorization: `Basic ${basicAuth}`,
     "X-System": X_SYSTEM,
+    ...auth,
   };
 }
 
@@ -36,7 +45,7 @@ export type FubPersonPayload = {
  * Returns person id from 200/201 response body.
  */
 export async function createOrUpdateLeadViaEvents(
-  apiKey: string,
+  auth: FubAuthInput,
   person: FubPersonPayload
 ): Promise<{ personId: number }> {
   const event = {
@@ -57,7 +66,7 @@ export async function createOrUpdateLeadViaEvents(
 
   const res = await fetch(`${FUB_API_BASE}/events`, {
     method: "POST",
-    headers: authHeaders(apiKey),
+    headers: authHeaders(auth),
     body: JSON.stringify(event),
   });
 
@@ -84,14 +93,14 @@ export async function createOrUpdateLeadViaEvents(
  * Create a note on a person.
  */
 export async function createNote(
-  apiKey: string,
+  auth: FubAuthInput,
   personId: number,
   body: string,
   subject?: string
 ): Promise<{ id: number }> {
   const res = await fetch(`${FUB_API_BASE}/notes`, {
     method: "POST",
-    headers: authHeaders(apiKey),
+    headers: authHeaders(auth),
     body: JSON.stringify({
       personId,
       body,
@@ -117,7 +126,7 @@ export async function createNote(
  * dueAt: ISO8601 string; FUB accepts dueDateTime with timezone suffix.
  */
 export async function createTask(
-  apiKey: string,
+  auth: FubAuthInput,
   personId: number,
   dueAt: string,
   name: string,
@@ -126,7 +135,7 @@ export async function createTask(
 ): Promise<{ id: number }> {
   const res = await fetch(`${FUB_API_BASE}/tasks`, {
     method: "POST",
-    headers: authHeaders(apiKey),
+    headers: authHeaders(auth),
     body: JSON.stringify({
       personId,
       name,
@@ -154,7 +163,7 @@ export async function createTask(
  * invitees: array of { personId?, userId?, name?, email? } for calendar sync.
  */
 export async function createAppointment(
-  apiKey: string,
+  auth: FubAuthInput,
   personId: number,
   startAt: string,
   endAt: string,
@@ -171,7 +180,7 @@ export async function createAppointment(
 
   const res = await fetch(`${FUB_API_BASE}/appointments`, {
     method: "POST",
-    headers: authHeaders(apiKey),
+    headers: authHeaders(auth),
     body: JSON.stringify({
       title,
       start: startAt,

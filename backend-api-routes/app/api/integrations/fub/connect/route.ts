@@ -113,7 +113,7 @@ export async function POST(request: Request) {
           status: "connected",
           connected_at: new Date().toISOString(),
           last_sync_at: null,
-          metadata: { name: account.name ?? null, company: account.company ?? null },
+          metadata: { name: account.name ?? null, company: account.company ?? null, auth_mode: "api_key" },
           error_reason: null,
           updated_at: new Date().toISOString(),
         })
@@ -126,7 +126,7 @@ export async function POST(request: Request) {
           provider: "fub",
           status: "connected",
           connected_at: new Date().toISOString(),
-          metadata: { name: account.name ?? null, company: account.company ?? null },
+          metadata: { name: account.name ?? null, company: account.company ?? null, auth_mode: "api_key" },
           updated_at: new Date().toISOString(),
         })
         .select("id")
@@ -147,6 +147,13 @@ export async function POST(request: Request) {
       },
       { onConflict: "connection_id" }
     );
+
+    // API-key mode should override OAuth mode for this user.
+    await supabaseAdmin
+      .from("user_integrations")
+      .delete()
+      .eq("user_id", userId)
+      .eq("provider", "fub");
 
     return NextResponse.json({
       connected: true,

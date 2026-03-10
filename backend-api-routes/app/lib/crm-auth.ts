@@ -1,7 +1,11 @@
 import { createDecipheriv } from "crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { refreshOAuthToken } from "./fub-oauth";
 
 const CRM_ENCRYPTION_KEY = process.env.CRM_ENCRYPTION_KEY!;
+const FUB_SYSTEM_NAME = process.env.FUB_SYSTEM_NAME || "FLYR";
+const FUB_SYSTEM_KEY = process.env.FUB_SYSTEM_KEY;
+const OAUTH_EXPIRY_SKEW_SECONDS = 90;
 
 function getEncryptionKey(): Buffer {
   if (!CRM_ENCRYPTION_KEY || CRM_ENCRYPTION_KEY.length < 32) {
@@ -26,6 +30,19 @@ export function decrypt(encryptedBase64: string): string {
   return Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString("utf8");
 }
 
+function getSystemHeaders(): Record<string, string> {
+  const headers: Record<string, string> = { "X-System": FUB_SYSTEM_NAME };
+  if (FUB_SYSTEM_KEY) {
+    headers["X-System-Key"] = FUB_SYSTEM_KEY;
+  }
+  return headers;
+}
+
+export type FubAuth = {
+  mode: "oauth" | "api_key";
+  headers: Record<string, string>;
+};
+
 export async function getFubApiKeyForUser(
   supabaseAdmin: SupabaseClient,
   userId: string
@@ -46,4 +63,86 @@ export async function getFubApiKeyForUser(
   if (!secret?.encrypted_api_key) return null;
 
   return decrypt(secret.encrypted_api_key);
+}
+
+export async function getFubAuthForUser(
+  supabaseAdmin: SupabaseClient,
+  userId: string
+): Promise<FubAuth | null> {
+  // Prefer OAuth token when present; refresh if expired or near expiry.
+  const { data: oauth } = await supabaseAdmin
+    .from("user_integrations")
+    .select("access_token, refresh_token, expires_at")
+    .eq("user_id", userId)
+    .eq("provider", "fub")
+    .maybeSingle();
+
+  const oauthToken = oauth?.access_token ? String(oauth.access_token).trim() : "";
+  const refreshToken = oauth?.refresh_token ? String(oauth.refresh_token).trim() : "";
+  const rawExpiresAt = oauth?.expires_at;
+  const parsedExpiresAt =
+    typeof rawExpiresAt === "number"
+      ? rawExpiresAt
+      : typeof rawExpiresAt === "string"
+        ? Number.parseInt(rawExpiresAt, 10)
+        : NaN;
+  const expiresAt = Number.isFinite(parsedExpiresAt) ? parsedExpiresAt : null;
+
+  if (oauthToken) {
+    const now = Math.floor(Date.now() / 1000);
+    const shouldRefresh = expiresAt != null && now >= (expiresAt - OAUTH_EXPIRY_SKEW_SECONDS);
+
+    if (shouldRefresh && refreshToken) {
+      try {
+        const refreshed = await refreshOAuthToken(refreshToken);
+        const nextAccessToken = refreshed.accessToken.trim();
+        const nextRefreshToken = (refreshed.refreshToken || refreshToken).trim();
+
+        await supabaseAdmin
+          .from("user_integrations")
+          .update({
+            access_token: nextAccessToken,
+            refresh_token: nextRefreshToken || null,
+            expires_at: refreshed.expiresAt ?? null,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("user_id", userId)
+          .eq("provider", "fub");
+
+        return {
+          mode: "oauth",
+          headers: {
+            ...getSystemHeaders(),
+            Authorization: `Bearer ${nextAccessToken}`,
+          },
+        };
+      } catch (err) {
+        console.warn("[crm-auth] fub oauth refresh failed", err);
+      }
+    }
+
+    // If token is expired and refresh failed/unavailable, fall back to API key if configured.
+    const isExpired = expiresAt != null && now >= expiresAt;
+    if (!isExpired) {
+      return {
+        mode: "oauth",
+        headers: {
+          ...getSystemHeaders(),
+          Authorization: `Bearer ${oauthToken}`,
+        },
+      };
+    }
+  }
+
+  const apiKey = await getFubApiKeyForUser(supabaseAdmin, userId);
+  if (!apiKey) return null;
+
+  const basicAuth = Buffer.from(`${apiKey}:`).toString("base64");
+  return {
+    mode: "api_key",
+    headers: {
+      ...getSystemHeaders(),
+      Authorization: `Basic ${basicAuth}`,
+    },
+  };
 }

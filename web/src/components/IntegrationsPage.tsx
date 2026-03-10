@@ -26,6 +26,7 @@ export default function IntegrationsPage() {
   const [integrations, setIntegrations] = useState<UserIntegration[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
   const [showFUB, setShowFUB] = useState(false)
   const [showKVCore, setShowKVCore] = useState(false)
   const [showZapier, setShowZapier] = useState(false)
@@ -54,6 +55,20 @@ export default function IntegrationsPage() {
   useEffect(() => {
     load()
   }, [user?.id])
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const fub = params.get('fub')
+    const message = params.get('message')
+    if (fub === 'connected') {
+      setNotice(message || 'Follow Up Boss connected successfully.')
+      window.history.replaceState({}, '', window.location.pathname)
+      load()
+    } else if (fub === 'error') {
+      setApiError(message || 'Follow Up Boss OAuth connection failed.')
+      window.history.replaceState({}, '', window.location.pathname)
+    }
+  }, [])
 
   function isConnected(provider: IntegrationProvider): boolean {
     if (provider === 'fub') {
@@ -175,6 +190,9 @@ export default function IntegrationsPage() {
 
       {error && (
         <p style={{ color: 'var(--accent)', marginBottom: 16 }}>{error}</p>
+      )}
+      {notice && (
+        <p style={{ color: '#18a058', marginBottom: 16 }}>{notice}</p>
       )}
       {apiError && (
         <p style={{ color: 'var(--accent)', marginBottom: 16 }}>{apiError}</p>

@@ -1,6 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
-import { getFubApiKeyForUser } from "../../../lib/crm-auth";
+import { getFubAuthForUser } from "../../../lib/crm-auth";
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY!;
@@ -18,7 +18,7 @@ type ContactRow = {
 };
 
 async function pushContactToFub(
-  apiKey: string,
+  fubHeaders: Record<string, string>,
   contact: ContactRow
 ): Promise<{ ok: boolean; error?: string }> {
   const hasEmail = contact.email != null && String(contact.email).trim() !== "";
@@ -47,12 +47,11 @@ async function pushContactToFub(
     person,
   };
 
-  const basicAuth = Buffer.from(`${apiKey}:`).toString("base64");
   const res = await fetch(`${FUB_API_BASE}/events`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Basic ${basicAuth}`,
+      ...fubHeaders,
     },
     body: JSON.stringify(event),
   });
@@ -77,8 +76,8 @@ export async function POST(request: Request) {
     }
 
     const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
-    const apiKey = await getFubApiKeyForUser(supabaseAdmin, user.id);
-    if (!apiKey) {
+    const fubAuth = await getFubAuthForUser(supabaseAdmin, user.id);
+    if (!fubAuth) {
       return NextResponse.json(
         { success: false, error: "Follow Up Boss not connected" },
         { status: 400 }
@@ -103,7 +102,7 @@ export async function POST(request: Request) {
     let synced = 0;
     const errors: string[] = [];
     for (const contact of rows) {
-      const result = await pushContactToFub(apiKey, contact);
+      const result = await pushContactToFub(fubAuth.headers, contact);
       if (result.ok) synced++;
       else if (result.error && errors.length < 5) errors.push(result.error);
     }

@@ -7,4 +7,15 @@ Copy the contents of `app/api/integrations/fub/` into your Next.js App Router pr
 
 Ensure env vars: `NEXT_PUBLIC_SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `CRM_ENCRYPTION_KEY` (32-byte hex or base64 for AES-256), `CRM_ENCRYPTION_KEY_VERSION` (e.g. `1`).
 
+For Follow Up Boss OAuth add:
+- `FUB_OAUTH_CLIENT_ID`
+- `FUB_OAUTH_CLIENT_SECRET`
+- `FUB_OAUTH_REDIRECT_URI` (optional, defaults to `<NEXT_PUBLIC_APP_URL>/api/integrations/fub/oauth/callback`)
+- `FUB_OAUTH_AUTHORIZE_URL` (optional)
+- `FUB_OAUTH_TOKEN_URL` (optional)
+- `FUB_OAUTH_SCOPE` (optional)
+- `OAUTH_STATE_SECRET` (recommended; falls back to `CRM_ENCRYPTION_KEY`)
+- `NEXT_PUBLIC_APP_URL` (e.g. `https://www.flyrpro.app`)
+- Optional FUB system headers: `FUB_SYSTEM_NAME`, `FUB_SYSTEM_KEY`
+
 **Apple billing (App Store Server API):** For `/api/billing/apple/verify`, set `APP_STORE_CONNECT_ISSUER_ID`, `APP_STORE_CONNECT_KEY_ID`, `APP_STORE_CONNECT_PRIVATE_KEY` (full .p8 file contents), `APPLE_BUNDLE_ID`, and optionally `APP_APPLE_ID` (numeric app id for production). See `.env.example`.

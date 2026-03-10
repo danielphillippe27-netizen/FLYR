@@ -38,20 +38,19 @@ export async function fetchCRMConnections(userId: string): Promise<CRMConnection
   return (data ?? []) as CRMConnection[]
 }
 
-/** Connect FUB via backend (API key never stored in frontend). */
-export async function connectFUB(apiKey: string, accessToken: string): Promise<{ connected: boolean; account?: { name?: string; company?: string }; error?: string }> {
-  const url = `${API_BASE}/api/integrations/fub/connect`
+/** Start FUB OAuth flow and return authorize URL. */
+export async function startFUBOAuth(accessToken: string): Promise<string> {
+  const url = `${API_BASE}/api/integrations/fub/oauth/start?platform=web`
   const res = await fetch(url, {
-    method: 'POST',
+    method: 'GET',
     headers: {
-      'Content-Type': 'application/json',
       Authorization: `Bearer ${accessToken}`,
     },
-    body: JSON.stringify({ api_key: apiKey.trim() }),
   })
-  const json = await res.json()
-  if (!res.ok) return { connected: false, error: json.error ?? 'Failed to connect' }
-  return json
+  const json = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(json.error ?? 'Failed to start OAuth')
+  if (!json.authorizeUrl) throw new Error('Missing OAuth authorize URL')
+  return String(json.authorizeUrl)
 }
 
 /** Disconnect FUB via backend. */

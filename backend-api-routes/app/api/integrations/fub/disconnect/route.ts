@@ -34,6 +34,11 @@ export async function DELETE(request: Request) {
     if (row?.id) {
       await supabaseAdmin.from("crm_connections").delete().eq("id", row.id);
     }
+    await supabaseAdmin
+      .from("user_integrations")
+      .delete()
+      .eq("user_id", userId)
+      .eq("provider", "fub");
 
     return NextResponse.json({ disconnected: true });
   } catch (err) {
