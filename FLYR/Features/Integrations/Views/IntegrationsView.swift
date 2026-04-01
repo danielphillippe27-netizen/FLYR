@@ -11,12 +11,11 @@ struct IntegrationsView: View {
     @State private var showAPIKeySheet = false
     @State private var showWebhookSheet = false
     @State private var showConnectFUB = false
+    @State private var showConnectBoldTrail = false
     @State private var apiKeyProvider: IntegrationProvider?
     @State private var webhookProvider: IntegrationProvider?
     @State private var apiKeyText = ""
     @State private var webhookURLText = ""
-    @State private var showTestLeadAlert = false
-    @State private var testLeadSent = false
     @State private var isConnectingAPIKey = false
     @State private var isConnectingWebhook = false
     @State private var apiKeyError: String?
@@ -24,6 +23,34 @@ struct IntegrationsView: View {
     @State private var fubActionMessage: String?
     @State private var fubActionSuccess: Bool = true
     @State private var isFUBActionInProgress = false
+    @State private var showMondayBoardSheet = false
+    @State private var mondayBoards: [MondayBoardSummary] = []
+    @State private var isLoadingMondayBoards = false
+    @State private var isSavingMondayBoard = false
+    @State private var mondayBoardsError: String?
+    @State private var hubSpotActionMessage: String?
+    @State private var hubSpotActionSuccess: Bool = true
+    @State private var isHubSpotActionInProgress = false
+
+    private var fubIntegration: UserIntegration? {
+        integrations.first { $0.provider == .fub }
+    }
+
+    private var mondayIntegration: UserIntegration? {
+        integrations.first { $0.provider == .monday }
+    }
+
+    private var hubspotIntegration: UserIntegration? {
+        integrations.first { $0.provider == .hubspot }
+    }
+
+    private var isFUBConnected: Bool {
+        crmStore.isFUBConnected || (fubIntegration?.isConnected == true)
+    }
+
+    private var isBoldTrailConnected: Bool {
+        crmStore.boldtrailConnection?.isConnected == true
+    }
 
     var body: some View {
         NavigationStack {
@@ -39,9 +66,18 @@ struct IntegrationsView: View {
                             // CRM Connections Section
                             Section {
                                 VStack(spacing: 12) {
-                                    ForEach(IntegrationProvider.allCases) { provider in
+                                    ForEach([IntegrationProvider.fub, .boldtrail, .hubspot, .monday], id: \.id) { provider in
                                         let integration = integrations.first { $0.provider == provider }
-                                        let crmConnection = provider == .fub ? crmStore.fubConnection : nil
+                                        let crmConnection: CRMConnection? = {
+                                            switch provider {
+                                            case .fub:
+                                                return crmStore.fubConnection
+                                            case .boldtrail:
+                                                return crmStore.boldtrailConnection
+                                            default:
+                                                return nil
+                                            }
+                                        }()
                                         IntegrationCardView(
                                             provider: provider,
                                             integration: integration,
@@ -61,8 +97,94 @@ struct IntegrationsView: View {
                                 .padding(.horizontal, 16)
                             }
 
+                            if let mondayIntegration, mondayIntegration.isConnected {
+                                Section {
+                                    VStack(alignment: .leading, spacing: 12) {
+                                        Text(mondayIntegration.mondayNeedsBoardSelection
+                                             ? "Monday.com is connected, but FLYR still needs a board before sync can run."
+                                             : "FLYR will sync leads to \(mondayIntegration.selectedBoardName ?? "your selected monday board").")
+                                            .font(.system(size: 14))
+                                            .foregroundColor(.muted)
+
+                                        if let mondayBoardsError, !showMondayBoardSheet {
+                                            Text(mondayBoardsError)
+                                                .font(.system(size: 13))
+                                                .foregroundColor(.error)
+                                        }
+
+                                        Button(action: { presentMondayBoardPicker() }) {
+                                            HStack(spacing: 8) {
+                                                if isLoadingMondayBoards || isSavingMondayBoard {
+                                                    ProgressView()
+                                                        .tint(.white)
+                                                }
+                                                Text(mondayIntegration.mondayNeedsBoardSelection ? "Select Board" : "Change Board")
+                                                    .font(.system(size: 15, weight: .medium))
+                                            }
+                                            .foregroundColor(.white)
+                                            .frame(maxWidth: .infinity)
+                                            .padding(.vertical, 12)
+                                            .background(mondayIntegration.mondayNeedsBoardSelection ? Color.info : Color.accent)
+                                            .cornerRadius(10)
+                                        }
+                                        .disabled(isLoadingMondayBoards || isSavingMondayBoard)
+                                    }
+                                    .padding(16)
+                                    .background(Color.bgSecondary)
+                                    .cornerRadius(20)
+                                    .shadow(color: Color.black.opacity(0.05), radius: 8, x: 0, y: 2)
+                                } header: {
+                                    HStack {
+                                        Text("Monday.com")
+                                            .font(.system(size: 22, weight: .bold))
+                                            .foregroundColor(.text)
+                                        Spacer()
+                                    }
+                                    .padding(.horizontal, 16)
+                                }
+                            }
+
+                            // HubSpot actions (when connected)
+                            if let hubspotIntegration, hubspotIntegration.isConnected {
+                                Section {
+                                    VStack(spacing: 12) {
+                                        if let msg = hubSpotActionMessage {
+                                            Text(msg)
+                                                .font(.system(size: 13))
+                                                .foregroundColor(hubSpotActionSuccess ? .success : .error)
+                                                .multilineTextAlignment(.center)
+                                        }
+                                        Button(action: { runHubSpotTestConnection() }) {
+                                            HStack(spacing: 6) {
+                                                if isHubSpotActionInProgress { ProgressView().scaleEffect(0.8).tint(.white) }
+                                                Text("Test connection")
+                                                    .font(.system(size: 15, weight: .medium))
+                                            }
+                                            .foregroundColor(.white)
+                                            .frame(maxWidth: .infinity)
+                                            .padding(.vertical, 12)
+                                            .background(Color.info)
+                                            .cornerRadius(10)
+                                        }
+                                        .disabled(isHubSpotActionInProgress)
+                                    }
+                                    .padding(16)
+                                    .background(Color.bgSecondary)
+                                    .cornerRadius(20)
+                                    .shadow(color: Color.black.opacity(0.05), radius: 8, x: 0, y: 2)
+                                } header: {
+                                    HStack {
+                                        Text("HubSpot")
+                                            .font(.system(size: 22, weight: .bold))
+                                            .foregroundColor(.text)
+                                        Spacer()
+                                    }
+                                    .padding(.horizontal, 16)
+                                }
+                            }
+
                             // Follow Up Boss actions (when connected)
-                            if crmStore.isFUBConnected {
+                            if isFUBConnected {
                                 Section {
                                     VStack(spacing: 12) {
                                         if let msg = fubActionMessage {
@@ -71,31 +193,19 @@ struct IntegrationsView: View {
                                                 .foregroundColor(fubActionSuccess ? .success : .error)
                                                 .multilineTextAlignment(.center)
                                         }
-                                        HStack(spacing: 12) {
-                                            Button(action: { runFUBTestConnection() }) {
-                                                HStack(spacing: 6) {
-                                                    if isFUBActionInProgress { ProgressView().scaleEffect(0.8).tint(.white) }
-                                                    Text("Test connection")
-                                                        .font(.system(size: 15, weight: .medium))
-                                                }
-                                                .foregroundColor(.white)
-                                                .frame(maxWidth: .infinity)
-                                                .padding(.vertical, 12)
-                                                .background(Color.info)
-                                                .cornerRadius(10)
-                                            }
-                                            .disabled(isFUBActionInProgress)
-                                            Button(action: { runFUBTestPush() }) {
-                                                Text("Send test lead")
+                                        Button(action: { runFUBTestConnection() }) {
+                                            HStack(spacing: 6) {
+                                                if isFUBActionInProgress { ProgressView().scaleEffect(0.8).tint(.white) }
+                                                Text("Test connection")
                                                     .font(.system(size: 15, weight: .medium))
-                                                    .foregroundColor(.white)
-                                                    .frame(maxWidth: .infinity)
-                                                    .padding(.vertical, 12)
-                                                    .background(Color.info)
-                                                    .cornerRadius(10)
                                             }
-                                            .disabled(isFUBActionInProgress)
+                                            .foregroundColor(.white)
+                                            .frame(maxWidth: .infinity)
+                                            .padding(.vertical, 12)
+                                            .background(Color.info)
+                                            .cornerRadius(10)
                                         }
+                                        .disabled(isFUBActionInProgress)
                                         Button(action: { runFUBSyncCRM() }) {
                                             HStack(spacing: 6) {
                                                 if isFUBActionInProgress { ProgressView().scaleEffect(0.8).tint(.white) }
@@ -124,44 +234,6 @@ struct IntegrationsView: View {
                                     .padding(.horizontal, 16)
                                 }
                             }
-                            
-                            // Test Lead Section
-                            Section {
-                                VStack(spacing: 12) {
-                                    Button(action: {
-                                        sendTestLead()
-                                    }) {
-                                        HStack {
-                                            Image(systemName: "paperplane.fill")
-                                                .font(.system(size: 16))
-                                            Text("Send Test Lead")
-                                                .font(.system(size: 17, weight: .semibold))
-                                        }
-                                        .foregroundColor(.white)
-                                        .frame(maxWidth: .infinity)
-                                        .padding(.vertical, 14)
-                                        .background(Color.info)
-                                        .cornerRadius(12)
-                                    }
-                                    
-                                    Text("Send a test lead to all connected CRMs to verify your integration")
-                                        .font(.system(size: 13))
-                                        .foregroundColor(.muted)
-                                        .multilineTextAlignment(.center)
-                                }
-                                .padding(16)
-                                .background(Color.bgSecondary)
-                                .cornerRadius(20)
-                                .shadow(color: Color.black.opacity(0.05), radius: 8, x: 0, y: 2)
-                            } header: {
-                                HStack {
-                                    Text("Automation")
-                                        .font(.system(size: 22, weight: .bold))
-                                        .foregroundColor(.text)
-                                    Spacer()
-                                }
-                                .padding(.horizontal, 16)
-                            }
                         }
                         .padding(.vertical, 20)
                     }
@@ -183,8 +255,20 @@ struct IntegrationsView: View {
                         userId: userId,
                         onComplete: { result in
                             showOAuth = false
+                            let oauthSucceeded: Bool
+                            if case .failure(let error) = result {
+                                oauthSucceeded = false
+                                errorMessage = error.localizedDescription
+                            } else {
+                                oauthSucceeded = true
+                            }
                             Task {
                                 await loadIntegrations()
+                                if oauthSucceeded && provider == .monday {
+                                    await MainActor.run {
+                                        presentMondayBoardPicker()
+                                    }
+                                }
                             }
                         }
                     )
@@ -198,6 +282,7 @@ struct IntegrationsView: View {
             }
             .sheet(isPresented: $showConnectFUB) {
                 ConnectFUBView(
+                    existingConnection: crmStore.fubConnection,
                     onSuccess: {
                         showConnectFUB = false
                         guard let userId = auth.user?.id else { return }
@@ -206,13 +291,31 @@ struct IntegrationsView: View {
                             await loadIntegrations()
                         }
                     },
-                    onCancel: { showConnectFUB = false }
+                    onCancel: { showConnectFUB = false },
+                    onDisconnect: isFUBConnected ? {
+                        handleDisconnect(provider: .fub)
+                    } : nil
                 )
             }
-            .alert("Test Lead Sent", isPresented: $showTestLeadAlert) {
-                Button("OK", role: .cancel) {}
-            } message: {
-                Text("Lead sent to CRM")
+            .sheet(isPresented: $showConnectBoldTrail) {
+                ConnectBoldTrailView(
+                    existingConnection: crmStore.boldtrailConnection,
+                    onSuccess: {
+                        showConnectBoldTrail = false
+                        guard let userId = auth.user?.id else { return }
+                        Task {
+                            await CRMConnectionStore.shared.refresh(userId: userId)
+                            await loadIntegrations()
+                        }
+                    },
+                    onCancel: { showConnectBoldTrail = false },
+                    onDisconnect: isBoldTrailConnected ? {
+                        handleDisconnect(provider: .boldtrail)
+                    } : nil
+                )
+            }
+            .sheet(isPresented: $showMondayBoardSheet) {
+                mondayBoardPickerSheet
             }
             .alert("Error", isPresented: Binding(
                 get: { errorMessage != nil },
@@ -237,10 +340,16 @@ struct IntegrationsView: View {
             showConnectFUB = true
             return
         }
+        if provider == .boldtrail {
+            showConnectBoldTrail = true
+            return
+        }
         switch provider.connectionType {
         case .oauth:
             oauthProvider = provider
             showOAuth = true
+        case .token:
+            showConnectBoldTrail = true
         case .apiKey:
             apiKeyProvider = provider
             apiKeyText = ""
@@ -268,6 +377,18 @@ struct IntegrationsView: View {
             }
             return
         }
+        if provider == .boldtrail {
+            Task {
+                do {
+                    try await BoldTrailConnectAPI.shared.disconnect()
+                    await CRMConnectionStore.shared.refresh(userId: userId)
+                    await loadIntegrations()
+                } catch {
+                    errorMessage = "Failed to disconnect: \(error.localizedDescription)"
+                }
+            }
+            return
+        }
         Task {
             do {
                 try await CRMIntegrationManager.shared.disconnect(userId: userId, provider: provider)
@@ -278,6 +399,7 @@ struct IntegrationsView: View {
         }
     }
     
+    @MainActor
     private func loadIntegrations() async {
         guard let userId = auth.user?.id else { return }
         isLoading = true
@@ -285,9 +407,10 @@ struct IntegrationsView: View {
         defer { isLoading = false }
         do {
             async let integrationsTask = CRMIntegrationManager.shared.fetchIntegrations(userId: userId)
-            async let crmTask = CRMConnectionStore.shared.refresh(userId: userId)
+            async let crmTask: Void = CRMConnectionStore.shared.refresh(userId: userId)
             integrations = try await integrationsTask
             await crmTask
+            await refreshMondayStatusIfNeeded()
         } catch {
             let msg = error.localizedDescription
             // Table missing (migration not applied): show as no integrations instead of blocking error
@@ -300,23 +423,50 @@ struct IntegrationsView: View {
             print("❌ Error loading integrations: \(error)")
         }
     }
-    
-    private func sendTestLead() {
-        guard let userId = auth.user?.id else { return }
-        
-        let testLead = LeadModel(
-            name: "Test Lead",
-            phone: "555-555-5555",
-            email: "test@flyr.app",
-            address: "123 Test St",
-            source: "FLYR Test",
-            notes: "This is a test lead from FLYR"
-        )
-        
+
+    @MainActor
+    private func presentMondayBoardPicker() {
+        mondayBoardsError = nil
+        isLoadingMondayBoards = true
         Task {
-            await LeadSyncManager.shared.syncLeadToCRM(lead: testLead, userId: userId)
-            await MainActor.run {
-                showTestLeadAlert = true
+            do {
+                let response = try await CRMIntegrationManager.shared.fetchMondayBoards()
+                await MainActor.run {
+                    mondayBoards = response.validBoards
+                    applyMondayBoardsResponse(response)
+                    isLoadingMondayBoards = false
+                    showMondayBoardSheet = true
+                    if response.validBoards.isEmpty {
+                        mondayBoardsError = "No Monday boards were found for this account."
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    isLoadingMondayBoards = false
+                    mondayBoardsError = error.localizedDescription
+                    errorMessage = mondayBoardsError
+                }
+            }
+        }
+    }
+    
+    private func runHubSpotTestConnection() {
+        hubSpotActionMessage = nil
+        isHubSpotActionInProgress = true
+        Task {
+            do {
+                let msg = try await CRMIntegrationManager.shared.testHubSpotConnection()
+                await MainActor.run {
+                    isHubSpotActionInProgress = false
+                    hubSpotActionSuccess = true
+                    hubSpotActionMessage = msg
+                }
+            } catch {
+                await MainActor.run {
+                    isHubSpotActionInProgress = false
+                    hubSpotActionSuccess = false
+                    hubSpotActionMessage = error.localizedDescription
+                }
             }
         }
     }
@@ -331,27 +481,6 @@ struct IntegrationsView: View {
                     isFUBActionInProgress = false
                     fubActionSuccess = true
                     fubActionMessage = res.message ?? "Connection is working."
-                }
-            } catch {
-                await MainActor.run {
-                    isFUBActionInProgress = false
-                    fubActionSuccess = false
-                    fubActionMessage = error.localizedDescription
-                }
-            }
-        }
-    }
-
-    private func runFUBTestPush() {
-        fubActionMessage = nil
-        isFUBActionInProgress = true
-        Task {
-            do {
-                let res = try await FUBPushLeadAPI.shared.testPush()
-                await MainActor.run {
-                    isFUBActionInProgress = false
-                    fubActionSuccess = true
-                    fubActionMessage = res.message ?? "Test lead sent."
                 }
             } catch {
                 await MainActor.run {
@@ -470,6 +599,81 @@ struct IntegrationsView: View {
             }
         }
     }
+
+    private var mondayBoardPickerSheet: some View {
+        NavigationStack {
+            List {
+                if let mondayBoardsError {
+                    Section {
+                        Text(mondayBoardsError)
+                            .foregroundColor(.red)
+                    }
+                }
+
+                if mondayBoards.isEmpty, !isLoadingMondayBoards {
+                    Section {
+                        Text("No Monday boards are available for this account yet.")
+                            .foregroundColor(.muted)
+                    }
+                } else {
+                    ForEach(mondayBoards) { board in
+                        Button(action: {
+                            selectMondayBoard(board)
+                        }) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(board.name)
+                                    .foregroundColor(.text)
+                                if let workspaceName = board.workspaceName, !workspaceName.isEmpty {
+                                    Text(workspaceName)
+                                        .font(.system(size: 12))
+                                        .foregroundColor(.muted)
+                                }
+                            }
+                        }
+                        .disabled(isSavingMondayBoard)
+                    }
+                }
+            }
+            .overlay {
+                if isLoadingMondayBoards || isSavingMondayBoard {
+                    ProgressView()
+                }
+            }
+            .navigationTitle("Select Monday Board")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button("Close") {
+                        showMondayBoardSheet = false
+                    }
+                    .disabled(isSavingMondayBoard)
+                }
+            }
+        }
+    }
+
+    private func selectMondayBoard(_ board: MondayBoardSummary) {
+        mondayBoardsError = nil
+        isSavingMondayBoard = true
+        Task {
+            do {
+                let response = try await CRMIntegrationManager.shared.selectMondayBoard(board: board)
+                await MainActor.run {
+                    applyMondayBoardSelection(board, response: response)
+                    isSavingMondayBoard = false
+                    showMondayBoardSheet = false
+                }
+                await refreshMondayStatusIfNeeded()
+                await loadIntegrations()
+            } catch {
+                await MainActor.run {
+                    isSavingMondayBoard = false
+                    mondayBoardsError = error.localizedDescription
+                    errorMessage = mondayBoardsError
+                }
+            }
+        }
+    }
     
     private func connectWithAPIKey() {
         guard let provider = apiKeyProvider,
@@ -483,7 +687,11 @@ struct IntegrationsView: View {
             do {
                 switch provider {
                 case .fub:
-                    try await CRMIntegrationManager.shared.connectFUB(userId: userId, apiKey: apiKeyText)
+                    throw NSError(
+                        domain: "IntegrationsView",
+                        code: -1,
+                        userInfo: [NSLocalizedDescriptionKey: "Use the Follow Up Boss Connect flow."]
+                    )
                 case .kvcore:
                     try await CRMIntegrationManager.shared.connectKVCore(userId: userId, apiKey: apiKeyText)
                 default:
@@ -507,7 +715,7 @@ struct IntegrationsView: View {
     }
     
     private func connectWithWebhook() {
-        guard let provider = webhookProvider,
+        guard webhookProvider != nil,
               let userId = auth.user?.id else { return }
         
         // Reset error and start loading
@@ -533,6 +741,65 @@ struct IntegrationsView: View {
             }
         }
     }
+
+    @MainActor
+    private func refreshMondayStatusIfNeeded() async {
+        guard integrations.contains(where: { $0.provider == .monday && $0.isConnected }) else { return }
+        do {
+            let status = try await CRMIntegrationManager.shared.fetchMondayStatus()
+            applyMondayStatus(status)
+        } catch {
+            // Keep the existing integration snapshot if status refresh fails.
+        }
+    }
+
+    @MainActor
+    private func applyMondayBoardsResponse(_ response: MondayBoardsResponse) {
+        integrations = integrations.map { integration in
+            guard integration.provider == .monday else { return integration }
+            return integration.updatingMondayConnection(
+                selectedBoardId: response.selectedBoardId,
+                selectedBoardName: response.selectedBoardName,
+                accountId: response.accountId,
+                accountName: response.accountName,
+                replaceBoardSelection: true
+            )
+        }
+    }
+
+    @MainActor
+    private func applyMondayStatus(_ status: MondayStatusResponse) {
+        guard status.resolvedIsConnected != false else { return }
+        integrations = integrations.map { integration in
+            guard integration.provider == .monday else { return integration }
+            return integration.updatingMondayConnection(
+                selectedBoardId: status.selectedBoardId,
+                selectedBoardName: status.selectedBoardName,
+                accountId: status.accountId,
+                accountName: status.accountName,
+                workspaceId: status.workspaceId,
+                workspaceName: status.workspaceName,
+                replaceBoardSelection: true
+            )
+        }
+    }
+
+    @MainActor
+    private func applyMondayBoardSelection(
+        _ board: MondayBoardSummary,
+        response: MondayBoardSelectionResponse
+    ) {
+        integrations = integrations.map { integration in
+            guard integration.provider == .monday else { return integration }
+            return integration.updatingMondayConnection(
+                selectedBoardId: response.selectedBoardId ?? board.id,
+                selectedBoardName: response.selectedBoardName ?? board.name,
+                workspaceId: board.workspaceId,
+                workspaceName: board.workspaceName,
+                replaceBoardSelection: true
+            )
+        }
+    }
 }
 
 // MARK: - Preview
@@ -540,4 +807,3 @@ struct IntegrationsView: View {
 #Preview {
     IntegrationsView()
 }
-

@@ -16,6 +16,8 @@ struct LeadSyncTask {
 /// Manages syncing leads to connected CRM integrations
 actor LeadSyncManager {
     static let shared = LeadSyncManager()
+    private let duplicateWindow: TimeInterval = 8
+    private var recentSyncs: [String: Date] = [:]
     
     private var client: SupabaseClient {
         SupabaseManager.shared.client
@@ -23,8 +25,9 @@ actor LeadSyncManager {
     
     private init() {}
     
-    /// Sync a lead to all connected CRM integrations.
-    /// Pushes to Follow Up Boss via FLYR API (crm_connection_secrets) when connected, then to other CRMs via Edge Function (user_integrations).
+    /// Sync a lead to connected CRM integrations.
+    /// Follow Up Boss remains the native/special-case path via secure backend routes.
+    /// All other CRM providers flow through the shared provider sync pipeline.
     /// - Parameters:
     ///   - lead: The lead to sync
     ///   - userId: The user ID who owns the lead
@@ -35,12 +38,127 @@ actor LeadSyncManager {
             print("⚠️ [LeadSyncManager] Skipping sync - lead missing contact information")
             return
         }
+        let dedupeKey = makeDedupeKey(for: lead, userId: userId, appointment: appointment, task: task)
+        guard shouldProceed(with: dedupeKey) else {
+            print("ℹ️ [LeadSyncManager] Skipping duplicate sync for key: \(dedupeKey)")
+            return
+        }
 
-        // Sync to all connected CRMs (FUB, KVCore, Zapier, etc.) via Edge Function
-        // FUB connection is managed via web at Settings → Integrations
-        // The Edge Function reads from user_integrations table and syncs to all connected CRMs
+        // Push to secure backend providers first, then sync the rest via Edge Function.
         Task.detached(priority: .utility) {
             do {
+                var excludedProviders: [String] = []
+                func excludeProvider(_ provider: String) {
+                    if !excludedProviders.contains(provider) {
+                        excludedProviders.append(provider)
+                    }
+                }
+
+                // FUB secure push (crm_connection_secrets via FLYR backend routes).
+                do {
+                    let fubResponse = try await FUBPushLeadAPI.shared.pushLead(
+                        lead,
+                        appointment: appointment,
+                        task: task
+                    )
+                    excludeProvider("fub")
+                    print("✅ [LeadSyncManager] Lead pushed to FUB via secure backend route")
+                    if let followUpErrors = fubResponse.followUpErrors, !followUpErrors.isEmpty {
+                        let summary = followUpErrors.joined(separator: " | ")
+                        print("⚠️ [LeadSyncManager] FUB follow-up issues: \(summary)")
+                        for err in followUpErrors {
+                            print("⚠️ [LeadSyncManager] FUB follow-up detail: \(err)")
+                        }
+                    }
+                    if appointment != nil, fubResponse.fubAppointmentId == nil {
+                        if fubResponse.appointmentCreated != true {
+                            print("⚠️ [LeadSyncManager] Appointment payload was sent but FUB did not confirm creation")
+                        }
+                    }
+                    if task != nil, fubResponse.fubTaskId == nil {
+                        if fubResponse.taskCreated != true {
+                            print("⚠️ [LeadSyncManager] Task payload was sent but FUB did not confirm creation")
+                        }
+                    }
+                    if (lead.notes?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false),
+                       fubResponse.noteCreated != true {
+                        print("⚠️ [LeadSyncManager] Note payload was sent but FUB did not confirm creation")
+                    }
+                } catch let fubError as FUBPushLeadError {
+                    switch fubError {
+                    case .notConnected:
+                        print("ℹ️ [LeadSyncManager] FUB not connected via secure flow; skipping secure FUB push")
+                    case .invalidLead(let msg):
+                        excludeProvider("fub")
+                        print("ℹ️ [LeadSyncManager] Skipping secure FUB push: \(msg)")
+                    case .unauthorized(let msg):
+                        excludeProvider("fub")
+                        print("⚠️ [LeadSyncManager] Secure FUB auth failed: \(msg)")
+                    case .tokenExpired(let msg):
+                        excludeProvider("fub")
+                        print("⚠️ [LeadSyncManager] Secure FUB token expired: \(msg)")
+                    default:
+                        excludeProvider("fub")
+                        print("⚠️ [LeadSyncManager] Secure FUB push failed: \(fubError.localizedDescription)")
+                    }
+                } catch {
+                    excludeProvider("fub")
+                    print("⚠️ [LeadSyncManager] Secure FUB push error: \(error.localizedDescription)")
+                }
+
+                // BoldTrail secure push (workspace-scoped connection on FLYR-PRO backend routes).
+                do {
+                    _ = try await BoldTrailPushLeadAPI.shared.pushLead(lead)
+                    excludeProvider("boldtrail")
+                    print("✅ [LeadSyncManager] Lead pushed to BoldTrail via secure backend route")
+                } catch let boldTrailError as BoldTrailPushLeadError {
+                    switch boldTrailError {
+                    case .notConnected:
+                        print("ℹ️ [LeadSyncManager] BoldTrail not connected via secure flow; skipping secure BoldTrail push")
+                    case .invalidLead(let msg):
+                        excludeProvider("boldtrail")
+                        print("ℹ️ [LeadSyncManager] Skipping secure BoldTrail push: \(msg)")
+                    case .unauthorized(let msg):
+                        excludeProvider("boldtrail")
+                        print("⚠️ [LeadSyncManager] Secure BoldTrail auth failed: \(msg)")
+                    default:
+                        excludeProvider("boldtrail")
+                        print("⚠️ [LeadSyncManager] Secure BoldTrail push failed: \(boldTrailError.localizedDescription)")
+                    }
+                } catch {
+                    excludeProvider("boldtrail")
+                    print("⚠️ [LeadSyncManager] Secure BoldTrail push error: \(error.localizedDescription)")
+                }
+
+                // HubSpot secure push (FLYR-PRO backend stores tokens server-side).
+                do {
+                    let hubRes = try await HubSpotPushLeadAPI.shared.pushLead(lead, appointment: appointment, task: task)
+                    excludeProvider("hubspot")
+                    print("✅ [LeadSyncManager] Lead pushed to HubSpot via secure backend route")
+                    if let errs = hubRes.partialErrors, !errs.isEmpty {
+                        for err in errs {
+                            print("⚠️ [LeadSyncManager] HubSpot follow-up: \(err)")
+                        }
+                    }
+                } catch let hubSpotError as HubSpotPushLeadError {
+                    switch hubSpotError {
+                    case .notConnected:
+                        print("ℹ️ [LeadSyncManager] HubSpot not connected; skipping secure HubSpot push")
+                    case .invalidLead(let msg):
+                        excludeProvider("hubspot")
+                        print("ℹ️ [LeadSyncManager] Skipping secure HubSpot push: \(msg)")
+                    case .unauthorized(let msg):
+                        excludeProvider("hubspot")
+                        print("⚠️ [LeadSyncManager] Secure HubSpot auth failed: \(msg)")
+                    default:
+                        excludeProvider("hubspot")
+                        print("⚠️ [LeadSyncManager] Secure HubSpot push failed: \(hubSpotError.localizedDescription)")
+                    }
+                } catch {
+                    excludeProvider("hubspot")
+                    print("⚠️ [LeadSyncManager] Secure HubSpot push error: \(error.localizedDescription)")
+                }
+
                 let supabaseURLString = Bundle.main.object(forInfoDictionaryKey: "SUPABASE_URL") as! String
                 let supabaseKey = Bundle.main.object(forInfoDictionaryKey: "SUPABASE_ANON_KEY") as! String
                 let url = URL(string: "\(supabaseURLString)/functions/v1/crm_sync")!
@@ -82,7 +200,11 @@ actor LeadSyncManager {
                     "lead": leadDict.compactMapValues { $0 },
                     "user_id": userId.uuidString
                 ]
-                request.httpBody = try JSONSerialization.data(withJSONObject: payload)
+                var payloadWithExclusions = payload
+                if !excludedProviders.isEmpty {
+                    payloadWithExclusions["exclude_providers"] = excludedProviders
+                }
+                request.httpBody = try JSONSerialization.data(withJSONObject: payloadWithExclusions)
                 
                 // Debug: print what's being sent
                 if let bodyString = String(data: request.httpBody!, encoding: .utf8) {
@@ -129,6 +251,41 @@ actor LeadSyncManager {
             }
         }
     }
+
+    private func shouldProceed(with key: String) -> Bool {
+        let now = Date()
+        recentSyncs = recentSyncs.filter { now.timeIntervalSince($0.value) < duplicateWindow }
+        if let last = recentSyncs[key], now.timeIntervalSince(last) < duplicateWindow {
+            return false
+        }
+        recentSyncs[key] = now
+        return true
+    }
+
+    private func makeDedupeKey(
+        for lead: LeadModel,
+        userId: UUID,
+        appointment: LeadSyncAppointment?,
+        task: LeadSyncTask?
+    ) -> String {
+        let normalized = {
+            (value: String?) in
+            value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        }
+        let appointmentDate = appointment.map { ISO8601DateFormatter().string(from: $0.date) } ?? ""
+        let taskDate = task.map { ISO8601DateFormatter().string(from: $0.dueDate) } ?? ""
+        return [
+            userId.uuidString.lowercased(),
+            lead.id.uuidString.lowercased(),
+            normalized(lead.email),
+            normalized(lead.phone),
+            normalized(lead.address),
+            normalized(lead.notes),
+            normalized(appointment?.title),
+            normalized(appointment?.notes),
+            appointmentDate,
+            normalized(task?.title),
+            taskDate
+        ].joined(separator: "|")
+    }
 }
-
-

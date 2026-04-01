@@ -9,7 +9,10 @@ struct FLYRApp: App {
     @StateObject private var entitlementsService = EntitlementsService()
 
     init() {
-        MapboxOptions.accessToken = Config.mapboxAccessToken
+        let mapboxToken = Config.mapboxAccessToken
+        if !mapboxToken.isEmpty {
+            MapboxOptions.accessToken = mapboxToken
+        }
         #if DEBUG
         Self.verifyInterFonts()
         #endif
@@ -78,19 +81,70 @@ struct FLYRApp: App {
             return
         }
         
-        // Extract provider and code from URL
-        let providerString = queryItems.first(where: { $0.name == "provider" })?.value
+        let providerRaw = queryItems.first(where: { $0.name == "provider" })?.value
         let code = queryItems.first(where: { $0.name == "code" })?.value
-        
-        guard let providerString = providerString,
-              let code = code,
-              let provider = IntegrationProvider(rawValue: providerString),
+        let status = queryItems.first(where: { $0.name == "status" })?.value
+        let message = queryItems.first(where: { $0.name == "message" })?.value
+
+        #if DEBUG
+        print("🔗 [OAuth Redirect] provider=\(providerRaw ?? "nil") status=\(status ?? "nil") codePresent=\(code != nil) message=\(message ?? "nil") url=\(url.absoluteString)")
+        #endif
+
+        guard let providerRaw else {
+            print("⚠️ Missing OAuth provider")
+            return
+        }
+
+        if providerRaw == "fub" {
+            guard let userId = AuthManager.shared.user?.id else {
+                print("⚠️ FUB OAuth callback received without signed-in user")
+                return
+            }
+            if status == "success" {
+                await CRMConnectionStore.shared.refresh(userId: userId)
+                #if DEBUG
+                let refreshedConnection = CRMConnectionStore.shared.fubConnection
+                print("✅ OAuth flow completed for Follow Up Boss. connected=\(refreshedConnection?.isConnected == true) status=\(refreshedConnection?.status ?? "nil") errorReason=\(refreshedConnection?.errorReason ?? "nil") storeError=\(CRMConnectionStore.shared.error ?? "nil")")
+                #else
+                print("✅ OAuth flow completed for Follow Up Boss")
+                #endif
+            } else {
+                print("❌ OAuth flow failed for Follow Up Boss: \(message ?? "Unknown error")")
+            }
+            return
+        }
+
+        if providerRaw == "monday", let status {
+            if status == "success" {
+                print("✅ OAuth flow completed for Monday.com")
+            } else {
+                print("❌ OAuth flow failed for Monday.com: \(message ?? "Unknown error")")
+            }
+            return
+        }
+
+        if providerRaw == "hubspot", let status {
+            if status == "success" {
+                print("✅ OAuth flow completed for HubSpot")
+            } else {
+                print("❌ OAuth flow failed for HubSpot: \(message ?? "Unknown error")")
+            }
+            return
+        }
+
+        guard let code,
+              let provider = IntegrationProvider(rawValue: providerRaw),
               let userId = AuthManager.shared.user?.id else {
             print("⚠️ Missing OAuth parameters")
             return
         }
-        
-        // Complete OAuth flow
+
+        // Monday.com still exchanges the authorization code via Supabase Edge Function.
+        guard provider == .monday else {
+            print("⚠️ Unexpected OAuth code callback for provider \(providerRaw)")
+            return
+        }
+
         do {
             try await CRMIntegrationManager.shared.completeOAuthFlow(
                 provider: provider,
@@ -143,7 +197,7 @@ struct AuthGate: View {
             if let userId = auth.user?.id {
                 await uiState.loadAppearancePreference(userID: userId)
                 StoreKitManager.shared.entitlementsService = entitlementsService
-                await entitlementsService.fetchEntitlement()
+                _ = await entitlementsService.fetchEntitlement()
                 await StoreKitManager.shared.refreshLocalProFromCurrentEntitlements()
             } else if uiState.colorScheme == nil {
                 uiState.detectSystemAppearance()
@@ -154,11 +208,12 @@ struct AuthGate: View {
                 routeState.setRoute(.login)
             } else {
                 Task { @MainActor in
+                    guard let userId = newUserId else { return }
                     // Brief delay so Supabase session is fully available before calling redirect API
                     try? await Task.sleep(nanoseconds: 300_000_000) // 0.3s
-                    await uiState.loadAppearancePreference(userID: newUserId!)
+                    await uiState.loadAppearancePreference(userID: userId)
                     StoreKitManager.shared.entitlementsService = entitlementsService
-                    await entitlementsService.fetchEntitlement()
+                    _ = await entitlementsService.fetchEntitlement()
                     await StoreKitManager.shared.refreshLocalProFromCurrentEntitlements()
                     if routeState.pendingJoinToken != nil {
                         await routeState.acceptPendingInviteAndResolve()
@@ -178,7 +233,7 @@ struct AuthGate: View {
             if phase == .active, auth.user != nil {
                 Task {
                     await routeState.resolveRoute()
-                    await entitlementsService.fetchEntitlement()
+                    _ = await entitlementsService.fetchEntitlement()
                     await StoreKitManager.shared.refreshLocalProFromCurrentEntitlements()
                 }
             }
