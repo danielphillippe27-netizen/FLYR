@@ -2,8 +2,7 @@
   "images" : [
     {
       "filename" : "FLYRLogoWideWhite.svg",
-      "idiom" : "universal",
-      "scale" : "universal"
+      "idiom" : "universal"
     }
   ],
   "info" : {

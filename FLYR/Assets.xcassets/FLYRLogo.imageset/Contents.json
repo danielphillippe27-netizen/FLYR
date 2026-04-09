@@ -1,9 +1,24 @@
 {
   "images" : [
     {
+      "appearances" : [
+        {
+          "appearance" : "luminosity",
+          "value" : "light"
+        }
+      ],
+      "filename" : "FLYRLogoBlack.svg",
+      "idiom" : "universal"
+    },
+    {
+      "appearances" : [
+        {
+          "appearance" : "luminosity",
+          "value" : "dark"
+        }
+      ],
       "filename" : "FLYRLogoWhite.svg",
-      "idiom" : "universal",
-      "scale" : "universal"
+      "idiom" : "universal"
     }
   ],
   "info" : {
