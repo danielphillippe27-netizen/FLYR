@@ -10,6 +10,10 @@ struct ContactsHubView: View {
     @State private var showSessionStart = false
     @State private var integrations: [UserIntegration] = []
     @State private var isSyncing = false
+    @State private var isBulkSelecting = false
+    @State private var selectedLeadIDs: Set<UUID> = []
+    @State private var showBulkDeleteConfirmation = false
+    @State private var pendingDeleteLead: FieldLead?
 
     private var hasConnectedCRM: Bool {
         integrations.contains { $0.isConnected }
@@ -17,6 +21,11 @@ struct ContactsHubView: View {
 
     private var connectedIntegration: UserIntegration? {
         integrations.first { $0.isConnected }
+    }
+
+    private var allVisibleLeadIDsSelected: Bool {
+        let visibleLeadIDs = Set(leadsViewModel.filteredLeads.map(\.id))
+        return !visibleLeadIDs.isEmpty && visibleLeadIDs.isSubset(of: selectedLeadIDs)
     }
 
     var body: some View {
@@ -28,41 +37,55 @@ struct ContactsHubView: View {
                     contentSection
                 }
             }
-            .navigationTitle("Leads")
+            .navigationTitle(isBulkSelecting ? "\(selectedLeadIDs.count) Selected" : "Leads")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Menu {
-                        Button("Sync Settings") {
-                            HapticManager.light()
-                            if entitlementsService.canUsePro {
-                                showSyncSettings = true
-                            } else {
-                                showPaywall = true
-                            }
+                if isBulkSelecting {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button("Cancel") {
+                            exitBulkSelection()
                         }
-                        if hasConnectedCRM, let integration = connectedIntegration {
-                            Button("Disconnect", role: .destructive) {
-                                Task { await disconnect(provider: integration.provider) }
-                            }
-                        }
-                        Button("Sync Now") {
-                            Task {
-                                isSyncing = true
-                                await loadIntegrations()
-                                await leadsViewModel.loadLeads()
-                                isSyncing = false
-                            }
-                        }
-                    } label: {
-                        HStack(spacing: 4) {
-                            Text(syncStatusText)
-                                .font(.system(size: 17, weight: .regular))
-                            syncStatusIcon
-                        }
-                        .foregroundColor(syncStatusColor)
                     }
-                    .buttonStyle(.plain)
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button(allVisibleLeadIDsSelected ? "Deselect All" : "Select All") {
+                            toggleSelectAllVisible()
+                        }
+                        .disabled(leadsViewModel.filteredLeads.isEmpty)
+                    }
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button(role: .destructive) {
+                            showBulkDeleteConfirmation = true
+                        } label: {
+                            Image(systemName: "trash")
+                        }
+                        .disabled(selectedLeadIDs.isEmpty)
+                    }
+                } else {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Menu {
+                            Button("Sync Settings") {
+                                HapticManager.light()
+                                if entitlementsService.canUsePro {
+                                    showSyncSettings = true
+                                } else {
+                                    showPaywall = true
+                                }
+                            }
+                            if hasConnectedCRM, let integration = connectedIntegration {
+                                Button("Disconnect", role: .destructive) {
+                                    Task { await disconnect(provider: integration.provider) }
+                                }
+                            }
+                        } label: {
+                            HStack(spacing: 4) {
+                                Text(syncStatusText)
+                                    .font(.system(size: 17, weight: .regular))
+                                syncStatusIcon
+                            }
+                            .foregroundColor(syncStatusColor)
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
             }
             .task {
@@ -73,6 +96,9 @@ struct ContactsHubView: View {
                 await leadsViewModel.loadLeads()
                 await loadIntegrations()
                 HapticManager.rigid()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .leadSavedFromSession)) { _ in
+                Task { await leadsViewModel.loadLeads() }
             }
             .sheet(isPresented: $showSyncSettings) {
                 SyncSettingsView()
@@ -97,6 +123,39 @@ struct ContactsHubView: View {
                         Task { await leadsViewModel.updateLead(updated) }
                     }
                 )
+            }
+            .alert("Delete lead?", isPresented: Binding(
+                get: { pendingDeleteLead != nil },
+                set: { if !$0 { pendingDeleteLead = nil } }
+            )) {
+                Button("Delete", role: .destructive) {
+                    guard let lead = pendingDeleteLead else { return }
+                    Task {
+                        await leadsViewModel.deleteLead(lead)
+                        pendingDeleteLead = nil
+                    }
+                }
+                Button("Cancel", role: .cancel) {
+                    pendingDeleteLead = nil
+                }
+            } message: {
+                Text("This will permanently delete \(pendingDeleteLead?.displayNameOrUnknown ?? "this lead").")
+            }
+            .alert("Delete selected leads?", isPresented: $showBulkDeleteConfirmation) {
+                Button("Delete", role: .destructive) {
+                    Task { await deleteSelectedLeads() }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This will permanently delete \(selectedLeadIDs.count) lead\(selectedLeadIDs.count == 1 ? "" : "s").")
+            }
+            .alert("Error", isPresented: Binding(
+                get: { leadsViewModel.errorMessage != nil },
+                set: { if !$0 { leadsViewModel.errorMessage = nil } }
+            )) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(leadsViewModel.errorMessage ?? "Something went wrong.")
             }
         }
     }
@@ -155,9 +214,20 @@ struct ContactsHubView: View {
             ScrollView {
                 LazyVStack(spacing: 0) {
                     ForEach(leadsViewModel.filteredLeads) { lead in
-                        FieldLeadRowView(lead: lead) {
-                            leadsViewModel.selectedLead = lead
-                        }
+                        FieldLeadRowView(
+                            lead: lead,
+                            isSelectionMode: isBulkSelecting,
+                            isSelected: selectedLeadIDs.contains(lead.id),
+                            onTap: {
+                                handleLeadTap(lead)
+                            },
+                            onEnterSelectionMode: {
+                                startBulkSelection(with: lead)
+                            },
+                            onDelete: {
+                                pendingDeleteLead = lead
+                            }
+                        )
                         Divider()
                             .padding(.leading, 56)
                     }
@@ -210,6 +280,59 @@ struct ContactsHubView: View {
             try await CRMIntegrationManager.shared.disconnect(userId: userId, provider: provider)
             await loadIntegrations()
         } catch {}
+    }
+
+    private func handleLeadTap(_ lead: FieldLead) {
+        if isBulkSelecting {
+            toggleLeadSelection(lead)
+        } else {
+            leadsViewModel.selectedLead = lead
+        }
+    }
+
+    private func startBulkSelection(with lead: FieldLead) {
+        isBulkSelecting = true
+        selectedLeadIDs.insert(lead.id)
+        HapticManager.light()
+    }
+
+    private func exitBulkSelection() {
+        isBulkSelecting = false
+        selectedLeadIDs.removeAll()
+    }
+
+    private func toggleLeadSelection(_ lead: FieldLead) {
+        if selectedLeadIDs.contains(lead.id) {
+            selectedLeadIDs.remove(lead.id)
+            if selectedLeadIDs.isEmpty {
+                isBulkSelecting = false
+            }
+        } else {
+            selectedLeadIDs.insert(lead.id)
+        }
+    }
+
+    private func toggleSelectAllVisible() {
+        let visibleLeadIDs = Set(leadsViewModel.filteredLeads.map(\.id))
+        guard !visibleLeadIDs.isEmpty else { return }
+
+        if visibleLeadIDs.isSubset(of: selectedLeadIDs) {
+            selectedLeadIDs.subtract(visibleLeadIDs)
+            if selectedLeadIDs.isEmpty {
+                isBulkSelecting = false
+            }
+        } else {
+            isBulkSelecting = true
+            selectedLeadIDs.formUnion(visibleLeadIDs)
+        }
+    }
+
+    private func deleteSelectedLeads() async {
+        let leadsToDelete = leadsViewModel.leads.filter { selectedLeadIDs.contains($0.id) }
+        await leadsViewModel.deleteLeads(leadsToDelete)
+        if leadsViewModel.errorMessage == nil {
+            exitBulkSelection()
+        }
     }
 }
 

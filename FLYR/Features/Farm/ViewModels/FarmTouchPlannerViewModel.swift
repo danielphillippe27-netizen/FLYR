@@ -11,6 +11,7 @@ final class FarmTouchPlannerViewModel: ObservableObject {
     @Published var errorMessage: String?
     
     private let touchService = FarmTouchService.shared
+    private let executionService = FarmExecutionService.shared
     let farmId: UUID
     
     init(farmId: UUID) {
@@ -132,6 +133,7 @@ final class FarmTouchPlannerViewModel: ObservableObject {
             let updated = FarmTouch(
                 id: touch.id,
                 farmId: touch.farmId,
+                phaseId: touch.phaseId,
                 date: touch.date,
                 type: touch.type,
                 title: touch.title,
@@ -140,6 +142,10 @@ final class FarmTouchPlannerViewModel: ObservableObject {
                 completed: touch.completed,
                 campaignId: touch.campaignId,
                 batchId: touch.batchId,
+                sessionId: touch.sessionId,
+                completedAt: touch.completedAt,
+                completedByUserId: touch.completedByUserId,
+                executionMetrics: touch.executionMetrics,
                 createdAt: touch.createdAt
             )
             
@@ -165,6 +171,7 @@ final class FarmTouchPlannerViewModel: ObservableObject {
         let updated = FarmTouch(
             id: touch.id,
             farmId: touch.farmId,
+            phaseId: touch.phaseId,
             date: touch.date,
             type: touch.type,
             title: touch.title,
@@ -173,6 +180,10 @@ final class FarmTouchPlannerViewModel: ObservableObject {
             completed: touch.completed,
             campaignId: campaignId,
             batchId: touch.batchId,
+            sessionId: touch.sessionId,
+            completedAt: touch.completedAt,
+            completedByUserId: touch.completedByUserId,
+            executionMetrics: touch.executionMetrics,
             createdAt: touch.createdAt
         )
         
@@ -185,6 +196,7 @@ final class FarmTouchPlannerViewModel: ObservableObject {
         let updated = FarmTouch(
             id: touch.id,
             farmId: touch.farmId,
+            phaseId: touch.phaseId,
             date: touch.date,
             type: touch.type,
             title: touch.title,
@@ -193,6 +205,10 @@ final class FarmTouchPlannerViewModel: ObservableObject {
             completed: touch.completed,
             campaignId: touch.campaignId,
             batchId: batchId,
+            sessionId: touch.sessionId,
+            completedAt: touch.completedAt,
+            completedByUserId: touch.completedByUserId,
+            executionMetrics: touch.executionMetrics,
             createdAt: touch.createdAt
         )
         
@@ -215,6 +231,16 @@ final class FarmTouchPlannerViewModel: ObservableObject {
             print("❌ [FarmTouchPlannerViewModel] Error marking touch complete: \(error)")
         }
     }
+
+    func executionContext(for touch: FarmTouch) async -> FarmExecutionContext? {
+        do {
+            return try await executionService.executionContext(for: touch)
+        } catch {
+            errorMessage = "Failed to prepare planned session: \(error.localizedDescription)"
+            print("❌ [FarmTouchPlannerViewModel] Error preparing planned session: \(error)")
+            return nil
+        }
+    }
     
     // MARK: - Get Touches for Month
     
@@ -228,4 +254,3 @@ final class FarmTouchPlannerViewModel: ObservableObject {
         touchesByMonth.keys.sorted()
     }
 }
-

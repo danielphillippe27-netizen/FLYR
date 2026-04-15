@@ -3,6 +3,7 @@ import Foundation
 // MARK: - Access state (GET /api/access/state)
 
 struct AccessStateResponse: Codable {
+    let userId: String?
     let role: String?
     let workspaceName: String?
     let workspaceId: String?
@@ -12,23 +13,34 @@ struct AccessStateResponse: Codable {
 
     enum CodingKeys: String, CodingKey {
         case role, reason
+        case userId = "user_id"
+        case userIdCamel = "userId"
         case workspaceName = "name"
-        // Both possible snake_case and camelCase forms for resilience
+        case workspaceNameCamel = "workspaceName"
         case workspaceId = "workspace_id"
+        case workspaceIdCamel = "workspaceId"
         case hasAccess = "has_access"
+        case hasAccessCamel = "hasAccess"
     }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        userId = try c.decodeIfPresent(String.self, forKey: .userId)
+            ?? c.decodeIfPresent(String.self, forKey: .userIdCamel)
         role = try c.decodeIfPresent(String.self, forKey: .role)
         workspaceName = try c.decodeIfPresent(String.self, forKey: .workspaceName)
+            ?? c.decodeIfPresent(String.self, forKey: .workspaceNameCamel)
         workspaceId = try c.decodeIfPresent(String.self, forKey: .workspaceId)
-        hasAccess = try c.decodeIfPresent(Bool.self, forKey: .hasAccess) ?? true
+            ?? c.decodeIfPresent(String.self, forKey: .workspaceIdCamel)
+        hasAccess = try c.decodeIfPresent(Bool.self, forKey: .hasAccess)
+            ?? c.decodeIfPresent(Bool.self, forKey: .hasAccessCamel)
+            ?? true
         reason = try c.decodeIfPresent(String.self, forKey: .reason)
     }
 
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encodeIfPresent(userId, forKey: .userId)
         try c.encodeIfPresent(role, forKey: .role)
         try c.encodeIfPresent(workspaceName, forKey: .workspaceName)
         try c.encodeIfPresent(workspaceId, forKey: .workspaceId)
@@ -56,14 +68,13 @@ struct OnboardingCompleteRequest: Codable {
     var lastName: String?
     var workspaceName: String?
     var industry: String?
-    var referralCode: String?
     var useCase: OnboardingUseCase?
     var inviteEmails: [String]?
     var brokerage: String?
     var brokerageId: String?
 
     enum CodingKeys: String, CodingKey {
-        case firstName, lastName, workspaceName, industry, referralCode, useCase
+        case firstName, lastName, workspaceName, industry, useCase
         case inviteEmails, brokerage, brokerageId
     }
 }
@@ -99,6 +110,7 @@ struct InviteAcceptResponse: Codable {
     let success: Bool
     let workspaceId: String
     let redirect: String
+    let alreadyAccepted: Bool?
 }
 
 // MARK: - Stripe checkout (POST /api/billing/stripe/checkout)

@@ -1,7 +1,6 @@
-import { createDecipheriv } from "crypto";
-import type { SupabaseClient } from "@supabase/supabase-js";
-
+import { createCipheriv, createDecipheriv, randomBytes } from "crypto";
 const CRM_ENCRYPTION_KEY = process.env.CRM_ENCRYPTION_KEY!;
+const CRM_ENCRYPTION_KEY_VERSION = parseInt(process.env.CRM_ENCRYPTION_KEY_VERSION ?? "1", 10);
 
 function getEncryptionKey(): Buffer {
   if (!CRM_ENCRYPTION_KEY || CRM_ENCRYPTION_KEY.length < 32) {
@@ -13,6 +12,22 @@ function getEncryptionKey(): Buffer {
 }
 
 type Blob = { iv: string; tag: string; ciphertext: string };
+
+export function encryptCRMSecret(plaintext: string): string {
+  const key = getEncryptionKey();
+  const iv = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", key, iv, { authTagLength: 16 });
+  const enc = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  const blob = {
+    v: 1,
+    key_version: CRM_ENCRYPTION_KEY_VERSION,
+    iv: iv.toString("base64"),
+    tag: tag.toString("base64"),
+    ciphertext: enc.toString("base64"),
+  };
+  return Buffer.from(JSON.stringify(blob)).toString("base64");
+}
 
 export function decrypt(encryptedBase64: string): string {
   const key = getEncryptionKey();
@@ -26,15 +41,16 @@ export function decrypt(encryptedBase64: string): string {
   return Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString("utf8");
 }
 
-export async function getFubApiKeyForUser(
-  supabaseAdmin: SupabaseClient,
-  userId: string
+export async function getCRMSecretForUser(
+  supabaseAdmin: any,
+  userId: string,
+  provider: string
 ): Promise<string | null> {
   const { data: conn } = await supabaseAdmin
     .from("crm_connections")
     .select("id")
     .eq("user_id", userId)
-    .eq("provider", "fub")
+    .eq("provider", provider)
     .maybeSingle();
   if (!conn?.id) return null;
 
@@ -46,4 +62,18 @@ export async function getFubApiKeyForUser(
   if (!secret?.encrypted_api_key) return null;
 
   return decrypt(secret.encrypted_api_key);
+}
+
+export async function getFubApiKeyForUser(
+  supabaseAdmin: any,
+  userId: string
+): Promise<string | null> {
+  return getCRMSecretForUser(supabaseAdmin, userId, "fub");
+}
+
+export async function getBoldTrailTokenForUser(
+  supabaseAdmin: any,
+  userId: string
+): Promise<string | null> {
+  return getCRMSecretForUser(supabaseAdmin, userId, "boldtrail");
 }

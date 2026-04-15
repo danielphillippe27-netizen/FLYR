@@ -78,10 +78,10 @@ enum FarmAnalyticsCalculator {
             
             // Estimated spend
             let estimatedSpend = Double(flyers) * 0.50
-            let roi = conversions > 0 ? (Double(conversions) * 1000.0) / estimatedSpend : 0.0
+            let roi = 0.0
             
             comparisons.append(PhaseComparison(
-                phaseName: phase.phaseName,
+                cycleName: phase.phaseName,
                 startDate: phase.startDate,
                 endDate: phase.endDate,
                 touches: phaseTouches.count,
@@ -98,6 +98,4 @@ enum FarmAnalyticsCalculator {
         return comparisons
     }
 }
-
-
 

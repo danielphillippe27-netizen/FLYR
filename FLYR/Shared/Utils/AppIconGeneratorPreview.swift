@@ -34,7 +34,7 @@ struct AppIconGeneratorPreview: View {
     }
     
     private func saveIcon() {
-        guard let icon = iconImage else { return }
+        guard iconImage != nil else { return }
         
         // Get the AppIcon.appiconset directory
         guard let bundlePath = Bundle.main.resourcePath else { return }
@@ -66,5 +66,4 @@ struct AppIconGeneratorPreview: View {
 #Preview {
     AppIconGeneratorPreview()
 }
-
 

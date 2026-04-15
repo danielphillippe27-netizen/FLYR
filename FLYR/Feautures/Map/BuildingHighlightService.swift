@@ -7,6 +7,7 @@ import CoreGraphics
 
 /// Stateless service for rendering building polygons on Mapbox maps
 /// Handles polygon queries, distance calculations, and fallback circle generation
+@MainActor
 final class BuildingHighlightService {
     private weak var mapView: MapView?
     private let sourceId = "campaign-buildings-source"
@@ -63,7 +64,7 @@ final class BuildingHighlightService {
         }
         
         // Update source with new features
-        try? mapView.mapboxMap.updateGeoJSONSource(withId: sourceId, geoJSON: .featureCollection(.init(features: features)))
+        mapView.mapboxMap.updateGeoJSONSource(withId: sourceId, geoJSON: .featureCollection(.init(features: features)))
     }
     
     /// Query Mapbox building layer for polygon at coordinate

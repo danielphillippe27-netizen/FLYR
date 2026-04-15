@@ -7,14 +7,28 @@ import CoreLocation
 struct EndSessionSummaryView: View {
     let data: SessionSummaryData
     var userName: String?
+    /// Live campaign map capture when ending a session (preferred background for the homes card).
+    var campaignMapSnapshot: UIImage? = nil
     /// When true, open the Share Activity sheet immediately (e.g. when entering from "Session Share Card").
     var openShareSheetOnAppear: Bool = false
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.displayScale) private var displayScale
     @State private var shareImages: [UIImage] = []
     @State private var showShareSheet = false
     @State private var showShareHelp = false
     @State private var toastMessage: String?
+    @State private var summaryCardPage = 0
+    @State private var homesMapSnapshot: UIImage?
+    @State private var homesCardVectorOverlay: Bool = true
+
+    private var summaryPageCount: Int {
+        data.includesHomesRouteShareCard ? 3 : 2
+    }
+
+    private var homesMapTheme: ShareCardGenerator.HomesMapTheme {
+        colorScheme == .dark ? .dark : .light
+    }
 
     var body: some View {
         ZStack {
@@ -32,7 +46,9 @@ struct EndSessionSummaryView: View {
                     }
                     .buttonStyle(.plain)
                     Spacer()
-                    Button { captureAndShare() } label: {
+                    Button {
+                        Task { await captureAndShare() }
+                    } label: {
                         Text("Share")
                             .font(.system(size: 17, weight: .semibold))
                             .foregroundColor(.white)
@@ -44,49 +60,102 @@ struct EndSessionSummaryView: View {
                 .padding(.top, 8)
                 .padding(.horizontal, 8)
 
-                // Scrollable card so full content (route + FLYR logo) is visible
-                ScrollView(.vertical, showsIndicators: false) {
-                    SessionShareCardView(data: data, forExport: false, darkCard: true, metrics: .doorsDistanceTime)
-                        .frame(maxWidth: 360)
-                        .clipShape(RoundedRectangle(cornerRadius: 20))
-                        .overlay(RoundedRectangle(cornerRadius: 20).stroke(Color.white.opacity(0.15), lineWidth: 1))
-                        .shadow(color: .black.opacity(0.5), radius: 24, x: 0, y: 12)
-                        .padding(.top, 8)
-                        .padding(.horizontal, 24)
-                }
-                .frame(maxHeight: .infinity)
+                // Swipeable cards: map + route first (when available), then the two metric variants (matches Share Activity order).
+                VStack(spacing: 10) {
+                    TabView(selection: $summaryCardPage) {
+                        if data.includesHomesRouteShareCard {
+                            SessionHomesShareCardView(
+                                data: data,
+                                darkCard: true,
+                                backgroundSnapshot: homesMapSnapshot,
+                                showVectorOverlay: homesCardVectorOverlay
+                            )
+                                .frame(maxWidth: 360)
+                                .aspectRatio(9.0 / 16.0, contentMode: .fit)
+                                .clipShape(RoundedRectangle(cornerRadius: 20))
+                                .overlay(RoundedRectangle(cornerRadius: 20).stroke(Color.white.opacity(0.15), lineWidth: 1))
+                                .shadow(color: .black.opacity(0.5), radius: 24, x: 0, y: 12)
+                                .padding(.horizontal, 24)
+                                .tag(0)
+                        }
+                        SessionShareCardView(data: data, forExport: false, darkCard: true, metrics: .doorsDistanceTime)
+                            .frame(maxWidth: 360)
+                            .clipShape(RoundedRectangle(cornerRadius: 20))
+                            .overlay(RoundedRectangle(cornerRadius: 20).stroke(Color.white.opacity(0.15), lineWidth: 1))
+                            .shadow(color: .black.opacity(0.5), radius: 24, x: 0, y: 12)
+                            .padding(.horizontal, 24)
+                            .tag(data.includesHomesRouteShareCard ? 1 : 0)
+                        SessionShareCardView(data: data, forExport: false, darkCard: true, metrics: .doorsConvoTime)
+                            .frame(maxWidth: 360)
+                            .clipShape(RoundedRectangle(cornerRadius: 20))
+                            .overlay(RoundedRectangle(cornerRadius: 20).stroke(Color.white.opacity(0.15), lineWidth: 1))
+                            .shadow(color: .black.opacity(0.5), radius: 24, x: 0, y: 12)
+                            .padding(.horizontal, 24)
+                            .tag(data.includesHomesRouteShareCard ? 2 : 1)
+                    }
+                    .tabViewStyle(.page(indexDisplayMode: .never))
+                    .frame(maxHeight: .infinity)
 
-                // Bottom row: Copy, Save, Export, ?
+                    if summaryPageCount > 1 {
+                        HStack(spacing: 6) {
+                            ForEach(0..<summaryPageCount, id: \.self) { index in
+                                Circle()
+                                    .fill(index == summaryCardPage ? Color.white : Color.white.opacity(0.38))
+                                    .frame(width: 7, height: 7)
+                            }
+                        }
+                    }
+                }
+                .padding(.top, 4)
+
+                // Bottom row: Copy, Save, Export, Help
                 HStack(spacing: 20) {
                     ShareActionButton(icon: "doc.on.doc", label: "Copy to Clipboard") {
-                        if let img = generateShareImage(metrics: .doorsDistanceTime) {
-                            UIPasteboard.general.image = img
-                            showToast("Copied to clipboard")
+                        Task {
+                            if let img = await primaryShareImageForStory() {
+                                UIPasteboard.general.image = img
+                                showToast("Copied to clipboard")
+                            }
                         }
                     }
                     ShareActionButton(icon: "arrow.down.circle", label: "Save") {
-                        let img1 = generateShareImage(metrics: .doorsDistanceTime)
-                        let img2 = generateShareImage(metrics: .doorsConvoTime)
-                        let items = [img1, img2].compactMap { $0 }
-                        guard !items.isEmpty else { showToast("Could not save"); return }
-                        var pending = items.count
-                        var successCount = 0
-                        for img in items {
-                            ShareCardGenerator.saveToPhotos(img) { success in
-                                if success { successCount += 1 }
-                                pending -= 1
-                                if pending == 0 {
-                                    showToast(successCount == 0 ? "Could not save" : successCount == items.count ? "Saved" : "Saved \(successCount) image(s)")
+                        Task {
+                            let items = await ShareCardGenerator.generateShareImages(
+                                data: data,
+                                homesMapTheme: homesMapTheme,
+                                campaignMapSnapshot: campaignMapSnapshot ?? SessionManager.lastEndedSummaryMapSnapshot
+                            )
+                            guard !items.isEmpty else { showToast("Could not save"); return }
+                            var pending = items.count
+                            var successCount = 0
+                            for img in items {
+                                ShareCardGenerator.saveToPhotos(img) { success in
+                                    if success { successCount += 1 }
+                                    pending -= 1
+                                    if pending == 0 {
+                                        showToast(successCount == 0 ? "Could not save" : successCount == items.count ? "Saved" : "Saved \(successCount) image(s)")
+                                    }
                                 }
                             }
                         }
                     }
                     ShareActionButton(icon: "square.and.arrow.up", label: "Export") {
-                        let img1 = generateShareImage(metrics: .doorsDistanceTime)
-                        let img2 = generateShareImage(metrics: .doorsConvoTime)
-                        let items = [img1, img2].compactMap { $0 }
-                        guard !items.isEmpty, let vc = ShareCardGenerator.rootViewController() else { return }
-                        ShareCardGenerator.shareImages(items, from: vc)
+                        Task {
+                            let items = await ShareCardGenerator.generateShareImages(
+                                data: data,
+                                homesMapTheme: homesMapTheme,
+                                campaignMapSnapshot: campaignMapSnapshot ?? SessionManager.lastEndedSummaryMapSnapshot
+                            )
+                            guard !items.isEmpty else {
+                                showToast("Could not export")
+                                return
+                            }
+                            guard let vc = ShareCardGenerator.rootViewController() else {
+                                showToast(ShareCardGenerator.shareSheetUnavailableUserMessage)
+                                return
+                            }
+                            ShareCardGenerator.shareImages(items, from: vc)
+                        }
                     }
                     ShareActionButton(icon: "questionmark.circle", label: "How to share") {
                         showShareHelp = true
@@ -120,9 +189,23 @@ struct EndSessionSummaryView: View {
         .sheet(isPresented: $showShareHelp) {
             ShareHelpSheet(onDismiss: { showShareHelp = false })
         }
+        .task(id: colorScheme) {
+            let exportSize = CGSize(width: 1080, height: 1920)
+            if let live = campaignMapSnapshot ?? SessionManager.lastEndedSummaryMapSnapshot {
+                homesMapSnapshot = live
+                homesCardVectorOverlay = false
+            } else {
+                homesMapSnapshot = await ShareCardGenerator.loadHomesMapSnapshot(
+                    for: data,
+                    theme: homesMapTheme,
+                    size: exportSize
+                )
+                homesCardVectorOverlay = !data.isDemoSession
+            }
+        }
         .onAppear {
             if openShareSheetOnAppear {
-                captureAndShare()
+                Task { await captureAndShare() }
             }
         }
     }
@@ -132,27 +215,30 @@ struct EndSessionSummaryView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { toastMessage = nil }
     }
 
-    private func captureAndShare() {
-        shareImages = [
-            generateShareImage(metrics: .doorsDistanceTime),
-            generateShareImage(metrics: .doorsConvoTime),
-        ].compactMap { $0 }
+    private func captureAndShare() async {
+        shareImages = await ShareCardGenerator.generateShareImages(
+            data: data,
+            homesMapTheme: homesMapTheme,
+            campaignMapSnapshot: campaignMapSnapshot ?? SessionManager.lastEndedSummaryMapSnapshot
+        )
         showShareSheet = true
     }
 
     /// Generates a transparent PNG of the share card (1080×1920) for the given metric variant.
     private func generateShareImage(metrics: ShareCardMetrics) -> UIImage? {
-        let size = CGSize(width: 1080, height: 1920)
-        let card = SessionShareCardView(data: data, forExport: true, metrics: metrics)
-            .frame(width: size.width, height: size.height)
+        ShareCardGenerator.renderImage(
+            content: SessionShareCardView(data: data, forExport: true, metrics: metrics)
+        )
+    }
 
-        let renderer = ImageRenderer(content: card)
-        renderer.scale = 2
-        renderer.isOpaque = false
-
-        guard let uiImage = renderer.uiImage,
-              let pngData = uiImage.pngData() else { return nil }
-        return UIImage(data: pngData)
+    /// Prefer the map + route card for Story/Copy when it exists (same order as `generateShareImages`).
+    private func primaryShareImageForStory() async -> UIImage? {
+        let images = await ShareCardGenerator.generateShareImages(
+            data: data,
+            homesMapTheme: homesMapTheme,
+            campaignMapSnapshot: campaignMapSnapshot ?? SessionManager.lastEndedSummaryMapSnapshot
+        )
+        return images.first
     }
 }
 
@@ -197,11 +283,6 @@ private struct ShareActivitySheet: View {
                 Spacer(minLength: 0)
                 if !images.isEmpty {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("Transparent")
-                            .font(.footnote)
-                            .foregroundColor(.white.opacity(0.7))
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 24)
                         TabView(selection: $selectedPage) {
                             ForEach(images.indices, id: \.self) { index in
                                 Image(uiImage: images[index])
@@ -235,16 +316,15 @@ private struct ShareActivitySheet: View {
                     .padding(.bottom, 12)
                 }
 
-                // Buttons pinned at bottom
-                HStack(spacing: 20) {
-                    ShareActionButton(icon: "doc.on.doc", label: "Copy to Clipboard") {
+                HStack(spacing: 12) {
+                    ShareActionButton(icon: "doc.on.doc", label: "Copy", action: {
                         if let img = currentImage {
                             UIPasteboard.general.image = img
                             saveToast = "Copied to clipboard"
                             clearToastAfterDelay()
                         }
-                    }
-                    ShareActionButton(icon: "arrow.down.circle", label: "Save") {
+                    })
+                    ShareActionButton(icon: "arrow.down.circle", label: "Save", action: {
                         guard !images.isEmpty else { return }
                         var pending = images.count
                         var successCount = 0
@@ -258,18 +338,23 @@ private struct ShareActivitySheet: View {
                                 }
                             }
                         }
-                    }
-                    ShareActionButton(icon: "square.and.arrow.up", label: "Export") {
-                        guard let vc = ShareCardGenerator.rootViewController(), !images.isEmpty else { return }
+                    })
+                    ShareActionButton(icon: "square.and.arrow.up", label: "Export", action: {
+                        guard !images.isEmpty else { return }
+                        guard let vc = ShareCardGenerator.rootViewController() else {
+                            saveToast = ShareCardGenerator.shareSheetUnavailableUserMessage
+                            clearToastAfterDelay()
+                            return
+                        }
                         ShareCardGenerator.shareImages(images, from: vc)
-                    }
-                    ShareActionButton(icon: "questionmark.circle", label: "How to share") {
+                    })
+                    ShareActionButton(icon: "questionmark.circle", label: "Help", action: {
                         showShareHelp = true
-                    }
+                    })
                 }
-                .padding(.horizontal, 24)
-                .padding(.top, 16)
-                .padding(.bottom, 24)
+                .padding(.horizontal, 20)
+                .padding(.top, 12)
+                .padding(.bottom, 28)
                 .background(Color.black)
             }
 
@@ -303,7 +388,11 @@ private struct ShareActivitySheet: View {
 
 struct ShareActivityGateView: View {
     let data: SessionSummaryData
+    var sessionID: UUID? = nil
+    /// Prefer live campaign capture for the first share card; falls back to Mapbox static API.
+    var campaignMapSnapshot: UIImage? = nil
     var onDismiss: () -> Void
+    @Environment(\.colorScheme) private var colorScheme
     @State private var images: [UIImage] = []
 
     var body: some View {
@@ -312,14 +401,32 @@ struct ShareActivityGateView: View {
                 Color.black.ignoresSafeArea()
                     .overlay(ProgressView().tint(.white))
                     .onAppear {
-                        Task { @MainActor in
-                            images = ShareCardGenerator.generateShareImages(data: data)
+                        Task {
+                            await loadImages()
                         }
                     }
             } else {
                 ShareActivitySheet(images: images, onDismiss: onDismiss)
             }
         }
+    }
+
+    @MainActor
+    private func loadImages() async {
+        let homesMapTheme: ShareCardGenerator.HomesMapTheme = colorScheme == .dark ? .dark : .light
+        let localImages = await ShareCardGenerator.generateShareImages(
+            data: data,
+            homesMapTheme: homesMapTheme,
+            campaignMapSnapshot: campaignMapSnapshot ?? SessionManager.lastEndedSummaryMapSnapshot
+        )
+        if let userID = AuthManager.shared.user?.id, let sessionID {
+            if let remoteImage = try? await ChallengeService.shared.fetchShareCardImage(userID: userID, sessionID: sessionID) {
+                images = [remoteImage] + localImages
+                return
+            }
+        }
+
+        images = localImages
     }
 }
 
@@ -334,10 +441,11 @@ private struct ShareHelpSheet: View {
                 VStack(alignment: .leading, spacing: 16) {
                     Text("To share to Instagram or Facebook:")
                         .font(.system(size: 17, weight: .semibold))
-                    Text("1. Tap Save to save the image(s) to your Photos, or tap Export to open the share sheet.")
-                    Text("2. Open the Instagram or Facebook app.")
-                    Text("3. Create a new Story or post and choose Photo or Gallery.")
-                    Text("4. Select the FLYR session image from your camera roll and share.")
+                    Text("1. To overlay on top of a photo: tap Copy to Clipboard in FLYR.")
+                    Text("2. Open Instagram, start a Story, and pick a background photo.")
+                    Text("3. Paste the copied FLYR image onto the Story (long-press and tap Paste).")
+                    Text("4. Resize/move the overlay, then share your Story.")
+                    Text("5. Or use Save/Export to share from Photos if preferred.")
                 }
                 .padding(24)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -354,29 +462,30 @@ private struct ShareHelpSheet: View {
     }
 }
 
-// MARK: - Share action button (red circle, black icon + label)
+// MARK: - Share action button (red circle, black icon + white label)
 
 private struct ShareActionButton: View {
     let icon: String
     let label: String
+    var circleDiameter: CGFloat = 52
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            VStack(spacing: 8) {
+            VStack(spacing: 7) {
                 ZStack {
                     Circle()
                         .fill(Color.flyrPrimary)
-                        .frame(width: 56, height: 56)
+                        .frame(width: circleDiameter, height: circleDiameter)
                     Image(systemName: icon)
-                        .font(.system(size: 24, weight: .medium))
+                        .font(.system(size: circleDiameter * 0.44, weight: .medium))
                         .foregroundColor(.black)
                 }
                 Text(label)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(.black)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(.white.opacity(0.92))
                     .lineLimit(1)
-                    .minimumScaleFactor(0.8)
+                    .minimumScaleFactor(0.75)
                     .multilineTextAlignment(.center)
             }
             .frame(maxWidth: .infinity)

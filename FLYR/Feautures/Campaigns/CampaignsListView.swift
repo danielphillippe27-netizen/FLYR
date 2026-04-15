@@ -8,8 +8,13 @@ struct CampaignsListView: View {
     @State private var showSessionStartSheet = false
     @State private var sessionStartCampaign: CampaignV2?
     @State private var searchText = ""
-    @State private var archiveErrorMessage: String?
-    @State private var showArchiveError = false
+    @State private var campaignActionErrorMessage: String?
+    @State private var showCampaignActionError = false
+    @State private var isBulkSelecting = false
+    @State private var selectedCampaignIDs: Set<UUID> = []
+    @State private var showBulkArchiveConfirmation = false
+    @State private var showBulkDeleteConfirmation = false
+    @State private var pendingDeleteCampaign: CampaignV2?
     var externalFilter: Binding<CampaignFilter>? = nil
     /// When set, empty state and "+ New Campaign" button set this to true (same as toolbar + button).
     var showCreateCampaign: Binding<Bool>? = nil
@@ -18,6 +23,49 @@ struct CampaignsListView: View {
 
     private var effectiveFilter: CampaignFilter {
         externalFilter?.wrappedValue ?? campaignFilter
+    }
+
+    private var allVisibleCampaignIDsSelected: Bool {
+        let visibleCampaignIDs = Set(visibleCampaigns.map(\.id))
+        return !visibleCampaignIDs.isEmpty && visibleCampaignIDs.isSubset(of: selectedCampaignIDs)
+    }
+
+    private var selectedCampaigns: [CampaignV2] {
+        storeV2.campaigns.filter { selectedCampaignIDs.contains($0.id) }
+    }
+
+    private var selectedArchivableCampaignIDs: Set<UUID> {
+        Set(selectedCampaigns.lazy.filter { $0.status != .archived }.map(\.id))
+    }
+
+    private var visibleCampaigns: [CampaignV2] {
+        let filteredCampaigns: [CampaignV2]
+        switch effectiveFilter {
+        case .active:
+            filteredCampaigns = storeV2.campaigns.filter { $0.status != .completed && $0.status != .archived }
+        case .completed:
+            filteredCampaigns = storeV2.campaigns.filter { $0.status == .completed }
+        case .archived:
+            filteredCampaigns = storeV2.campaigns.filter { $0.status == .archived }
+        case .all:
+            filteredCampaigns = storeV2.campaigns
+        }
+
+        let sortedCampaigns = filteredCampaigns.sorted { a, b in
+            let aActive = a.status != .completed
+            let bActive = b.status != .completed
+            if aActive != bActive { return aActive }
+            if a.createdAt != b.createdAt { return a.createdAt > b.createdAt }
+            return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
+        }
+
+        guard !searchText.isEmpty else { return sortedCampaigns }
+        let q = searchText.lowercased()
+        return sortedCampaigns.filter {
+            $0.name.localizedCaseInsensitiveContains(q) ||
+            ($0.seedQuery?.localizedCaseInsensitiveContains(q) == true) ||
+            $0.addresses.contains { $0.address.localizedCaseInsensitiveContains(q) }
+        }
     }
 
     var body: some View {
@@ -69,15 +117,26 @@ struct CampaignsListView: View {
                             recentlyCreatedCampaignID: recentlyCreatedCampaignID,
                             filter: effectiveFilter,
                             searchText: searchText,
+                            isSelectionMode: isBulkSelecting,
+                            selectedCampaignIDs: selectedCampaignIDs,
                             onCampaignTapped: onCampaignTapped,
+                            onCampaignSelected: { campaign in
+                                handleCampaignTap(campaign)
+                            },
+                            onStartSelection: { campaign in
+                                startBulkSelection(with: campaign)
+                            },
                             onPlayTapped: { campaign in
                                 HapticManager.light()
                                 sessionStartCampaign = campaign
                                 showSessionStartSheet = true
                             },
+                            onDeleteRequested: { campaign in
+                                pendingDeleteCampaign = campaign
+                            },
                             onArchiveFailed: { message in
-                                archiveErrorMessage = message
-                                showArchiveError = true
+                                campaignActionErrorMessage = message
+                                showCampaignActionError = true
                             },
                             onArchiveSucceeded: {
                                 if externalFilter != nil {
@@ -124,6 +183,38 @@ struct CampaignsListView: View {
                 }
             }
             .animation(.spring(response: 0.35, dampingFraction: 0.8), value: effectiveFilter)
+            .navigationTitle(isBulkSelecting ? "\(selectedCampaignIDs.count) Selected" : "Campaigns")
+            .toolbar {
+                if isBulkSelecting {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button("Cancel") {
+                            exitBulkSelection()
+                        }
+                    }
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button(allVisibleCampaignIDsSelected ? "Deselect All" : "Select All") {
+                            toggleSelectAllVisible()
+                        }
+                        .disabled(visibleCampaigns.isEmpty)
+                    }
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button {
+                            showBulkArchiveConfirmation = true
+                        } label: {
+                            Image(systemName: "archivebox")
+                        }
+                        .disabled(selectedArchivableCampaignIDs.isEmpty)
+                    }
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button(role: .destructive) {
+                            showBulkDeleteConfirmation = true
+                        } label: {
+                            Image(systemName: "trash")
+                        }
+                        .disabled(selectedCampaignIDs.isEmpty)
+                    }
+                }
+            }
             .onChange(of: storeV2.campaigns.count) { oldCount, newCount in
                 if newCount > oldCount, let newCampaign = storeV2.campaigns.last {
                     recentlyCreatedCampaignID = newCampaign.id
@@ -152,15 +243,152 @@ struct CampaignsListView: View {
             .sheet(isPresented: $showSessionStartSheet) {
                 SessionStartView(preselectedCampaign: sessionStartCampaign)
             }
-            .alert("Archive failed", isPresented: $showArchiveError) {
+            .alert("Campaign action failed", isPresented: $showCampaignActionError) {
                 Button("OK") {
-                    showArchiveError = false
-                    archiveErrorMessage = nil
+                    showCampaignActionError = false
+                    campaignActionErrorMessage = nil
                 }
             } message: {
-                if let message = archiveErrorMessage {
+                if let message = campaignActionErrorMessage {
                     Text(message)
                 }
+            }
+            .alert("Delete campaign?", isPresented: Binding(
+                get: { pendingDeleteCampaign != nil },
+                set: { if !$0 { pendingDeleteCampaign = nil } }
+            )) {
+                Button("Delete", role: .destructive) {
+                    guard let campaign = pendingDeleteCampaign else { return }
+                    Task {
+                        await deleteCampaign(campaign)
+                        pendingDeleteCampaign = nil
+                    }
+                }
+                Button("Cancel", role: .cancel) {
+                    pendingDeleteCampaign = nil
+                }
+            } message: {
+                Text("This will permanently delete \(pendingDeleteCampaign?.name ?? "this campaign").")
+            }
+            .alert("Archive selected campaigns?", isPresented: $showBulkArchiveConfirmation) {
+                Button("Archive") {
+                    Task { await archiveSelectedCampaigns() }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This will move \(selectedArchivableCampaignIDs.count) campaign\(selectedArchivableCampaignIDs.count == 1 ? "" : "s") to archived.")
+            }
+            .alert("Delete selected campaigns?", isPresented: $showBulkDeleteConfirmation) {
+                Button("Delete", role: .destructive) {
+                    Task { await deleteSelectedCampaigns() }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This will permanently delete \(selectedCampaignIDs.count) campaign\(selectedCampaignIDs.count == 1 ? "" : "s").")
+            }
+        }
+    }
+
+    private func handleCampaignTap(_ campaign: CampaignV2) {
+        if isBulkSelecting {
+            toggleCampaignSelection(campaign)
+        } else {
+            HapticManager.light()
+            onCampaignTapped?(campaign.id)
+        }
+    }
+
+    private func startBulkSelection(with campaign: CampaignV2) {
+        isBulkSelecting = true
+        selectedCampaignIDs.insert(campaign.id)
+        HapticManager.light()
+    }
+
+    private func exitBulkSelection() {
+        isBulkSelecting = false
+        selectedCampaignIDs.removeAll()
+    }
+
+    private func toggleCampaignSelection(_ campaign: CampaignV2) {
+        if selectedCampaignIDs.contains(campaign.id) {
+            selectedCampaignIDs.remove(campaign.id)
+            if selectedCampaignIDs.isEmpty {
+                isBulkSelecting = false
+            }
+        } else {
+            selectedCampaignIDs.insert(campaign.id)
+        }
+    }
+
+    private func toggleSelectAllVisible() {
+        let visibleCampaignIDs = Set(visibleCampaigns.map(\.id))
+        guard !visibleCampaignIDs.isEmpty else { return }
+
+        if visibleCampaignIDs.isSubset(of: selectedCampaignIDs) {
+            selectedCampaignIDs.subtract(visibleCampaignIDs)
+            if selectedCampaignIDs.isEmpty {
+                isBulkSelecting = false
+            }
+        } else {
+            isBulkSelecting = true
+            selectedCampaignIDs.formUnion(visibleCampaignIDs)
+        }
+    }
+
+    private func deleteCampaign(_ campaign: CampaignV2) async {
+        do {
+            try await CampaignsAPI.shared.deleteCampaign(campaignId: campaign.id)
+            storeV2.remove(id: campaign.id)
+        } catch {
+            await MainActor.run {
+                campaignActionErrorMessage = error.localizedDescription
+                showCampaignActionError = true
+            }
+        }
+    }
+
+    private func archiveSelectedCampaigns() async {
+        let idsToArchive = selectedArchivableCampaignIDs
+        guard !idsToArchive.isEmpty else { return }
+
+        do {
+            try await withThrowingTaskGroup(of: Void.self) { group in
+                for campaignID in idsToArchive {
+                    group.addTask {
+                        try await CampaignsAPI.shared.updateCampaignStatus(campaignId: campaignID, status: .archived)
+                    }
+                }
+                try await group.waitForAll()
+            }
+            await MainActor.run {
+                storeV2.setStatus(ids: idsToArchive, status: .archived)
+                exitBulkSelection()
+                if externalFilter != nil {
+                    externalFilter?.wrappedValue = .archived
+                } else {
+                    campaignFilter = .archived
+                }
+            }
+        } catch {
+            await MainActor.run {
+                campaignActionErrorMessage = error.localizedDescription
+                showCampaignActionError = true
+            }
+        }
+    }
+
+    private func deleteSelectedCampaigns() async {
+        let idsToDelete = selectedCampaignIDs
+        guard !idsToDelete.isEmpty else { return }
+
+        do {
+            try await CampaignsAPI.shared.deleteCampaigns(campaignIDs: Array(idsToDelete))
+            storeV2.remove(ids: idsToDelete)
+            exitBulkSelection()
+        } catch {
+            await MainActor.run {
+                campaignActionErrorMessage = error.localizedDescription
+                showCampaignActionError = true
             }
         }
     }
@@ -217,8 +445,13 @@ struct V2CampaignsListSection: View {
     let recentlyCreatedCampaignID: UUID?
     let filter: CampaignFilter
     var searchText: String = ""
+    var isSelectionMode = false
+    var selectedCampaignIDs: Set<UUID> = []
     var onCampaignTapped: ((UUID) -> Void)?
+    var onCampaignSelected: ((CampaignV2) -> Void)?
+    var onStartSelection: ((CampaignV2) -> Void)?
     var onPlayTapped: ((CampaignV2) -> Void)?
+    var onDeleteRequested: ((CampaignV2) -> Void)?
     var onArchiveFailed: ((String) -> Void)?
     var onArchiveSucceeded: (() -> Void)?
 
@@ -287,18 +520,21 @@ struct V2CampaignsListSection: View {
             Section {
                 ForEach(searchFilteredCampaigns, id: \.id) { campaign in
                     Button {
-                        HapticManager.light()
-                        onCampaignTapped?(campaign.id)
+                        onCampaignSelected?(campaign)
                     } label: {
                         HStack(spacing: 0) {
                             CampaignRowView(
                                 campaign: campaign,
                                 displayName: displayName(for: campaign),
-                                onPlayTapped: campaign.status != .completed ? { onPlayTapped?(campaign) } : nil
+                                onPlayTapped: !isSelectionMode && campaign.status != .completed ? { onPlayTapped?(campaign) } : nil,
+                                isSelectionMode: isSelectionMode,
+                                isSelected: selectedCampaignIDs.contains(campaign.id)
                             )
-                            Image(systemName: "chevron.right")
-                                .font(.system(size: 14, weight: .semibold))
-                                .foregroundColor(Color(.tertiaryLabel))
+                            if !isSelectionMode {
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 14, weight: .semibold))
+                                    .foregroundColor(Color(.tertiaryLabel))
+                            }
                         }
                         .background(
                             campaign.id == recentlyCreatedCampaignID
@@ -312,28 +548,27 @@ struct V2CampaignsListSection: View {
                     .listRowSeparator(.hidden)
                     .listRowBackground(Color.clear)
                     .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                        Button(role: .destructive) {
-                            store.remove(id: campaign.id)
-                        } label: {
-                            Label("Delete", systemImage: "trash")
+                        if !isSelectionMode {
+                            Button(role: .destructive) {
+                                onDeleteRequested?(campaign)
+                            } label: {
+                                Label("Delete", systemImage: "trash")
+                            }
+                            Button {
+                                archiveCampaign(campaign)
+                            } label: {
+                                Label("Archive", systemImage: "archivebox")
+                            }
+                            .tint(Color(.systemGray))
                         }
-                        Button {
-                            archiveCampaign(campaign)
-                        } label: {
-                            Label("Archive", systemImage: "archivebox")
-                        }
-                        .tint(Color(.systemGray))
                     }
                     .contextMenu {
-                        Button {
-                            onCampaignTapped?(campaign.id)
-                        } label: {
-                            Label("Edit", systemImage: "pencil")
-                        }
-                        Button {
-                            // TODO: Duplicate campaign when API exists
-                        } label: {
-                            Label("Duplicate", systemImage: "doc.on.doc")
+                        if !isSelectionMode {
+                            Button {
+                                onStartSelection?(campaign)
+                            } label: {
+                                Label("Select Multiple", systemImage: "checklist")
+                            }
                         }
                         Button {
                             archiveCampaign(campaign)
@@ -342,7 +577,7 @@ struct V2CampaignsListSection: View {
                         }
                         Divider()
                         Button(role: .destructive) {
-                            store.remove(id: campaign.id)
+                            onDeleteRequested?(campaign)
                         } label: {
                             Label("Delete", systemImage: "trash")
                         }
@@ -400,10 +635,24 @@ struct CampaignListEmptyFilteredSection: View {
 // MARK: - Campaign List Empty View (no campaigns at all)
 
 struct CampaignListEmptyView: View {
+    @StateObject private var storeV2 = CampaignV2Store.shared
+    @State private var showLocalCreateCampaign = false
     var showCreateCampaign: Binding<Bool>? = nil
     var onCreateTapped: (() -> Void)?
 
-    private var canCreate: Bool { showCreateCampaign != nil || onCreateTapped != nil }
+    private var canCreate: Bool { true }
+
+    private func triggerCreateCampaign() {
+        HapticManager.light()
+        if let onCreateTapped {
+            onCreateTapped()
+        } else if let showCreateCampaign = showCreateCampaign {
+            showCreateCampaign.wrappedValue = true
+        } else {
+            // Fallback path so empty-state create always works even if parent forgot to pass bindings.
+            showLocalCreateCampaign = true
+        }
+    }
 
     var body: some View {
         VStack(spacing: 24) {
@@ -424,22 +673,33 @@ struct CampaignListEmptyView: View {
                     .lineLimit(3)
             }
             if canCreate {
-                Button(action: {
-                    HapticManager.light()
-                    if let onCreateTapped {
-                        onCreateTapped()
-                    } else if let showCreateCampaign = showCreateCampaign {
-                        showCreateCampaign.wrappedValue = true
-                    }
-                }) {
+                Button(action: triggerCreateCampaign) {
                     Text("+ Create Campaign")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .background(Color.accentColor)
+                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                 }
-                .primaryButton()
+                .buttonStyle(.plain)
             }
             Spacer()
         }
         .padding(.horizontal, 40)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .fullScreenCover(isPresented: $showLocalCreateCampaign) {
+            NavigationStack {
+                NewCampaignScreen(store: storeV2)
+                    .toolbar {
+                        ToolbarItem(placement: .topBarLeading) {
+                            Button("Cancel") {
+                                showLocalCreateCampaign = false
+                            }
+                        }
+                    }
+            }
+        }
     }
 }
 

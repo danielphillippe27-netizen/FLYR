@@ -1,6 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
 
+import { enrichHubSpotPushLeadInput } from "../../../../lib/crm-sparse-enrich";
 import { getHubSpotAccessTokenForUser } from "../../../../lib/hubspot-auth";
 import { pushLeadToHubSpot, type PushLeadInput } from "../../../../lib/hubspot-crm";
 
@@ -131,10 +132,11 @@ export async function POST(request: Request) {
     }
 
     const raw = (await request.json()) as RawBody;
-    const lead = normalizeLead(raw);
-    if (!lead) {
+    const normalized = normalizeLead(raw);
+    if (!normalized) {
       return NextResponse.json({ success: false, error: "Lead id is required" }, { status: 400 });
     }
+    const lead = enrichHubSpotPushLeadInput(normalized);
 
     const linkedId = await getLinkedContactId(supabaseAdmin, user.id, lead.id);
     const result = await pushLeadToHubSpot(accessToken, lead, { existingContactId: linkedId });

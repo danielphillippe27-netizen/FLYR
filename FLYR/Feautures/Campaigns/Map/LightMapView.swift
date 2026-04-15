@@ -26,7 +26,7 @@ struct LightMapView: UIViewRepresentable {
         // Load custom light style
         mapView.mapboxMap.loadStyle(StyleURI(rawValue: "mapbox://styles/fliper27/cml6z0dhg002301qo9xxc08k4")!)
         
-        mapView.mapboxMap.onNext(event: .mapLoaded) { _ in
+        _ = mapView.mapboxMap.onMapLoaded.observeNext { _ in
             // Center the map when loaded
             let cameraOptions = CameraOptions(
                 center: center,

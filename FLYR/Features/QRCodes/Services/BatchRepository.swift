@@ -100,7 +100,7 @@ actor BatchRepository {
         if let customURL = batch.customURL {
             updateData["custom_url"] = AnyCodable(customURL)
         } else {
-            updateData["custom_url"] = AnyCodable(nil as String?)
+            updateData["custom_url"] = AnyCodable(NSNull())
         }
         
         let response = try await client
@@ -163,6 +163,5 @@ enum BatchRepositoryError: LocalizedError {
         }
     }
 }
-
 
 

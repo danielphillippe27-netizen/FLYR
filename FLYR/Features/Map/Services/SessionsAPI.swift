@@ -2,6 +2,7 @@ import Foundation
 import Supabase
 
 // #region agent log
+#if DEBUG
 private func _debugLogDoorsAPI(location: String, message: String, data: [String: Any], hypothesisId: String) {
     let payload: [String: Any] = [
         "id": "log_\(Int(Date().timeIntervalSince1970 * 1000))_\(UUID().uuidString.prefix(8))",
@@ -13,7 +14,9 @@ private func _debugLogDoorsAPI(location: String, message: String, data: [String:
     ]
     guard let json = try? JSONSerialization.data(withJSONObject: payload),
           let line = String(data: json, encoding: .utf8) else { return }
-    let path = "/Users/danielphillippe/Desktop/FLYR IOS/.cursor/debug.log"
+    let baseURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+        ?? URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+    let path = baseURL.appendingPathComponent("flyr_debug.log").path
     let lineWithNewline = line + "\n"
     guard let dataToWrite = lineWithNewline.data(using: .utf8) else { return }
     if FileManager.default.fileExists(atPath: path), let handle = FileHandle(forWritingAtPath: path) {
@@ -24,6 +27,9 @@ private func _debugLogDoorsAPI(location: String, message: String, data: [String:
         try? dataToWrite.write(to: URL(fileURLWithPath: path), options: .atomic)
     }
 }
+#else
+private func _debugLogDoorsAPI(location: String, message: String, data: [String: Any], hypothesisId: String) {}
+#endif
 // #endregion
 
 /// API service for fetching and mutating user sessions
@@ -34,6 +40,30 @@ final class SessionsAPI {
 
     private init() {}
 
+    private func isMissingRouteAssignmentColumn(_ error: Error) -> Bool {
+        if let postgrestError = error as? PostgrestError {
+            let message = postgrestError.message.lowercased()
+            if postgrestError.code == "PGRST204" && message.contains("route_assignment_id") {
+                return true
+            }
+            if message.contains("route_assignment_id")
+                && (message.contains("schema cache") || message.contains("could not find the")) {
+                return true
+            }
+        }
+
+        let message = error.localizedDescription.lowercased()
+        return message.contains("route_assignment_id")
+            && (message.contains("schema cache") || message.contains("could not find the"))
+    }
+
+    private func isMissingFarmExecutionColumn(_ error: Error) -> Bool {
+        let message = error.localizedDescription.lowercased()
+        return message.contains("farm_id")
+            || message.contains("farm_touch_id")
+            || message.contains("farm_phase_id")
+    }
+
     /// Fetch user sessions ordered by start time (most recent first)
     /// - Parameters:
     ///   - userId: The user ID to fetch sessions for
@@ -41,7 +71,7 @@ final class SessionsAPI {
     /// - Returns: Array of session records
     func fetchUserSessions(userId: UUID, limit: Int = 20) async throws -> [SessionRecord] {
         let response = try await client
-            .from("sessions")
+            .from("session_analytics")
             .select()
             .eq("user_id", value: userId.uuidString)
             .order("start_time", ascending: false)
@@ -53,18 +83,35 @@ final class SessionsAPI {
         return sessions
     }
 
-    /// Fetch sessions for a campaign (current user's activity in that campaign)
+    /// Fetch sessions for a campaign.
+    /// When a workspace is provided, fetch workspace-visible campaign activity.
+    /// Otherwise fall back to the current user's activity.
     /// - Parameters:
     ///   - campaignId: The campaign ID to filter by
-    ///   - userId: The user ID to filter by
+    ///   - userId: The user ID to filter by when no workspace is available
+    ///   - workspaceId: Optional workspace scope for shared campaign activity
     ///   - limit: Maximum number of sessions to return (default: 20)
     /// - Returns: Array of session records ordered by start_time descending
-    func fetchSessionsForCampaign(campaignId: UUID, userId: UUID, limit: Int = 20) async throws -> [SessionRecord] {
-        let response = try await client
-            .from("sessions")
+    func fetchSessionsForCampaign(
+        campaignId: UUID,
+        userId: UUID? = nil,
+        workspaceId: UUID? = nil,
+        limit: Int = 20
+    ) async throws -> [SessionRecord] {
+        var query = client
+            .from("session_analytics")
             .select()
             .eq("campaign_id", value: campaignId.uuidString)
-            .eq("user_id", value: userId.uuidString)
+
+        if let workspaceId {
+            query = query.eq("workspace_id", value: workspaceId.uuidString)
+        } else if let userId {
+            query = query.eq("user_id", value: userId.uuidString)
+        } else {
+            return []
+        }
+
+        let response = try await query
             .order("start_time", ascending: false)
             .limit(limit)
             .execute()
@@ -85,9 +132,13 @@ final class SessionsAPI {
         dwellSeconds: Int,
         notes: String? = nil,
         workspaceId: UUID? = nil,
-        goalType: GoalType = .knocks
+        goalType: GoalType = .knocks,
+        goalAmount: Int? = nil,
+        routeAssignmentId: UUID? = nil,
+        farmExecutionContext: FarmExecutionContext? = nil
     ) async throws {
         let emptyPath = "{\"type\":\"LineString\",\"coordinates\":[]}"
+        let boundedGoalAmount = min(max(1, goalAmount ?? targetBuildingIds.count), max(1, targetBuildingIds.count))
         var data: [String: AnyCodable] = [
             "id": AnyCodable(id.uuidString),
             "user_id": AnyCodable(userId.uuidString),
@@ -96,12 +147,13 @@ final class SessionsAPI {
             "doors_hit": AnyCodable(0),
             "distance_meters": AnyCodable(0),
             "goal_type": AnyCodable(goalType.rawValue),
-            "goal_amount": AnyCodable(targetBuildingIds.count),
+            "goal_amount": AnyCodable(boundedGoalAmount),
             "path_geojson": AnyCodable(emptyPath),
             "target_building_ids": AnyCodable(targetBuildingIds),
             "completed_count": AnyCodable(0),
             "flyers_delivered": AnyCodable(0),
             "conversations": AnyCodable(0),
+            "leads_created": AnyCodable(0),
             "auto_complete_enabled": AnyCodable(autoCompleteEnabled),
             "auto_complete_threshold_m": AnyCodable(thresholdMeters),
             "auto_complete_dwell_seconds": AnyCodable(dwellSeconds),
@@ -112,11 +164,47 @@ final class SessionsAPI {
         if let notes = notes, !notes.isEmpty {
             data["notes"] = AnyCodable(notes)
         }
-        // end_time left null for active session
-        _ = try await client
-            .from("sessions")
-            .insert(data)
-            .execute()
+        if let routeAssignmentId {
+            data["route_assignment_id"] = AnyCodable(routeAssignmentId.uuidString)
+        }
+        if let farmExecutionContext {
+            data["farm_id"] = AnyCodable(farmExecutionContext.farmId.uuidString)
+            data["farm_touch_id"] = AnyCodable(farmExecutionContext.touchId.uuidString)
+            if let phaseId = farmExecutionContext.phaseId {
+                data["farm_phase_id"] = AnyCodable(phaseId.uuidString)
+            }
+        }
+
+        do {
+            // end_time left null for active session
+            _ = try await client
+                .from("sessions")
+                .insert(data)
+                .execute()
+        } catch {
+            if routeAssignmentId != nil, isMissingRouteAssignmentColumn(error) {
+                print("⚠️ [SessionsAPI] sessions.route_assignment_id missing on backend; retrying session insert without route assignment linkage")
+                data.removeValue(forKey: "route_assignment_id")
+                _ = try await client
+                    .from("sessions")
+                    .insert(data)
+                    .execute()
+                return
+            }
+
+            guard farmExecutionContext != nil, isMissingFarmExecutionColumn(error) else {
+                throw error
+            }
+
+            print("⚠️ [SessionsAPI] farm execution columns missing on backend; retrying session insert without farm linkage")
+            data.removeValue(forKey: "farm_id")
+            data.removeValue(forKey: "farm_touch_id")
+            data.removeValue(forKey: "farm_phase_id")
+            _ = try await client
+                .from("sessions")
+                .insert(data)
+                .execute()
+        }
     }
 
     /// Update an existing session (path, completed count, end time, flyers_delivered, etc.)
@@ -127,8 +215,10 @@ final class SessionsAPI {
         distanceM: Double? = nil,
         activeSeconds: Int? = nil,
         pathGeoJSON: String? = nil,
+        pathGeoJSONNormalized: String? = nil,
         flyersDelivered: Int? = nil,
         conversations: Int? = nil,
+        leadsCreated: Int? = nil,
         doorsHit: Int? = nil,
         isPaused: Bool? = nil,
         endTime: Date? = nil
@@ -149,11 +239,17 @@ final class SessionsAPI {
         if let pathGeoJSON = pathGeoJSON {
             data["path_geojson"] = AnyCodable(pathGeoJSON)
         }
+        if let pathGeoJSONNormalized = pathGeoJSONNormalized {
+            data["path_geojson_normalized"] = AnyCodable(pathGeoJSONNormalized)
+        }
         if let flyersDelivered = flyersDelivered {
             data["flyers_delivered"] = AnyCodable(flyersDelivered)
         }
         if let conversations = conversations {
             data["conversations"] = AnyCodable(conversations)
+        }
+        if let leadsCreated = leadsCreated {
+            data["leads_created"] = AnyCodable(leadsCreated)
         }
         if let doorsHit = doorsHit ?? flyersDelivered ?? completedCount {
             data["doors_hit"] = AnyCodable(doorsHit)

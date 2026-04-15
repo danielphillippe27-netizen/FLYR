@@ -12,6 +12,13 @@ final class FUBConnectAPI {
             .trimmingCharacters(in: CharacterSet(charactersIn: "/")) ?? "https://flyrpro.app"
     }
 
+    private var requestBaseURL: String {
+        guard let components = URLComponents(string: baseURL), components.host == "flyrpro.app" else {
+            return baseURL
+        }
+        return "https://www.flyrpro.app"
+    }
+
     private init() {}
 
     /// Connect Follow Up Boss: send trimmed api_key to backend. Backend uses JWT for user_id.
@@ -23,7 +30,7 @@ final class FUBConnectAPI {
         }
 
         let session = try await SupabaseManager.shared.client.auth.session
-        let url = URL(string: "\(baseURL)/api/integrations/fub/connect")!
+        let url = URL(string: "\(requestBaseURL)/api/integrations/fub/connect")!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -69,18 +76,52 @@ final class FUBConnectAPI {
     /// Disconnect FUB via backend (server-side only; wipes secrets).
     func disconnect() async throws {
         let session = try await SupabaseManager.shared.client.auth.session
-        let url = URL(string: "\(baseURL)/api/integrations/fub/disconnect")!
-        var request = URLRequest(url: url)
-        request.httpMethod = "DELETE"
-        request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
+        do {
+            try await performDisconnect(
+                accessToken: session.accessToken,
+                method: "POST",
+                fallbackMethod: "DELETE"
+            )
+        } catch let error as FUBConnectError {
+            throw error
+        } catch {
+            throw FUBConnectError.network("No connection—try again.")
+        }
+    }
 
-        let (_, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse else { return }
+    private func performDisconnect(
+        accessToken: String,
+        method: String,
+        fallbackMethod: String? = nil
+    ) async throws {
+        let url = URL(string: "\(requestBaseURL)/api/integrations/fub/disconnect")!
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await URLSession.shared.data(for: request)
+        } catch {
+            throw FUBConnectError.network("No connection—try again.")
+        }
+
+        guard let http = response as? HTTPURLResponse else {
+            throw FUBConnectError.network("No connection—try again.")
+        }
+
+        let body = try? JSONDecoder().decode(CRMDisconnectResponse.self, from: data)
+
+        if http.statusCode == 405, let fallbackMethod {
+            try await performDisconnect(accessToken: accessToken, method: fallbackMethod)
+            return
+        }
         if http.statusCode == 401 || http.statusCode == 403 {
-            throw FUBConnectError.authFailed("Not authorized")
+            throw FUBConnectError.authFailed(body?.error ?? "Not authorized")
         }
         if !(200...299).contains(http.statusCode) {
-            throw FUBConnectError.server("Failed to disconnect")
+            throw FUBConnectError.server(body?.error ?? body?.message ?? "Failed to disconnect")
         }
     }
 }

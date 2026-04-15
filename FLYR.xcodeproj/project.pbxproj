@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		256A6DB64C951F7679B03285 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 79E245EF5F24004170C35541 /* Foundation.framework */; };
 		30A4A5E22EA70F3500FA72B1 /* Auth in Frameworks */ = {isa = PBXBuildFile; productRef = 30A4A5E12EA70F3500FA72B1 /* Auth */; };
 		30A4A5E42EA70F3500FA72B1 /* Functions in Frameworks */ = {isa = PBXBuildFile; productRef = 30A4A5E32EA70F3500FA72B1 /* Functions */; };
 		30A4A5E62EA70F3500FA72B1 /* PostgREST in Frameworks */ = {isa = PBXBuildFile; productRef = 30A4A5E52EA70F3500FA72B1 /* PostgREST */; };
@@ -17,6 +18,11 @@
 		30A4A6182EA71CB500FA72B1 /* GoogleSignIn in Frameworks */ = {isa = PBXBuildFile; productRef = 30A4A6192EA71CB500FA72B1 /* GoogleSignIn */; };
 		30A4A6222EA71CC000FA72B1 /* Lottie in Frameworks */ = {isa = PBXBuildFile; productRef = 30A4A6212EA71CC000FA72B1 /* Lottie */; };
 		30DC41E02F35A3A5003EBA4A /* GoogleSignInSwift in Frameworks */ = {isa = PBXBuildFile; productRef = 30DC41DF2F35A3A5003EBA4A /* GoogleSignInSwift */; };
+		58364365322F42ACD84162FE /* FLYRSessionActivityExtension.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 6D459D5D3353C7164A9DE29E /* FLYRSessionActivityExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		6E6070619E28865FB84BCA38 /* SessionLiveActivityWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5194BCD47B2F8D7EAA1E888C /* SessionLiveActivityWidget.swift */; };
+		B666D9B179DB98D0135C86D4 /* SessionLiveActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1F739542582267E77AA500C4 /* SessionLiveActivityAttributes.swift */; };
+		F4EA04B3F2333EC3DE50F0FB /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AA7395B8BD595392DE025A5C /* Assets.xcassets */; };
+		FF2316BFD5B89C25757FBD16 /* FLYRSessionActivityBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 91CCBD85356FC43A6E8767FE /* FLYRSessionActivityBundle.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -34,13 +40,41 @@
 			remoteGlobalIDString = 30A4A57D2EA6CD9800FA72B1;
 			remoteInfo = FLYR;
 		};
+		504238C45A02B1D820B58FD0 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 30A4A5762EA6CD9800FA72B1 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 51FB34537882BC17BB64EBC9;
+			remoteInfo = FLYRSessionActivityExtension;
+		};
 /* End PBXContainerItemProxy section */
 
+/* Begin PBXCopyFilesBuildPhase section */
+		128D6ADF8B16E49150BC8127 /* Embed App Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				58364365322F42ACD84162FE /* FLYRSessionActivityExtension.appex in Embed App Extensions */,
+			);
+			name = "Embed App Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
+		05030697214A2D9EDD508F34 /* Info.plist */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		1F739542582267E77AA500C4 /* SessionLiveActivityAttributes.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SessionLiveActivityAttributes.swift; path = FLYR/Shared/LiveActivity/SessionLiveActivityAttributes.swift; sourceTree = "<group>"; };
 		30A4A57E2EA6CD9800FA72B1 /* FLYR.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = FLYR.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		30A4A58B2EA6CD9900FA72B1 /* FLYRTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = FLYRTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		30A4A5952EA6CD9900FA72B1 /* FLYRUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = FLYRUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		30A4A5D82EA7089C00FA72B1 /* Config.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config.xcconfig; sourceTree = "<group>"; };
+		5194BCD47B2F8D7EAA1E888C /* SessionLiveActivityWidget.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SessionLiveActivityWidget.swift; sourceTree = "<group>"; };
+		6D459D5D3353C7164A9DE29E /* FLYRSessionActivityExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = FLYRSessionActivityExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		79E245EF5F24004170C35541 /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS18.0.sdk/System/Library/Frameworks/Foundation.framework; sourceTree = DEVELOPER_DIR; };
+		91CCBD85356FC43A6E8767FE /* FLYRSessionActivityBundle.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = FLYRSessionActivityBundle.swift; sourceTree = "<group>"; };
+		AA7395B8BD595392DE025A5C /* Assets.xcassets */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = folder.assetcatalog; name = Assets.xcassets; path = FLYR/Assets.xcassets; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -106,6 +140,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		7CAECFAA7DC1E69A7AFA7CF8 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				256A6DB64C951F7679B03285 /* Foundation.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -118,6 +160,9 @@
 				30A4A5982EA6CD9900FA72B1 /* FLYRUITests */,
 				30A4A5EB2EA70F4800FA72B1 /* Frameworks */,
 				30A4A57F2EA6CD9800FA72B1 /* Products */,
+				34FFFFD0C09877FFAE599E7E /* FLYRSessionActivityExtension */,
+				1F739542582267E77AA500C4 /* SessionLiveActivityAttributes.swift */,
+				AA7395B8BD595392DE025A5C /* Assets.xcassets */,
 			);
 			sourceTree = "<group>";
 		};
@@ -127,6 +172,7 @@
 				30A4A57E2EA6CD9800FA72B1 /* FLYR.app */,
 				30A4A58B2EA6CD9900FA72B1 /* FLYRTests.xctest */,
 				30A4A5952EA6CD9900FA72B1 /* FLYRUITests.xctest */,
+				6D459D5D3353C7164A9DE29E /* FLYRSessionActivityExtension.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -134,8 +180,27 @@
 		30A4A5EB2EA70F4800FA72B1 /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
+				7F9EA72C5B7A27BB5EB1FB61 /* iOS */,
 			);
 			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		34FFFFD0C09877FFAE599E7E /* FLYRSessionActivityExtension */ = {
+			isa = PBXGroup;
+			children = (
+				91CCBD85356FC43A6E8767FE /* FLYRSessionActivityBundle.swift */,
+				5194BCD47B2F8D7EAA1E888C /* SessionLiveActivityWidget.swift */,
+				05030697214A2D9EDD508F34 /* Info.plist */,
+			);
+			path = FLYRSessionActivityExtension;
+			sourceTree = "<group>";
+		};
+		7F9EA72C5B7A27BB5EB1FB61 /* iOS */ = {
+			isa = PBXGroup;
+			children = (
+				79E245EF5F24004170C35541 /* Foundation.framework */,
+			);
+			name = iOS;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -148,6 +213,8 @@
 				30A4A57A2EA6CD9800FA72B1 /* Sources */,
 				30A4A57B2EA6CD9800FA72B1 /* Frameworks */,
 				30A4A57C2EA6CD9800FA72B1 /* Resources */,
+				128D6ADF8B16E49150BC8127 /* Embed App Extensions */,
+				8DA7EA6C8EA51D99DE4D2806 /* Generate Framework dSYMs */,
 			);
 			buildRules = (
 			);
@@ -158,6 +225,7 @@
 				30A4A5F52EA70F6500FA72B1 /* PBXTargetDependency */,
 				30A4A5F72EA70F6500FA72B1 /* PBXTargetDependency */,
 				30A4A5F92EA70F6500FA72B1 /* PBXTargetDependency */,
+				F3A74D16E14D2B1F3064F6BE /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				30A4A5802EA6CD9800FA72B1 /* FLYR */,
@@ -196,8 +264,6 @@
 				30A4A58E2EA6CD9900FA72B1 /* FLYRTests */,
 			);
 			name = FLYRTests;
-			packageProductDependencies = (
-			);
 			productName = FLYRTests;
 			productReference = 30A4A58B2EA6CD9900FA72B1 /* FLYRTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
@@ -219,11 +285,26 @@
 				30A4A5982EA6CD9900FA72B1 /* FLYRUITests */,
 			);
 			name = FLYRUITests;
-			packageProductDependencies = (
-			);
 			productName = FLYRUITests;
 			productReference = 30A4A5952EA6CD9900FA72B1 /* FLYRUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+		51FB34537882BC17BB64EBC9 /* FLYRSessionActivityExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AF3DC3FC1D882E2CB02E7D99 /* Build configuration list for PBXNativeTarget "FLYRSessionActivityExtension" */;
+			buildPhases = (
+				A01342B55529231B8167926B /* Sources */,
+				7CAECFAA7DC1E69A7AFA7CF8 /* Frameworks */,
+				DFA0BF22BF664F18CD92C47E /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = FLYRSessionActivityExtension;
+			productName = FLYRSessionActivityExtension;
+			productReference = 6D459D5D3353C7164A9DE29E /* FLYRSessionActivityExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
 		};
 /* End PBXNativeTarget section */
 
@@ -245,6 +326,9 @@
 					30A4A5942EA6CD9900FA72B1 = {
 						CreatedOnToolsVersion = 26.0.1;
 						TestTargetID = 30A4A57D2EA6CD9800FA72B1;
+					};
+					51FB34537882BC17BB64EBC9 = {
+						CreatedOnToolsVersion = 26.0.1;
 					};
 				};
 			};
@@ -271,6 +355,7 @@
 				30A4A57D2EA6CD9800FA72B1 /* FLYR */,
 				30A4A58A2EA6CD9900FA72B1 /* FLYRTests */,
 				30A4A5942EA6CD9900FA72B1 /* FLYRUITests */,
+				51FB34537882BC17BB64EBC9 /* FLYRSessionActivityExtension */,
 			);
 		};
 /* End PBXProject section */
@@ -297,7 +382,36 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		DFA0BF22BF664F18CD92C47E /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				F4EA04B3F2333EC3DE50F0FB /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		8DA7EA6C8EA51D99DE4D2806 /* Generate Framework dSYMs */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Generate Framework dSYMs";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -eu\n\nif [ \"${DEBUG_INFORMATION_FORMAT:-}\" != \"dwarf-with-dsym\" ]; then\n  exit 0\nfi\n\nframeworks_dir=\"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH:-}\"\ndsym_dir=\"${DWARF_DSYM_FOLDER_PATH:-}\"\n\nif [ ! -d \"$frameworks_dir\" ] || [ -z \"$dsym_dir\" ]; then\n  exit 0\nfi\n\nfind \"$frameworks_dir\" -maxdepth 1 -type d -name '*.framework' | while IFS= read -r framework; do\n  framework_name=\"$(basename \"$framework\" .framework)\"\n  binary_path=\"$framework/$framework_name\"\n  output_dsym=\"$dsym_dir/$framework_name.framework.dSYM\"\n\n  if [ ! -f \"$binary_path\" ] || [ -d \"$output_dsym\" ]; then\n    continue\n  fi\n\n  echo \"Generating dSYM for $framework_name.framework\"\n  dsymutil -o \"$output_dsym\" \"$binary_path\"\ndone\n";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		30A4A57A2EA6CD9800FA72B1 /* Sources */ = {
@@ -318,6 +432,16 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A01342B55529231B8167926B /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				FF2316BFD5B89C25757FBD16 /* FLYRSessionActivityBundle.swift in Sources */,
+				6E6070619E28865FB84BCA38 /* SessionLiveActivityWidget.swift in Sources */,
+				B666D9B179DB98D0135C86D4 /* SessionLiveActivityAttributes.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -357,6 +481,12 @@
 		30A4A5F92EA70F6500FA72B1 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			productRef = 30A4A5F82EA70F6500FA72B1 /* Supabase */;
+		};
+		F3A74D16E14D2B1F3064F6BE /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = FLYRSessionActivityExtension;
+			target = 51FB34537882BC17BB64EBC9 /* FLYRSessionActivityExtension */;
+			targetProxy = 504238C45A02B1D820B58FD0 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -415,7 +545,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
@@ -474,7 +604,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
@@ -491,7 +621,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = FLYR/FLYR.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = 2AR5T8ZYAS;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -505,7 +635,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.14;
 				PRODUCT_BUNDLE_IDENTIFIER = com.danielphillippe.FLYR;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -514,7 +644,7 @@
 				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
-				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = nonisolated;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
@@ -529,7 +659,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = FLYR/FLYR.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = 2AR5T8ZYAS;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -543,7 +673,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.14;
 				PRODUCT_BUNDLE_IDENTIFIER = com.danielphillippe.FLYR;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -552,7 +682,7 @@
 				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
-				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = nonisolated;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
@@ -565,11 +695,11 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = 2AR5T8ZYAS;
 				GENERATE_INFOPLIST_FILE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 1.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 1.14;
 				PRODUCT_BUNDLE_IDENTIFIER = com.danielphillippe.FLYRTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
@@ -587,11 +717,11 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = 2AR5T8ZYAS;
 				GENERATE_INFOPLIST_FILE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 1.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 1.14;
 				PRODUCT_BUNDLE_IDENTIFIER = com.danielphillippe.FLYRTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
@@ -608,10 +738,10 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = 2AR5T8ZYAS;
 				GENERATE_INFOPLIST_FILE = YES;
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.14;
 				PRODUCT_BUNDLE_IDENTIFIER = com.danielphillippe.FLYRUITests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
@@ -628,10 +758,10 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = 2AR5T8ZYAS;
 				GENERATE_INFOPLIST_FILE = YES;
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.14;
 				PRODUCT_BUNDLE_IDENTIFIER = com.danielphillippe.FLYRUITests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
@@ -643,6 +773,75 @@
 				TEST_TARGET_NAME = FLYR;
 			};
 			name = Release;
+		};
+		6DF737D9995BF5371F062067 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 3;
+				DEVELOPMENT_TEAM = 2AR5T8ZYAS;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = FLYRSessionActivityExtension/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.14;
+				PRODUCT_BUNDLE_IDENTIFIER = com.danielphillippe.FLYR.SessionActivityExtension;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		D22EACB72589D428D37F7BE9 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 3;
+				DEVELOPMENT_TEAM = 2AR5T8ZYAS;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = FLYRSessionActivityExtension/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.14;
+				PRODUCT_BUNDLE_IDENTIFIER = com.danielphillippe.FLYR.SessionActivityExtension;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
 		};
 /* End XCBuildConfiguration section */
 
@@ -679,6 +878,15 @@
 			buildConfigurations = (
 				30A4A5A62EA6CD9900FA72B1 /* Debug */,
 				30A4A5A72EA6CD9900FA72B1 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		AF3DC3FC1D882E2CB02E7D99 /* Build configuration list for PBXNativeTarget "FLYRSessionActivityExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				6DF737D9995BF5371F062067 /* Release */,
+				D22EACB72589D428D37F7BE9 /* Debug */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

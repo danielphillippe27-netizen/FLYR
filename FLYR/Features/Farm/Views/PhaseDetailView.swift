@@ -1,25 +1,25 @@
 import SwiftUI
 
-struct PhaseDetailView: View {
-    let phase: FarmPhase
+struct CycleDetailView: View {
+    let cycle: FarmCycle
     let touches: [FarmTouch]
     
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                // Phase Header
+                // Cycle Header
                 VStack(alignment: .leading, spacing: 8) {
-                    Text(phase.phaseName)
+                    Text(cycle.cycleName)
                         .font(.flyrTitle2Bold)
-                    
-                    Text("\(phase.startDate, style: .date) - \(phase.endDate, style: .date)")
+
+                    Text("\(cycle.startDate, style: .date) - \(cycle.endDate, style: .date)")
                         .font(.flyrSubheadline)
                         .foregroundStyle(.secondary)
                 }
                 .padding()
                 
                 // Metrics
-                if let results = phase.results {
+                if let results = cycle.results {
                     MetricsSection(results: results)
                         .padding(.horizontal)
                 }
@@ -40,7 +40,7 @@ struct PhaseDetailView: View {
             }
             .padding(.vertical)
         }
-        .navigationTitle(phase.phaseName)
+        .navigationTitle(cycle.cycleName)
         .navigationBarTitleDisplayMode(.inline)
     }
 }
@@ -97,10 +97,10 @@ struct MetricRow: View {
 
 #Preview {
     NavigationStack {
-        PhaseDetailView(
-            phase: FarmPhase(
+        CycleDetailView(
+            cycle: FarmCycle(
                 farmId: UUID(),
-                phaseName: "Awareness",
+                cycleName: "Cycle 1",
                 startDate: Date(),
                 endDate: Date().addingTimeInterval(60 * 60 * 24 * 60)
             ),
@@ -108,6 +108,5 @@ struct MetricRow: View {
         )
     }
 }
-
 
 

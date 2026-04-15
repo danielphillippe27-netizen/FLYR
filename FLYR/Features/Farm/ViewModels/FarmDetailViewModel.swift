@@ -5,8 +5,9 @@ import Combine
 final class FarmDetailViewModel: ObservableObject {
     @Published var farm: Farm?
     @Published var touches: [FarmTouch] = []
-    @Published var phases: [FarmPhase] = []
+    @Published var cycles: [FarmCycle] = []
     @Published var leads: [FarmLead] = []
+    @Published var addresses: [CampaignAddressViewRow] = []
     @Published var upcomingTouches: [FarmTouch] = []
     @Published var recommendations: [FarmRecommendation] = []
     
@@ -15,7 +16,7 @@ final class FarmDetailViewModel: ObservableObject {
     
     private let farmService = FarmService.shared
     private let touchService = FarmTouchService.shared
-    private let phaseService = FarmPhaseService.shared
+    private let cycleService = FarmCycleService.shared
     private let leadService = FarmLeadService.shared
     
     let farmId: UUID
@@ -30,13 +31,15 @@ final class FarmDetailViewModel: ObservableObject {
         isLoading = true
         errorMessage = nil
         defer { isLoading = false }
-        
-        async let farmTask = loadFarm()
-        async let touchesTask = loadTouches()
-        async let phasesTask = loadPhases()
-        async let leadsTask = loadLeads()
-        
-        _ = await (farmTask, touchesTask, phasesTask, leadsTask)
+
+        await loadFarm()
+
+        async let touchesTask: Void = loadTouches()
+        async let cyclesTask: Void = loadCycles()
+        async let leadsTask: Void = loadLeads()
+        async let addressesTask: Void = loadAddresses()
+
+        _ = await (touchesTask, cyclesTask, leadsTask, addressesTask)
         
         // Calculate upcoming touches
         calculateUpcomingTouches()
@@ -63,12 +66,12 @@ final class FarmDetailViewModel: ObservableObject {
         }
     }
     
-    private func loadPhases() async {
+    private func loadCycles() async {
         do {
-            phases = try await phaseService.fetchPhases(farmId: farmId)
+            cycles = try await cycleService.fetchCycles(farmId: farmId)
         } catch {
-            errorMessage = "Failed to load phases: \(error.localizedDescription)"
-            print("❌ [FarmDetailViewModel] Error loading phases: \(error)")
+            errorMessage = "Failed to load cycles: \(error.localizedDescription)"
+            print("❌ [FarmDetailViewModel] Error loading cycles: \(error)")
         }
     }
     
@@ -78,6 +81,23 @@ final class FarmDetailViewModel: ObservableObject {
         } catch {
             errorMessage = "Failed to load leads: \(error.localizedDescription)"
             print("❌ [FarmDetailViewModel] Error loading leads: \(error)")
+        }
+    }
+
+    private func loadAddresses() async {
+        guard let polygonGeoJSON = farm?.polygon, !polygonGeoJSON.isEmpty else {
+            addresses = []
+            return
+        }
+
+        do {
+            addresses = try await AddressesAPI.shared.fetchAddressesInPolygon(
+                polygonGeoJSON: polygonGeoJSON,
+                campaignId: nil
+            )
+        } catch {
+            addresses = []
+            print("⚠️ [FarmDetailViewModel] Error loading addresses: \(error)")
         }
     }
     
@@ -130,10 +150,10 @@ final class FarmDetailViewModel: ObservableObject {
         }
         
         // Phase analysis
-        if phases.isEmpty {
+        if cycles.isEmpty {
             recs.append(FarmRecommendation(
-                title: "Generate Phases",
-                detail: "Phases help track progress through your farm lifecycle. Generate phases to get started."
+                title: "Generate Cycles",
+                detail: "Cycles help track progress through your farm workflow. Generate cycles to get started."
             ))
         }
         
@@ -144,26 +164,26 @@ final class FarmDetailViewModel: ObservableObject {
     
     func refreshAnalytics() async {
         await loadTouches()
-        await loadPhases()
+        await loadCycles()
         await loadLeads()
         calculateUpcomingTouches()
         generateRecommendations()
     }
-    
-    // MARK: - Generate Phases
-    
-    func generatePhases() async {
+
+    // MARK: - Generate Cycles
+
+    func generateCycles() async {
         guard let farm = farm else { return }
         
         isLoading = true
         errorMessage = nil
         defer { isLoading = false }
-        
+
         do {
-            phases = try await phaseService.calculatePhases(farm: farm)
+            cycles = try await cycleService.calculateCycles(farm: farm)
         } catch {
-            errorMessage = "Failed to generate phases: \(error.localizedDescription)"
-            print("❌ [FarmDetailViewModel] Error generating phases: \(error)")
+            errorMessage = "Failed to generate cycles: \(error.localizedDescription)"
+            print("❌ [FarmDetailViewModel] Error generating cycles: \(error)")
         }
     }
 }
@@ -175,6 +195,4 @@ struct FarmRecommendation: Identifiable {
     let title: String
     let detail: String
 }
-
-
 

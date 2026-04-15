@@ -10,7 +10,10 @@ struct RoutePreviewView: View {
     var showCancelButton: Bool = true
     
     @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var sessionManager = SessionManager.shared
     @State private var showWaypointList: Bool = false
+    @State private var pendingSessionStartAfterAuthorization = false
+    @State private var showLocationPermissionAlert = false
     
     var body: some View {
         ZStack {
@@ -22,6 +25,9 @@ struct RoutePreviewView: View {
             VStack {
                 routeStatsCard
                     .padding()
+
+                backgroundTrackingCard
+                    .padding(.horizontal)
                 
                 Spacer()
             }
@@ -78,6 +84,27 @@ struct RoutePreviewView: View {
         }
         .navigationTitle("Route Preview")
         .navigationBarTitleDisplayMode(.inline)
+        .alert("Allow Location Access", isPresented: $showLocationPermissionAlert) {
+            Button("Cancel", role: .cancel) {}
+            Button("Open Settings") {
+                openLocationSettings()
+            }
+        } message: {
+            Text("FLYR uses your location only during an active session. Allow location access to start this route and track progress.")
+        }
+        .onChange(of: sessionManager.locationAuthorizationStatus) { _, newStatus in
+            guard pendingSessionStartAfterAuthorization else { return }
+            switch newStatus {
+            case .authorizedWhenInUse, .authorizedAlways:
+                pendingSessionStartAfterAuthorization = false
+                startSessionFlow()
+            case .denied, .restricted:
+                pendingSessionStartAfterAuthorization = false
+                showLocationPermissionAlert = true
+            default:
+                break
+            }
+        }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
@@ -133,6 +160,25 @@ struct RoutePreviewView: View {
             RoundedRectangle(cornerRadius: 16)
                 .fill(Color(.systemBackground))
                 .shadow(radius: 8)
+        )
+    }
+
+    private var backgroundTrackingCard: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label("Location is used only during active sessions", systemImage: "location.fill.badge.plus")
+                .font(.flyrSubheadline)
+                .foregroundColor(.primary)
+            Text("After you start, FLYR can continue your route and session progress in the background if you choose that option for this active session.")
+                .font(.flyrCaption)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding()
+        .background(
+            RoundedRectangle(cornerRadius: 16)
+                .fill(Color(.systemBackground))
+                .shadow(radius: 6)
         )
     }
     
@@ -207,6 +253,20 @@ struct RoutePreviewView: View {
     // MARK: - Actions
     
     private func startSession() {
+        switch sessionManager.locationAuthorizationStatus {
+        case .notDetermined:
+            pendingSessionStartAfterAuthorization = true
+            sessionManager.requestForegroundLocationAuthorization()
+        case .authorizedWhenInUse, .authorizedAlways:
+            startSessionFlow()
+        case .denied, .restricted:
+            showLocationPermissionAlert = true
+        @unknown default:
+            showLocationPermissionAlert = true
+        }
+    }
+
+    private func startSessionFlow() {
         HapticManager.success()
         SessionManager.shared.sessionNotes = sessionNotes
         SessionManager.shared.start(
@@ -243,6 +303,11 @@ struct RoutePreviewView: View {
         }
         
         return nil
+    }
+
+    private func openLocationSettings() {
+        guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+        UIApplication.shared.open(url)
     }
 }
 

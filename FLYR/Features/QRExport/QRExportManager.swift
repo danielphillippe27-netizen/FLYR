@@ -252,7 +252,7 @@ class QRExportManager {
         // Convert QRCode to QRCodeAddress
         let addresses = qrCodes.compactMap { qrCode -> QRCodeAddress? in
             guard let addressId = qrCode.addressId else { return nil }
-            let (webURL, deepLinkURL) = QRCodeAddress.generateURLs(for: addressId)
+            let (_, deepLinkURL) = QRCodeAddress.generateURLs(for: addressId)
             return QRCodeAddress(
                 id: qrCode.id,
                 addressId: addressId,
@@ -310,7 +310,7 @@ class QRExportManager {
         // Convert QRCode to QRCodeAddress
         let addresses = qrCodes.compactMap { qrCode -> QRCodeAddress? in
             guard let addressId = qrCode.addressId else { return nil }
-            let (webURL, deepLinkURL) = QRCodeAddress.generateURLs(for: addressId)
+            let (_, deepLinkURL) = QRCodeAddress.generateURLs(for: addressId)
             return QRCodeAddress(
                 id: qrCode.id,
                 addressId: addressId,
@@ -397,4 +397,3 @@ class QRExportManager {
         return exportDir
     }
 }
-

@@ -21,6 +21,7 @@ const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY!;
 const SNAPSHOT_BUCKET = process.env.SNAPSHOT_BUCKET ?? "flyr-snapshots";
+const DEFAULT_SILVER_ADDRESS_LIMIT = 2500;
 
 function adminClient() {
   return createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
@@ -32,6 +33,61 @@ interface CampaignRow {
   territory_boundary: unknown;
   region:             string | null;
   provision_status:   string | null;
+  address_source:     string | null;
+}
+
+interface RoadMetadataRow {
+  roads_status: string;
+  road_count:   number;
+}
+
+interface ReadinessChecks {
+  addresses_saved_gt_0: boolean;
+  map_roads_ready?:     boolean;
+  roads_status?:        string | null;
+  road_count?:          number;
+}
+
+type DataConfidenceLabel = "low" | "medium" | "high";
+
+interface DataConfidenceMetrics {
+  addresses_total: number;
+  addresses_linked: number;
+  linked_coverage: number;
+  building_link_count: number;
+  gold_exact_count: number;
+  gold_proximity_count: number;
+  gold_unlinked_count: number;
+  silver_count: number;
+  bronze_count: number;
+  lambda_count: number;
+  manual_count: number;
+  other_count: number;
+  unlinked_count: number;
+  avg_address_score: number;
+  avg_link_confidence: number;
+}
+
+interface DataConfidenceSummary {
+  version: 1;
+  score: number;
+  label: DataConfidenceLabel;
+  reason: string;
+  metrics: DataConfidenceMetrics;
+  calculated_at: string;
+}
+
+interface CampaignAddressConfidenceRow {
+  id: string;
+  source: string | null;
+  match_source: string | null;
+  confidence: number | string | null;
+  building_id: string | null;
+}
+
+interface BuildingLinkConfidenceRow {
+  address_id: string;
+  confidence_score: number | string | null;
 }
 
 /**
@@ -54,7 +110,9 @@ interface CampaignRow {
  *       - Run StableLinkerService (JS spatial join → building_address_links).
  *       - Write campaign_snapshots row.
  *   5. Set provision_status = 'ready'.
- *   6. Return { success, addresses_saved, buildings_saved }.
+ *   6. Validate readiness (addresses > 0; for address_source=map, roads metadata ready + road_count > 0).
+ *   7. Set provision_status = 'ready' only if checks pass; else 'failed' and 422.
+ *   8. Return { success, addresses_saved, buildings_saved, roads_count, readiness_checks }.
  */
 export async function POST(request: Request): Promise<Response> {
   const supabase = adminClient();
@@ -87,7 +145,7 @@ export async function POST(request: Request): Promise<Response> {
   // Load campaign
   const { data: campaign, error: campErr } = await supabase
     .from("campaigns")
-    .select("id, owner_id, territory_boundary, region, provision_status")
+    .select("id, owner_id, territory_boundary, region, provision_status, address_source")
     .eq("id", campaignId)
     .maybeSingle();
 
@@ -216,6 +274,7 @@ export async function POST(request: Request): Promise<Response> {
         campaign_id:     campaignId,
         polygon_geojson: polygonGeoJSON,
         province,
+        address_limit:   DEFAULT_SILVER_ADDRESS_LIMIT,
       });
 
       // Download addresses from Lambda
@@ -290,26 +349,119 @@ export async function POST(request: Request): Promise<Response> {
       }
     }
 
+    const confidenceSummary = await buildCampaignDataConfidence(supabase, campaignId);
+
+    // -------------------------------------------------------------------------
+    // Readiness: addresses required; map-sourced campaigns require road metadata
+    // -------------------------------------------------------------------------
+    const addressSource = (c.address_source ?? "").toLowerCase();
+    const isMapSourced = addressSource === "map";
+
+    const { data: roadMetaRow } = await supabase
+      .from("campaign_road_metadata")
+      .select("roads_status, road_count")
+      .eq("campaign_id", campaignId)
+      .maybeSingle();
+
+    const roadMeta = roadMetaRow as RoadMetadataRow | null;
+    const roadsCount = roadMeta?.road_count ?? 0;
+    const roadsStatus = roadMeta?.roads_status ?? null;
+    const mapRoadsOk =
+      !isMapSourced ||
+      (roadsStatus === "ready" && roadsCount > 0);
+
+    const readinessChecks: ReadinessChecks = {
+      addresses_saved_gt_0: addressesSaved > 0,
+      ...(isMapSourced
+        ? {
+            map_roads_ready: mapRoadsOk,
+            roads_status:    roadsStatus,
+            road_count:      roadsCount,
+          }
+        : {}),
+    };
+
+    const failProvision = async (
+      message: string,
+      checks: ReadinessChecks,
+      confidence: DataConfidenceSummary
+    ): Promise<Response> => {
+      await supabase
+        .from("campaigns")
+        .update({
+          provision_status: "failed",
+          data_confidence_score: confidence.score,
+          data_confidence_label: confidence.label,
+          data_confidence_reason: confidence.reason,
+          data_confidence_summary: confidence,
+          data_confidence_updated_at: confidence.calculated_at,
+        })
+        .eq("id", campaignId);
+      console.warn(`[Provision] Readiness failed: campaign=${campaignId} ${message}`, checks);
+      return NextResponse.json(
+        {
+          success:          false,
+          error:            message,
+          addresses_saved:  addressesSaved,
+          buildings_saved:  buildingsSaved,
+          roads_count:      roadsCount,
+          readiness_checks: checks,
+          data_confidence_score: confidence.score,
+          data_confidence_label: confidence.label,
+          data_confidence_reason: confidence.reason,
+          data_confidence_summary: confidence,
+        },
+        { status: 422 }
+      );
+    };
+
+    if (addressesSaved <= 0) {
+      return await failProvision(
+        "No addresses were saved for this campaign. Try a larger area or verify territory boundaries.",
+        readinessChecks,
+        confidenceSummary
+      );
+    }
+
+    if (isMapSourced && !mapRoadsOk) {
+      return await failProvision(
+        "Campaign roads are not ready in the database (map campaigns require roads before provisioning completes). Open the campaign to refresh roads, then retry provisioning.",
+        readinessChecks,
+        confidenceSummary
+      );
+    }
+
     // -------------------------------------------------------------------------
     // Set provision_status = 'ready'
     // -------------------------------------------------------------------------
     await supabase
       .from("campaigns")
       .update({
-        provision_status: "ready",
-        provisioned_at:   new Date().toISOString(),
+        provision_status:           "ready",
+        provisioned_at:             new Date().toISOString(),
+        data_confidence_score:      confidenceSummary.score,
+        data_confidence_label:      confidenceSummary.label,
+        data_confidence_reason:     confidenceSummary.reason,
+        data_confidence_summary:    confidenceSummary,
+        data_confidence_updated_at: confidenceSummary.calculated_at,
       })
       .eq("id", campaignId);
 
     console.log(
-      `[Provision] Done: campaign=${campaignId} addresses=${addressesSaved} buildings=${buildingsSaved}`
+      `[Provision] Done: campaign=${campaignId} addresses=${addressesSaved} buildings=${buildingsSaved} roads_count=${roadsCount}`
     );
 
     return NextResponse.json({
-      success:         true,
-      addresses_saved: addressesSaved,
-      buildings_saved: buildingsSaved,
-      message:         `Provisioning complete: ${addressesSaved} addresses, ${buildingsSaved} buildings`,
+      success:          true,
+      addresses_saved:  addressesSaved,
+      buildings_saved:  buildingsSaved,
+      roads_count:      roadsCount,
+      readiness_checks: readinessChecks,
+      data_confidence_score: confidenceSummary.score,
+      data_confidence_label: confidenceSummary.label,
+      data_confidence_reason: confidenceSummary.reason,
+      data_confidence_summary: confidenceSummary,
+      message:          `Provisioning complete: ${addressesSaved} addresses, ${buildingsSaved} buildings`,
     });
 
   } catch (err) {
@@ -360,6 +512,229 @@ function parseNumber(value: unknown): number | null {
     if (Number.isFinite(n)) return n;
   }
   return null;
+}
+
+function clamp01(value: number): number {
+  return Math.max(0, Math.min(1, value));
+}
+
+function roundMetric(value: number, digits = 3): number {
+  return Number(value.toFixed(digits));
+}
+
+function percent(count: number, total: number): number {
+  if (total <= 0) return 0;
+  return Math.round((count / total) * 100);
+}
+
+function confidenceLabelForScore(score: number): DataConfidenceLabel {
+  if (score >= 0.85) return "high";
+  if (score >= 0.65) return "medium";
+  return "low";
+}
+
+function sourceWeight(row: CampaignAddressConfidenceRow): number {
+  const matchSource = (row.match_source ?? "").toLowerCase();
+  const source = (row.source ?? "").toLowerCase();
+  const confidence = clamp01(parseNumber(row.confidence) ?? 0.5);
+
+  if (matchSource === "gold_exact") return 1.0;
+  if (matchSource === "gold_proximity") return 0.7 + (confidence * 0.3);
+
+  switch (source) {
+    case "gold":
+      return 0.72;
+    case "silver":
+      return 0.68;
+    case "bronze":
+      return 0.5;
+    case "lambda":
+      return 0.62;
+    case "manual":
+      return 0.95;
+    default:
+      return 0.5;
+  }
+}
+
+function buildConfidenceReason(metrics: DataConfidenceMetrics): string {
+  const total = metrics.addresses_total;
+  if (total <= 0) {
+    return "No addresses were provisioned, so confidence could not be established.";
+  }
+
+  const parts: string[] = [];
+  const candidates: Array<{ count: number; label: string }> = [
+    { count: metrics.gold_exact_count, label: "gold exact" },
+    { count: metrics.gold_proximity_count, label: "gold proximity" },
+    { count: metrics.silver_count, label: "silver" },
+    { count: metrics.bronze_count, label: "bronze" },
+    { count: metrics.lambda_count, label: "lambda" },
+    { count: metrics.gold_unlinked_count, label: "gold unlinked" },
+    { count: metrics.manual_count, label: "manual" },
+  ];
+
+  for (const candidate of candidates) {
+    if (candidate.count > 0) {
+      parts.push(`${percent(candidate.count, total)}% ${candidate.label}`);
+    }
+    if (parts.length === 3) break;
+  }
+
+  if (metrics.unlinked_count > 0) {
+    parts.push(`${percent(metrics.unlinked_count, total)}% unlinked`);
+  }
+
+  parts.push(`${percent(metrics.addresses_linked, total)}% linked to buildings`);
+  return parts.join(", ");
+}
+
+async function buildCampaignDataConfidence(
+  supabase: ReturnType<typeof adminClient>,
+  campaignId: string
+): Promise<DataConfidenceSummary> {
+  const [addressRes, linkRes] = await Promise.all([
+    supabase
+      .from("campaign_addresses")
+      .select("id, source, match_source, confidence, building_id")
+      .eq("campaign_id", campaignId),
+    supabase
+      .from("building_address_links")
+      .select("address_id, confidence_score")
+      .eq("campaign_id", campaignId),
+  ]);
+
+  if (addressRes.error) {
+    throw new Error(`[Provision] Failed to load campaign_addresses for confidence: ${addressRes.error.message}`);
+  }
+  if (linkRes.error) {
+    throw new Error(`[Provision] Failed to load building_address_links for confidence: ${linkRes.error.message}`);
+  }
+
+  const addresses = (addressRes.data ?? []) as CampaignAddressConfidenceRow[];
+  const links = (linkRes.data ?? []) as BuildingLinkConfidenceRow[];
+
+  if (addresses.length === 0) {
+    return {
+      version: 1,
+      score: 0,
+      label: "low",
+      reason: "No addresses were provisioned, so confidence could not be established.",
+      metrics: {
+        addresses_total: 0,
+        addresses_linked: 0,
+        linked_coverage: 0,
+        building_link_count: links.length,
+        gold_exact_count: 0,
+        gold_proximity_count: 0,
+        gold_unlinked_count: 0,
+        silver_count: 0,
+        bronze_count: 0,
+        lambda_count: 0,
+        manual_count: 0,
+        other_count: 0,
+        unlinked_count: 0,
+        avg_address_score: 0,
+        avg_link_confidence: 0,
+      },
+      calculated_at: new Date().toISOString(),
+    };
+  }
+
+  const linkConfidenceByAddress = new Map<string, number>();
+  for (const link of links) {
+    const parsed = clamp01(parseNumber(link.confidence_score) ?? 0.65);
+    if (!linkConfidenceByAddress.has(link.address_id)) {
+      linkConfidenceByAddress.set(link.address_id, parsed);
+    }
+  }
+
+  let weightedScoreTotal = 0;
+  let linkedCount = 0;
+  let linkedConfidenceTotal = 0;
+  let goldExactCount = 0;
+  let goldProximityCount = 0;
+  let goldUnlinkedCount = 0;
+  let silverCount = 0;
+  let bronzeCount = 0;
+  let lambdaCount = 0;
+  let manualCount = 0;
+  let otherCount = 0;
+
+  for (const address of addresses) {
+    const matchSource = (address.match_source ?? "").toLowerCase();
+    const source = (address.source ?? "").toLowerCase();
+    const linked = Boolean(address.building_id) || linkConfidenceByAddress.has(address.id);
+
+    weightedScoreTotal += sourceWeight(address);
+
+    if (matchSource === "gold_exact") {
+      goldExactCount += 1;
+    } else if (matchSource === "gold_proximity") {
+      goldProximityCount += 1;
+    } else if (source === "gold") {
+      goldUnlinkedCount += 1;
+    } else if (source === "silver") {
+      silverCount += 1;
+    } else if (source === "bronze") {
+      bronzeCount += 1;
+    } else if (source === "lambda") {
+      lambdaCount += 1;
+    } else if (source === "manual") {
+      manualCount += 1;
+    } else {
+      otherCount += 1;
+    }
+
+    if (linked) {
+      linkedCount += 1;
+
+      if (matchSource === "gold_exact") {
+        linkedConfidenceTotal += 1.0;
+      } else if (matchSource === "gold_proximity") {
+        linkedConfidenceTotal += clamp01(parseNumber(address.confidence) ?? 0.7);
+      } else if (linkConfidenceByAddress.has(address.id)) {
+        linkedConfidenceTotal += linkConfidenceByAddress.get(address.id) ?? 0.65;
+      } else {
+        linkedConfidenceTotal += 0.7;
+      }
+    }
+  }
+
+  const addressesTotal = addresses.length;
+  const unlinkedCount = Math.max(0, addressesTotal - linkedCount);
+  const linkedCoverage = linkedCount / addressesTotal;
+  const avgAddressScore = weightedScoreTotal / addressesTotal;
+  const avgLinkConfidence = linkedCount > 0 ? linkedConfidenceTotal / linkedCount : 0;
+  const coverageFactor = 0.8 + (0.2 * linkedCoverage);
+  const linkFactor = linkedCount > 0 ? 0.9 + (0.1 * avgLinkConfidence) : 0.85;
+  const score = clamp01(avgAddressScore * coverageFactor * linkFactor);
+  const metrics: DataConfidenceMetrics = {
+    addresses_total: addressesTotal,
+    addresses_linked: linkedCount,
+    linked_coverage: roundMetric(linkedCoverage),
+    building_link_count: links.length,
+    gold_exact_count: goldExactCount,
+    gold_proximity_count: goldProximityCount,
+    gold_unlinked_count: goldUnlinkedCount,
+    silver_count: silverCount,
+    bronze_count: bronzeCount,
+    lambda_count: lambdaCount,
+    manual_count: manualCount,
+    other_count: otherCount,
+    unlinked_count: unlinkedCount,
+    avg_address_score: roundMetric(avgAddressScore),
+    avg_link_confidence: roundMetric(avgLinkConfidence),
+  };
+
+  return {
+    version: 1,
+    score: roundMetric(score),
+    label: confidenceLabelForScore(score),
+    reason: buildConfidenceReason(metrics),
+    metrics,
+    calculated_at: new Date().toISOString(),
+  };
 }
 
 function parseTotalLinked(raw: unknown): number | null {

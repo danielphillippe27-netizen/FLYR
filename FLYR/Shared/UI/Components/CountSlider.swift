@@ -1,7 +1,7 @@
 import SwiftUI
 
 public struct CountSlider: View {
-  private let steps: [Int] = [25, 50, 100, 250, 500, 750, 1000]
+  private let steps: [Int] = [25, 50, 100, 250, 500, 750, 1000, 1500, 2000, 2500]
   @Binding var value: Int
 
   public init(value: Binding<Int>) { self._value = value }
@@ -25,7 +25,6 @@ public struct CountSlider: View {
     }
   }
 }
-
 
 
 

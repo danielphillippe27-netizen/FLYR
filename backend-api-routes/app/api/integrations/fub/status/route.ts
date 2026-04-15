@@ -13,6 +13,12 @@ type ConnectionRow = {
   error_reason: string | null;
 };
 
+type IntegrationRow = {
+  access_token: string | null;
+  api_key: string | null;
+  updated_at: string | null;
+};
+
 export async function GET(request: Request) {
   try {
     const authHeader = request.headers.get("authorization");
@@ -36,11 +42,20 @@ export async function GET(request: Request) {
       .maybeSingle();
 
     if (!row) {
+      const { data: integration } = await supabaseAdmin
+        .from("user_integrations")
+        .select("access_token, api_key, updated_at")
+        .eq("user_id", user.id)
+        .eq("provider", "fub")
+        .maybeSingle();
+
+      const oauth = integration as IntegrationRow | null;
+      const hasOAuth = !!oauth?.access_token || !!oauth?.api_key;
       return NextResponse.json({
-        connected: false,
-        status: "disconnected",
+        connected: hasOAuth,
+        status: hasOAuth ? "connected" : "disconnected",
         createdAt: null,
-        updatedAt: null,
+        updatedAt: oauth?.updated_at ?? null,
         lastSyncAt: null,
         lastError: null,
       });

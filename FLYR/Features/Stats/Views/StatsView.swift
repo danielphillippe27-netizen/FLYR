@@ -118,7 +118,7 @@ struct StatsView: View {
     private var statsGridSection: some View {
         LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 16) {
             StatCard(
-                icon: "door.left.hand.open",
+                icon: "door.left.hand.closed",
                 color: .blue,
                 title: "Doors Knocked",
                 value: vm.stats?.doors_knocked ?? 0

@@ -6,14 +6,14 @@ import CoreLocation
 final class FarmAnalyticsViewModel: ObservableObject {
     @Published var funnelData: FunnelData?
     @Published var touchEffectiveness: [TouchEffectiveness] = []
-    @Published var phaseComparison: [PhaseComparison] = []
+    @Published var cycleComparison: [CycleComparison] = []
     @Published var heatmapData: [HeatmapPoint] = []
     
     @Published var isLoading = false
     @Published var errorMessage: String?
     
     private let touchService = FarmTouchService.shared
-    private let phaseService = FarmPhaseService.shared
+    private let cycleService = FarmCycleService.shared
     private let leadService = FarmLeadService.shared
     
     let farmId: UUID
@@ -101,61 +101,61 @@ final class FarmAnalyticsViewModel: ObservableObject {
         }
     }
     
-    // MARK: - Compare Phases
-    
-    func comparePhases() async {
+    // MARK: - Compare Cycles
+
+    func compareCycles() async {
         isLoading = true
         errorMessage = nil
         defer { isLoading = false }
-        
+
         do {
-            let phases = try await phaseService.fetchPhases(farmId: farmId)
+            let cycles = try await cycleService.fetchCycles(farmId: farmId)
             let touches = try await touchService.fetchTouches(farmId: farmId)
             let leads = try await leadService.fetchLeads(farmId: farmId)
-            
-            var comparisons: [PhaseComparison] = []
-            
-            for phase in phases {
-                let phaseTouches = touches.filter { touch in
-                    touch.date >= phase.startDate && touch.date <= phase.endDate
+
+            var comparisons: [CycleComparison] = []
+
+            for cycle in cycles {
+                let cycleTouches = touches.filter { touch in
+                    touch.date >= cycle.startDate && touch.date <= cycle.endDate
                 }
-                
-                let phaseLeads = leads.filter { lead in
+
+                let cycleLeads = leads.filter { lead in
                     if let touchId = lead.touchId,
                        let touch = touches.first(where: { $0.id == touchId }) {
-                        return touch.date >= phase.startDate && touch.date <= phase.endDate
+                        return touch.date >= cycle.startDate && touch.date <= cycle.endDate
                     }
                     return false
                 }
-                
-                let flyers = phaseTouches.filter { $0.type == .flyer }.count
-                let knocks = phaseTouches.filter { $0.type == .doorKnock }.count
+
+                let flyers = cycleTouches.filter { $0.type == .flyer }.count
+                let knocks = cycleTouches.filter { $0.type == .doorKnock }.count
                 let scans = 0 // TODO: Integrate with QR scans
                 let conversions = 0 // TODO: Integrate with conversions
                 
                 // Calculate spend (estimated)
                 let estimatedSpend = Double(flyers) * 0.50 + Double(knocks) * 0.0 // Flyers cost $0.50 each
-                let roi = conversions > 0 ? (Double(conversions) * 1000.0) / estimatedSpend : 0.0 // Assume $1000 per conversion
+                let roi = 0.0 // Assume $1000 per conversion once conversions are wired
                 
-                comparisons.append(PhaseComparison(
-                    phaseName: phase.phaseName,
-                    startDate: phase.startDate,
-                    endDate: phase.endDate,
-                    touches: phaseTouches.count,
+                comparisons.append(CycleComparison(
+                    cycleName: cycle.cycleName,
+                    startDate: cycle.startDate,
+                    endDate: cycle.endDate,
+                    touches: cycleTouches.count,
                     flyers: flyers,
                     knocks: knocks,
                     scans: scans,
-                    leads: phaseLeads.count,
+                    leads: cycleLeads.count,
                     conversions: conversions,
                     spend: estimatedSpend,
                     roi: roi
                 ))
             }
-            
-            phaseComparison = comparisons
+
+            cycleComparison = comparisons
         } catch {
-            errorMessage = "Failed to compare phases: \(error.localizedDescription)"
-            print("❌ [FarmAnalyticsViewModel] Error comparing phases: \(error)")
+            errorMessage = "Failed to compare cycles: \(error.localizedDescription)"
+            print("❌ [FarmAnalyticsViewModel] Error comparing cycles: \(error)")
         }
     }
     
@@ -188,8 +188,8 @@ struct TouchEffectiveness {
     let leadRate: Double
 }
 
-struct PhaseComparison {
-    let phaseName: String
+struct CycleComparison {
+    let cycleName: String
     let startDate: Date
     let endDate: Date
     let touches: Int
@@ -202,9 +202,10 @@ struct PhaseComparison {
     let roi: Double
 }
 
+typealias PhaseComparison = CycleComparison
+
 struct HeatmapPoint {
     let coordinate: CLLocationCoordinate2D
     let intensity: Double // 0.0 - 1.0
     let address: String
 }
-

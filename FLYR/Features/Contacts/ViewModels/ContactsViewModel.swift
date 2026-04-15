@@ -185,7 +185,7 @@ final class ContactsViewModel: ObservableObject {
     }
     
     func deleteContact(_ contact: Contact) async {
-        guard let userID = AuthManager.shared.user?.id else { return }
+        guard AuthManager.shared.user?.id != nil else { return }
         
         isLoading = true
         errorMessage = nil
@@ -228,4 +228,3 @@ final class ContactsViewModel: ObservableObject {
         filterStatus != nil || filterCampaignId != nil || filterFarmId != nil
     }
 }
-

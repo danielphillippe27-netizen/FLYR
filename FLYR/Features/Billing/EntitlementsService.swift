@@ -7,6 +7,9 @@ import Supabase
 /// Layer 2: Backend verify + entitlement sync can replace local unlock later.
 @MainActor
 final class EntitlementsService: ObservableObject {
+    /// Shipping builds should enforce billing. Keep false unless intentionally running an internal unlock build.
+    static let forceUnlockAllAccess = false
+
     private static let localProUnlockedKey = "flyr_local_pro_unlocked"
 
     /// Shared instance for UIKit (e.g. BuildingPopupView) to read canUsePro. Set by app root.
@@ -15,6 +18,7 @@ final class EntitlementsService: ObservableObject {
     @Published private(set) var entitlement: Entitlement?
     @Published private(set) var isLoading = false
     @Published private(set) var error: String?
+    @Published private(set) var databaseProUnlocked = false
 
     /// Layer 1: Set when StoreKit purchase or restore succeeds. Persisted so Pro survives app restart.
     @Published private(set) var localProUnlocked: Bool {
@@ -47,6 +51,8 @@ final class EntitlementsService: ObservableObject {
 
     /// True if user has Pro: server entitlement (apple/stripe) OR local unlock from StoreKit (Layer 1).
     var canUsePro: Bool {
+        if Self.forceUnlockAllAccess { return true }
+        if databaseProUnlocked { return true }
         if localProUnlocked { return true }
         guard let e = entitlement else { return false }
         guard e.isActive else { return false }
@@ -70,57 +76,119 @@ final class EntitlementsService: ObservableObject {
         error = nil
         defer { isLoading = false }
 
+        var fetchedEntitlement: Entitlement = .free
+
         do {
-            let session = try await SupabaseManager.shared.client.auth.session
             let url = URL(string: "\(requestBaseURL)/api/billing/entitlement")!
             var request = URLRequest(url: url)
             request.httpMethod = "GET"
-            request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
 
-            let (data, response) = try await URLSession.shared.data(for: request)
-            guard let http = response as? HTTPURLResponse else {
-                entitlement = .free
-                return .free
-            }
+            let (data, http) = try await dataForAuthorizedRequest(request)
 
             if http.statusCode == 401 {
-                entitlement = .free
-                return .free
+                fetchedEntitlement = .free
+                entitlement = fetchedEntitlement
+                databaseProUnlocked = await resolveWorkspaceAccessFromAPI()
+                return fetchedEntitlement
             }
 
             guard (200...299).contains(http.statusCode) else {
-                entitlement = .free
+                fetchedEntitlement = .free
+                entitlement = fetchedEntitlement
                 error = "Could not load subscription status."
-                return .free
+                databaseProUnlocked = await resolveWorkspaceAccessFromAPI()
+                return fetchedEntitlement
             }
 
             let value = try decoder.decode(Entitlement.self, from: data)
-            entitlement = value
-            return value
+            fetchedEntitlement = value
+            entitlement = fetchedEntitlement
+            databaseProUnlocked = await resolveWorkspaceAccessFromAPI()
+            return fetchedEntitlement
         } catch {
-            entitlement = .free
+            fetchedEntitlement = .free
+            entitlement = fetchedEntitlement
             self.error = error.localizedDescription
-            return .free
+            databaseProUnlocked = await resolveWorkspaceAccessFromAPI()
+            return fetchedEntitlement
+        }
+    }
+
+    /// Workspace is the billing source of truth. Ask backend access state and cache workspace context.
+    private func resolveWorkspaceAccessFromAPI() async -> Bool {
+        do {
+            let state = try await AccessAPI.shared.getState()
+            WorkspaceContext.shared.update(from: state)
+            #if DEBUG
+            print(
+                "🔐 [Entitlements] workspace access from /api/access/state -> \(state.hasAccess) " +
+                "userId=\(state.userId ?? "nil") workspaceId=\(state.workspaceId ?? "nil") " +
+                "role=\(state.role ?? "nil") reason=\(state.reason ?? "nil")"
+            )
+            #endif
+            return state.hasAccess
+        } catch {
+            #if DEBUG
+            print("⚠️ [Entitlements] access state lookup failed: \(error.localizedDescription)")
+            #endif
+            return false
         }
     }
 
     /// Send Apple transaction to backend for verification and entitlement update.
     /// Call after a verified purchase, before transaction.finish().
-    func verifyAppleTransaction(transactionId: String, productId: String) async throws {
-        let session = try await SupabaseManager.shared.client.auth.session
+    func verifyAppleTransaction(
+        transactionId: String,
+        productId: String
+    ) async throws {
         let url = URL(string: "\(requestBaseURL)/api/billing/apple/verify")!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
-        request.httpBody = try JSONEncoder().encode(AppleVerifyRequest(transactionId: transactionId, productId: productId))
+        request.httpBody = try JSONEncoder().encode(
+            AppleVerifyRequest(
+                transactionId: transactionId,
+                productId: productId
+            )
+        )
 
-        let (_, response) = try await URLSession.shared.data(for: request)
+        let (_, http) = try await dataForAuthorizedRequest(request)
+        guard (200...299).contains(http.statusCode) else {
+            throw BillingError.server("Verification failed. Try Restore Purchases.")
+        }
+    }
+
+    /// Uses access token from current session and retries once with refreshSession() on 401.
+    private func dataForAuthorizedRequest(
+        _ request: URLRequest
+    ) async throws -> (Data, HTTPURLResponse) {
+        var authedRequest = request
+        let session = try await SupabaseManager.shared.client.auth.session
+        authedRequest.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
+
+        let (data, response) = try await URLSession.shared.data(for: authedRequest)
         guard let http = response as? HTTPURLResponse else {
             throw BillingError.network("No connection—try again.")
         }
-        guard (200...299).contains(http.statusCode) else {
-            throw BillingError.server("Verification failed. Try Restore Purchases.")
+        guard http.statusCode == 401 else {
+            return (data, http)
+        }
+
+        do {
+            let refreshed = try await SupabaseManager.shared.client.auth.refreshSession()
+            KeychainAuthStorage.saveSession(
+                accessToken: refreshed.accessToken,
+                refreshToken: refreshed.refreshToken
+            )
+            authedRequest.setValue("Bearer \(refreshed.accessToken)", forHTTPHeaderField: "Authorization")
+
+            let (retryData, retryResponse) = try await URLSession.shared.data(for: authedRequest)
+            guard let retryHTTP = retryResponse as? HTTPURLResponse else {
+                throw BillingError.network("No connection—try again.")
+            }
+            return (retryData, retryHTTP)
+        } catch {
+            return (data, http)
         }
     }
 }

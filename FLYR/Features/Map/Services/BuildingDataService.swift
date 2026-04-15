@@ -20,6 +20,43 @@ class BuildingDataService: ObservableObject {
     init(supabase: SupabaseClient) {
         self.supabase = supabase
     }
+
+    static func sortAddressesForDisplay(_ addresses: [CampaignAddressResponse]) -> [CampaignAddressResponse] {
+        addresses.sorted { lhs, rhs in
+            let lhsStreet = normalizedStreetName(for: lhs)
+            let rhsStreet = normalizedStreetName(for: rhs)
+            if lhsStreet != rhsStreet {
+                return lhsStreet.localizedStandardCompare(rhsStreet) == .orderedAscending
+            }
+
+            let lhsHouse = houseNumberSortParts(for: lhs)
+            let rhsHouse = houseNumberSortParts(for: rhs)
+            switch (lhsHouse.number, rhsHouse.number) {
+            case let (left?, right?) where left != right:
+                return left < right
+            case (.some, nil):
+                return true
+            case (nil, .some):
+                return false
+            default:
+                break
+            }
+
+            if lhsHouse.suffix != rhsHouse.suffix {
+                return lhsHouse.suffix.localizedStandardCompare(rhsHouse.suffix) == .orderedAscending
+            }
+
+            if lhsHouse.raw != rhsHouse.raw {
+                return lhsHouse.raw.localizedStandardCompare(rhsHouse.raw) == .orderedAscending
+            }
+
+            let lhsFormatted = (lhs.formatted ?? "\(lhs.houseNumber ?? "") \(lhs.streetName ?? "")")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let rhsFormatted = (rhs.formatted ?? "\(rhs.houseNumber ?? "") \(rhs.streetName ?? "")")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return lhsFormatted.localizedStandardCompare(rhsFormatted) == .orderedAscending
+        }
+    }
     
     // MARK: - Public Methods
     
@@ -176,7 +213,8 @@ class BuildingDataService: ObservableObject {
             // Step 2: If still no match, get all addresses linked to this building from Supabase.
             // building_address_links.building_id is buildings.id (UUID), so resolve building first by gers_id or id.
             var supabaseLinkAddresses: [CampaignAddressResponse] = []
-            if let buildingUuid = try? await resolveBuildingUuid(gersId: gersId) {
+            let buildingIdCandidates = (try? await resolveBuildingLinkCandidates(gersId: gersId)) ?? []
+            if !buildingIdCandidates.isEmpty {
                 let linkQuery = supabase
                     .from("building_address_links")
                     .select("""
@@ -203,7 +241,7 @@ class BuildingDataService: ObservableObject {
                         )
                     """)
                     .eq("campaign_id", value: campaignId.uuidString)
-                    .eq("building_id", value: buildingUuid.uuidString)
+                    .in("building_id", values: buildingIdCandidates)
                 let linkResponse = try await linkQuery.execute()
                 let links = try decoder.decode([BuildingAddressLinkResponse].self, from: linkResponse.data)
                 supabaseLinkAddresses = links.compactMap(\.campaignAddress)
@@ -227,6 +265,7 @@ class BuildingDataService: ObservableObject {
             if allAddressResponses.isEmpty, let single = resolvedAddress {
                 allAddressResponses = [single]
             }
+            allAddressResponses = Self.sortAddressesForDisplay(allAddressResponses)
             let resolvedAddresses = allAddressResponses.map { $0.toResolvedAddress(fallbackGersId: gersId) }
             let preferred = preferredAddressId ?? addressId
             let primaryAddress = preferred.flatMap { id in resolvedAddresses.first(where: { $0.id == id }) }
@@ -294,24 +333,51 @@ class BuildingDataService: ObservableObject {
         }
     }
     
-    /// Resolves map building identifier to buildings.id (UUID). Tries id and gers_id with both original and lowercased variants.
-    private func resolveBuildingUuid(gersId: String) async throws -> UUID? {
+    /// Resolves a tapped building identifier into possible link keys.
+    /// Some environments store building_address_links.building_id as buildings.id (UUID row id),
+    /// while others behave like the public building/GERS id. Query both so Silver campaigns remain readable.
+    private func resolveBuildingLinkCandidates(gersId: String) async throws -> [String] {
         let trimmed = gersId.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return [] }
+
         // Try both original case and lowercased (Overture GERS IDs are UUIDs but may have different casing)
         let lower = trimmed.lowercased()
-        let candidates = Set([trimmed, lower])
-        // Only query if at least one candidate looks like a UUID
-        guard candidates.contains(where: { UUID(uuidString: $0) != nil }) else { return nil }
+        var candidates = Set([trimmed, lower])
+
+        // Only query the buildings table if at least one candidate looks like a UUID.
+        guard candidates.contains(where: { UUID(uuidString: $0) != nil }) else {
+            return Array(candidates)
+        }
+
         let orParts = candidates.flatMap { c in ["id.eq.\(c)", "gers_id.eq.\(c)"] }
         let response = try await supabase
             .from("buildings")
-            .select("id")
+            .select("id, gers_id")
             .or(orParts.joined(separator: ","))
             .limit(1)
             .execute()
-        struct Row: Decodable { let id: UUID }
+
+        struct Row: Decodable {
+            let id: UUID
+            let gersId: String?
+
+            enum CodingKeys: String, CodingKey {
+                case id
+                case gersId = "gers_id"
+            }
+        }
+
         let rows = try JSONDecoder().decode([Row].self, from: response.data)
-        return rows.first?.id
+        if let row = rows.first {
+            candidates.insert(row.id.uuidString)
+            candidates.insert(row.id.uuidString.lowercased())
+            if let resolvedGersId = row.gersId?.trimmingCharacters(in: .whitespacesAndNewlines), !resolvedGersId.isEmpty {
+                candidates.insert(resolvedGersId)
+                candidates.insert(resolvedGersId.lowercased())
+            }
+        }
+
+        return Array(candidates)
     }
     
     /// Fetches contacts for a given address ID
@@ -327,6 +393,43 @@ class BuildingDataService: ObservableObject {
         let contactsResponse = try await contactsQuery.execute()
         let decoder = JSONDecoder.supabaseDates
         return try decoder.decode([Contact].self, from: contactsResponse.data)
+    }
+
+    private static func normalizedStreetName(for address: CampaignAddressResponse) -> String {
+        let explicitStreet = (address.streetName ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !explicitStreet.isEmpty {
+            return explicitStreet
+        }
+
+        let formatted = (address.formatted ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let streetOnly = formatted.split(separator: ",", maxSplits: 1, omittingEmptySubsequences: true).first.map(String.init) ?? formatted
+        return streetOnly.replacingOccurrences(
+            of: #"^\s*\d+[A-Za-z\-]*\s+"#,
+            with: "",
+            options: .regularExpression
+        )
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func houseNumberSortParts(for address: CampaignAddressResponse) -> (number: Int?, suffix: String, raw: String) {
+        let rawHouseNumber = (address.houseNumber ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let rawValue: String
+        if !rawHouseNumber.isEmpty {
+            rawValue = rawHouseNumber
+        } else {
+            let formatted = (address.formatted ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let streetOnly = formatted.split(separator: ",", maxSplits: 1, omittingEmptySubsequences: true).first.map(String.init) ?? formatted
+            rawValue = streetOnly.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true).first.map(String.init) ?? ""
+        }
+
+        let normalized = rawValue.uppercased()
+        guard let range = normalized.range(of: #"^\d+"#, options: .regularExpression) else {
+            return (nil, normalized, normalized)
+        }
+
+        let number = Int(normalized[range])
+        let suffix = normalized[range.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
+        return (number, suffix, normalized)
     }
     
     /// Clears the cache

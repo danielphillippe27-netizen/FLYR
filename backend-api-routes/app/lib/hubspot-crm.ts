@@ -1,16 +1,16 @@
 /**
- * HubSpot CRM helpers (contacts, notes, tasks, meetings).
- * Association type IDs are HubSpot-defined defaults for CRM v3 batch/create-with-associations.
+ * HubSpot CRM helpers (contacts, notes, tasks, appointments).
+ * Association type IDs: https://developers.hubspot.com/docs/api-reference/crm-associations-v3/guide
  */
 
 const API_BASE = "https://api.hubapi.com";
 
-/** HUBSPOT_DEFINED: note → contact */
-const ASSOC_NOTE_TO_CONTACT = 214;
+/** HUBSPOT_DEFINED: note → contact (214 is note → deal) */
+const ASSOC_NOTE_TO_CONTACT = 202;
 /** HUBSPOT_DEFINED: task → contact */
 const ASSOC_TASK_TO_CONTACT = 204;
-/** HUBSPOT_DEFINED: meeting → contact */
-const ASSOC_MEETING_TO_CONTACT = 200;
+/** HUBSPOT_DEFINED: appointment → contact */
+const ASSOC_APPOINTMENT_TO_CONTACT = 906;
 
 export type PushLeadInput = {
   id: string;
@@ -183,7 +183,8 @@ async function createTaskForContact(
   return ok;
 }
 
-async function createMeetingForContact(
+/** Uses CRM “appointments” object + scopes (`crm.objects.appointments.write`), not legacy meetings. */
+async function createAppointmentForContact(
   accessToken: string,
   contactId: string,
   startIso: string,
@@ -193,15 +194,13 @@ async function createMeetingForContact(
   const start = new Date(startIso);
   if (Number.isNaN(start.getTime())) return false;
   const end = new Date(start.getTime() + 60 * 60 * 1000);
+  // Default appointment properties (see HubSpot Appointments API). Title/description use a
+  // timeline note so we don’t depend on portal-specific appointment property internal names.
   const props: Record<string, string> = {
-    hs_meeting_title: title || "FLYR Meeting",
-    hs_meeting_start_time: start.toISOString(),
-    hs_meeting_end_time: end.toISOString(),
+    hs_appointment_start: start.toISOString(),
+    hs_appointment_end: end.toISOString(),
   };
-  if (description?.trim()) {
-    props.hs_meeting_body = description.trim();
-  }
-  const { ok, text } = await hsJson<{ id?: string }>(accessToken, "/crm/v3/objects/meetings", {
+  const { ok, text } = await hsJson<{ id?: string }>(accessToken, "/crm/v3/objects/appointments", {
     method: "POST",
     body: JSON.stringify({
       properties: props,
@@ -211,7 +210,7 @@ async function createMeetingForContact(
           types: [
             {
               associationCategory: "HUBSPOT_DEFINED",
-              associationTypeId: ASSOC_MEETING_TO_CONTACT,
+              associationTypeId: ASSOC_APPOINTMENT_TO_CONTACT,
             },
           ],
         },
@@ -219,9 +218,17 @@ async function createMeetingForContact(
     }),
   });
   if (!ok) {
-    console.warn("[hubspot-crm] meeting create failed", text);
+    console.warn("[hubspot-crm] appointment create failed", text);
+    return false;
   }
-  return ok;
+  const extra = [title?.trim(), description?.trim()].filter(Boolean).join("\n\n");
+  if (extra) {
+    const noteOk = await createNoteForContact(accessToken, contactId, extra);
+    if (!noteOk) {
+      console.warn("[hubspot-crm] appointment title/notes could not be saved as activity note");
+    }
+  }
+  return true;
 }
 
 export async function hubspotMinimalApiTest(accessToken: string): Promise<{ ok: boolean; message: string }> {
@@ -259,7 +266,10 @@ export async function pushLeadToHubSpot(
     };
   }
 
-  const properties: Record<string, string> = {
+  // Only include properties that have actual values.
+  // HubSpot treats empty strings in PATCH requests as clearing the field, which can
+  // silently wipe data already in HubSpot (e.g. an address entered manually).
+  const rawProperties: Record<string, string> = {
     firstname: first,
     lastname: last,
     email,
@@ -267,6 +277,9 @@ export async function pushLeadToHubSpot(
     address,
     hs_lead_status: "NEW",
   };
+  const properties = Object.fromEntries(
+    Object.entries(rawProperties).filter(([, v]) => v.length > 0)
+  );
 
   let contactId = options?.existingContactId?.trim() || null;
 
@@ -347,7 +360,7 @@ export async function pushLeadToHubSpot(
     if (!startIso) {
       partialErrors.push(`Invalid appointment date: "${apptDate}"`);
     } else {
-      const m = await createMeetingForContact(
+      const m = await createAppointmentForContact(
         accessToken,
         contactId,
         startIso,
@@ -355,7 +368,7 @@ export async function pushLeadToHubSpot(
         trim(input.appointment?.notes)
       );
       meetingCreated = m;
-      if (!m) partialErrors.push("Meeting could not be created (check HubSpot meeting scopes).");
+      if (!m) partialErrors.push("Appointment could not be created (check HubSpot appointment scopes and property names).");
     }
   }
 

@@ -6,6 +6,8 @@ struct CampaignRowView: View {
     /// When set (e.g. duplicate names), show this instead of campaign.name in the title.
     var displayName: String?
     var onPlayTapped: (() -> Void)?
+    var isSelectionMode = false
+    var isSelected = false
 
     private var titleText: String {
         displayName ?? campaign.name
@@ -17,6 +19,12 @@ struct CampaignRowView: View {
 
     var body: some View {
         HStack(alignment: .center, spacing: 8) {
+            if isSelectionMode {
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundColor(isSelected ? .accentColor : .secondary)
+            }
+
             VStack(alignment: .leading, spacing: 4) {
                 Text(titleText)
                     .font(.flyrHeadline)
@@ -31,7 +39,11 @@ struct CampaignRowView: View {
 
             Spacer(minLength: 8)
 
-            if campaign.status != .completed, onPlayTapped != nil {
+            if isSelectionMode {
+                Text(isSelected ? "Selected" : "Select")
+                    .font(.flyrCaption)
+                    .foregroundColor(isSelected ? .accentColor : .secondary)
+            } else if campaign.status != .completed, onPlayTapped != nil {
                 Button {
                     onPlayTapped?()
                 } label: {

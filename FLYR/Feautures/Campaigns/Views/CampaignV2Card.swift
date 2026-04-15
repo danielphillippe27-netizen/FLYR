@@ -21,7 +21,19 @@ struct CampaignV2Card: View {
                 
                 Spacer()
                 
-                CampaignTypeLabel(type: campaign.type, size: .small)
+                VStack(alignment: .trailing, spacing: 8) {
+                    CampaignTypeLabel(type: campaign.type, size: .small)
+
+                    if let confidence = campaign.dataConfidence {
+                        Text(confidence.label.title)
+                            .font(.caption.weight(.semibold))
+                            .foregroundColor(confidenceForegroundColor(for: confidence.label))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(confidenceBackgroundColor(for: confidence.label))
+                            .clipShape(Capsule())
+                    }
+                }
             }
             
             // Progress
@@ -48,21 +60,15 @@ struct CampaignV2Card: View {
                     .foregroundColor(.muted)
                     .font(.flyrCaption)
                 
-                Text("\(campaign.addresses.count) addresses")
+                Text("\(campaign.totalFlyers) addresses")
                     .font(.flyrCaption)
                     .foregroundColor(.muted)
                 
                 Spacer()
                 
-                if campaign.addressSource == .closestHome {
-                    Text("Closest Home")
-                        .font(.flyrCaption)
-                        .foregroundColor(.muted)
-                } else {
-                    Text("Imported List")
-                        .font(.flyrCaption)
-                        .foregroundColor(.muted)
-                }
+                Text(campaign.addressSource.displayName)
+                    .font(.flyrCaption)
+                    .foregroundColor(.muted)
             }
         }
         .padding(16)
@@ -79,6 +85,28 @@ struct CampaignV2Card: View {
         formatter.dateStyle = .short
         formatter.timeStyle = .none
         return formatter
+    }
+
+    private func confidenceForegroundColor(for label: DataConfidenceLabel) -> Color {
+        switch label {
+        case .high:
+            return .green
+        case .medium:
+            return .orange
+        case .low:
+            return .red
+        }
+    }
+
+    private func confidenceBackgroundColor(for label: DataConfidenceLabel) -> Color {
+        switch label {
+        case .high:
+            return Color.green.opacity(0.12)
+        case .medium:
+            return Color.orange.opacity(0.12)
+        case .low:
+            return Color.red.opacity(0.12)
+        }
     }
 }
 

@@ -66,28 +66,9 @@ final class UseCampaignMap: ObservableObject {
       print("🗺️ [MAP DEBUG] Loaded \(addresses.count) addresses from database with DB IDs")
     } catch {
       print("⚠️ [MAP DEBUG] Failed to fetch addresses from DB: \(error)")
-      // Fall back to mock data for testing
-      print("🗺️ [MAP DEBUG] Using mock data - DB fetch failed")
-      addresses = [
-        CampaignAddressRow(
-          id: UUID(),
-          formatted: "123 Main Street, Toronto, ON",
-          lat: 43.6532,
-          lon: -79.3832
-        ),
-        CampaignAddressRow(
-          id: UUID(),
-          formatted: "456 Queen Street, Toronto, ON",
-          lat: 43.6525,
-          lon: -79.3815
-        ),
-        CampaignAddressRow(
-          id: UUID(),
-          formatted: "789 King Street, Toronto, ON",
-          lat: 43.6518,
-          lon: -79.3800
-        )
-      ]
+      self.error = "Failed to load campaign addresses."
+      self.homes = []
+      return
     }
     
     let points = addresses.compactMap { row in

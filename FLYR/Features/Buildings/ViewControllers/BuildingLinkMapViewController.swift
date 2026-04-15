@@ -12,7 +12,7 @@ final class BuildingLinkMapViewController: UIViewController {
     
     // Data
     private var campaignData: CampaignBuildingData?
-    private var realtimeChannel: RealtimeChannel?
+    private var realtimeChannel: RealtimeChannelV2?
     
     // UI
     private var popupView: BuildingPopupView?
@@ -115,13 +115,13 @@ final class BuildingLinkMapViewController: UIViewController {
 
         var source = GeoJSONSource(id: "campaign-buildings")
         source.data = .featureCollection(FeatureCollection(features: features))
-        source.promoteId = .string("gers_id")
+        source.promoteId2 = .constant("gers_id")
 
         do {
-            if mapView.mapboxMap.style.sourceExists(withId: "campaign-buildings") {
-                try mapView.mapboxMap.style.removeSource(withId: "campaign-buildings")
+            if mapView.mapboxMap.sourceExists(withId: "campaign-buildings") {
+                try mapView.mapboxMap.removeSource(withId: "campaign-buildings")
             }
-            try mapView.mapboxMap.style.addSource(source)
+            try mapView.mapboxMap.addSource(source)
             addBuildingLayer()
             
             print("✅ [BuildingLinkMap] Rendered \(features.count) buildings")
@@ -139,7 +139,7 @@ final class BuildingLinkMapViewController: UIViewController {
         layer.fillExtrusionColor = .expression(colorExpression())
         
         do {
-            try mapView.mapboxMap.style.addLayer(layer)
+            try mapView.mapboxMap.addLayer(layer)
         } catch {
             print("❌ [BuildingLinkMap] Error adding layer: \(error)")
         }
@@ -234,7 +234,9 @@ final class BuildingLinkMapViewController: UIViewController {
                 realtimeChannel = try await BuildingLinkService.shared.subscribeToBuildingStats(
                     campaignId: campaignId
                 ) { [weak self] stats in
-                    self?.handleRealtimeUpdate(stats: stats)
+                    Task { [weak self] in
+                        await self?.handleRealtimeUpdate(stats: stats)
+                    }
                 }
             } catch {
                 print("❌ [BuildingLinkMap] Failed to subscribe: \(error)")
@@ -242,18 +244,17 @@ final class BuildingLinkMapViewController: UIViewController {
         }
     }
     
+    @MainActor
     private func handleRealtimeUpdate(stats: BuildingStats) {
-        DispatchQueue.main.async { [weak self] in
-            self?.mapView.mapboxMap.setFeatureState(
-                sourceId: "campaign-buildings",
-                featureId: stats.gersId,
-                state: [
-                    "scans_total": stats.scansTotal,
-                    "status": stats.status
-                ]
-            ) { _ in }
-            print("🔄 [BuildingLinkMap] Updated building \(stats.gersId): \(stats.status), scans: \(stats.scansTotal)")
-        }
+        mapView.mapboxMap.setFeatureState(
+            sourceId: "campaign-buildings",
+            featureId: stats.gersId,
+            state: [
+                "scans_total": stats.scansTotal,
+                "status": stats.status
+            ]
+        ) { _ in }
+        print("🔄 [BuildingLinkMap] Updated building \(stats.gersId): \(stats.status), scans: \(stats.scansTotal)")
     }
     
     // MARK: - Helpers

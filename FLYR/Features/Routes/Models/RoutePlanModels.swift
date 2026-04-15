@@ -42,6 +42,10 @@ struct RouteAssignmentSummary: Identifiable, Equatable, Sendable {
     let updatedAt: Date?
     let progress: RouteAssignmentProgress
     let assignedByName: String?
+    /// Present when loaded from HTTP assignments API.
+    let assigneeDisplayName: String?
+    let dueAt: Date?
+    let priority: String?
 
     var completedStops: Int {
         min(max(progress.completedStops, 0), max(totalStops, 0))
@@ -74,6 +78,65 @@ struct RouteAssignmentSummary: Identifiable, Equatable, Sendable {
         self.updatedAt = RouteJSON.date(from: RouteJSON.value(in: json, keys: ["updated_at", "updatedAt"]))
         self.progress = RouteAssignmentProgress(jsonValue: RouteJSON.value(in: json, keys: ["progress"]))
         self.assignedByName = RouteJSON.string(from: RouteJSON.value(in: json, keys: ["assigned_by_name", "assignedByName"]))
+        self.assigneeDisplayName = nil
+        self.dueAt = RouteJSON.date(from: RouteJSON.value(in: json, keys: ["due_at", "dueAt"]))
+        self.priority = RouteJSON.string(from: RouteJSON.value(in: json, keys: ["priority"]))
+    }
+
+    /// Parses `GET /api/routes/assignments` row (assignment + nested `route_plan`, `assignee`, `assigned_by`).
+    init?(apiAssignment json: [String: Any]) {
+        guard let assignmentId = RouteJSON.uuid(from: RouteJSON.value(in: json, keys: ["id"])) else {
+            return nil
+        }
+
+        let plan = RouteJSON.dictionary(from: RouteJSON.value(in: json, keys: ["route_plan", "routePlan"])) ?? [:]
+        let routePlanId =
+            RouteJSON.uuid(from: RouteJSON.value(in: json, keys: ["route_plan_id", "routePlanId"]))
+            ?? RouteJSON.uuid(from: RouteJSON.value(in: plan, keys: ["id"]))
+        guard let routePlanId else { return nil }
+
+        let rawPlanName = RouteJSON.string(from: RouteJSON.value(in: plan, keys: ["name"]))
+        self.id = assignmentId
+        self.routePlanId = routePlanId
+        self.name = Self.displayName(fromRoutePlanName: rawPlanName)
+        self.status = RouteJSON.string(from: RouteJSON.value(in: json, keys: ["status"])) ?? "assigned"
+        self.totalStops = RouteJSON.int(from: RouteJSON.value(in: plan, keys: ["total_stops", "totalStops"])) ?? 0
+        self.estMinutes = RouteJSON.int(from: RouteJSON.value(in: plan, keys: ["est_minutes", "estMinutes"]))
+        self.distanceMeters = RouteJSON.int(from: RouteJSON.value(in: plan, keys: ["distance_meters", "distanceMeters"]))
+        self.updatedAt = RouteJSON.date(from: RouteJSON.value(in: json, keys: ["updated_at", "updatedAt"]))
+        self.progress = RouteAssignmentProgress(jsonValue: RouteJSON.value(in: json, keys: ["progress"]))
+
+        let assigner = RouteJSON.dictionary(from: RouteJSON.value(in: json, keys: ["assigned_by", "assignedBy"]))
+        self.assignedByName = RouteJSON.string(from: RouteJSON.value(in: assigner, keys: ["display_name", "displayName"]))
+
+        let assignee = RouteJSON.dictionary(from: RouteJSON.value(in: json, keys: ["assignee"]))
+        self.assigneeDisplayName = RouteJSON.string(from: RouteJSON.value(in: assignee, keys: ["display_name", "displayName"]))
+
+        self.dueAt = RouteJSON.date(from: RouteJSON.value(in: json, keys: ["due_at", "dueAt"]))
+        self.priority = {
+            if let s = RouteJSON.string(from: RouteJSON.value(in: json, keys: ["priority"])) {
+                return s
+            }
+            if let i = RouteJSON.int(from: RouteJSON.value(in: json, keys: ["priority"])) {
+                return String(i)
+            }
+            return nil
+        }()
+    }
+
+    /// Prefer label before em dash in `route_plan.name` (web parity).
+    static func displayName(fromRoutePlanName name: String?) -> String {
+        guard let raw = name?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+            return "Route"
+        }
+        let separators = [" — ", " – ", " - "] // em dash, en dash, hyphen
+        for sep in separators {
+            if let range = raw.range(of: sep) {
+                let head = raw[..<range.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines)
+                if !head.isEmpty { return String(head) }
+            }
+        }
+        return raw
     }
 }
 
@@ -171,6 +234,8 @@ struct RoutePlanStop: Identifiable, Equatable, Sendable {
     let longitude: Double?
     let displayAddress: String
     let buildingId: UUID?
+    /// When the stop is tied to campaign_addresses, API may include visited.
+    let visited: Bool?
 
     init(_ json: [String: Any], index: Int) {
         let stopOrder = RouteJSON.int(from: RouteJSON.value(in: json, keys: ["stop_order", "stopOrder", "order"])) ?? (index + 1)
@@ -186,9 +251,14 @@ struct RoutePlanStop: Identifiable, Equatable, Sendable {
         self.longitude = RouteJSON.double(from: RouteJSON.value(in: json, keys: ["lng", "lon", "longitude"]))
         self.displayAddress = displayAddress
         self.buildingId = RouteJSON.uuid(from: RouteJSON.value(in: json, keys: ["building_id", "buildingId"]))
+        self.visited = RouteJSON.bool(from: RouteJSON.value(in: json, keys: ["visited"]))
 
         let idBase = addressId?.uuidString ?? gersId ?? "stop-\(stopOrder)"
-        self.id = "\(idBase)-\(stopOrder)"
+        if let explicitId = RouteJSON.string(from: RouteJSON.value(in: json, keys: ["id"])) {
+            self.id = explicitId
+        } else {
+            self.id = "\(idBase)-\(stopOrder)"
+        }
     }
 }
 
@@ -286,6 +356,21 @@ enum RouteJSON {
         }
         if let string = string(from: value) {
             return UUID(uuidString: string)
+        }
+        return nil
+    }
+
+    static func bool(from value: Any?) -> Bool? {
+        guard let value, !(value is NSNull) else { return nil }
+        if let b = value as? Bool {
+            return b
+        }
+        if let n = value as? NSNumber {
+            return n.boolValue
+        }
+        if let s = string(from: value)?.lowercased() {
+            if s == "true" { return true }
+            if s == "false" { return false }
         }
         return nil
     }

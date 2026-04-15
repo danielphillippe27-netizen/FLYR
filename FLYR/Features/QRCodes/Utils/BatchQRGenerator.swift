@@ -25,14 +25,9 @@ public struct BatchQRGenerator {
         
         print("✅ [Batch QR Generator] Found \(addresses.count) addresses for campaign")
         
-        // Resolve base URL for the batch
-        let baseURL = BatchURLResolver.resolveBatchURL(
-            batch,
-            userDefaultWebsite: userDefaultWebsite
-        )
-        
+        let deviceModel = await MainActor.run { UIDevice.current.model }
+
         // Generate QR codes for each address
-        let qrRepository = QRRepository.shared
         var createdQRCodes: [QRCode] = []
         
         // Use TaskGroup for parallel processing
@@ -56,11 +51,11 @@ public struct BatchQRGenerator {
                         // Prepare metadata
                         var metadataDict: [String: AnyCodable] = [:]
                         metadataDict["entity_name"] = AnyCodable(address.formatted)
-                        metadataDict["device_info"] = AnyCodable(UIDevice.current.model)
+                        metadataDict["device_info"] = AnyCodable(deviceModel)
                         metadataDict["batch_name"] = AnyCodable(batch.name)
                         
                         // Insert into database with batch_id
-                        var qrCodeData: [String: AnyCodable] = [
+                        let qrCodeData: [String: AnyCodable] = [
                             "address_id": AnyCodable(address.id.uuidString),
                             "campaign_id": AnyCodable(campaignId.uuidString),
                             "batch_id": AnyCodable(batch.id.uuidString),
@@ -118,4 +113,3 @@ enum BatchQRGeneratorError: LocalizedError {
         }
     }
 }
-

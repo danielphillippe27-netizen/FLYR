@@ -8,7 +8,10 @@
 	</array>
 	<key>com.apple.developer.associated-domains</key>
 	<array>
+		<string>applinks:flyr.software</string>
+		<string>applinks:www.flyr.software</string>
 		<string>applinks:flyrpro.app</string>
+		<string>applinks:www.flyrpro.app</string>
 	</array>
 	<key>com.apple.developer.healthkit</key>
 	<true/>

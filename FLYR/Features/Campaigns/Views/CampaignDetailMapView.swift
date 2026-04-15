@@ -68,7 +68,7 @@ struct CampaignDetailMapView: View {
                     
                     print("🏗️ [HOOK] featureCollection count = \(buildings.featureCollection?.features.count ?? 0)")
                 }
-                .onChange(of: buildings.featureCollection) { fc in
+                .onChange(of: buildings.featureCollection) { _, fc in
                     guard let fc else { return }
                     try? BuildingLayers.addOrUpdate(
                         map: MapboxBridge.shared.mapView!.mapboxMap,
@@ -76,14 +76,14 @@ struct CampaignDetailMapView: View {
                         featureCollection: fc
                     )
                 }
-                .onChange(of: buildings.isLoading) { isLoading in
+                .onChange(of: buildings.isLoading) { _, isLoading in
                     if isLoading {
                         print("🏗️ [HOOK] Building fetch started")
                     } else {
                         print("🏗️ [HOOK] Building fetch completed")
                     }
                 }
-                .onChange(of: buildings.error) { error in
+                .onChange(of: buildings.error) { _, error in
                     if let error = error {
                         print("❌ [HOOK] Building fetch error: \(error)")
                     }

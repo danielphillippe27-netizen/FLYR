@@ -7,6 +7,7 @@ struct LeadDetailView: View {
     var onLeadUpdated: ((FieldLead) -> Void)?
     
     @EnvironmentObject private var entitlementsService: EntitlementsService
+    @ObservedObject private var crmStore = CRMConnectionStore.shared
     @State private var showPaywall = false
     @State private var integrations: [UserIntegration] = []
     @State private var showSyncSettings = false
@@ -24,11 +25,11 @@ struct LeadDetailView: View {
     private var hasEdits: Bool { editableName != (lead.name ?? "") || editablePhone != (lead.phone ?? "") || editableEmail != (lead.email ?? "") || editableNotes != (lead.notes ?? "") }
     
     // Appointment / task for CRM push (UI-only, not persisted on lead)
-    @State private var appointmentDate: Date = Date()
+    @State private var appointmentDate: Date? = nil
     @State private var appointmentTitle: String = ""
     @State private var appointmentNotes: String = ""
     @State private var taskTitle: String = ""
-    @State private var taskDueDate: Date = Date()
+    @State private var taskDueDate: Date? = nil
     
     init(lead: FieldLead, onConnectCRM: @escaping () -> Void, onDismiss: (() -> Void)? = nil, onLeadUpdated: ((FieldLead) -> Void)? = nil) {
         self.lead = lead
@@ -37,8 +38,22 @@ struct LeadDetailView: View {
         self.onLeadUpdated = onLeadUpdated
     }
     
+    private var fubIntegration: UserIntegration? {
+        integrations.first { $0.provider == .fub }
+    }
+
+    private var isFUBConnected: Bool {
+        crmStore.isFUBConnected || (fubIntegration?.isConnected == true)
+    }
+
+    private var isBoldTrailConnected: Bool {
+        crmStore.boldtrailConnection?.isConnected == true
+    }
+
     private var connectedProvider: IntegrationProvider? {
-        integrations.first { $0.isConnected }?.provider
+        if isFUBConnected { return .fub }
+        if isBoldTrailConnected { return .boldtrail }
+        return integrations.first { $0.isConnected }?.provider
     }
     
     private var lastSyncedText: String? {
@@ -233,9 +248,35 @@ struct LeadDetailView: View {
             Label("Appointment (for CRM)", systemImage: "calendar")
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundColor(.muted)
-            DatePicker("Date & time", selection: $appointmentDate, in: Date()...)
-                .datePickerStyle(.compact)
-                .foregroundColor(.text)
+            if appointmentDate != nil {
+                HStack {
+                    DatePicker(
+                        "Date & time",
+                        selection: Binding(
+                            get: { appointmentDate ?? Date() },
+                            set: { appointmentDate = $0 }
+                        ),
+                        in: Date()...
+                    )
+                    .datePickerStyle(.compact)
+                    .foregroundColor(.text)
+                    Spacer()
+                    Button("Clear") {
+                        appointmentDate = nil
+                    }
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(.muted)
+                }
+            } else {
+                Button {
+                    appointmentDate = Date()
+                } label: {
+                    Label("Add date & time", systemImage: "plus.circle")
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundColor(.accent)
+                }
+                .buttonStyle(.plain)
+            }
             TextField("Title (optional)", text: $appointmentTitle)
                 .textFieldStyle(.plain)
                 .font(.system(size: 16))
@@ -261,9 +302,35 @@ struct LeadDetailView: View {
                 .textFieldStyle(.plain)
                 .font(.system(size: 16))
                 .foregroundColor(.text)
-            DatePicker("Due date", selection: $taskDueDate, in: Date()...)
-                .datePickerStyle(.compact)
-                .foregroundColor(.text)
+            if taskDueDate != nil {
+                HStack {
+                    DatePicker(
+                        "Due date",
+                        selection: Binding(
+                            get: { taskDueDate ?? Date() },
+                            set: { taskDueDate = $0 }
+                        ),
+                        in: Date()...
+                    )
+                    .datePickerStyle(.compact)
+                    .foregroundColor(.text)
+                    Spacer()
+                    Button("Clear") {
+                        taskDueDate = nil
+                    }
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(.muted)
+                }
+            } else {
+                Button {
+                    taskDueDate = Date()
+                } label: {
+                    Label("Add due date", systemImage: "plus.circle")
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundColor(.accent)
+                }
+                .buttonStyle(.plain)
+            }
         }
         .padding(16)
         .background(Color.gray.opacity(0.12))
@@ -356,7 +423,7 @@ struct LeadDetailView: View {
             Text("Last: \(lead.createdAt, style: .date) at \(lead.createdAt, style: .time)")
                 .font(.system(size: 14))
                 .foregroundColor(.muted)
-            if let sessionId = lead.sessionId {
+            if lead.sessionId != nil {
                 Text("Captured during Session")
                     .font(.system(size: 13))
                     .foregroundColor(.muted)
@@ -406,7 +473,7 @@ struct LeadDetailView: View {
                     Text("Pro Tip")
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundColor(.text)
-                    Text("Connect FUB to auto-sync this lead to your office.")
+                    Text("Connect a CRM to auto-sync this lead to your office.")
                         .font(.system(size: 14))
                         .foregroundColor(.muted)
                     Button("Connect CRM →") {
@@ -485,8 +552,19 @@ struct LeadDetailView: View {
     private func loadIntegrations() async {
         guard let userId = AuthManager.shared.user?.id else { return }
         do {
-            integrations = try await CRMIntegrationManager.shared.fetchIntegrations(userId: userId)
-        } catch {}
+            async let integrationsTask = CRMIntegrationManager.shared.fetchIntegrations(userId: userId)
+            async let crmTask: Void = CRMConnectionStore.shared.refresh(userId: userId)
+            integrations = try await integrationsTask
+            await crmTask
+        } catch {
+            let message = error.localizedDescription
+            if message.contains("user_integrations") &&
+                (message.contains("schema cache") || message.contains("does not exist")) {
+                integrations = []
+                await CRMConnectionStore.shared.refresh(userId: userId)
+                return
+            }
+        }
     }
     
     private func shareLead() {
@@ -508,10 +586,29 @@ struct LeadDetailView: View {
         currentLead.email = editableEmail.isEmpty ? lead.email : editableEmail
         currentLead.notes = editableNotes.isEmpty ? lead.notes : editableNotes
         let leadModel = LeadModel(from: currentLead)
-        let appointment: LeadSyncAppointment? = (appointmentTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && appointmentNotes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) ? nil : LeadSyncAppointment(date: appointmentDate, title: appointmentTitle.isEmpty ? nil : appointmentTitle, notes: appointmentNotes.isEmpty ? nil : appointmentNotes)
-        let task: LeadSyncTask? = taskTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : LeadSyncTask(title: taskTitle, dueDate: taskDueDate)
+        let trimmedAppointmentTitle = appointmentTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedAppointmentNotes = appointmentNotes.trimmingCharacters(in: .whitespacesAndNewlines)
+        let appointment: LeadSyncAppointment? = {
+            guard let appointmentDate else { return nil }
+            return LeadSyncAppointment(
+                date: appointmentDate,
+                title: trimmedAppointmentTitle.isEmpty ? nil : trimmedAppointmentTitle,
+                notes: trimmedAppointmentNotes.isEmpty ? nil : trimmedAppointmentNotes
+            )
+        }()
+        let trimmedTaskTitle = taskTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        let task: LeadSyncTask? = {
+            guard let taskDueDate, !trimmedTaskTitle.isEmpty else { return nil }
+            return LeadSyncTask(title: trimmedTaskTitle, dueDate: taskDueDate)
+        }()
         Task {
-            await LeadSyncManager.shared.syncLeadToCRM(lead: leadModel, userId: lead.userId, appointment: appointment, task: task)
+            await LeadSyncManager.shared.syncLeadToCRM(
+                lead: leadModel,
+                userId: lead.userId,
+                appointment: appointment,
+                task: task,
+                trackFieldLeadCRMStatus: true
+            )
             await MainActor.run {
                 isPushingToCRM = false
                 pushToCRMSuccess = true

@@ -18,10 +18,12 @@ struct MapSeedPickerView: View {
 
   var body: some View {
     VStack(spacing: 0) {
-      Map(initialViewport: .camera(center: initialCenter ?? CLLocationCoordinate2D(latitude: 37.7749, longitude: -122.4194), zoom: 15))
-        .onMapTapGesture { context in
+      Map(initialViewport: .camera(center: initialCenter ?? CLLocationCoordinate2D(latitude: 37.7749, longitude: -122.4194), zoom: 15)) {
+        TapInteraction { context in
           center = context.coordinate
+          return true
         }
+      }
         .ignoresSafeArea(edges: .top)
 
       VStack(alignment: .leading, spacing: 16) {

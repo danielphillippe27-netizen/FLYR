@@ -1,4 +1,5 @@
 import Foundation
+import CoreLocation
 import Supabase
 
 /// Service for fetching and managing building-address links
@@ -10,7 +11,14 @@ final class BuildingLinkService {
     
     private init() {
         self.supabaseClient = SupabaseManager.shared.client
-        self.baseURL = (Bundle.main.object(forInfoDictionaryKey: "FLYR_PRO_API_URL") as? String)?.trimmingCharacters(in: CharacterSet(charactersIn: "/")) ?? "https://flyrpro.app"
+        let raw = (Bundle.main.object(forInfoDictionaryKey: "FLYR_PRO_API_URL") as? String)?.trimmingCharacters(in: CharacterSet(charactersIn: "/")) ?? "https://flyrpro.app"
+        // Normalize flyrpro.app → www.flyrpro.app so URLSession doesn't follow a redirect that
+        // strips the Authorization header, causing 401 on the buildings snapshot endpoint.
+        if let components = URLComponents(string: raw), components.host == "flyrpro.app" {
+            self.baseURL = "https://www.flyrpro.app"
+        } else {
+            self.baseURL = raw
+        }
     }
     
     // MARK: - Fetch Buildings (from S3 via API)
@@ -48,18 +56,51 @@ final class BuildingLinkService {
     }
     
     // MARK: - Fetch Links (from Supabase)
-    
+
     /// Get all building-address links for a campaign
     func fetchLinks(campaignId: String) async throws -> [BuildingAddressLink] {
         print("🔗 [BuildingLinkService] Fetching links for campaign: \(campaignId)")
-        
-        let links: [BuildingAddressLink] = try await supabaseClient
+
+        let rawLinks: [RawBuildingAddressLink] = try await supabaseClient
             .from("building_address_links")
             .select("*")
             .eq("campaign_id", value: campaignId)
             .execute()
             .value
-        
+
+        guard !rawLinks.isEmpty else {
+            print("✅ [BuildingLinkService] Fetched 0 links")
+            return []
+        }
+
+        let buildingIds = Array(Set(rawLinks.map(\.buildingId)))
+        let buildingRows: [BuildingIdentityRow] = try await supabaseClient
+            .from("buildings")
+            .select("id, gers_id")
+            .in("id", values: buildingIds)
+            .execute()
+            .value
+
+        let publicIdsByRowId = Dictionary(
+            uniqueKeysWithValues: buildingRows.map { row in
+                (row.id.lowercased(), (row.gersId?.isEmpty == false ? row.gersId! : row.id))
+            }
+        )
+
+        let links = rawLinks.map { link in
+            let normalizedBuildingId =
+                publicIdsByRowId[link.buildingId.lowercased()] ?? link.buildingId
+            return BuildingAddressLink(
+                id: link.id,
+                buildingId: normalizedBuildingId,
+                addressId: link.addressId,
+                matchType: link.matchType,
+                confidence: link.confidence,
+                isMultiUnit: link.isMultiUnit,
+                unitCount: link.unitCount
+            )
+        }
+
         print("✅ [BuildingLinkService] Fetched \(links.count) links")
         return links
     }
@@ -83,12 +124,7 @@ final class BuildingLinkService {
         guard let url = URL(string: "\(baseURL)/api/campaigns/\(campaignId)/buildings/\(buildingId)/addresses") else {
             throw BuildingLinkError.invalidURL
         }
-        var request = URLRequest(url: url)
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        if let session = try? await supabaseClient.auth.session {
-            request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
-        }
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await authorizedDataRequest(url: url)
         guard let httpResponse = response as? HTTPURLResponse else {
             throw BuildingLinkError.fetchFailed
         }
@@ -102,6 +138,82 @@ final class BuildingLinkService {
         decoder.dateDecodingStrategy = .iso8601
         let wrapper = try decoder.decode(BuildingAddressesAPIResponse.self, from: data)
         return wrapper.addresses
+    }
+
+    // MARK: - Manual Map Shapes
+
+    @discardableResult
+    func createManualAddress(
+        campaignId: String,
+        input: ManualAddressCreateInput
+    ) async throws -> ManualAddressCreateResponse {
+        guard let url = URL(string: "\(baseURL)/api/campaigns/\(campaignId)/addresses/manual") else {
+            throw BuildingLinkError.invalidURL
+        }
+
+        let payload: [String: Any?] = [
+            "longitude": input.coordinate.longitude,
+            "latitude": input.coordinate.latitude,
+            "formatted": input.formatted,
+            "house_number": input.houseNumber,
+            "street_name": input.streetName,
+            "locality": input.locality,
+            "region": input.region,
+            "postal_code": input.postalCode,
+            "country": input.country,
+            "building_id": input.buildingId
+        ]
+
+        let data = try JSONSerialization.data(withJSONObject: payload.compactMapValues { $0 })
+        let (responseData, response) = try await authorizedDataRequest(url: url, method: "POST", body: data)
+        try ensureSuccessfulResponse(response, data: responseData)
+        let decoder = JSONDecoder.supabaseDates
+        return try decoder.decode(ManualAddressCreateResponse.self, from: responseData)
+    }
+
+    @discardableResult
+    func createManualBuilding(
+        campaignId: String,
+        input: ManualBuildingCreateInput
+    ) async throws -> ManualBuildingCreateResponse {
+        guard let url = URL(string: "\(baseURL)/api/campaigns/\(campaignId)/buildings/manual") else {
+            throw BuildingLinkError.invalidURL
+        }
+
+        let ring = input.polygon.map { [$0.longitude, $0.latitude] }
+        let geometry: [String: Any] = [
+            "type": "Polygon",
+            "coordinates": [ring]
+        ]
+        let payload: [String: Any?] = [
+            "geometry": geometry,
+            "height_m": input.heightMeters,
+            "units_count": input.unitsCount,
+            "levels": input.levels,
+            "address_ids": input.addressIds
+        ]
+
+        let data = try JSONSerialization.data(withJSONObject: payload.compactMapValues { $0 })
+        let (responseData, response) = try await authorizedDataRequest(url: url, method: "POST", body: data)
+        try ensureSuccessfulResponse(response, data: responseData)
+        let decoder = JSONDecoder.supabaseDates
+        return try decoder.decode(ManualBuildingCreateResponse.self, from: responseData)
+    }
+
+    func deleteManualAddress(campaignId: String, addressId: UUID) async throws {
+        guard let url = URL(string: "\(baseURL)/api/campaigns/\(campaignId)/addresses/\(addressId.uuidString)/manual") else {
+            throw BuildingLinkError.invalidURL
+        }
+        let (data, response) = try await authorizedDataRequest(url: url, method: "DELETE")
+        try ensureSuccessfulResponse(response, data: data)
+    }
+
+    func deleteManualBuilding(campaignId: String, buildingId: String) async throws {
+        guard let url = URL(string: "\(baseURL)/api/campaigns/\(campaignId)/buildings/\(buildingId)/manual") else {
+            throw BuildingLinkError.invalidURL
+        }
+        let (data, response) = try await authorizedDataRequest(url: url, method: "DELETE")
+        try ensureSuccessfulResponse(response, data: data)
     }
     
     // MARK: - Fetch Addresses
@@ -195,38 +307,217 @@ final class BuildingLinkService {
     /// Subscribe to building stats updates for real-time color changes
     func subscribeToBuildingStats(
         campaignId: String,
-        onUpdate: @escaping (BuildingStats) -> Void
-    ) async throws -> RealtimeChannel {
-        let channel = supabaseClient.realtime.channel("building-stats-\(campaignId)")
-        
-        await channel.on(
-            "postgres_changes",
-            filter: ChannelFilter(
-                event: "*",
-                schema: "public",
-                table: "building_stats",
-                filter: "campaign_id=eq.\(campaignId)"
-            )
-        ) { payload in
-            guard let payloadDict = payload as? [String: Any],
-                  let new = payloadDict["new"] as? [String: Any] else { return }
-            if let gersId = new["gers_id"] as? String,
-               let status = new["status"] as? String,
-               let scansTotal = new["scans_total"] as? Int {
-                
-                let stats = BuildingStats(
-                    gersId: gersId,
-                    status: status,
-                    scansTotal: scansTotal
+        onUpdate: @escaping @Sendable (BuildingStats) -> Void
+    ) async throws -> RealtimeChannelV2 {
+        let channel = supabaseClient.channel("building-stats-\(campaignId)")
+
+        let updates = channel.postgresChange(
+            AnyAction.self,
+            schema: "public",
+            table: "building_stats",
+            filter: .eq("campaign_id", value: campaignId)
+        )
+
+        Task {
+            for await action in updates {
+                let record: [String: AnyJSON]
+                switch action {
+                case .insert(let insert):
+                    record = insert.record
+                case .update(let update):
+                    record = update.record
+                case .delete:
+                    continue
+                }
+
+                guard let gersId = record["gers_id"]?.stringValue,
+                      let status = record["status"]?.stringValue else {
+                    continue
+                }
+                let scansTotal = record["scans_total"]?.intValue
+                    ?? Int(record["scans_total"]?.doubleValue ?? 0)
+                onUpdate(
+                    BuildingStats(
+                        gersId: gersId,
+                        status: status,
+                        scansTotal: scansTotal
+                    )
                 )
-                onUpdate(stats)
             }
         }
-        
-        await channel.subscribe()
+
+        try await channel.subscribeWithError()
         print("📡 [BuildingLinkService] Subscribed to building stats for campaign: \(campaignId)")
-        
+
         return channel
+    }
+
+    // MARK: - HTTP Helpers
+
+    private func authorizedDataRequest(
+        url: URL,
+        method: String = "GET",
+        body: Data? = nil
+    ) async throws -> (Data, URLResponse) {
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        if body != nil {
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        }
+        request.httpBody = body
+
+        if let session = try? await supabaseClient.auth.session {
+            request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
+        }
+
+        return try await URLSession.shared.data(for: request)
+    }
+
+    private func ensureSuccessfulResponse(_ response: URLResponse, data: Data) throws {
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw BuildingLinkError.fetchFailed
+        }
+        let statusCode = httpResponse.statusCode
+        guard (200..<300).contains(statusCode) else {
+            if let apiError = try? JSONDecoder().decode(APIErrorResponse.self, from: data),
+               !apiError.error.isEmpty {
+                throw ManualShapeServiceError.api(apiError.error)
+            }
+            let responseText = String(data: data, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+            if !responseText.isEmpty {
+                let previewLen = 200
+                let preview = String(responseText.prefix(previewLen))
+                let suffix = responseText.count > previewLen ? "…" : ""
+                print("⚠️ [BuildingLinkService] HTTP \(statusCode) body preview: \(preview)\(suffix)")
+
+                if Self.responseBodyLooksLikeHTML(responseText) {
+                    throw ManualShapeServiceError.api(
+                        "The server returned a web page instead of data (HTTP \(statusCode)). The API may not be deployed yet, or the server URL may be wrong. Try again later or contact support."
+                    )
+                }
+
+                let maxPlaintext = 400
+                if responseText.count > maxPlaintext {
+                    let truncated = String(responseText.prefix(maxPlaintext)) + "…"
+                    throw ManualShapeServiceError.api("Request failed (HTTP \(statusCode)): \(truncated)")
+                }
+                throw ManualShapeServiceError.api(responseText)
+            }
+            throw BuildingLinkError.fetchFailed
+        }
+    }
+
+    /// True when the body is almost certainly HTML (e.g. Next.js error/404 page) rather than an API JSON error.
+    private static func responseBodyLooksLikeHTML(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if trimmed.hasPrefix("<!doctype html") { return true }
+        if trimmed.hasPrefix("<html") { return true }
+        if text.contains("/_next/static/") { return true }
+        return false
+    }
+}
+
+private struct RawBuildingAddressLink: Codable {
+    let id: String
+    let buildingId: String
+    let addressId: String
+    let matchType: String
+    let confidence: Double
+    let isMultiUnit: Bool
+    let unitCount: Int
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case buildingId = "building_id"
+        case addressId = "address_id"
+        case matchType = "match_type"
+        case confidence
+        case isMultiUnit = "is_multi_unit"
+        case unitCount = "unit_count"
+    }
+}
+
+private struct BuildingIdentityRow: Codable {
+    let id: String
+    let gersId: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case gersId = "gers_id"
+    }
+}
+
+struct ManualAddressCreateInput {
+    let coordinate: CLLocationCoordinate2D
+    let formatted: String
+    let houseNumber: String?
+    let streetName: String?
+    let locality: String?
+    let region: String?
+    let postalCode: String?
+    let country: String?
+    let buildingId: String?
+}
+
+struct ManualBuildingCreateInput {
+    let polygon: [CLLocationCoordinate2D]
+    let heightMeters: Double
+    let unitsCount: Int
+    let levels: Int
+    let addressIds: [String]
+}
+
+struct ManualAddressCreateResponse: Decodable {
+    let address: CampaignAddressResponse
+    let linkedBuildingId: String?
+
+    enum CodingKeys: String, CodingKey {
+        case address
+        case linkedBuildingId = "linked_building_id"
+    }
+}
+
+struct ManualBuildingCreateResponse: Decodable {
+    let building: ManualBuildingResponse
+    let linkedAddressIds: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case building
+        case linkedAddressIds = "linked_address_ids"
+    }
+}
+
+struct ManualBuildingResponse: Decodable {
+    let id: String
+    let rowId: String
+    let source: String
+    let heightMeters: Double?
+    let unitsCount: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case rowId = "row_id"
+        case source
+        case heightMeters = "height_m"
+        case unitsCount = "units_count"
+    }
+}
+
+struct APIErrorResponse: Decodable {
+    let error: String
+}
+
+enum ManualShapeServiceError: LocalizedError {
+    case api(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .api(let message):
+            return message
+        }
     }
 }
 
@@ -237,9 +528,22 @@ private struct BuildingAddressesAPIResponse: Codable {
     let addresses: [CampaignAddressResponse]
 }
 
-enum BuildingLinkError: Error {
+enum BuildingLinkError: LocalizedError {
     case invalidURL
     case fetchFailed
     case decodingFailed
     case notAuthenticated
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidURL:
+            return "The app couldn't build the request URL."
+        case .fetchFailed:
+            return "The request couldn't be completed."
+        case .decodingFailed:
+            return "The server response couldn't be read."
+        case .notAuthenticated:
+            return "You need to sign in again before making this change."
+        }
+    }
 }

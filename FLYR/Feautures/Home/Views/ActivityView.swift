@@ -8,6 +8,9 @@ struct ActivityView: View {
     @State private var includeMembers = false
     @State private var isLoading = true
     @State private var errorMessage: String?
+    @State private var selectedSummaryItem: EndSessionSummaryItem?
+    @State private var loadingSessionItemId: String?
+    @State private var showSummaryError = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -45,6 +48,18 @@ struct ActivityView: View {
         .onChange(of: includeMembers) { _, _ in
             Task { await loadItems() }
         }
+        .alert("Couldn’t load session summary.", isPresented: $showSummaryError) {
+            Button("OK", role: .cancel) {}
+        }
+        .fullScreenCover(item: $selectedSummaryItem) { item in
+            ShareActivityGateView(
+                data: item.data,
+                sessionID: item.sessionID,
+                campaignMapSnapshot: item.campaignMapSnapshot
+            ) {
+                selectedSummaryItem = nil
+            }
+        }
     }
 
     private var canIncludeMembers: Bool {
@@ -57,7 +72,8 @@ struct ActivityView: View {
     }
 
     private var filterTabs: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
+        HStack {
+            Spacer(minLength: 0)
             HStack(spacing: 8) {
                 ForEach(ActivityFeedFilter.allCases) { filter in
                     Button {
@@ -65,7 +81,7 @@ struct ActivityView: View {
                     } label: {
                         Text(filter.rawValue)
                             .font(.system(size: 16, weight: .semibold))
-                            .foregroundColor(selectedFilter == filter ? .white : .muted)
+                            .foregroundColor(selectedFilter == filter ? .text : .muted)
                             .padding(.horizontal, 14)
                             .padding(.vertical, 10)
                             .background(selectedFilter == filter ? Color.white.opacity(0.14) : Color.clear)
@@ -74,6 +90,8 @@ struct ActivityView: View {
                     .buttonStyle(.plain)
                 }
             }
+            .frame(maxWidth: 420)
+            Spacer(minLength: 0)
         }
     }
 
@@ -139,6 +157,23 @@ struct ActivityView: View {
     }
 
     private func activityRow(_ item: ActivityFeedItem) -> some View {
+        let rowContent = activityRowContent(item)
+        if item.kind == .session {
+            return AnyView(
+                Button {
+                    openSessionShareCard(for: item)
+                } label: {
+                    rowContent
+                }
+                .buttonStyle(.plain)
+                .disabled(loadingSessionItemId != nil)
+            )
+        } else {
+            return AnyView(rowContent)
+        }
+    }
+
+    private func activityRowContent(_ item: ActivityFeedItem) -> some View {
         HStack(alignment: .top, spacing: 12) {
             ZStack {
                 Circle()
@@ -159,9 +194,24 @@ struct ActivityView: View {
                     .lineLimit(2)
             }
             Spacer(minLength: 8)
-            Text(item.timestamp, style: .relative)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundColor(.muted)
+            if loadingSessionItemId == item.id {
+                ProgressView()
+                    .scaleEffect(0.85)
+                    .tint(.muted)
+                    .frame(minWidth: 48, alignment: .trailing)
+            } else {
+                if item.kind == .session {
+                    Text(trailingLabel(for: item))
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.muted)
+                        .multilineTextAlignment(.trailing)
+                } else {
+                    Text(item.timestamp, style: .relative)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.muted)
+                        .multilineTextAlignment(.trailing)
+                }
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -169,6 +219,15 @@ struct ActivityView: View {
             RoundedRectangle(cornerRadius: 12)
                 .fill(Color.bgSecondary.opacity(0.75))
         )
+    }
+
+    private func trailingLabel(for item: ActivityFeedItem) -> String {
+        let durationText = formatSessionDuration(item.sessionDurationSeconds)
+        let dateText = sessionDateFormatter.string(from: item.timestamp)
+        if dateText.isEmpty {
+            return durationText
+        }
+        return "\(dateText) • \(durationText)"
     }
 
     private var emptyMessage: String {
@@ -215,6 +274,52 @@ struct ActivityView: View {
         }
     }
 
+    private func formatSessionDuration(_ seconds: TimeInterval?) -> String {
+        let totalSeconds = Int((seconds ?? 0).rounded())
+        guard totalSeconds > 0 else { return "0 min" }
+        let hours = totalSeconds / 3600
+        let minutes = (totalSeconds % 3600) / 60
+        if hours > 0 && minutes > 0 {
+            return "\(hours) hr \(minutes) min"
+        }
+        if hours > 0 {
+            return "\(hours) hr"
+        }
+        return "\(max(1, minutes)) min"
+    }
+
+    private func openSessionShareCard(for item: ActivityFeedItem) {
+        guard item.kind == .session, let sessionId = item.sessionId else {
+            showSummaryError = true
+            return
+        }
+        loadingSessionItemId = item.id
+        Task {
+            do {
+                let session = try await ActivityFeedService.shared.fetchSessionRecord(sessionId: sessionId)
+                await MainActor.run {
+                    loadingSessionItemId = nil
+                    guard let session else {
+                        showSummaryError = true
+                        return
+                    }
+                    let summary = session.toSummaryData()
+                    let hasAnyStats = summary.doorsCount > 0 || summary.conversations > 0 || summary.distance > 0 || summary.time > 0
+                    guard hasAnyStats else {
+                        showSummaryError = true
+                        return
+                    }
+                    selectedSummaryItem = EndSessionSummaryItem(data: summary, sessionID: sessionId)
+                }
+            } catch {
+                await MainActor.run {
+                    loadingSessionItemId = nil
+                    showSummaryError = true
+                }
+            }
+        }
+    }
+
     private func loadItems() async {
         guard let userId = auth.user?.id else {
             errorMessage = "Please sign in to view activity"
@@ -236,6 +341,17 @@ struct ActivityView: View {
         }
         isLoading = false
     }
+
+    private var sessionDateFormatter: DateFormatter {
+        Self._sessionDateFormatter
+    }
+
+    private static let _sessionDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = .autoupdatingCurrent
+        formatter.setLocalizedDateFormatFromTemplate("MMM d")
+        return formatter
+    }()
 }
 
 #Preview {

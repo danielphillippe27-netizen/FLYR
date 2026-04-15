@@ -9,8 +9,11 @@ actor BuildingStatsSubscriber {
     private let supabase: SupabaseClient
     private var channel: RealtimeChannelV2?
     private var pollingTask: Task<Void, Never>?
+    private var insertStreamTask: Task<Void, Never>?
+    private var updateStreamTask: Task<Void, Never>?
     private var useWebSocket = true
     private var lastStats: [String: BuildingStatsUpdate] = [:]
+    private var subscribedCampaignId: UUID?
     
     // MARK: - Callback
     
@@ -35,6 +38,12 @@ actor BuildingStatsSubscriber {
     /// Subscribes to building stats updates for a campaign
     /// - Parameter campaignId: The campaign ID to subscribe to
     func subscribe(campaignId: UUID) async {
+        if subscribedCampaignId == campaignId, channel != nil || pollingTask != nil {
+            return
+        }
+        await unsubscribe()
+        subscribedCampaignId = campaignId
+
         // Try WebSocket first
         if useWebSocket {
             await subscribeWebSocket(campaignId: campaignId)
@@ -49,6 +58,10 @@ actor BuildingStatsSubscriber {
         // Cancel polling task
         pollingTask?.cancel()
         pollingTask = nil
+        insertStreamTask?.cancel()
+        insertStreamTask = nil
+        updateStreamTask?.cancel()
+        updateStreamTask = nil
         
         // Unsubscribe from channel
         if let channel = channel {
@@ -58,6 +71,7 @@ actor BuildingStatsSubscriber {
         
         // Clear cache
         lastStats.removeAll()
+        subscribedCampaignId = nil
     }
     
     // MARK: - Private Methods - WebSocket
@@ -65,45 +79,48 @@ actor BuildingStatsSubscriber {
     private func subscribeWebSocket(campaignId: UUID) async {
         let channelId = "building-stats-\(campaignId.uuidString)"
         
+        // Create channel
+        let newChannel = supabase.realtimeV2.channel(channelId)
+        
+        // Listen to building_stats changes
+        let changeStream = newChannel.postgresChange(
+            InsertAction.self,
+            schema: "public",
+            table: "building_stats"
+        )
+        
+        // Handle updates in a background task
+        insertStreamTask = Task {
+            for await change in changeStream {
+                await self.handleWebSocketUpdate(change: change)
+            }
+        }
+        
+        // Also listen to updates
+        let updateStream = newChannel.postgresChange(
+            UpdateAction.self,
+            schema: "public",
+            table: "building_stats"
+        )
+        
+        updateStreamTask = Task {
+            for await change in updateStream {
+                await self.handleWebSocketUpdate(change: change)
+            }
+        }
+        
+        // Subscribe to channel
         do {
-            // Create channel
-            let newChannel = supabase.realtimeV2.channel(channelId)
-            
-            // Listen to building_stats changes
-            let changeStream = await newChannel.postgresChange(
-                InsertAction.self,
-                schema: "public",
-                table: "building_stats"
-            )
-            
-            // Handle updates in a background task
-            Task {
-                for await change in changeStream {
-                    await self.handleWebSocketUpdate(change: change)
-                }
-            }
-            
-            // Also listen to updates
-            let updateStream = await newChannel.postgresChange(
-                UpdateAction.self,
-                schema: "public",
-                table: "building_stats"
-            )
-            
-            Task {
-                for await change in updateStream {
-                    await self.handleWebSocketUpdate(change: change)
-                }
-            }
-            
-            // Subscribe to channel
-            await newChannel.subscribe()
+            try await newChannel.subscribeWithError()
             self.channel = newChannel
-            
             print("✅ BuildingStatsSubscriber: WebSocket connected for campaign \(campaignId)")
         } catch {
-            print("⚠️ BuildingStatsSubscriber: WebSocket failed, falling back to polling. Error: \(error)")
+            print("⚠️ BuildingStatsSubscriber: WebSocket subscribe failed: \(error). Falling back to polling.")
             useWebSocket = false
+            insertStreamTask?.cancel()
+            insertStreamTask = nil
+            updateStreamTask?.cancel()
+            updateStreamTask = nil
             await subscribeFallback(campaignId: campaignId)
         }
     }

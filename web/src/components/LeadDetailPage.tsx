@@ -11,8 +11,9 @@ import type { CRMConnection, UserIntegration } from '../types/leads'
 import SyncSettingsView from './SyncSettingsView'
 
 const PROVIDER_NAMES: Record<string, string> = {
+  boldtrail: 'BoldTrail / kvCORE',
   fub: 'Follow Up Boss',
-  kvcore: 'KVCore',
+  kvcore: 'BoldTrail / kvCORE',
   zapier: 'Zapier',
   hubspot: 'HubSpot',
   monday: 'Monday.com',

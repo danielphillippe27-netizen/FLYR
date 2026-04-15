@@ -92,7 +92,7 @@ struct FlyrMapView: View {
         }
         
         // Apply initial mode after map loads (to add 3D layers if needed)
-        newMapView.mapboxMap?.onMapLoaded.observeNext { _ in
+        _ = newMapView.mapboxMap?.onMapLoaded.observeNext { _ in
             Task { @MainActor in
                 MapController.shared.applyMode(mode, to: newMapView, campaignPolygon: campaignPolygon, campaignId: campaignId)
             }
@@ -349,4 +349,3 @@ struct MapboxMapViewRepresentable: UIViewRepresentable {
         
     }
 }
-

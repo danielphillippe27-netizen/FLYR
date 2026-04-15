@@ -1,24 +1,24 @@
 import SwiftUI
-import UIKit
 
-/// Modal to connect Follow Up Boss: paste API key, validate locally, send to backend only.
-/// Backend verifies with FUB and stores encrypted key; app never stores the key.
+/// Modal to connect Follow Up Boss with OAuth.
+/// The backend handles OAuth exchange and token storage; app never stores FUB credentials.
 struct ConnectFUBView: View {
-    @State private var apiKeyText = ""
-    @State private var showApiKey = false
+    @Environment(\.openURL) private var openURL
+    @Environment(\.dismiss) private var dismiss
+
+    let existingConnection: CRMConnection?
     @State private var isConnecting = false
+    @State private var isTestingConnection = false
+    @State private var isSendingTestLead = false
     @State private var errorMessage: String?
-    @FocusState private var apiKeyFocused: Bool
+    @State private var successMessage: String?
 
     var onSuccess: () -> Void
     var onCancel: () -> Void
+    var onDisconnect: (() -> Void)?
 
-    private var trimmedKey: String {
-        apiKeyText.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private var isKeyValid: Bool {
-        trimmedKey.count >= 20
+    private var isConnected: Bool {
+        existingConnection?.isConnected == true
     }
 
     var body: some View {
@@ -27,56 +27,48 @@ struct ConnectFUBView: View {
                 Color.bg.ignoresSafeArea()
                 ScrollView {
                     VStack(alignment: .leading, spacing: 20) {
-                        Text("Enter your Follow Up Boss API key")
+                        Text(isConnected ? "Manage Follow Up Boss" : "Connect Follow Up Boss")
                             .font(.flyrHeadline)
                             .foregroundColor(.text)
 
-                        HStack(spacing: 12) {
-                            if showApiKey {
-                                TextField("API Key", text: $apiKeyText)
-                                    .textInputAutocapitalization(.never)
-                                    .autocorrectionDisabled(true)
-                                    .focused($apiKeyFocused)
-                            } else {
-                                SecureField("API Key", text: $apiKeyText)
-                                    .textInputAutocapitalization(.never)
-                                    .autocorrectionDisabled(true)
-                                    .focused($apiKeyFocused)
-                            }
-                            Button(showApiKey ? "Hide" : "Show") {
-                                showApiKey.toggle()
+                        Text(
+                            isConnected
+                            ? "Your Follow Up Boss connection is active. You can verify it, send a test lead, or disconnect below."
+                            : "Sign in to Follow Up Boss and approve access. FLYR will securely store OAuth tokens on the backend."
+                        )
+                            .font(.flyrSubheadline)
+                            .foregroundColor(.secondary)
+
+                        if isConnected {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("Available actions")
+                                    .font(.flyrSystem(size: 15, weight: .semibold))
+                                    .foregroundColor(.text)
+                                Text("1) Test the stored Follow Up Boss connection")
+                                Text("2) Send a provider-specific test lead")
+                                Text("3) Disconnect any time")
                             }
                             .font(.flyrSubheadline)
-                            .foregroundColor(.info)
-                        }
-                        .padding(12)
-                        .background(Color.bgSecondary)
-                        .cornerRadius(12)
-                        .disabled(isConnecting)
-
-                        Button("Paste") {
-                            if let str = UIPasteboard.general.string {
-                                apiKeyText = str.trimmingCharacters(in: .whitespacesAndNewlines)
+                            .foregroundColor(.secondary)
+                        } else {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("What happens next")
+                                    .font(.flyrSystem(size: 15, weight: .semibold))
+                                    .foregroundColor(.text)
+                                Text("1) Tap Continue")
+                                Text("2) Sign in to Follow Up Boss")
+                                Text("3) Approve access")
+                                Text("4) Return to FLYR automatically")
                             }
+                            .font(.flyrSubheadline)
+                            .foregroundColor(.secondary)
                         }
-                        .font(.flyrSubheadline)
-                        .foregroundColor(.info)
-                        .disabled(isConnecting)
 
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("How to get your API key")
-                                .font(.flyrSystem(size: 15, weight: .semibold))
-                                .foregroundColor(.text)
-                            Text("1) Open Follow Up Boss (desktop works best)")
-                            Text("2) Go to Settings → Integrations / API")
-                            Text("3) Generate API Key (or \"Create Key\")")
-                            Text("4) Copy and paste it here")
-                            Text("5) Tap Connect")
-                                .padding(.bottom, 4)
+                        if let successMessage {
+                            Text(successMessage)
+                                .font(.flyrSubheadline)
+                                .foregroundColor(.success)
                         }
-                        .font(.flyrSubheadline)
-                        .foregroundColor(.secondary)
-
                         if let err = errorMessage {
                             Text(err)
                                 .font(.flyrSubheadline)
@@ -85,7 +77,76 @@ struct ConnectFUBView: View {
 
                         Spacer(minLength: 24)
 
-                        Text("We encrypt your key and only use it to sync leads/notes you create in FLYR.")
+                        if isConnected {
+                            VStack(spacing: 12) {
+                                Button {
+                                    testConnection()
+                                } label: {
+                                    HStack {
+                                        if isTestingConnection {
+                                            ProgressView().tint(.white)
+                                        }
+                                        Text(isTestingConnection ? "Testing…" : "Test Connection")
+                                            .font(.flyrSystem(size: 16, weight: .semibold))
+                                    }
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 14)
+                                    .foregroundColor(.white)
+                                    .background(Color.info)
+                                    .cornerRadius(12)
+                                }
+                                .disabled(isTestingConnection || isSendingTestLead)
+
+                                Button {
+                                    sendTestLead()
+                                } label: {
+                                    HStack {
+                                        if isSendingTestLead {
+                                            ProgressView().tint(.white)
+                                        }
+                                        Text(isSendingTestLead ? "Sending…" : "Send Test Lead")
+                                            .font(.flyrSystem(size: 16, weight: .semibold))
+                                    }
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 14)
+                                    .foregroundColor(.white)
+                                    .background(Color.accent)
+                                    .cornerRadius(12)
+                                }
+                                .disabled(isTestingConnection || isSendingTestLead)
+
+                                if let onDisconnect {
+                                    Button(role: .destructive) {
+                                        onDisconnect()
+                                        dismiss()
+                                    } label: {
+                                        Text("Disconnect Follow Up Boss")
+                                            .frame(maxWidth: .infinity)
+                                    }
+                                    .padding(.top, 4)
+                                }
+                            }
+                        } else {
+                            Button {
+                                beginOAuth()
+                            } label: {
+                                HStack {
+                                    if isConnecting {
+                                        ProgressView().tint(.white)
+                                    }
+                                    Text(isConnecting ? "Opening…" : "Continue to Follow Up Boss")
+                                        .font(.flyrSystem(size: 16, weight: .semibold))
+                                }
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 14)
+                                .foregroundColor(.white)
+                                .background(Color.accent)
+                                .cornerRadius(12)
+                            }
+                            .disabled(isConnecting)
+                        }
+
+                        Text("You can disconnect anytime from Integrations.")
                             .font(.flyrCaption)
                             .foregroundColor(.secondary)
                     }
@@ -102,53 +163,73 @@ struct ConnectFUBView: View {
                     }
                     .disabled(isConnecting)
                 }
-                ToolbarItem(placement: .confirmationAction) {
-                    if isConnecting {
-                        ProgressView()
-                    } else {
-                        Button("Connect") {
-                            connect()
-                        }
-                        .disabled(!isKeyValid)
-                    }
-                }
             }
-        }
-        .onAppear {
-            errorMessage = nil
         }
     }
 
-    private func connect() {
+    private func testConnection() {
+        successMessage = nil
         errorMessage = nil
-        if !isKeyValid {
-            errorMessage = "API key looks too short."
-            UINotificationFeedbackGenerator().notificationOccurred(.error)
-            return
-        }
+        isTestingConnection = true
 
-        isConnecting = true
         Task {
             do {
-                _ = try await FUBConnectAPI.shared.connect(apiKey: trimmedKey)
+                let response = try await FUBPushLeadAPI.shared.testConnection()
                 await MainActor.run {
-                    isConnecting = false
-                    HapticManager.success()
-                    if let userId = AuthManager.shared.user?.id {
-                        Task { await CRMConnectionStore.shared.refresh(userId: userId) }
-                    }
-                    onSuccess()
-                }
-            } catch let e as FUBConnectError {
-                await MainActor.run {
-                    errorMessage = e.errorDescription ?? "Couldn't connect. Check your API key and try again."
-                    UINotificationFeedbackGenerator().notificationOccurred(.error)
-                    isConnecting = false
+                    isTestingConnection = false
+                    successMessage = response.message ?? "Follow Up Boss connection is working."
                 }
             } catch {
                 await MainActor.run {
-                    errorMessage = "No connection—try again."
-                    UINotificationFeedbackGenerator().notificationOccurred(.error)
+                    isTestingConnection = false
+                    errorMessage = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    private func sendTestLead() {
+        successMessage = nil
+        errorMessage = nil
+        isSendingTestLead = true
+
+        Task {
+            do {
+                let response = try await FUBPushLeadAPI.shared.testPush()
+                await MainActor.run {
+                    isSendingTestLead = false
+                    successMessage = response.message ?? "Test lead sent to Follow Up Boss."
+                }
+            } catch {
+                await MainActor.run {
+                    isSendingTestLead = false
+                    errorMessage = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    private func beginOAuth() {
+        successMessage = nil
+        errorMessage = nil
+        isConnecting = true
+        Task {
+            do {
+                let authorizeURL = try await FUBOAuthAPI.shared.fetchAuthorizeURL(platform: "ios")
+                await MainActor.run {
+                    isConnecting = false
+                    #if DEBUG
+                    print("🚀 [FUB OAuth] Opening authorize URL: \(authorizeURL.absoluteString)")
+                    #endif
+                    openURL(authorizeURL)
+                    onCancel()
+                }
+            } catch {
+                await MainActor.run {
+                    #if DEBUG
+                    print("❌ [FUB OAuth] Failed to begin OAuth: \(error.localizedDescription)")
+                    #endif
+                    errorMessage = error.localizedDescription
                     isConnecting = false
                 }
             }
@@ -157,5 +238,5 @@ struct ConnectFUBView: View {
 }
 
 #Preview {
-    ConnectFUBView(onSuccess: {}, onCancel: {})
+    ConnectFUBView(existingConnection: nil, onSuccess: {}, onCancel: {}, onDisconnect: nil)
 }

@@ -1,7 +1,7 @@
 import Foundation
 
 /// Type of farm touch
-enum FarmTouchType: String, Codable, CaseIterable, Identifiable {
+enum FarmTouchType: String, Codable, CaseIterable, Identifiable, Sendable {
     case flyer = "flyer"
     case doorKnock = "door_knock"
     case event = "event"
@@ -25,7 +25,7 @@ enum FarmTouchType: String, Codable, CaseIterable, Identifiable {
     var iconName: String {
         switch self {
         case .flyer: return "paperplane.fill"
-        case .doorKnock: return "door.left.hand.open"
+        case .doorKnock: return "door.left.hand.closed"
         case .event: return "calendar"
         case .newsletter: return "envelope.fill"
         case .ad: return "megaphone.fill"
@@ -49,6 +49,7 @@ enum FarmTouchType: String, Codable, CaseIterable, Identifiable {
 struct FarmTouch: Identifiable, Codable, Equatable {
     let id: UUID
     let farmId: UUID
+    let phaseId: UUID?
     let date: Date
     let type: FarmTouchType
     let title: String
@@ -57,11 +58,16 @@ struct FarmTouch: Identifiable, Codable, Equatable {
     let completed: Bool
     let campaignId: UUID?
     let batchId: UUID?
+    let sessionId: UUID?
+    let completedAt: Date?
+    let completedByUserId: UUID?
+    let executionMetrics: [String: AnyCodable]?
     let createdAt: Date
     
     enum CodingKeys: String, CodingKey {
         case id
         case farmId = "farm_id"
+        case phaseId = "phase_id"
         case date
         case type
         case title
@@ -70,6 +76,10 @@ struct FarmTouch: Identifiable, Codable, Equatable {
         case completed
         case campaignId = "campaign_id"
         case batchId = "batch_id"
+        case sessionId = "session_id"
+        case completedAt = "completed_at"
+        case completedByUserId = "completed_by_user_id"
+        case executionMetrics = "execution_metrics"
         case createdAt = "created_at"
     }
     
@@ -78,6 +88,7 @@ struct FarmTouch: Identifiable, Codable, Equatable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(UUID.self, forKey: .id)
         farmId = try container.decode(UUID.self, forKey: .farmId)
+        phaseId = try container.decodeIfPresent(UUID.self, forKey: .phaseId)
         
         // Decode date (can be date-only string or full timestamp)
         if let dateString = try? container.decode(String.self, forKey: .date) {
@@ -103,12 +114,17 @@ struct FarmTouch: Identifiable, Codable, Equatable {
         completed = try container.decode(Bool.self, forKey: .completed)
         campaignId = try container.decodeIfPresent(UUID.self, forKey: .campaignId)
         batchId = try container.decodeIfPresent(UUID.self, forKey: .batchId)
+        sessionId = try container.decodeIfPresent(UUID.self, forKey: .sessionId)
+        completedAt = try container.decodeIfPresent(Date.self, forKey: .completedAt)
+        completedByUserId = try container.decodeIfPresent(UUID.self, forKey: .completedByUserId)
+        executionMetrics = try container.decodeIfPresent([String: AnyCodable].self, forKey: .executionMetrics)
         createdAt = try container.decode(Date.self, forKey: .createdAt)
     }
     
     init(
         id: UUID = UUID(),
         farmId: UUID,
+        phaseId: UUID? = nil,
         date: Date,
         type: FarmTouchType,
         title: String,
@@ -117,10 +133,15 @@ struct FarmTouch: Identifiable, Codable, Equatable {
         completed: Bool = false,
         campaignId: UUID? = nil,
         batchId: UUID? = nil,
+        sessionId: UUID? = nil,
+        completedAt: Date? = nil,
+        completedByUserId: UUID? = nil,
+        executionMetrics: [String: AnyCodable]? = nil,
         createdAt: Date = Date()
     ) {
         self.id = id
         self.farmId = farmId
+        self.phaseId = phaseId
         self.date = date
         self.type = type
         self.title = title
@@ -129,6 +150,10 @@ struct FarmTouch: Identifiable, Codable, Equatable {
         self.completed = completed
         self.campaignId = campaignId
         self.batchId = batchId
+        self.sessionId = sessionId
+        self.completedAt = completedAt
+        self.completedByUserId = completedByUserId
+        self.executionMetrics = executionMetrics
         self.createdAt = createdAt
     }
     
@@ -137,6 +162,7 @@ struct FarmTouch: Identifiable, Codable, Equatable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(id, forKey: .id)
         try container.encode(farmId, forKey: .farmId)
+        try container.encodeIfPresent(phaseId, forKey: .phaseId)
         
         // Encode date as date-only string
         let dateFormatter = DateFormatter()
@@ -151,9 +177,11 @@ struct FarmTouch: Identifiable, Codable, Equatable {
         try container.encode(completed, forKey: .completed)
         try container.encodeIfPresent(campaignId, forKey: .campaignId)
         try container.encodeIfPresent(batchId, forKey: .batchId)
+        try container.encodeIfPresent(sessionId, forKey: .sessionId)
+        try container.encodeIfPresent(completedAt, forKey: .completedAt)
+        try container.encodeIfPresent(completedByUserId, forKey: .completedByUserId)
+        try container.encodeIfPresent(executionMetrics, forKey: .executionMetrics)
         try container.encode(createdAt, forKey: .createdAt)
     }
 }
-
-
 

@@ -98,7 +98,7 @@ struct LeaderboardView: View {
                 rank: user.rank,
                 avatarUrl: user.avatarUrl,
                 name: user.name,
-                subtitle: nil,
+                subtitle: user.brokerage,
                 value: value,
                 isCurrentUser: isCurrentUser,
                 isActiveMetric: true
@@ -123,7 +123,7 @@ struct LeaderboardView: View {
                 rank: 0,
                 avatarUrl: vm.currentUserProfileImageURL ?? vm.currentUserProfile?.avatarURL ?? currentUser.photoURL?.absoluteString,
                 name: displayName,
-                subtitle: "No activity this period",
+                subtitle: inactiveCurrentUserSubtitle,
                 value: 0,
                 valueDisplay: "—",
                 isCurrentUser: true,
@@ -157,6 +157,13 @@ struct LeaderboardView: View {
         }
         if let authName = currentUser.displayName, !authName.isEmpty { return authName }
         return "You"
+    }
+
+    private var inactiveCurrentUserSubtitle: String {
+        if let brokerage = vm.currentUserBrokerage, !brokerage.isEmpty {
+            return "\(brokerage) • No activity this period"
+        }
+        return "No activity this period"
     }
 
     private var emptyView: some View {

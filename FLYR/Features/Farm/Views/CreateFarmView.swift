@@ -4,14 +4,20 @@ import Supabase
 
 struct CreateFarmView: View {
     @StateObject private var viewModel = CreateFarmViewModel()
+    @StateObject private var authManager = AuthManager.shared
     @State private var showPolygonSelector = false
     @State private var showTouchPlanner = false
     @State private var createdFarm: Farm?
     
     @Environment(\.dismiss) var dismiss
-    @EnvironmentObject var authManager: AuthManager
     
     var body: some View {
+        NavigationStack {
+            createFarmForm
+        }
+    }
+
+    private var createFarmForm: some View {
         Form {
             Section("Farm Details") {
                 TextField("Farm Name", text: $viewModel.name)
@@ -106,7 +112,7 @@ struct CreateFarmView: View {
             }
         }
     }
-    
+
     private func createFarm() async {
         guard let userId = authManager.user?.id else {
             viewModel.errorMessage = "Not authenticated"
@@ -124,9 +130,5 @@ struct CreateFarmView: View {
 }
 
 #Preview {
-    NavigationStack {
-        CreateFarmView()
-            .environmentObject(AuthManager.shared)
-    }
+    CreateFarmView()
 }
-

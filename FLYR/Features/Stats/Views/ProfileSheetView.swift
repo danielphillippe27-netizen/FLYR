@@ -34,7 +34,7 @@ struct ProfileSheetView: View {
                 ScrollView {
                     VStack(spacing: 24) {
                         // Sticky "You" Card
-                        if let userID = auth.user?.id {
+                        if auth.user?.id != nil {
                             YouStickyCard(
                                 rank: leaderboardVM.currentUserRank,
                                 totalUsers: leaderboardVM.users.count,
@@ -425,4 +425,3 @@ struct SettingsRow: View {
 #Preview {
     ProfileSheetView()
 }
-

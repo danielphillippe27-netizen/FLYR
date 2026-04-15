@@ -1,7 +1,20 @@
 import { supabase } from '../supabase'
-import type { CRMConnection, UserIntegration, LeadSyncPayload } from '../types/leads'
+import type { CRMConnection, UserIntegration, LeadSyncPayload, MondayBoard } from '../types/leads'
 
 const API_BASE = import.meta.env.VITE_FLYR_API_URL?.replace(/\/$/, '') ?? ''
+
+type BoldTrailConnectResponse = {
+  connected?: boolean
+  disconnected?: boolean
+  success?: boolean
+  message?: string
+  error?: string
+  tokenHint?: string
+  account?: {
+    name?: string | null
+    email?: string | null
+  } | null
+}
 
 /** Fetch FUB connection status from crm_connections. */
 export async function fetchFUBConnection(userId: string): Promise<CRMConnection | null> {
@@ -54,16 +67,75 @@ export async function connectFUB(apiKey: string, accessToken: string): Promise<{
   return json
 }
 
+export async function connectBoldTrail(apiToken: string, accessToken: string): Promise<BoldTrailConnectResponse> {
+  const url = `${API_BASE}/api/integrations/boldtrail/connect`
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify({ api_token: apiToken.trim() }),
+  })
+  const json = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    return {
+      connected: false,
+      error: json.error ?? 'Failed to save BoldTrail token',
+    }
+  }
+  return json
+}
+
+export async function testBoldTrailConnection(
+  accessToken: string,
+  apiToken?: string
+): Promise<BoldTrailConnectResponse> {
+  const url = `${API_BASE}/api/integrations/boldtrail/test`
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: apiToken?.trim() ? JSON.stringify({ api_token: apiToken.trim() }) : undefined,
+  })
+  const json = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    return {
+      success: false,
+      error: json.error ?? 'Failed to test BoldTrail connection',
+    }
+  }
+  return json
+}
+
 /** Disconnect FUB via backend. */
 export async function disconnectFUB(accessToken: string): Promise<void> {
   const url = `${API_BASE}/api/integrations/fub/disconnect`
-  const res = await fetch(url, {
-    method: 'DELETE',
-    headers: { Authorization: `Bearer ${accessToken}` },
-  })
-  if (!res.ok) {
+  for (const method of ['POST', 'DELETE']) {
+    const res = await fetch(url, {
+      method,
+      headers: { Authorization: `Bearer ${accessToken}` },
+    })
+    if (res.ok) return
+    if (res.status === 405 && method === 'POST') continue
     const json = await res.json().catch(() => ({}))
-    throw new Error(json.error ?? 'Failed to disconnect')
+    throw new Error(json.error ?? json.message ?? 'Failed to disconnect')
+  }
+}
+
+export async function disconnectBoldTrail(accessToken: string): Promise<void> {
+  const url = `${API_BASE}/api/integrations/boldtrail/disconnect`
+  for (const method of ['POST', 'DELETE']) {
+    const res = await fetch(url, {
+      method,
+      headers: { Authorization: `Bearer ${accessToken}` },
+    })
+    if (res.ok) return
+    if (res.status === 405 && method === 'POST') continue
+    const json = await res.json().catch(() => ({}))
+    throw new Error(json.error ?? json.message ?? 'Failed to disconnect BoldTrail')
   }
 }
 
@@ -97,6 +169,74 @@ export async function connectZapier(userId: string, webhookUrl: string): Promise
   if (error) throw error
 }
 
+export async function exchangeOAuthCode(
+  provider: 'hubspot' | 'monday',
+  code: string,
+  userId: string,
+  accessToken: string
+): Promise<void> {
+  const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/oauth_exchange`
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${accessToken}`,
+      apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
+    },
+    body: JSON.stringify({
+      provider,
+      code,
+      user_id: userId,
+    }),
+  })
+  const json = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(json.error ?? 'OAuth exchange failed')
+}
+
+export async function fetchMondayBoards(accessToken: string): Promise<{
+  boards: MondayBoard[]
+  selectedBoardId?: string | null
+  selectedBoardName?: string | null
+  accountId?: string | null
+  accountName?: string | null
+}> {
+  const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/monday_boards`
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${accessToken}`,
+      apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
+    },
+    body: JSON.stringify({ action: 'list' }),
+  })
+  const json = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(json.error ?? 'Failed to load monday boards')
+  return json
+}
+
+export async function selectMondayBoard(
+  boardId: string,
+  accessToken: string
+): Promise<{ success: boolean; selectedBoardId?: string | null; selectedBoardName?: string | null }> {
+  const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/monday_boards`
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${accessToken}`,
+      apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
+    },
+    body: JSON.stringify({
+      action: 'select_board',
+      board_id: boardId,
+    }),
+  })
+  const json = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(json.error ?? 'Failed to save monday board')
+  return json
+}
+
 /** Disconnect a provider from user_integrations (for KVCore, Zapier). */
 export async function disconnectUserIntegration(userId: string, provider: string): Promise<void> {
   if (!supabase) throw new Error('Supabase not configured')
@@ -110,10 +250,7 @@ export async function disconnectUserIntegration(userId: string, provider: string
 
 /**
  * Invoke crm_sync Edge Function to sync a lead to connected CRMs.
- * Note: FUB keys connected via backend are stored in crm_connection_secrets; the Edge Function
- * currently reads user_integrations. So FUB sync works when the user connected FUB via the
- * Integrations page (backend), only if the Edge Function is updated to resolve FUB from
- * crm_connection_secrets, or when FUB is stored in user_integrations (e.g. legacy).
+ * Follow Up Boss remains the native/special-case path; provider-based CRMs flow through crm_sync.
  */
 export async function syncLeadToCRM(
   lead: LeadSyncPayload,
@@ -128,7 +265,10 @@ export async function syncLeadToCRM(
       'Content-Type': 'application/json',
       Authorization: `Bearer ${accessToken}`,
     },
-    body: JSON.stringify({ lead, user_id: userId }),
+    body: JSON.stringify({
+      lead,
+      user_id: userId,
+    }),
   })
   const json = await res.json()
   if (!res.ok) throw new Error(json.error ?? 'Sync failed')

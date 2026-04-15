@@ -4,16 +4,15 @@ import SwiftUI
 struct UberStyleTabBar: View {
     let selectedIndex: Int
     let onSelect: (Int) -> Void
-    let recordHighlight: Bool // Session tab highlighted (e.g. red) when campaign selected on map
+    let recordHighlight: Bool // Session tab can use filled icon when campaign selected on map
     let accentColor: Color
 
     private enum Tab: Int, CaseIterable {
-        case home = 0, map = 1, record = 2, leads = 3, leaderboard = 4, settings = 5
+        case home = 0, record = 1, leads = 2, leaderboard = 3, settings = 4
 
         var title: String {
             switch self {
             case .home: return "Home"
-            case .map: return "Map"
             case .record: return "Session"
             case .leads: return "Leads"
             case .leaderboard: return "Leaderboard"
@@ -24,7 +23,6 @@ struct UberStyleTabBar: View {
         func icon(selected: Bool, recordHighlight: Bool) -> String {
             switch self {
             case .home: return selected ? "house.fill" : "house"
-            case .map: return "map"
             case .record:
                 return recordHighlight ? "record.circle.fill" : (selected ? "record.circle.fill" : "record.circle")
             case .leads: return "tray.full.fill"
@@ -40,8 +38,7 @@ struct UberStyleTabBar: View {
                 UberTabItem(
                     title: tab.title,
                     icon: tab.icon(selected: selectedIndex == tab.rawValue, recordHighlight: tab == .record && recordHighlight),
-                    isSelected: selectedIndex == tab.rawValue,
-                    useAccent: tab == .record && recordHighlight
+                    isSelected: selectedIndex == tab.rawValue
                 ) {
                     onSelect(tab.rawValue)
                 }
@@ -57,7 +54,6 @@ private struct UberTabItem: View {
     let title: String
     let icon: String
     let isSelected: Bool
-    let useAccent: Bool
     let action: () -> Void
 
     var body: some View {
@@ -75,7 +71,6 @@ private struct UberTabItem: View {
     }
 
     private var foregroundColor: Color {
-        if useAccent { return Color.red }
         return isSelected ? Color.red : Color(.secondaryLabel)
     }
 }

@@ -74,7 +74,7 @@ final class SettingsViewModel: ObservableObject {
     }
     
     func saveSettings(userID: UUID) async {
-        guard var currentSettings = settings else { return }
+        guard let currentSettings = settings else { return }
         
         isSaving = true
         errorMessage = nil
@@ -128,4 +128,3 @@ final class SettingsViewModel: ObservableObject {
         }
     }
 }
-

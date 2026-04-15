@@ -3,18 +3,22 @@ import { useAuth } from '../contexts/AuthContext'
 import {
   fetchCRMConnections,
   fetchUserIntegrations,
+  disconnectBoldTrail,
   disconnectFUB,
-  connectKVCore,
   connectZapier,
   disconnectUserIntegration,
   syncLeadToCRM,
+  exchangeOAuthCode,
+  fetchMondayBoards,
+  selectMondayBoard,
 } from '../lib/integrations'
-import type { CRMConnection, UserIntegration, IntegrationProvider } from '../types/leads'
+import type { CRMConnection, UserIntegration, IntegrationProvider, MondayBoard } from '../types/leads'
 import ConnectFUBModal from './ConnectFUBModal'
+import ConnectBoldTrailModal from './ConnectBoldTrailModal'
 
 const PROVIDERS: { id: IntegrationProvider; name: string; description: string }[] = [
+  { id: 'boldtrail', name: 'BoldTrail / kvCORE', description: 'Token-based BoldTrail / kvCORE lead sync' },
   { id: 'fub', name: 'Follow Up Boss', description: 'Real estate CRM and lead management' },
-  { id: 'kvcore', name: 'KVCore', description: 'Real estate marketing platform' },
   { id: 'hubspot', name: 'HubSpot', description: 'Marketing, sales, and service platform' },
   { id: 'monday', name: 'Monday.com', description: 'Work management and collaboration' },
   { id: 'zapier', name: 'Zapier / Webhooks', description: 'Automate workflows with webhooks' },
@@ -26,15 +30,19 @@ export default function IntegrationsPage() {
   const [integrations, setIntegrations] = useState<UserIntegration[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [showBoldTrail, setShowBoldTrail] = useState(false)
   const [showFUB, setShowFUB] = useState(false)
-  const [showKVCore, setShowKVCore] = useState(false)
   const [showZapier, setShowZapier] = useState(false)
-  const [kvcoreKey, setKvcoreKey] = useState('')
   const [zapierUrl, setZapierUrl] = useState('')
   const [apiError, setApiError] = useState<string | null>(null)
   const [connecting, setConnecting] = useState<string | null>(null)
   const [testLeadSent, setTestLeadSent] = useState(false)
   const [sendingTest, setSendingTest] = useState(false)
+  const [mondayBoards, setMondayBoards] = useState<MondayBoard[]>([])
+  const [loadingMondayBoards, setLoadingMondayBoards] = useState(false)
+  const [savingMondayBoard, setSavingMondayBoard] = useState(false)
+
+  const mondayIntegration = integrations.find((i) => i.provider === 'monday')
 
   async function load() {
     if (!user?.id) return
@@ -55,31 +63,74 @@ export default function IntegrationsPage() {
     load()
   }, [user?.id])
 
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const provider = params.get('provider')
+    const code = params.get('code')
+    if (!user?.id || !code || provider !== 'monday') return
+
+    let cancelled = false
+    ;(async () => {
+      try {
+        const token = await getAccessToken()
+        if (!token) throw new Error('Not signed in')
+        await exchangeOAuthCode('monday', code, user.id, token)
+        if (cancelled) return
+        setApiError(null)
+        await load()
+        await loadMondayBoards()
+        window.history.replaceState({}, '', '/integrations')
+      } catch (error) {
+        if (cancelled) return
+        setApiError(error instanceof Error ? error.message : 'Failed to connect Monday.com')
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [user?.id, getAccessToken])
+
   function isConnected(provider: IntegrationProvider): boolean {
-    if (provider === 'fub') {
-      return connections.some((c) => c.provider === 'fub' && c.status === 'connected')
+    if (provider === 'fub' || provider === 'boldtrail') {
+      return connections.some((c) => c.provider === provider && c.status === 'connected')
     }
     const int = integrations.find((i) => i.provider === provider)
     if (!int) return false
     if (provider === 'zapier') return !!int.webhook_url
-    if (provider === 'kvcore') return !!int.api_key
     return !!int.access_token
   }
 
   async function handleConnect(provider: IntegrationProvider) {
-    if (provider === 'fub') {
-      setShowFUB(true)
+    if (provider === 'boldtrail') {
+      setShowBoldTrail(true)
       return
     }
-    if (provider === 'kvcore') {
-      setShowKVCore(true)
+    if (provider === 'fub') {
+      setShowFUB(true)
       return
     }
     if (provider === 'zapier') {
       setShowZapier(true)
       return
     }
-    setApiError('HubSpot and Monday require OAuth (not implemented on web yet).')
+    if (provider === 'monday') {
+      const clientId = import.meta.env.VITE_MONDAY_CLIENT_ID as string | undefined
+      if (!clientId) {
+        setApiError('Missing VITE_MONDAY_CLIENT_ID for Monday.com OAuth.')
+        return
+      }
+      const redirectUri = `${window.location.origin}/integrations`
+      const params = new URLSearchParams({
+        client_id: clientId,
+        redirect_uri: redirectUri,
+        scope: 'boards:read boards:write',
+        state: user?.id ?? '',
+      })
+      window.location.assign(`https://auth.monday.com/oauth2/authorize?${params.toString()}`)
+      return
+    }
+    setApiError('HubSpot OAuth is not implemented on web yet.')
   }
 
   async function handleDisconnect(provider: IntegrationProvider) {
@@ -91,6 +142,10 @@ export default function IntegrationsPage() {
         const token = await getAccessToken()
         if (!token) throw new Error('Not signed in')
         await disconnectFUB(token)
+      } else if (provider === 'boldtrail') {
+        const token = await getAccessToken()
+        if (!token) throw new Error('Not signed in')
+        await disconnectBoldTrail(token)
       } else {
         await disconnectUserIntegration(user.id, provider)
       }
@@ -107,20 +162,9 @@ export default function IntegrationsPage() {
     await load()
   }
 
-  async function handleConnectKVCore() {
-    if (!user?.id || !kvcoreKey.trim()) return
-    setConnecting('kvcore')
-    setApiError(null)
-    try {
-      await connectKVCore(user.id, kvcoreKey)
-      setShowKVCore(false)
-      setKvcoreKey('')
-      await load()
-    } catch (e) {
-      setApiError(e instanceof Error ? e.message : 'Failed to connect')
-    } finally {
-      setConnecting(null)
-    }
+  async function handleBoldTrailSuccess() {
+    setShowBoldTrail(false)
+    await load()
   }
 
   async function handleConnectZapier() {
@@ -166,6 +210,33 @@ export default function IntegrationsPage() {
       setApiError(e instanceof Error ? e.message : 'Failed to send test lead')
     } finally {
       setSendingTest(false)
+    }
+  }
+
+  async function loadMondayBoards() {
+    const token = await getAccessToken()
+    if (!token) throw new Error('Not signed in')
+    setLoadingMondayBoards(true)
+    try {
+      const data = await fetchMondayBoards(token)
+      setMondayBoards(data.boards ?? [])
+    } finally {
+      setLoadingMondayBoards(false)
+    }
+  }
+
+  async function handleSelectMondayBoard(boardId: string) {
+    const token = await getAccessToken()
+    if (!token) return
+    setSavingMondayBoard(true)
+    setApiError(null)
+    try {
+      await selectMondayBoard(boardId, token)
+      await load()
+    } catch (error) {
+      setApiError(error instanceof Error ? error.message : 'Failed to save Monday board')
+    } finally {
+      setSavingMondayBoard(false)
     }
   }
 
@@ -229,6 +300,61 @@ export default function IntegrationsPage() {
             </div>
           </section>
 
+          {mondayIntegration?.access_token && (
+            <section style={{ marginBottom: 32, padding: 16, background: 'var(--bg-secondary)', borderRadius: 20, border: '1px solid #333' }}>
+              <h2 style={{ fontSize: 22, fontWeight: 700, marginBottom: 12 }}>Monday.com</h2>
+              <p style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 12 }}>
+                {mondayIntegration.selected_board_name
+                  ? `Selected board: ${mondayIntegration.selected_board_name}`
+                  : 'Connected, but no board selected yet.'}
+              </p>
+              <button
+                type="button"
+                onClick={() => loadMondayBoards().catch((error) => setApiError(error instanceof Error ? error.message : 'Failed to load Monday boards'))}
+                disabled={loadingMondayBoards || savingMondayBoard}
+                style={{
+                  padding: '10px 16px',
+                  background: '#007AFF',
+                  border: 'none',
+                  borderRadius: 10,
+                  color: 'white',
+                  cursor: 'pointer',
+                  fontSize: 14,
+                  marginBottom: 12,
+                }}
+              >
+                {loadingMondayBoards ? 'Loading boards...' : mondayIntegration.selected_board_name ? 'Change board' : 'Select board'}
+              </button>
+
+              {mondayBoards.length > 0 && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {mondayBoards.map((board) => (
+                    <button
+                      key={board.id}
+                      type="button"
+                      onClick={() => handleSelectMondayBoard(board.id)}
+                      disabled={savingMondayBoard}
+                      style={{
+                        textAlign: 'left',
+                        padding: 12,
+                        background: 'rgba(255,255,255,0.06)',
+                        border: '1px solid #333',
+                        borderRadius: 10,
+                        color: 'var(--text)',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      <div style={{ fontWeight: 600 }}>{board.name}</div>
+                      {board.workspaceName && (
+                        <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 4 }}>{board.workspaceName}</div>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </section>
+          )}
+
           <section style={{ padding: 16, background: 'var(--bg-secondary)', borderRadius: 20, border: '1px solid #333' }}>
             <h2 style={{ fontSize: 22, fontWeight: 700, marginBottom: 12 }}>Automation</h2>
             <button
@@ -266,22 +392,14 @@ export default function IntegrationsPage() {
         </div>
       )}
 
-      {showKVCore && (
+      {showBoldTrail && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
-          <div style={{ background: 'var(--bg)', borderRadius: 16, maxWidth: 400, width: '90%', padding: 20, border: '1px solid #333' }}>
-            <h3 style={{ marginBottom: 16 }}>Connect KVCore</h3>
-            <input
-              type="password"
-              value={kvcoreKey}
-              onChange={(e) => setKvcoreKey(e.target.value)}
-              placeholder="API Key"
-              disabled={!!connecting}
-              style={{ width: '100%', padding: 12, marginBottom: 12, borderRadius: 10, border: '1px solid #333', background: 'var(--bg-secondary)', color: 'var(--text)' }}
+          <div style={{ background: 'var(--bg)', borderRadius: 16, maxWidth: 440, width: '90%', border: '1px solid #333' }}>
+            <ConnectBoldTrailModal
+              connection={connections.find((connection) => connection.provider === 'boldtrail') ?? null}
+              onSuccess={handleBoldTrailSuccess}
+              onCancel={() => setShowBoldTrail(false)}
             />
-            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-              <button type="button" onClick={() => setShowKVCore(false)} disabled={!!connecting}>Cancel</button>
-              <button type="button" onClick={handleConnectKVCore} disabled={!kvcoreKey.trim() || !!connecting}>{connecting === 'kvcore' ? 'Connecting...' : 'Connect'}</button>
-            </div>
           </div>
         </div>
       )}

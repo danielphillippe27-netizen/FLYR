@@ -7,28 +7,35 @@ const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 
 type RouteContext = { params: Promise<{ campaignId: string; buildingId: string }> };
 
+type ResolvedBuilding = {
+  rowId: string;
+  publicId: string;
+};
+
 /**
- * Resolve path param buildingId (GERS ID string or buildings.id UUID string) to buildings.id UUID.
- * building_address_links.building_id references buildings(id), so we need the internal UUID.
+ * Resolve a public building identifier to both the buildings row UUID and the public id shown on the map.
+ * Supports both UUID-based manual buildings (buildings.id) and GERS-linked imported buildings.
  */
-async function resolveBuildingId(
-  supabase: ReturnType<typeof createClient>,
+async function resolveBuilding(
+  supabase: any,
   buildingIdParam: string
-): Promise<string | null> {
+): Promise<ResolvedBuilding | null> {
   const uuidMatch = buildingIdParam.match(
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
   );
-  if (!uuidMatch) return null;
+  const query = supabase.from("buildings").select("id, gers_id").limit(1);
+  const builder = uuidMatch
+    ? query.or(`id.eq.${buildingIdParam},gers_id.eq.${buildingIdParam}`)
+    : query.eq("gers_id", buildingIdParam);
 
-  const { data: row, error } = await supabase
-    .from("buildings")
-    .select("id")
-    .or(`id.eq.${buildingIdParam},gers_id.eq.${buildingIdParam}`)
-    .limit(1)
-    .maybeSingle();
+  const { data: row, error } = await builder.maybeSingle();
 
   if (error || !row) return null;
-  return (row as { id: string }).id;
+  const building = row as { id: string; gers_id: string | null };
+  return {
+    rowId: building.id,
+    publicId: building.gers_id ?? building.id,
+  };
 }
 
 function getAuthUser(request: Request) {
@@ -39,7 +46,7 @@ function getAuthUser(request: Request) {
 
 /** Ensure the campaign exists and the user can access it (owner or workspace member). */
 async function ensureCampaignAccess(
-  supabase: ReturnType<typeof createClient>,
+  supabase: any,
   campaignId: string,
   userId: string
 ): Promise<boolean> {
@@ -97,19 +104,27 @@ export async function GET(request: Request, context: RouteContext) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
-    const buildingUuid = await resolveBuildingId(supabase, buildingIdParam);
-    if (!buildingUuid) {
+    const resolvedBuilding = await resolveBuilding(supabase, buildingIdParam);
+    if (!resolvedBuilding) {
       return NextResponse.json(
         { error: "Building not found", addresses: [] },
         { status: 404 }
       );
     }
 
+    const buildingIdCandidates = Array.from(
+      new Set(
+        [resolvedBuilding.rowId, resolvedBuilding.publicId]
+          .map((value) => value.trim())
+          .filter((value) => value.length > 0)
+      )
+    );
+
     const { data: links, error: linksError } = await supabase
       .from("building_address_links")
       .select("address_id")
       .eq("campaign_id", campaignId)
-      .eq("building_id", buildingUuid);
+      .in("building_id", buildingIdCandidates);
 
     if (linksError) {
       console.error("[buildings/addresses] links error:", linksError);
@@ -198,19 +213,21 @@ export async function POST(request: Request, context: RouteContext) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
-    const buildingUuid = await resolveBuildingId(supabase, buildingIdParam);
-    if (!buildingUuid) {
+    const resolvedBuilding = await resolveBuilding(supabase, buildingIdParam);
+    if (!resolvedBuilding) {
       return NextResponse.json({ error: "Building not found" }, { status: 404 });
     }
 
     const { error: insertError } = await supabase
       .from("building_address_links")
       .insert({
-        building_id: buildingUuid,
+        building_id: resolvedBuilding.rowId,
         address_id: addressId,
         campaign_id: campaignId,
-        method: "MANUAL",
-        is_primary: false,
+        match_type: "manual",
+        confidence: 1,
+        is_multi_unit: false,
+        unit_count: 1,
       });
 
     if (insertError) {
@@ -274,15 +291,15 @@ export async function DELETE(request: Request, context: RouteContext) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
-    const buildingUuid = await resolveBuildingId(supabase, buildingIdParam);
-    if (!buildingUuid) {
+    const resolvedBuilding = await resolveBuilding(supabase, buildingIdParam);
+    if (!resolvedBuilding) {
       return NextResponse.json({ error: "Building not found" }, { status: 404 });
     }
 
     const { error: deleteError } = await supabase
       .from("building_address_links")
       .delete()
-      .eq("building_id", buildingUuid)
+      .eq("building_id", resolvedBuilding.rowId)
       .eq("address_id", addressId)
       .eq("campaign_id", campaignId);
 

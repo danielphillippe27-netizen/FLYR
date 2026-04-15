@@ -5,17 +5,11 @@ struct StringSlugifier {
     /// Convert a string to a URL-safe filename slug
     /// Example: "161 Sprucewood Crescent" -> "161_sprucewood_crescent"
     static func slugify(_ string: String) -> String {
-        // Convert to lowercase
-        var slug = string.lowercased()
-        
-        // Replace spaces and common separators with underscores
-        slug = slug.replacingOccurrences(of: " ", with: "_")
-        slug = slug.replacingOccurrences(of: "-", with: "_")
-        slug = slug.replacingOccurrences(of: ",", with: "_")
-        
-        // Remove invalid filename characters
-        let invalidChars = CharacterSet(charactersIn: "/:?<>\\|*\"'")
-        slug = slug.components(separatedBy: invalidChars).joined(separator: "")
+        // Normalize and keep only lowercase ASCII letters and digits.
+        var slug = string
+            .folding(options: .diacriticInsensitive, locale: .current)
+            .lowercased()
+            .replacingOccurrences(of: "[^a-z0-9]+", with: "_", options: .regularExpression)
         
         // Remove multiple consecutive underscores
         while slug.contains("__") {
@@ -39,4 +33,3 @@ struct StringSlugifier {
         return slug
     }
 }
-

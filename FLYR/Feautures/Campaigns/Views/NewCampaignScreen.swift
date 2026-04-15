@@ -10,13 +10,12 @@ struct NewCampaignScreen: View {
     
     @State private var name = ""
     @State private var description = ""
-    @State private var tags = ""
     @State private var source: AddressSource = .map
     @State private var count: AddressCountOption = .c100
 
     @StateObject private var auto = UseAddressAutocomplete()
     @State private var showMapSeed = false
-    @State private var seedLabel: String = ""
+    @State private var mapCenterLabel: String = ""
     @State private var selectedCenter: CLLocationCoordinate2D? = nil
     @State private var drawnPolygon: [CLLocationCoordinate2D]? = nil
 
@@ -27,35 +26,77 @@ struct NewCampaignScreen: View {
     /// Do not use createHook.isCreating for this because createHook resets after insert/createV2 returns.
     @State private var isSubmittingCampaign = false
     @State private var showPaywall = false
+    @State private var showNameRequiredScreen = false
 
     private var mapPreviewCenter: CLLocationCoordinate2D {
         selectedCenter ?? locationManager.currentLocation?.coordinate ?? CLLocationCoordinate2D(latitude: 43.65, longitude: -79.38)
     }
 
+    private var trimmedCampaignName: String {
+        name.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var hasCampaignName: Bool {
+        !trimmedCampaignName.isEmpty
+    }
+
+    private var hasDrawnTerritory: Bool {
+        (drawnPolygon?.count ?? 0) >= 3
+    }
+
+    private var hasMapCenterAddress: Bool {
+        !mapCenterLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     private var canCreate: Bool {
-        guard !name.trimmingCharacters(in: .whitespaces).isEmpty else { return false }
-        return drawnPolygon != nil && drawnPolygon!.count >= 3
+        hasCampaignName && hasDrawnTerritory
+    }
+
+    private var createButtonTitle: String {
+        if !hasCampaignName {
+            return "Enter Campaign Name"
+        }
+        if !hasDrawnTerritory {
+            return "Draw Territory to Continue"
+        }
+        return "Create Campaign"
+    }
+
+    private var territoryHelperText: String {
+        if !hasCampaignName {
+            return "Enter a campaign name to start drawing your territory."
+        }
+        if !hasDrawnTerritory {
+            return hasMapCenterAddress
+                ? "Map centered. Now draw your territory on the map."
+                : "Territory not set yet - draw on the map to continue."
+        }
+        return "Territory set. You can create this campaign now."
+    }
+
+    private var territoryHelperColor: Color {
+        if !hasCampaignName {
+            return .red
+        }
+        if hasDrawnTerritory {
+            return .green
+        }
+        return .secondary
     }
     
     var body: some View {
         ScrollView {
             VStack(spacing: 28) {
-                
-                FormSection("Campaign") {
-                    // Title field
+                VStack(alignment: .leading, spacing: 16) {
+                    Text("Step 1")
+                        .font(.flyrCaption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+
+                    Text("Enter campaign name")
+                        .font(.flyrHeadline)
+
                     HStack {
-                        TextField("Title", text: $name)
-                            .textInputAutocapitalization(.words)
-                            .font(.system(size: 16))
-                        Spacer()
-                    }
-                    .padding(12)
-                    .background(Color(.secondarySystemBackground))
-                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    
-                    // Tags field with consistent styling
-                    HStack {
-                        TextField("Tags (optional)", text: $tags)
+                        TextField("Campaign name", text: $name)
                             .textInputAutocapitalization(.words)
                             .font(.system(size: 16))
                         Spacer()
@@ -68,50 +109,90 @@ struct NewCampaignScreen: View {
                 
                 // Territory: starting address + map preview + draw polygon
                 VStack(alignment: .leading, spacing: 16) {
-                    Text("Territory")
-                        .font(.flyrHeadline)
+                    HStack(spacing: 8) {
+                        Text("Step 2")
+                            .font(.flyrCaption.weight(.semibold))
+                            .foregroundStyle(.secondary)
 
-                    Text("Starting address (optional)")
-                        .font(.flyrSubheadline)
-                        .foregroundStyle(.secondary)
-
-                    AddressSearchField(auto: auto) { suggestion in
-                        selectedCenter = suggestion.coordinate
-                        seedLabel = auto.query
-                        auto.clear()
+                        Text("(Optional)")
+                            .font(.flyrCaption.weight(.semibold))
+                            .foregroundStyle(.secondary)
                     }
 
-                    // Map preview: tap to open draw polygon workflow
-                    TerritoryPreviewMapView(center: selectedCenter ?? locationManager.currentLocation?.coordinate, polygon: drawnPolygon, useDarkStyle: colorScheme == .dark, height: 220)
-                        .frame(height: 220)
-                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            showMapSeed = true
-                        }
+                    Text("Center map on address")
+                        .font(.flyrHeadline)
 
-                    Button {
-                        showMapSeed = true
-                    } label: {
-                        HStack {
-                            Image(systemName: "map")
-                            Text(seedLabel.isEmpty ? "Draw polygon on map" : seedLabel)
-                            Spacer()
-                            Image(systemName: "chevron.right")
-                                .font(.flyrCaption)
+                    AddressSearchField(
+                        auto: auto,
+                        onPick: { suggestion in
+                            applySelectedCenter(
+                                suggestion.coordinate,
+                                label: formattedAddress(from: suggestion)
+                            )
+                            auto.clear()
+                        },
+                        onSubmitQuery: { query in
+                            Task { await centerMap(on: query) }
+                        }
+                    )
+
+                    Text("Step 3")
+                        .font(.flyrCaption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+
+                    Text("Draw your territory")
+                        .font(.flyrHeadline)
+
+                    ZStack(alignment: .topLeading) {
+                        // Map preview: tap to open draw polygon workflow
+                        TerritoryPreviewMapView(center: mapPreviewCenter, polygon: drawnPolygon, useDarkStyle: colorScheme == .dark, height: 220)
+                            .frame(height: 220)
+                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                openMapDrawing()
+                            }
+
+                        if !hasDrawnTerritory {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("No territory drawn yet")
+                                    .font(.flyrFootnote.weight(.semibold))
+                                Text("Tap or drag on the map to outline your area.")
+                                    .font(.flyrCaption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(2)
+                            }
+                            .padding(10)
+                            .background(.ultraThinMaterial)
+                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                            .padding(10)
+                            .allowsHitTesting(false)
+                        }
+                    }
+
+                    if hasMapCenterAddress {
+                        HStack(alignment: .top, spacing: 12) {
+                            Image(systemName: "mappin.and.ellipse")
                                 .foregroundStyle(.secondary)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Map centered at")
+                                    .font(.flyrFootnote)
+                                    .foregroundStyle(.secondary)
+                                Text(mapCenterLabel)
+                                    .font(.flyrSubheadline)
+                                    .foregroundStyle(.primary)
+                                    .lineLimit(2)
+                            }
+                            Spacer()
                         }
                         .padding()
                         .background(Color(.systemGray6))
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                     }
-                    .buttonStyle(.plain)
 
-                    if !seedLabel.isEmpty {
-                        Text("Create Campaign will save the territory and provision addresses from the area.")
-                            .font(.flyrFootnote)
-                            .foregroundStyle(.secondary)
-                    }
+                    Text(territoryHelperText)
+                        .font(.flyrFootnote)
+                        .foregroundStyle(territoryHelperColor)
                 }
                 .formContainerPadding()
 
@@ -130,7 +211,7 @@ struct NewCampaignScreen: View {
                         .font(.flyrFootnote) 
                 }
                 PrimaryButton(
-                    title: "Create Campaign",
+                    title: createButtonTitle,
                     enabled: canCreate && !isSubmittingCampaign,
                     isLoading: isSubmittingCampaign
                 ) {
@@ -151,14 +232,10 @@ struct NewCampaignScreen: View {
                         initialCenter: selectedCenter ?? locationManager.currentLocation?.coordinate,
                         onPolygonDone: { vertices in
                             self.drawnPolygon = vertices
-                            self.selectedCenter = nil
-                            self.seedLabel = "Polygon (\(vertices.count) points)"
                             self.showMapSeed = false
                         },
                         onCreateCampaign: { vertices in
                             self.drawnPolygon = vertices
-                            self.selectedCenter = nil
-                            self.seedLabel = "Polygon (\(vertices.count) points)"
                             self.showMapSeed = false
                             guard !self.isSubmittingCampaign else { return }
                             self.isSubmittingCampaign = true
@@ -169,6 +246,11 @@ struct NewCampaignScreen: View {
                 .sheet(isPresented: $showPaywall) {
                     PaywallView()
                 }
+                .fullScreenCover(isPresented: $showNameRequiredScreen) {
+                    CampaignNameRequiredView {
+                        showNameRequiredScreen = false
+                    }
+                }
                 .overlay {
                     if isSubmittingCampaign {
                         CampaignCreatingOverlayView(useDarkStyle: colorScheme == .dark)
@@ -177,6 +259,15 @@ struct NewCampaignScreen: View {
                     }
                 }
                 .hidesTabBar()
+    }
+
+    private func openMapDrawing() {
+        guard !trimmedCampaignName.isEmpty else {
+            HapticManager.light()
+            showNameRequiredScreen = true
+            return
+        }
+        showMapSeed = true
     }
     
     /// If polygonFromSheet is non-nil, use it for the map flow (avoids relying on state when coming from sheet).
@@ -235,7 +326,7 @@ struct NewCampaignScreen: View {
                 seedQuery: auto.query.isEmpty ? nil : auto.query,
                 seedLon: center.longitude,
                 seedLat: center.latitude,
-                tags: tags.trimmingCharacters(in: .whitespaces).isEmpty ? nil : tags.trimmingCharacters(in: .whitespaces),
+                tags: nil,
                 addressesJSON: [],
                 workspaceId: workspaceId
             )
@@ -274,12 +365,13 @@ struct NewCampaignScreen: View {
                     seedQuery: nil,
                     seedLon: nil,
                     seedLat: nil,
-                    tags: tags.trimmingCharacters(in: .whitespaces).isEmpty ? nil : tags.trimmingCharacters(in: .whitespaces),
+                    tags: nil,
                     addressesJSON: [],
                     workspaceId: workspaceId
                 )
-                if let created = await createHook.createV2(payload: payload, store: store) {
+                if let created = await createHook.createV2(payload: payload, store: store, polygon: polygon) {
                     print("✅ [CAMPAIGN DEBUG] Campaign created with ID: \(created.id)")
+                    var createdCampaign = created
                     let geoJSON = polygonToGeoJSON(polygon)
                     var shouldNavigateToDetails = true
                     do {
@@ -296,11 +388,22 @@ struct NewCampaignScreen: View {
                         }
                         print("🗺️ [CAMPAIGN DEBUG] Territory updated, starting provision...")
                         let provisionResponse = try await CampaignsAPI.shared.provisionCampaign(campaignId: created.id)
+                        if let confidence = provisionResponse?.dataConfidenceSummary {
+                            createdCampaign.dataConfidence = confidence
+                            store.update(createdCampaign)
+                        }
                         let provisionState = try await CampaignsAPI.shared.waitForProvisionReady(campaignId: created.id)
                         if provisionState.provisionStatus != "ready" {
                             createHook.error = "Campaign created but provisioning did not complete (status: \(provisionState.provisionStatus ?? "unknown")). You can retry from campaign details."
                             shouldNavigateToDetails = false
                         } else {
+                            if source == .map {
+                                let roadsOK = await CampaignRoadService.shared.areRoadsReady(campaignId: created.id.uuidString)
+                                if !roadsOK {
+                                    createHook.error = "Provisioning completed but campaign roads are not ready. Wait a moment and open the campaign from the list, or retry provisioning from campaign details."
+                                    shouldNavigateToDetails = false
+                                }
+                            }
                             let dbAddressCount = (try? await CampaignsAPI.shared.fetchAddresses(campaignId: created.id).count) ?? 0
                             let addressesSaved = provisionResponse?.addressesSaved ?? dbAddressCount
                             let buildingsSaved = provisionResponse?.buildingsSaved ?? 0
@@ -316,7 +419,7 @@ struct NewCampaignScreen: View {
                         shouldNavigateToDetails = false
                     }
                     guard shouldNavigateToDetails else { return }
-                    await routeToCampaignMap(created)
+                    await routeToCampaignMap(createdCampaign)
                 } else {
                     print("❌ [CAMPAIGN DEBUG] Campaign creation failed")
                 }
@@ -375,14 +478,81 @@ struct NewCampaignScreen: View {
         return "lat[\(minLat), \(maxLat)] lon[\(minLon), \(maxLon)]"
     }
 
-    /// After successful creation/provision, close create flow and open the new campaign in map mode.
+    @MainActor
+    private func applySelectedCenter(_ coordinate: CLLocationCoordinate2D, label: String) {
+        selectedCenter = coordinate
+        mapCenterLabel = label
+        createHook.error = nil
+    }
+
+    private func centerMap(on query: String) async {
+        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedQuery.isEmpty else { return }
+
+        do {
+            let seed = try await GeoAPI.shared.forwardGeocodeSeed(trimmedQuery)
+            await MainActor.run {
+                applySelectedCenter(seed.coordinate, label: trimmedQuery)
+            }
+        } catch {
+            await MainActor.run {
+                createHook.error = "Could not center map on \"\(trimmedQuery)\""
+            }
+        }
+    }
+
+    private func formattedAddress(from suggestion: AddressSuggestion) -> String {
+        [suggestion.title, suggestion.subtitle]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: ", ")
+    }
+
+    /// After successful creation/provision, close create flow and open the new campaign in the Session tab.
     private func routeToCampaignMap(_ campaign: CampaignV2) async {
         dismiss()
         try? await Task.sleep(nanoseconds: 300_000_000)
         await MainActor.run {
-            uiState.selectedMapCampaignId = campaign.id
-            uiState.selectedMapCampaignName = campaign.name
+            uiState.selectCampaign(id: campaign.id, name: campaign.name)
             uiState.selectedTabIndex = 1
+        }
+    }
+}
+
+private struct CampaignNameRequiredView: View {
+    let onDismiss: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 20) {
+                Spacer()
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 48))
+                    .foregroundStyle(.orange)
+                Text("Campaign Name Required")
+                    .font(.title3.bold())
+                    .multilineTextAlignment(.center)
+                Text("Enter a campaign name to start drawing your territory.")
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 24)
+                Button("Back to Campaign Setup") {
+                    onDismiss()
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                Spacer()
+            }
+            .padding()
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Close") {
+                        onDismiss()
+                    }
+                }
+            }
         }
     }
 }

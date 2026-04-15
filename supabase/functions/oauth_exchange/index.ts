@@ -7,6 +7,11 @@ interface OAuthExchangeRequest {
   user_id: string;
 }
 
+interface MondayAccountProfile {
+  accountId?: string;
+  accountName?: string;
+}
+
 serve(async (req) => {
   try {
     const { provider, code, user_id }: OAuthExchangeRequest = await req.json();
@@ -33,6 +38,8 @@ serve(async (req) => {
     let accessToken: string;
     let refreshToken: string | undefined;
     let expiresAt: number | undefined;
+    let accountId: string | undefined;
+    let accountName: string | undefined;
 
     // Exchange authorization code for tokens
     if (provider === "hubspot") {
@@ -50,6 +57,9 @@ serve(async (req) => {
       expiresAt = tokens.expires_in
         ? Math.floor(Date.now() / 1000) + tokens.expires_in
         : undefined;
+      const profile = await fetchMondayAccountProfile(accessToken);
+      accountId = profile.accountId;
+      accountName = profile.accountName;
     }
 
     // Upsert integration in database
@@ -62,6 +72,8 @@ serve(async (req) => {
           access_token: accessToken,
           refresh_token: refreshToken,
           expires_at: expiresAt,
+          account_id: accountId,
+          account_name: accountName,
           updated_at: new Date().toISOString(),
         },
         {
@@ -185,4 +197,43 @@ async function exchangeMondayCode(code: string): Promise<{
   };
 }
 
+async function fetchMondayAccountProfile(accessToken: string): Promise<MondayAccountProfile> {
+  const response = await fetch("https://api.monday.com/v2", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: accessToken,
+      "API-Version": "2023-10",
+    },
+    body: JSON.stringify({
+      query: `
+        query {
+          account {
+            id
+            name
+          }
+          me {
+            id
+            name
+          }
+        }
+      `,
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Monday.com profile fetch failed: ${response.status} - ${errorText}`);
+  }
+
+  const data = await response.json();
+  if (data.errors?.length) {
+    throw new Error(`Monday.com profile fetch failed: ${JSON.stringify(data.errors)}`);
+  }
+
+  return {
+    accountId: data.data?.account?.id?.toString?.() ?? data.data?.me?.id?.toString?.(),
+    accountName: data.data?.account?.name ?? data.data?.me?.name,
+  };
+}
 

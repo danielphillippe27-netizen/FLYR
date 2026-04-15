@@ -18,7 +18,7 @@ function getAuthUser(request: Request): string | null {
 
 /** Ensure the campaign exists and the user can access it (owner or workspace member). */
 async function ensureCampaignAccess(
-  supabase: ReturnType<typeof createClient>,
+  supabase: any,
   campaignId: string,
   userId: string
 ): Promise<boolean> {
@@ -49,6 +49,147 @@ async function ensureCampaignAccess(
 }
 
 const EMPTY_FEATURE_COLLECTION = { type: "FeatureCollection", features: [] };
+const MANUAL_HOME_PROXY_HALF_SIDE_METERS = 2.3 * 3.0;
+
+type GeoJSONGeometry = {
+  type?: string;
+  coordinates?: unknown;
+};
+
+type GeoJSONFeature = {
+  id?: unknown;
+  type?: string;
+  geometry?: GeoJSONGeometry;
+  properties?: Record<string, unknown>;
+};
+
+function normalizedString(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function finiteNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function isPolygonFeature(feature: GeoJSONFeature): boolean {
+  const geometryType = normalizedString(feature.geometry?.type);
+  return geometryType === "Polygon" || geometryType === "MultiPolygon";
+}
+
+function isManualFeature(feature: GeoJSONFeature): boolean {
+  const source = normalizedString(feature.properties?.source)?.toLowerCase();
+  return source === "manual";
+}
+
+function isManualAddressPointFeature(feature: GeoJSONFeature): boolean {
+  const geometryType = normalizedString(feature.geometry?.type);
+  return geometryType === "Point" && isManualFeature(feature);
+}
+
+function squarePolygonCoordinates(
+  longitude: number,
+  latitude: number,
+  halfSideMeters: number
+): number[][] {
+  const latDelta = halfSideMeters / 111_320.0;
+  const metersPerLonDegree = Math.max(
+    Math.cos((latitude * Math.PI) / 180.0) * 111_320.0,
+    0.0001
+  );
+  const lonDelta = halfSideMeters / metersPerLonDegree;
+
+  return [
+    [longitude - lonDelta, latitude - latDelta],
+    [longitude + lonDelta, latitude - latDelta],
+    [longitude + lonDelta, latitude + latDelta],
+    [longitude - lonDelta, latitude + latDelta],
+    [longitude - lonDelta, latitude - latDelta],
+  ];
+}
+
+function buildManualAddressProxyFeature(feature: GeoJSONFeature): GeoJSONFeature | null {
+  if (!isManualAddressPointFeature(feature)) return null;
+
+  const coordinates = Array.isArray(feature.geometry?.coordinates)
+    ? feature.geometry?.coordinates
+    : null;
+  const longitude = coordinates && coordinates.length > 0 ? finiteNumber(coordinates[0]) : null;
+  const latitude = coordinates && coordinates.length > 1 ? finiteNumber(coordinates[1]) : null;
+
+  if (longitude == null || latitude == null) return null;
+
+  const props = feature.properties ?? {};
+  const addressId =
+    normalizedString(props.address_id) ??
+    normalizedString(props.id) ??
+    normalizedString(feature.id);
+
+  if (!addressId) return null;
+
+  const houseNumber = normalizedString(props.house_number);
+  const streetName = normalizedString(props.street_name);
+  const fallbackAddressText = [houseNumber, streetName].filter(Boolean).join(" ").trim();
+  const addressText =
+    normalizedString(props.address_text) ??
+    normalizedString(props.formatted) ??
+    (fallbackAddressText.length > 0 ? fallbackAddressText : "Address");
+
+  const height =
+    finiteNumber(props.height_m) ??
+    finiteNumber(props.height) ??
+    9;
+
+  return {
+    type: "Feature",
+    id: addressId,
+    geometry: {
+      type: "Polygon",
+      coordinates: [squarePolygonCoordinates(longitude, latitude, MANUAL_HOME_PROXY_HALF_SIDE_METERS)],
+    },
+    properties: {
+      ...props,
+      id: addressId,
+      gers_id: normalizedString(props.gers_id) ?? addressId,
+      building_id: normalizedString(props.building_id) ?? addressId,
+      address_id: addressId,
+      address_text: addressText,
+      house_number: houseNumber,
+      street_name: streetName,
+      source: "manual",
+      feature_type: normalizedString(props.feature_type) ?? "address_proxy",
+      feature_status: normalizedString(props.feature_status) ?? "manual",
+      height,
+      height_m: height,
+      min_height: finiteNumber(props.min_height) ?? 0,
+      is_townhome: false,
+      units_count: Math.max(1, Math.round(finiteNumber(props.units_count) ?? 1)),
+      address_count: Math.max(1, Math.round(finiteNumber(props.address_count) ?? 1)),
+      status: normalizedString(props.status) ?? "not_visited",
+      scans_today: Math.max(0, Math.round(finiteNumber(props.scans_today) ?? 0)),
+      scans_total: Math.max(0, Math.round(finiteNumber(props.scans_total) ?? 0)),
+      qr_scanned: Boolean(props.qr_scanned),
+    },
+  };
+}
+
+function dedupeFeatures(features: GeoJSONFeature[]): GeoJSONFeature[] {
+  const seen = new Set<string>();
+  const deduped: GeoJSONFeature[] = [];
+
+  for (const feature of features) {
+    const key =
+      normalizedString(feature.id) ??
+      normalizedString(feature.properties?.id) ??
+      JSON.stringify(feature);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(feature);
+  }
+
+  return deduped;
+}
 
 /**
  * Fetch building GeoJSON from S3 using bucket + key from campaign_snapshots.
@@ -132,21 +273,32 @@ export async function GET(request: Request, context: RouteContext): Promise<Resp
       .rpc("rpc_get_campaign_full_features", { p_campaign_id: campaignId })
       .single();
 
+    let rpcBasePolygonFeatures: GeoJSONFeature[] = [];
+    let rpcManualPolygonFeatures: GeoJSONFeature[] = [];
+    let rpcManualAddressProxyFeatures: GeoJSONFeature[] = [];
+
     if (!rpcError && rpcResult) {
       const fc = rpcResult as { type?: string; features?: unknown[] };
-      const features = fc?.features ?? [];
-      const polygonFeatures = (features as Array<{ geometry?: { type?: string } }>)
-        .filter((f) => {
-          const t = f?.geometry?.type;
-          return t === "Polygon" || t === "MultiPolygon";
-        });
+      const features = (fc?.features ?? []) as GeoJSONFeature[];
+      const polygonFeatures = features.filter(isPolygonFeature);
 
-      if (polygonFeatures.length > 0) {
+      rpcBasePolygonFeatures = polygonFeatures.filter((feature) => !isManualFeature(feature));
+      rpcManualPolygonFeatures = polygonFeatures.filter(isManualFeature);
+      rpcManualAddressProxyFeatures = features
+        .map(buildManualAddressProxyFeature)
+        .filter((feature): feature is GeoJSONFeature => feature !== null);
+
+      if (rpcBasePolygonFeatures.length > 0) {
+        const mergedFeatures = dedupeFeatures([
+          ...rpcBasePolygonFeatures,
+          ...rpcManualPolygonFeatures,
+          ...rpcManualAddressProxyFeatures,
+        ]);
         console.log(
-          `[buildings] RPC returned ${polygonFeatures.length} polygon features for ${campaignId}`
+          `[buildings] RPC returned ${mergedFeatures.length} merged polygon/proxy features for ${campaignId}`
         );
         return NextResponse.json(
-          { type: "FeatureCollection", features: polygonFeatures },
+          { type: "FeatureCollection", features: mergedFeatures },
           { headers: { "Content-Type": "application/json" } }
         );
       }
@@ -169,12 +321,111 @@ export async function GET(request: Request, context: RouteContext): Promise<Resp
       console.log(
         `[buildings] S3 fallback: bucket=${snap.bucket} key=${snap.buildings_key}`
       );
-      const geojson = await fetchFromS3(snap.bucket, snap.buildings_key);
+      const geojson = await fetchFromS3(snap.bucket, snap.buildings_key) as {
+        type: string;
+        features: Array<{ id?: unknown; properties?: Record<string, unknown>; geometry?: unknown }>;
+      } | null;
+
       if (geojson) {
-        return NextResponse.json(geojson, {
+        // Enrich S3 buildings with address_id + address_count from building_address_links.
+        // This mirrors what the Gold RPC does automatically via the building_id FK, and
+        // allows the iOS tap resolver (resolveAddressForBuilding) to match buildings to addresses.
+        const { data: links } = await supabase
+          .from("building_address_links")
+          .select("building_id, address_id")
+          .eq("campaign_id", campaignId);
+
+        if (links && links.length > 0) {
+          const buildingRowIds = Array.from(
+            new Set((links as Array<{ building_id: string; address_id: string }>).map((link) => link.building_id))
+          );
+          const { data: buildings } = await supabase
+            .from("buildings")
+            .select("id, gers_id")
+            .in("id", buildingRowIds);
+
+          const publicIdByRowId = new Map<string, string>();
+          for (const building of (buildings ?? []) as Array<{ id: string; gers_id: string | null }>) {
+            publicIdByRowId.set(building.id.toLowerCase(), (building.gers_id ?? building.id).toLowerCase());
+          }
+
+          // Map: public building id (prefer gers_id, fallback buildings.id) → [address_id UUIDs]
+          const linkMap = new Map<string, string[]>();
+          for (const link of links as Array<{ building_id: string; address_id: string }>) {
+            const publicBuildingId =
+              publicIdByRowId.get(link.building_id.toLowerCase()) ?? link.building_id.toLowerCase();
+            const bucket = linkMap.get(publicBuildingId) ?? [];
+            bucket.push(link.address_id);
+            linkMap.set(publicBuildingId, bucket);
+          }
+
+          const enriched = geojson.features.map((f) => {
+            const props = f.properties ?? {};
+            // Match the same ID resolution used by StableLinkerService when it wrote the links
+            const gersId =
+              (props.gers_id as string | null) ??
+              (props.id as string | null) ??
+              (f.id != null ? String(f.id) : null);
+
+            const linked = gersId ? (linkMap.get(gersId.toLowerCase()) ?? []) : [];
+            return {
+              ...f,
+              properties: {
+                ...props,
+                // Follow the same Gold RPC convention: address_id only when exactly one linked address
+                address_id:    linked.length === 1 ? linked[0] : null,
+                address_count: linked.length,
+                source:        props.source ?? "silver",
+              },
+            };
+          });
+
+          console.log(
+            `[buildings] S3 enriched ${enriched.length} features with building_address_links (${links.length} links)`
+          );
+          const mergedFeatures = dedupeFeatures([
+            ...enriched,
+            ...rpcManualPolygonFeatures,
+            ...rpcManualAddressProxyFeatures,
+          ]);
+
+          return NextResponse.json(
+            { type: "FeatureCollection", features: mergedFeatures },
+            { headers: { "Content-Type": "application/json" } }
+          );
+        }
+
+        // No links yet — return raw S3 data as-is (e.g. campaign just created, links still writing)
+        const polygonFeatures = (geojson.features ?? []).filter((feature) =>
+          isPolygonFeature(feature as GeoJSONFeature)
+        );
+        const mergedFeatures = dedupeFeatures([
+          ...(polygonFeatures as GeoJSONFeature[]),
+          ...rpcManualPolygonFeatures,
+          ...rpcManualAddressProxyFeatures,
+        ]);
+
+        return NextResponse.json({
+          type: "FeatureCollection",
+          features: mergedFeatures,
+        }, {
           headers: { "Content-Type": "application/json" },
         });
       }
+    }
+
+    if (rpcManualPolygonFeatures.length > 0 || rpcManualAddressProxyFeatures.length > 0) {
+      const mergedFeatures = dedupeFeatures([
+        ...rpcManualPolygonFeatures,
+        ...rpcManualAddressProxyFeatures,
+      ]);
+      console.log(
+        `[buildings] Returning ${mergedFeatures.length} manual polygon/proxy features for ${campaignId}`
+      );
+      return NextResponse.json(
+        { type: "FeatureCollection", features: mergedFeatures },
+        { headers: { "Content-Type": "application/json" } }
+      );
     }
 
     // -------------------------------------------------------------------------

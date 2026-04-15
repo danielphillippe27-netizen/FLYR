@@ -100,25 +100,11 @@ struct PrintQRView: View {
                     exportButton(title: "Export as PNG", icon: "photo") {
                         await exportPNG()
                     }
-                    
-                    exportButton(title: "Export as SVG", icon: "doc.text") {
-                        await exportSVG()
-                    }
-                    
+
                     exportButton(title: "Export as PDF (8.5x11)", icon: "doc.fill") {
                         await exportPDF()
                     }
-                    
-                    Divider()
-                    
-                    exportButton(title: "Thermal Label 2x2", icon: "printer.fill") {
-                        await exportThermal(size: .size2x2)
-                    }
-                    
-                    exportButton(title: "Thermal Label 3x3", icon: "printer.fill") {
-                        await exportThermal(size: .size3x3)
-                    }
-                    
+
                     Divider()
                     
                     exportButton(title: "Canva Export", icon: "square.and.arrow.down") {
@@ -179,13 +165,6 @@ struct PrintQRView: View {
         }
     }
     
-    private func exportSVG() async {
-        // SVG export would need to be implemented
-        await MainActor.run {
-            viewModel.error = "SVG export coming soon"
-        }
-    }
-    
     private func exportPDF() async {
         guard let qrCode = viewModel.qrCode,
               let qrImageData = qrCode.qrImage,
@@ -198,13 +177,6 @@ struct PrintQRView: View {
         await MainActor.run {
             shareItems = [pdfData]
             showShareSheet = true
-        }
-    }
-    
-    private func exportThermal(size: ThermalLabelSize) async {
-        // Thermal printing would use existing thermal printing service
-        await MainActor.run {
-            viewModel.error = "Thermal printing coming soon"
         }
     }
     
@@ -304,4 +276,3 @@ class PrintQRViewModel: ObservableObject {
         }
     }
 }
-

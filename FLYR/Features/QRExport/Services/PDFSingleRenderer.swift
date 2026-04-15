@@ -22,7 +22,12 @@ struct PDFSingleRenderer {
         }
         
         // Page size: A4 or US Letter based on locale
-        let isMetric = Locale.current.usesMetricSystem
+        let isMetric: Bool
+        if #available(iOS 16.0, *) {
+            isMetric = Locale.current.measurementSystem != .us
+        } else {
+            isMetric = Locale.current.usesMetricSystem
+        }
         let pageWidth: CGFloat = isMetric ? 595.0 : 612.0  // A4: 595×842, US Letter: 612×792
         let pageHeight: CGFloat = isMetric ? 842.0 : 792.0
         let pageRect = CGRect(x: 0, y: 0, width: pageWidth, height: pageHeight)
@@ -100,4 +105,3 @@ struct PDFSingleRenderer {
         return QRCodeGenerator.generate(from: urlString, size: size)
     }
 }
-

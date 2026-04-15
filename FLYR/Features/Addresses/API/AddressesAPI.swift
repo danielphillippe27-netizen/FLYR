@@ -93,16 +93,16 @@ final class AddressesAPI {
     /// - Returns: Array of CampaignAddressViewRow matching addresses
     /// - Note: Requires Supabase RPC function `get_addresses_in_polygon` or `get_campaign_addresses_in_polygon`
     ///   The RPC should accept:
-    ///   - p_polygon_geojson (jsonb): The polygon geometry as GeoJSON
+    ///   - p_polygon_geojson (text): The polygon geometry as GeoJSON
     ///   - p_campaign_id (uuid, optional): Campaign ID to filter results
-    ///   And return rows from campaign_addresses_v view with PostGIS ST_Within/ST_Contains query
+    ///   And return rows matching CampaignAddressViewRow with a geom_json column.
     func fetchAddressesInPolygon(polygonGeoJSON: String, campaignId: UUID?) async throws -> [CampaignAddressViewRow] {
         print("🔍 [ADDRESSES] Fetching addresses in polygon (campaignId: \(campaignId?.uuidString ?? "none"))")
         
-        // Parse GeoJSON to validate format
-        guard let geoJSONData = polygonGeoJSON.data(using: .utf8),
-              let geoJSONDict = try? JSONSerialization.jsonObject(with: geoJSONData) as? [String: Any],
-              geoJSONDict["type"] as? String == "Polygon" else {
+        // Accept either a raw Polygon geometry or a Feature wrapping a Polygon geometry.
+        // Pass the original string through to the RPC because wrapping a raw `[String: Any]`
+        // inside `AnyCodable` fails to encode nested Foundation arrays.
+        guard let normalizedPolygonGeoJSON = Self.normalizedPolygonGeoJSON(from: polygonGeoJSON) else {
             throw NSError(
                 domain: "AddressesAPI",
                 code: 400,
@@ -112,7 +112,7 @@ final class AddressesAPI {
         
         // Build RPC parameters
         var params: [String: AnyCodable] = [
-            "p_polygon_geojson": AnyCodable(geoJSONDict)
+            "p_polygon_geojson": AnyCodable(normalizedPolygonGeoJSON)
         ]
         
         // Add campaign ID if provided
@@ -127,35 +127,56 @@ final class AddressesAPI {
             let res = try await client.rpc(rpcName, params: params).execute()
             
             // Decode response as array of CampaignAddressViewRow
-            let decoder = JSONDecoder()
-            decoder.dateDecodingStrategy = .iso8601
-            
+            let decoder = JSONDecoder.supabaseDates
             let addresses = try decoder.decode([CampaignAddressViewRow].self, from: res.data)
             print("✅ [ADDRESSES] Found \(addresses.count) addresses in polygon")
             return addresses
             
         } catch {
             // If RPC doesn't exist, provide helpful error message
-            if let error = error as? NSError,
-               let errorDescription = error.userInfo[NSLocalizedDescriptionKey] as? String,
+            let error = error as NSError
+            if let errorDescription = error.userInfo[NSLocalizedDescriptionKey] as? String,
                errorDescription.contains("function") || errorDescription.contains("does not exist") {
                 print("⚠️ [ADDRESSES] RPC '\(rpcName)' not found in Supabase. Please create the RPC function.")
                 print("⚠️ [ADDRESSES] Expected RPC signature:")
-                print("⚠️ [ADDRESSES]   - p_polygon_geojson (jsonb)")
+                print("⚠️ [ADDRESSES]   - p_polygon_geojson (text)")
                 if campaignId != nil {
                     print("⚠️ [ADDRESSES]   - p_campaign_id (uuid)")
                 }
-                print("⚠️ [ADDRESSES] Should return rows from campaign_addresses_v view")
+                print("⚠️ [ADDRESSES] Should return rows matching CampaignAddressViewRow")
                 throw NSError(
                     domain: "AddressesAPI",
                     code: 404,
-                    userInfo: [NSLocalizedDescriptionKey: "RPC '\(rpcName)' not found. Please create the Supabase RPC function to query addresses within a polygon using PostGIS ST_Within or ST_Contains."]
+                    userInfo: [NSLocalizedDescriptionKey: "RPC '\(rpcName)' not found. Please create the Supabase RPC function to query addresses within a polygon using PostGIS ST_Covers or ST_Contains."]
                 )
             }
             
             print("❌ [ADDRESSES] Error fetching addresses in polygon: \(error)")
             throw error
         }
+    }
+
+    private static func normalizedPolygonGeoJSON(from polygonGeoJSON: String) -> String? {
+        guard let geoJSONData = polygonGeoJSON.data(using: .utf8),
+              let geoJSONDict = try? JSONSerialization.jsonObject(with: geoJSONData) as? [String: Any] else {
+            return nil
+        }
+
+        if geoJSONDict["type"] as? String == "Polygon" {
+            return polygonGeoJSON
+        }
+
+        if geoJSONDict["type"] as? String == "Feature",
+           let geometry = geoJSONDict["geometry"] as? [String: Any],
+           geometry["type"] as? String == "Polygon" {
+            guard let geometryData = try? JSONSerialization.data(withJSONObject: geometry),
+                  let geometryString = String(data: geometryData, encoding: .utf8) else {
+                return nil
+            }
+            return geometryString
+        }
+
+        return nil
     }
 }
 

@@ -37,10 +37,10 @@ export interface NormalizedCampaignAddress {
   formatted: string;
   geom: string | null; // GeoJSON geometry string for Supabase PostGIS insert
   gers_id: string | null;
-  source: "gold" | "lambda" | "silver";
+  source: "gold" | "lambda" | "silver" | "bronze";
 }
 
-export type AddressSource = "gold" | "lambda" | "silver";
+export type AddressSource = "gold" | "lambda" | "silver" | "bronze";
 
 export interface GoldAddressResult {
   addresses: NormalizedCampaignAddress[];

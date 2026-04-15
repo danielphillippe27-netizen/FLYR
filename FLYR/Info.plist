@@ -13,7 +13,7 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.0</string>
+	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
@@ -36,9 +36,17 @@
 		</dict>
 	</array>
 	<key>CFBundleVersion</key>
-	<string>1</string>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>FacebookAppID</key>
+	<string>1629419134987825</string>
 	<key>FLYR_PRO_API_URL</key>
 	<string>https://flyrpro.app</string>
+	<key>FLYR_PASSWORD_RECOVERY_DEV_CALLBACK_URL</key>
+	<string>$(FLYR_PASSWORD_RECOVERY_DEV_CALLBACK_URL)</string>
+	<key>FLYR_PASSWORD_RECOVERY_PRODUCTION_URL</key>
+	<string>$(FLYR_PASSWORD_RECOVERY_PRODUCTION_URL)</string>
+	<key>FLYR_PASSWORD_RECOVERY_REDIRECT_URL</key>
+	<string>$(FLYR_PASSWORD_RECOVERY_REDIRECT_URL)</string>
 	<key>GOOGLE_CLIENT_ID</key>
 	<string>309925212737-5ivglrus1o0ocmtr57ca7ikt5btjqkch.apps.googleusercontent.com</string>
 	<key>LSApplicationQueriesSchemes</key>
@@ -50,18 +58,36 @@
 	<true/>
 	<key>MBXAccessToken</key>
 	<string>$(MAPBOX_ACCESS_TOKEN)</string>
+	<key>NSCalendarsUsageDescription</key>
+	<string>Calendar access allows you to create optional follow-up reminders and appointments.</string>
+	<key>NSCalendarsWriteOnlyAccessUsageDescription</key>
+	<string>Calendar access allows you to create optional follow-up reminders and appointments.</string>
+	<key>NSContactsUsageDescription</key>
+	<string>Contact access lets you choose Beacon safety contacts and send them your live tracking link.</string>
 	<key>NSHealthShareUsageDescription</key>
-	<string>We use your step count to show activity progress in the app.</string>
+	<string>FLYR reads step count from Apple Health to show walking progress during campaigns if the Sync Steps feature is enabled.</string>
 	<key>NSHealthUpdateUsageDescription</key>
-	<string>We may write health data if you enable future features.</string>
+	<string>FLYR may request Health access setup permissions so step count can be shown during campaigns if the Sync Steps feature is enabled.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>FLYR needs your location to track your session path and distance while you're walking.</string>
+	<string>We use your location to track routes and progress during active canvassing and delivery sessions.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>We use your location in the background during an active canvassing or delivery session so route tracking can continue while the app is locked or in the background.</string>
+	<key>NSLocationAlwaysUsageDescription</key>
+	<string>We use your location in the background during an active canvassing or delivery session so route tracking can continue while the app is locked or in the background.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>FLYR uses the microphone to record voice notes after a knock so we can update the lead without typing.</string>
+	<string>The microphone is used to record optional voice notes for campaign logs.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>The camera is used to take an optional photo for your challenge cover.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
-	<string>FLYR needs access to save your session share card to your photo library.</string>
+	<string>Access to your photo library allows you to save campaign share cards.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Access to your photo library allows you to select a profile photo and save campaign share cards.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>FLYR uses speech recognition to transcribe your voice notes on device. You can optionally improve accuracy by sending the recording to the server.</string>
+	<string>Speech recognition is used to transcribe optional voice notes into text.</string>
+	<key>NSSupportsLiveActivities</key>
+	<true/>
+	<key>MONDAY_CLIENT_ID</key>
+	<string>$(MONDAY_CLIENT_ID)</string>
 	<key>SUPABASE_ANON_KEY</key>
 	<string>eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtmbnNud3F5bHNkc2JnbndneHZhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA5MjY3MzEsImV4cCI6MjA3NjUwMjczMX0.k2TZKPi3VxAVpEGggLiROYvfVu2nV_oSqBt2GM4jX-Y</string>
 	<key>SUPABASE_URL</key>
@@ -75,11 +101,15 @@
 		<string>Inter-SemiBold.ttf</string>
 		<string>Inter-Bold.ttf</string>
 	</array>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>location</string>
+	</array>
 	<key>UILaunchScreen</key>
 	<dict/>
 	<key>UIRequiredDeviceCapabilities</key>
 	<array>
-		<string>armv7</string>
+		<string>arm64</string>
 	</array>
 	<key>UISupportedInterfaceOrientations</key>
 	<array>

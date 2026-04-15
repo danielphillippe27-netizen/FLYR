@@ -13,7 +13,8 @@ struct SessionMapView: View {
             SessionMapboxViewRepresentable(
                 coordinates: manager.pathCoordinates,
                 currentLocation: manager.currentLocation,
-                currentHeading: manager.currentHeading
+                currentHeading: manager.currentHeading,
+                roadCorridors: manager.sessionRoadCorridors
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .ignoresSafeArea(.all)
@@ -75,7 +76,7 @@ struct SessionMapView: View {
                     showingTargets: $showingTargets,
                     statsExpanded: $statsExpanded
                 )
-                .padding(.bottom, 24) // minimal padding above home indicator; map extends behind (full screen)
+                .padding(.bottom, 8) // keep it close to the home indicator without floating high above it
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -87,6 +88,14 @@ struct SessionMapView: View {
             }
         } message: {
             Text("This will end your session. You’ll see your summary and can share the transparent card.")
+        }
+        .alert("Session still running", isPresented: $manager.showLongSessionPrompt) {
+            Button("Keep Running", role: .cancel) {}
+            Button("End Session", role: .destructive) {
+                SessionManager.shared.stop()
+            }
+        } message: {
+            Text("This session has been running for a long time. End it now to save progress and prevent accidental all-day tracking.")
         }
         .sheet(isPresented: $showingTargets) {
             NextTargetsSheet(

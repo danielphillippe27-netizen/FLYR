@@ -15,7 +15,7 @@ export interface UseLeaderboardResult {
 
 export function useLeaderboard(): UseLeaderboardResult {
   const [users, setUsers] = useState<LeaderboardUser[]>([])
-  const [metric, setMetric] = useState<LeaderboardMetric>('flyers')
+  const [metric, setMetric] = useState<LeaderboardMetric>('doorknocks')
   const [timeframe, setTimeframe] = useState<LeaderboardTimeframe>('weekly')
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)

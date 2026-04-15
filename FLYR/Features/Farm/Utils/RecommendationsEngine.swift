@@ -46,8 +46,8 @@ enum RecommendationsEngine {
         // Phase analysis
         if phases.isEmpty && touches.count > 10 {
             recommendations.append(FarmRecommendation(
-                title: "Generate Phases",
-                detail: "Phases help track progress through your farm lifecycle. Generate phases to get started."
+                title: "Generate Cycles",
+                detail: "Cycles help track progress through your farm workflow. Generate cycles to get started."
             ))
         }
         
@@ -75,6 +75,5 @@ enum RecommendationsEngine {
         return recommendations
     }
 }
-
 
 

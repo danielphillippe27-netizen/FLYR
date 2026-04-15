@@ -91,7 +91,7 @@ extension GeoAPI {
     }
 
     /// Returns array of { formatted, lon, lat } JSON-ready dictionaries (deduped)
-    func addressesOnStreetJSON(streetName: String, center: CLLocationCoordinate2D, radiusMeters: Double = 800, limit: Int = 1000) async throws -> [[String: Any]] {
+    func addressesOnStreetJSON(streetName: String, center: CLLocationCoordinate2D, radiusMeters: Double = 800, limit: Int = 2500) async throws -> [[String: Any]] {
         let token = Bundle.main.object(forInfoDictionaryKey: "MBXAccessToken") as? String ?? ""
         guard !token.isEmpty else { 
             print("❌ [GEOAPI DEBUG] Missing Mapbox token for street search")
@@ -99,7 +99,7 @@ extension GeoAPI {
         }
         let bb = bbox(center: center, meters: radiusMeters)
         let q = streetName.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? streetName
-        let urlStr = "https://api.mapbox.com/geocoding/v5/mapbox.places/\(q).json?types=address&bbox=\(bb.minLon),\(bb.minLat),\(bb.maxLon),\(bb.maxLat)&limit=\(min(max(limit,1),1000))&access_token=\(token)"
+        let urlStr = "https://api.mapbox.com/geocoding/v5/mapbox.places/\(q).json?types=address&bbox=\(bb.minLon),\(bb.minLat),\(bb.maxLon),\(bb.maxLat)&limit=\(min(max(limit,1),2500))&access_token=\(token)"
         print("🔍 [GEOAPI DEBUG] Street search URL: \(urlStr.replacingOccurrences(of: token, with: "TOKEN_HIDDEN"))")
         guard let url = URL(string: urlStr) else { 
             print("❌ [GEOAPI DEBUG] Invalid street search URL: \(urlStr.replacingOccurrences(of: token, with: "TOKEN_HIDDEN"))")

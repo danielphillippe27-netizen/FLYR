@@ -36,12 +36,38 @@ final class AccessAPI {
 
     // MARK: - Helpers
 
-    private func authHeaders() async throws -> [String: String] {
+    /// Returns URL response payload, retrying once with a refreshed session if initial call is unauthorized.
+    private func dataForAuthorizedRequest(
+        _ request: URLRequest
+    ) async throws -> (Data, HTTPURLResponse) {
+        var authedRequest = request
         let session = try await SupabaseManager.shared.client.auth.session
-        return [
-            "Authorization": "Bearer \(session.accessToken)",
-            "Content-Type": "application/json"
-        ]
+        authedRequest.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
+
+        let (data, response) = try await URLSession.shared.data(for: authedRequest)
+        guard let http = response as? HTTPURLResponse else {
+            throw AccessAPIError.network("No connection—try again.")
+        }
+        guard http.statusCode == 401 else {
+            return (data, http)
+        }
+
+        do {
+            let refreshed = try await SupabaseManager.shared.client.auth.refreshSession()
+            KeychainAuthStorage.saveSession(
+                accessToken: refreshed.accessToken,
+                refreshToken: refreshed.refreshToken
+            )
+            authedRequest.setValue("Bearer \(refreshed.accessToken)", forHTTPHeaderField: "Authorization")
+
+            let (retryData, retryResponse) = try await URLSession.shared.data(for: authedRequest)
+            guard let retryHTTP = retryResponse as? HTTPURLResponse else {
+                throw AccessAPIError.network("No connection—try again.")
+            }
+            return (retryData, retryHTTP)
+        } catch {
+            return (data, http)
+        }
     }
 
     private func execute<T: Decodable>(
@@ -66,20 +92,23 @@ final class AccessAPI {
 
     /// Returns where the user should go after auth. Requires valid session.
     func getRedirect() async throws -> AccessRedirectResponse {
-        let session = try await SupabaseManager.shared.client.auth.session
         let url = URL(string: "\(requestBaseURL)/api/access/redirect")!
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
-        request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
 
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse else {
-            throw AccessAPIError.network("No connection—try again.")
-        }
+        let (data, http) = try await dataForAuthorizedRequest(request)
         if http.statusCode == 401 {
+            #if DEBUG
+            let body = String(data: data, encoding: .utf8) ?? "<non-utf8>"
+            print("⚠️ [AccessAPI] /api/access/redirect unauthorized (401) at \(url.absoluteString). Body: \(body.prefix(300))")
+            #endif
             throw AccessAPIError.unauthorized
         }
         guard (200...299).contains(http.statusCode) else {
+            #if DEBUG
+            let body = String(data: data, encoding: .utf8) ?? "<non-utf8>"
+            print("⚠️ [AccessAPI] /api/access/redirect failed (\(http.statusCode)) at \(url.absoluteString). Body: \(body.prefix(300))")
+            #endif
             throw AccessAPIError.status(http.statusCode, data)
         }
         return try decoder.decode(AccessRedirectResponse.self, from: data)
@@ -89,20 +118,23 @@ final class AccessAPI {
 
     /// Returns current workspace role, name, and hasAccess. Use for guards and member-inactive.
     func getState() async throws -> AccessStateResponse {
-        let session = try await SupabaseManager.shared.client.auth.session
         let url = URL(string: "\(requestBaseURL)/api/access/state")!
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
-        request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
 
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse else {
-            throw AccessAPIError.network("No connection—try again.")
-        }
+        let (data, http) = try await dataForAuthorizedRequest(request)
         if http.statusCode == 401 {
+            #if DEBUG
+            let body = String(data: data, encoding: .utf8) ?? "<non-utf8>"
+            print("⚠️ [AccessAPI] /api/access/state unauthorized (401) at \(url.absoluteString). Body: \(body.prefix(300))")
+            #endif
             throw AccessAPIError.unauthorized
         }
         guard (200...299).contains(http.statusCode) else {
+            #if DEBUG
+            let body = String(data: data, encoding: .utf8) ?? "<non-utf8>"
+            print("⚠️ [AccessAPI] /api/access/state failed (\(http.statusCode)) at \(url.absoluteString). Body: \(body.prefix(300))")
+            #endif
             throw AccessAPIError.status(http.statusCode, data)
         }
         return try decoder.decode(AccessStateResponse.self, from: data)
@@ -203,6 +235,40 @@ final class AccessAPI {
             throw AccessAPIError.badRequest("Invalid checkout URL.")
         }
         return checkoutURL
+    }
+
+    // MARK: - DELETE /api/account/delete
+
+    /// Deletes the currently authenticated account.
+    func deleteCurrentAccount() async throws {
+        let session = try await SupabaseManager.shared.client.auth.session
+        let url = URL(string: "\(requestBaseURL)/api/account/delete")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "DELETE"
+        request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw AccessAPIError.network("No connection—try again.")
+        }
+        if http.statusCode == 401 {
+            throw AccessAPIError.unauthorized
+        }
+        if http.statusCode == 400 {
+            let msg = (try? decoder.decode(ErrorBody.self, from: data))?.displayMessage ?? "Invalid request."
+            throw AccessAPIError.badRequest(msg)
+        }
+        if http.statusCode == 403 {
+            let msg = (try? decoder.decode(ErrorBody.self, from: data))?.displayMessage ?? "You don't have permission."
+            throw AccessAPIError.forbidden(msg)
+        }
+        if (500...599).contains(http.statusCode) {
+            let msg = (try? decoder.decode(ErrorBody.self, from: data))?.displayMessage ?? "Server error. Please try again."
+            throw AccessAPIError.server(msg)
+        }
+        guard (200...299).contains(http.statusCode) else {
+            throw AccessAPIError.status(http.statusCode, data)
+        }
     }
 }
 

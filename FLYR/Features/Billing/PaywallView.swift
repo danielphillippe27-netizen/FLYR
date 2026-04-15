@@ -4,6 +4,9 @@ import StoreKit
 /// Accent color: red (used for CTA, plan border, Most popular pill, feature icons, gradient).
 private let paywallAccentRed = Color(red: 1.0, green: 0.05, blue: 0.02)
 
+/// Apple Standard EULA for auto-renewable subscriptions (App Review 3.1.2).
+private let appleStandardEULAURL = "https://www.apple.com/legal/internet-services/itunes/dev/stdeula/"
+
 // MARK: - Region/currency helper (Canada = CAD, else USD).
 private var isCanadianLocale: Bool {
     Locale.current.region?.identifier == "CA" || Locale.current.currency?.identifier == "CAD"
@@ -43,7 +46,7 @@ private struct FallbackPricing {
 }
 
 struct PaywallView: View {
-    /// When true, show member-inactive copy (contact workspace owner); hide checkout CTA.
+    /// When true, show member-inactive copy while still allowing the user to start a trial or subscribe.
     var memberInactive: Bool = false
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
@@ -52,7 +55,7 @@ struct PaywallView: View {
     @EnvironmentObject var routeState: AppRouteState
     @ObservedObject private var storeKit = StoreKitManager.shared
 
-    @State private var selectedPlan: PlanKind = .annual
+    @State private var selectedPlan: PlanKind = .monthly
     @State private var errorMessage: String?
     @State private var showError = false
     @State private var isWaitingForPayment = false
@@ -65,7 +68,7 @@ struct PaywallView: View {
     }
 
     private var annualProduct: Product? {
-        storeKit.products.first { $0.id == StoreKitManager.ProductId.annual || $0.id == StoreKitManager.ProductId.yearly }
+        storeKit.products.first { $0.id == StoreKitManager.ProductId.annual }
     }
 
     private var monthlyProduct: Product? {
@@ -80,9 +83,15 @@ struct PaywallView: View {
     }
 
     private var ctaTitle: String {
+        "Start 14-Day Free Trial"
+    }
+
+    private var selectedPlanDisclosureText: String {
         switch selectedPlan {
-        case .annual: return "Subscribe Annually"
-        case .monthly: return "Subscribe Monthly"
+        case .annual:
+            return "14 days free, then \(annualPriceText)/year, auto-renewing yearly unless canceled at least 24 hours before renewal."
+        case .monthly:
+            return "14 days free, then \(monthlyBilledPrimaryText), auto-renewing monthly unless canceled at least 24 hours before renewal."
         }
     }
 
@@ -106,38 +115,19 @@ struct PaywallView: View {
                     .padding(.bottom, 24)
                 }
 
-                // Bottom header: CTA + recurring billing only (hidden when member-inactive)
-                if !memberInactive {
-                    bottomSubscribeSection
-                } else {
-                    bottomMemberInactiveSection
-                }
+                bottomSubscribeSection
             }
 
-            // Circular X close button
-            VStack {
-                HStack {
-                    Spacer()
-                    Button {
-                        dismiss()
-                    } label: {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 16, weight: .semibold))
-                            .foregroundColor(.white)
-                            .frame(width: 32, height: 32)
-                            .background(Color.white.opacity(0.2))
-                            .clipShape(Circle())
-                    }
-                    .padding(.trailing, 20)
-                    .padding(.top, 12)
-                }
-                Spacer()
-            }
-            .allowsHitTesting(true)
         }
         .preferredColorScheme(.dark)
         .onChange(of: entitlementsService.canUsePro) { _, canUse in
-            if canUse, !isWaitingForPayment { dismiss() }
+            if canUse {
+                Task { @MainActor in
+                    isWaitingForPayment = false
+                    routeState.setRoute(.dashboard)
+                    dismiss()
+                }
+            }
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active, isWaitingForPayment {
@@ -180,7 +170,7 @@ struct PaywallView: View {
     // MARK: - Member inactive
 
     private var memberInactiveBanner: some View {
-        Text("Your workspace doesn't have an active subscription. Contact your workspace owner to activate access.")
+        Text("Your workspace is inactive. Start your 14-day free trial or subscribe here to unlock full access.")
             .font(.subheadline)
             .foregroundColor(.white.opacity(0.9))
             .multilineTextAlignment(.center)
@@ -195,13 +185,20 @@ struct PaywallView: View {
 
     private var headerSection: some View {
         VStack(spacing: 10) {
+            Text("14-day free trial")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(.white)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(paywallAccentRed)
+                .clipShape(Capsule())
             Text("Track your outreach.")
                 .font(.system(size: 52, weight: .bold))
                 .foregroundColor(.white)
                 .multilineTextAlignment(.center)
                 .lineLimit(2)
                 .minimumScaleFactor(0.7)
-            Text("Your business will reward you.")
+            Text("Choose monthly or annual.")
                 .font(.system(size: 20))
                 .foregroundColor(.white.opacity(0.85))
                 .multilineTextAlignment(.center)
@@ -210,26 +207,24 @@ struct PaywallView: View {
         .padding(.bottom, 28)
     }
 
-    // MARK: - Plan cards
+    // MARK: - Plan cards (billed amount is primary; monthly equivalent is subordinate — App Review 3.1.2(c))
 
     private var planCardsSection: some View {
         VStack(spacing: 12) {
-            // Annual
             PlanCard(
                 title: "Annual",
-                billedYearText: annualBilledYearText,
-                rightPriceText: annualPerMonthText,
+                primaryPriceText: annualBilledPrimaryText,
+                secondaryPriceText: annualPerMonthEquivalentText,
                 isSelected: selectedPlan == .annual,
                 isMostPopular: false,
                 isLarge: false,
                 onTap: { selectedPlan = .annual }
             )
 
-            // Monthly
             PlanCard(
                 title: "Monthly",
-                billedYearText: nil,
-                rightPriceText: monthlyPriceText,
+                primaryPriceText: monthlyBilledPrimaryText,
+                secondaryPriceText: nil,
                 isSelected: selectedPlan == .monthly,
                 isMostPopular: false,
                 isLarge: false,
@@ -239,24 +234,29 @@ struct PaywallView: View {
         .padding(.bottom, 24)
     }
 
-    private var annualBilledYearText: String? {
+    /// Full yearly price as shown to user (same as StoreKit display price).
+    private var annualPriceText: String {
         if let p = annualProduct {
-            return "Billed at \(p.displayPrice)/year"
+            return p.displayPrice
         }
-        return "Billed at \(fallback.formattedPrice(fallback.annualYearTotal))/year"
+        return fallback.formattedPrice(fallback.annualYearTotal)
     }
 
-    private var annualPerMonthText: String {
+    private var annualBilledPrimaryText: String {
+        "\(annualPriceText)/year"
+    }
+
+    private var annualPerMonthEquivalentText: String {
         if let p = annualProduct, p.price > 0 {
             let perMonth = p.price / Decimal(12)
             let formatStyle: Decimal.FormatStyle.Currency =
                 isCanadianLocale ? .currency(code: "CAD") : .currency(code: "USD")
-            return "\(perMonth.formatted(formatStyle))/month"
+            return "\(perMonth.formatted(formatStyle))/month equivalent"
         }
-        return "\(fallback.formattedPrice(fallback.annualPerMonth))/month"
+        return "\(fallback.formattedPrice(fallback.annualPerMonth))/month equivalent"
     }
 
-    private var monthlyPriceText: String {
+    private var monthlyBilledPrimaryText: String {
         if let p = monthlyProduct {
             return "\(p.displayPrice)/month"
         }
@@ -267,7 +267,7 @@ struct PaywallView: View {
 
     private var featuresSection: some View {
         VStack(spacing: 32) {
-            Text("Unlock your full potential")
+            Text("Everything unlocks after activation")
                 .font(.system(size: 26, weight: .bold))
                 .foregroundColor(.white)
                 .multilineTextAlignment(.center)
@@ -276,6 +276,7 @@ struct PaywallView: View {
             VStack(alignment: .leading, spacing: 28) {
                 FeatureRow(icon: "desktopcomputer", text: "Desktop Dashboard")
                 FeatureRow(icon: "flag.fill", text: "Unlimited Campaigns")
+                FeatureRow(icon: "chart.line.uptrend.xyaxis", text: "Performance Reports")
                 FeatureRow(icon: "qrcode", text: "Smart QR Codes (see homes that scan)")
                 FeatureRow(icon: "link.circle.fill", text: "CRM Integration")
                 FeatureRow(icon: "calendar", text: "Set Appointments")
@@ -288,10 +289,10 @@ struct PaywallView: View {
         .padding(.bottom, 24)
     }
 
-    // MARK: - Bottom section (Subscribe button + recurring billing only)
+    // MARK: - Bottom section
 
     private var bottomSubscribeSection: some View {
-        VStack(spacing: 4) {
+        VStack(spacing: 8) {
             Button {
                 Task { await performPurchase() }
             } label: {
@@ -304,7 +305,7 @@ struct PaywallView: View {
                                 .font(.system(size: 14))
                                 .foregroundColor(.white.opacity(0.9))
                         } else if isWaitingForPayment {
-                            Text("Complete payment in browser…")
+                            Text("Unlocking access…")
                                 .font(.system(size: 14))
                                 .foregroundColor(.white.opacity(0.9))
                         }
@@ -320,11 +321,11 @@ struct PaywallView: View {
                 .cornerRadius(14)
             }
             .buttonStyle(.plain)
-            .disabled(storeKit.isPurchasing || selectedProduct == nil || isWaitingForPayment)
+            .disabled(storeKit.isPurchasing || isWaitingForPayment)
 
-            Text("Recurring billing. Cancel anytime.")
+            Text(selectedPlanDisclosureText)
                 .font(.system(size: 13))
-                .foregroundColor(.white.opacity(0.6))
+                .foregroundColor(.white.opacity(0.75))
                 .multilineTextAlignment(.center)
             Button("Restore purchases") {
                 Task { await restorePurchases() }
@@ -333,28 +334,23 @@ struct PaywallView: View {
             .foregroundColor(.white.opacity(0.8))
             .disabled(storeKit.isRestoring)
 
-            HStack(spacing: 12) {
-                Button("Terms") {
-                    openLegalURL("https://www.flyrpro.app/terms")
+            VStack(spacing: 6) {
+                Button {
+                    openLegalURL(appleStandardEULAURL)
+                } label: {
+                    Text("Terms of Use (EULA)")
+                        .font(.system(size: 13))
+                        .foregroundColor(.white.opacity(0.7))
                 }
-                .font(.system(size: 13))
-                .foregroundColor(.white.opacity(0.7))
 
-                Text("•")
-                    .foregroundColor(.white.opacity(0.4))
-
-                Button("Privacy") {
+                Button {
                     openLegalURL("https://www.flyrpro.app/privacy")
+                } label: {
+                    Text("Privacy Policy")
+                        .font(.system(size: 13))
+                        .foregroundColor(.white.opacity(0.7))
                 }
-                .font(.system(size: 13))
-                .foregroundColor(.white.opacity(0.7))
             }
-
-            Button("Skip for now") {
-                routeState.setRoute(.dashboard)
-            }
-            .font(.system(size: 14))
-            .foregroundColor(.white.opacity(0.6))
         }
         .padding(.horizontal, 24)
         .padding(.top, 8)
@@ -362,40 +358,30 @@ struct PaywallView: View {
         .background(Color.black)
     }
 
-    private var bottomMemberInactiveSection: some View {
-        VStack(spacing: 12) {
-            Text("Ask your workspace owner to subscribe so you can access the app.")
-                .font(.subheadline)
-                .foregroundColor(.white.opacity(0.7))
-                .multilineTextAlignment(.center)
-            Button("Sign out") {
-                Task {
-                    await AuthManager.shared.signOut()
-                }
-            }
-            .foregroundColor(.white.opacity(0.9))
-        }
-        .padding(24)
-        .background(Color.black)
-    }
-
     // MARK: - Actions
 
     private func performPurchase() async {
-        guard !memberInactive else { return }
         errorMessage = nil
         do {
-            // Prefer in-app Pay with Apple (solo users stay in app).
-            if let product = selectedProduct {
-                try await storeKit.purchase(product)
-                await MainActor.run {
-                    routeState.setRoute(.dashboard)
+            var product = selectedProduct
+            if product == nil {
+                await storeKit.loadProducts()
+                product = selectedProduct
+            }
+            if let product {
+                let completed = try await storeKit.purchase(product)
+                if completed {
+                    _ = await entitlementsService.fetchEntitlement()
+                    await StoreKitManager.shared.refreshLocalProFromCurrentEntitlements()
+                    await MainActor.run {
+                        routeState.setRoute(.dashboard)
+                        dismiss()
+                    }
                 }
                 return
             }
-            await storeKit.loadProducts()
             await MainActor.run {
-                errorMessage = "Unable to load App Store products. Please try again."
+                errorMessage = "Unable to load App Store products. Check Sandbox Apple ID, then try Restore Purchases."
                 showError = true
             }
         } catch {
@@ -412,12 +398,16 @@ struct PaywallView: View {
     }
 
     private func restorePurchases() async {
-        guard !memberInactive else { return }
         errorMessage = nil
         do {
             try await storeKit.restorePurchases()
-            if entitlementsService.canUsePro {
-                routeState.setRoute(.dashboard)
+            _ = await entitlementsService.fetchEntitlement()
+            await StoreKitManager.shared.refreshLocalProFromCurrentEntitlements()
+            await MainActor.run {
+                if entitlementsService.canUsePro {
+                    routeState.setRoute(.dashboard)
+                    dismiss()
+                }
             }
         } catch {
             await MainActor.run {
@@ -431,6 +421,14 @@ struct PaywallView: View {
         let maxAttempts = 60
         let interval: UInt64 = 2_000_000_000 // 2 seconds
         for _ in 0..<maxAttempts {
+            if await MainActor.run(body: { entitlementsService.canUsePro }) {
+                await MainActor.run {
+                    isWaitingForPayment = false
+                    routeState.setRoute(.dashboard)
+                    dismiss()
+                }
+                return
+            }
             do {
                 let state = try await AccessAPI.shared.getState()
                 if state.hasAccess {
@@ -439,7 +437,8 @@ struct PaywallView: View {
                         routeState.setRoute(.dashboard)
                         dismiss()
                     }
-                    await entitlementsService.fetchEntitlement()
+                    _ = await entitlementsService.fetchEntitlement()
+                    await StoreKitManager.shared.refreshLocalProFromCurrentEntitlements()
                     return
                 }
             } catch {}
@@ -458,22 +457,27 @@ struct PaywallView: View {
 
 private struct PlanCard: View {
     let title: String
-    let billedYearText: String?
-    let rightPriceText: String
+    /// Billed amount — largest, most conspicuous (e.g. "$299.99/year" or "$29.99/month").
+    let primaryPriceText: String
+    /// Optional subordinate line (e.g. monthly equivalent for annual).
+    let secondaryPriceText: String?
     let isSelected: Bool
     let isMostPopular: Bool
     let isLarge: Bool
     let onTap: () -> Void
 
     private var titleFont: Font { isLarge ? .system(size: 22, weight: .bold) : .system(size: 18, weight: .bold) }
-    private var detailFont: Font { isLarge ? .system(size: 15) : .system(size: 13) }
-    private var priceFont: Font { isLarge ? .system(size: 18, weight: .bold) : .system(size: 16, weight: .bold) }
+    private var primaryPriceFont: Font { isLarge ? .system(size: 22, weight: .bold) : .system(size: 20, weight: .bold) }
+    private var secondaryFont: Font { isLarge ? .system(size: 13) : .system(size: 12) }
     private var padding: CGFloat { isLarge ? 20 : 16 }
     private var cornerRadius: CGFloat { isLarge ? 16 : 14 }
 
+    private var fg: Color { isSelected ? .black : .white }
+    private var fgSecondary: Color { isSelected ? .black.opacity(0.65) : .white.opacity(0.65) }
+
     var body: some View {
         Button(action: onTap) {
-            HStack {
+            HStack(alignment: .center, spacing: 12) {
                 VStack(alignment: .leading, spacing: isLarge ? 6 : 4) {
                     if isMostPopular {
                         Text("Most popular")
@@ -486,18 +490,21 @@ private struct PlanCard: View {
                     }
                     Text(title)
                         .font(titleFont)
-                        .foregroundColor(isSelected ? .black : .white)
-                    if let billed = billedYearText {
-                        Text(billed)
-                            .font(detailFont)
-                            .foregroundColor(isSelected ? .black.opacity(0.7) : .white.opacity(0.7))
+                        .foregroundColor(fg)
+                }
+                Spacer(minLength: 8)
+                VStack(alignment: .trailing, spacing: 4) {
+                    Text(primaryPriceText)
+                        .font(primaryPriceFont)
+                        .foregroundColor(fg)
+                        .multilineTextAlignment(.trailing)
+                    if let secondary = secondaryPriceText {
+                        Text(secondary)
+                            .font(secondaryFont)
+                            .foregroundColor(fgSecondary)
+                            .multilineTextAlignment(.trailing)
                     }
                 }
-                Spacer()
-                Text(rightPriceText)
-                    .font(priceFont)
-                    .foregroundColor(isSelected ? .black : .white)
-                    .multilineTextAlignment(.trailing)
             }
             .padding(padding)
             .background(isSelected ? Color.white : Color.white.opacity(0.08))

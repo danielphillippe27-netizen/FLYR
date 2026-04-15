@@ -4,22 +4,29 @@ import CoreLocation
 struct AddressSearchField: View {
   @ObservedObject var auto: UseAddressAutocomplete
   var onPick: (AddressSuggestion) -> Void
+  var onSubmitQuery: ((String) -> Void)? = nil
+  var placeholder: String = "Enter an address to center the map"
   @FocusState private var focused: Bool
 
   var body: some View {
     VStack(spacing: 8) {
       HStack {
-        TextField("Enter a starting address", text: $auto.query)
+        TextField(placeholder, text: $auto.query)
           .textInputAutocapitalization(.never)
           .disableAutocorrection(true)
           .focused($focused)
-          .onChange(of: auto.query) { _ in auto.bind() }
-          .onSubmit { focused = false }     // keyboard return collapses
+          .onChange(of: auto.query) { _, _ in auto.bind() }
+          .onSubmit {
+            let query = auto.query.trimmingCharacters(in: .whitespacesAndNewlines)
+            focused = false
+            guard !query.isEmpty else { return }
+            onSubmitQuery?(query)
+          }
       }
       .padding(12)
       .background(Color(.secondarySystemBackground))
       .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-      .onChange(of: focused) { isFocused in
+      .onChange(of: focused) { _, isFocused in
         if !isFocused { auto.clear() }      // blur → hide list
       }
 

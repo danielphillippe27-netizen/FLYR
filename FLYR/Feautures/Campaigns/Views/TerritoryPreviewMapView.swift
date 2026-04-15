@@ -79,13 +79,13 @@ struct TerritoryPreviewMapView: UIViewRepresentable {
         let dark = useDarkStyle
         let coord = center ?? Self.defaultCenter
         let initialPolygon = polygon
-        mapView.mapboxMap.onStyleLoaded.observeNext { [weak mapView] _ in
+        _ = mapView.mapboxMap.onStyleLoaded.observeNext { [weak mapView] _ in
             guard let mapView = mapView, let map = mapView.mapboxMap else { return }
             Self.add2DBuildingsLayer(to: map, useDarkStyle: dark)
             if let poly = initialPolygon, poly.count >= 3 {
                 context.coordinator.setCameraToPolygonBounds(poly, on: mapView)
             } else {
-                map.setCamera(to: CameraOptions(center: coord, zoom: 14, bearing: 0, pitch: 0))
+                context.coordinator.setCameraToCenter(coord, on: mapView)
             }
         }
 
@@ -114,7 +114,7 @@ struct TerritoryPreviewMapView: UIViewRepresentable {
             context.coordinator.setCameraToPolygonBounds(polygon, on: mapView)
         } else {
             let coord = center ?? Self.defaultCenter
-            mapView.mapboxMap.setCamera(to: CameraOptions(center: coord, zoom: 14, bearing: 0, pitch: 0))
+            context.coordinator.setCameraToCenter(coord, on: mapView)
         }
     }
 
@@ -126,6 +126,8 @@ struct TerritoryPreviewMapView: UIViewRepresentable {
         weak var mapView: MapView?
         var pointAnnotationManager: PointAnnotationManager?
         var polygonAnnotationManager: PolygonAnnotationManager?
+        private var lastCameraCenter: CLLocationCoordinate2D?
+        private var lastPolygonSignature: String?
 
         func updateMarker(at center: CLLocationCoordinate2D?) {
             guard let manager = pointAnnotationManager else { return }
@@ -156,6 +158,11 @@ struct TerritoryPreviewMapView: UIViewRepresentable {
         }
 
         func setCameraToPolygonBounds(_ polygon: [CLLocationCoordinate2D], on mapView: MapView) {
+            let signature = polygon
+                .map { "\($0.latitude),\($0.longitude)" }
+                .joined(separator: "|")
+            guard signature != lastPolygonSignature else { return }
+            lastPolygonSignature = signature
             let lats = polygon.map { $0.latitude }
             let lons = polygon.map { $0.longitude }
             guard let minLat = lats.min(), let maxLat = lats.max(),
@@ -164,7 +171,24 @@ struct TerritoryPreviewMapView: UIViewRepresentable {
             let centerLon = (minLon + maxLon) / 2
             let center = CLLocationCoordinate2D(latitude: centerLat, longitude: centerLon)
             let padding = UIEdgeInsets(top: 24, left: 24, bottom: 24, right: 24)
-            mapView.mapboxMap.setCamera(to: CameraOptions(center: center, padding: padding, zoom: 14, bearing: 0, pitch: 0))
+            mapView.camera.ease(
+                to: CameraOptions(center: center, padding: padding, zoom: 14, bearing: 0, pitch: 0),
+                duration: 0.6
+            )
+        }
+
+        func setCameraToCenter(_ center: CLLocationCoordinate2D, on mapView: MapView) {
+            lastPolygonSignature = nil
+            if let last = lastCameraCenter,
+               abs(last.latitude - center.latitude) < 0.0001,
+               abs(last.longitude - center.longitude) < 0.0001 {
+                return
+            }
+            lastCameraCenter = center
+            mapView.camera.ease(
+                to: CameraOptions(center: center, zoom: 14, bearing: 0, pitch: 0),
+                duration: 0.6
+            )
         }
     }
 }

@@ -24,7 +24,7 @@ final class MapMarkersManager {
         guard let map = mapView.mapboxMap else { return }
 
         if !map.isStyleLoaded {
-            map.onMapLoaded.observeNext { [weak self] _ in
+            _ = map.onMapLoaded.observeNext { [weak self] _ in
                 Task { @MainActor in
                     await self?.addCampaignMarkersInternal(campaigns: campaigns, to: mapView, selectedCampaignId: selectedCampaignId)
                 }
@@ -130,7 +130,7 @@ final class MapMarkersManager {
         
         // Wait for map to load
         if !map.isStyleLoaded {
-            map.onMapLoaded.observeNext { [weak self] _ in
+            _ = map.onMapLoaded.observeNext { [weak self] _ in
                 Task { @MainActor in
                     await self?.addFarmMarkersInternal(farms: farms, to: mapView)
                 }
@@ -259,25 +259,9 @@ struct FarmMarker {
 // MARK: - Helper Extensions
 
 extension CampaignMarker {
-    /// Calculate center coordinate from campaign addresses
-    static func fromCampaign(_ campaign: CampaignListItem, addresses: [CampaignAddressRow]) -> CampaignMarker? {
-        guard !addresses.isEmpty else { return nil }
-        
-        // Calculate average of all address coordinates
-        let sumLat = addresses.reduce(0.0) { $0 + $1.lat }
-        let sumLon = addresses.reduce(0.0) { $0 + $1.lon }
-        let count = Double(addresses.count)
-        
-        let center = CLLocationCoordinate2D(
-            latitude: sumLat / count,
-            longitude: sumLon / count
-        )
-        
-        return CampaignMarker(
-            id: campaign.id,
-            name: campaign.name,
-            coordinate: center
-        )
+    /// Map pin from precomputed centroid (e.g. `get_campaign_address_centroids` RPC).
+    static func fromCampaign(_ campaign: CampaignListItem, center: CLLocationCoordinate2D) -> CampaignMarker {
+        CampaignMarker(id: campaign.id, name: campaign.name, coordinate: center)
     }
 }
 
@@ -311,4 +295,3 @@ extension FarmMarker {
         return fromFarm(farm)
     }
 }
-

@@ -6,11 +6,13 @@ import SwiftUI
 final class AppUIState: ObservableObject {
     @Published var showTabBar: Bool = true
     @Published var colorScheme: ColorScheme? = nil // nil = system default
-    /// Selected main tab: 0 Home, 1 Map, 2 Record, 3 Leads, 4 Leaderboard, 5 Settings.
+    /// Selected main tab: 0 Home, 1 Session, 2 Leads, 3 Leaderboard, 4 Settings.
     @Published var selectedTabIndex: Int = 0
-    /// Campaign selected on Map tab; Record tab turns red and tapping Record opens this campaign.
+    /// Campaign selected for the Session tab; the tab can show a filled icon and open this campaign.
     @Published var selectedMapCampaignId: UUID?
     @Published var selectedMapCampaignName: String?
+    @Published var selectedRouteWorkContext: RouteWorkContext?
+    @Published var plannedFarmExecution: FarmExecutionContext?
     
     private let settingsService = SettingsService.shared
     
@@ -55,5 +57,34 @@ final class AppUIState: ObservableObject {
         } catch {
             print("❌ Error saving appearance preference: \(error)")
         }
+    }
+
+    func selectCampaign(id: UUID?, name: String?) {
+        selectedMapCampaignId = id
+        selectedMapCampaignName = name
+        selectedRouteWorkContext = nil
+    }
+
+    func selectRoute(_ context: RouteWorkContext) {
+        selectedMapCampaignId = context.campaignId
+        selectedMapCampaignName = context.routeName
+        selectedRouteWorkContext = context
+    }
+
+    func clearMapSelection() {
+        selectedMapCampaignId = nil
+        selectedMapCampaignName = nil
+        selectedRouteWorkContext = nil
+    }
+
+    func beginPlannedFarmExecution(_ context: FarmExecutionContext) {
+        plannedFarmExecution = context
+        selectedMapCampaignId = context.campaignId
+        selectedMapCampaignName = context.touchTitle
+        selectedRouteWorkContext = nil
+    }
+
+    func clearPlannedFarmExecution() {
+        plannedFarmExecution = nil
     }
 }

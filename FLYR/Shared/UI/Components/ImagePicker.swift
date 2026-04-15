@@ -1,15 +1,16 @@
 import SwiftUI
 import UIKit
 
-/// A UIKit wrapper for UIImagePickerController to select images from photo library
+/// A UIKit wrapper for UIImagePickerController to select images from the library or camera.
 struct ImagePicker: UIViewControllerRepresentable {
+    var sourceType: UIImagePickerController.SourceType = .photoLibrary
     var onImagePicked: (UIImage) -> Void
     @Environment(\.dismiss) var dismiss
     
     func makeUIViewController(context: Context) -> UIImagePickerController {
         let controller = UIImagePickerController()
         controller.delegate = context.coordinator
-        controller.sourceType = .photoLibrary
+        controller.sourceType = sourceType
         controller.allowsEditing = true
         return controller
     }

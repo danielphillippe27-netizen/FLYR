@@ -27,6 +27,10 @@ final class CRMConnectionStore: ObservableObject {
         connection(for: "fub")
     }
 
+    var boldtrailConnection: CRMConnection? {
+        connection(for: "boldtrail")
+    }
+
     /// Call on appear and after successful FUB connect.
     func refresh(userId: UUID) async {
         isLoading = true
@@ -42,9 +46,16 @@ final class CRMConnectionStore: ObservableObject {
 
             let decoder = JSONDecoder.supabaseDates
             connections = try decoder.decode([CRMConnection].self, from: response.data)
+            #if DEBUG
+            let fubConnection = connections.first { $0.provider == "fub" }
+            print("🔄 [CRMConnectionStore] Refreshed \(connections.count) CRM connections. fubStatus=\(fubConnection?.status ?? "nil") fubError=\(fubConnection?.errorReason ?? "nil")")
+            #endif
         } catch {
             self.error = error.localizedDescription
             connections = []
+            #if DEBUG
+            print("❌ [CRMConnectionStore] Failed to refresh CRM connections: \(error.localizedDescription)")
+            #endif
         }
     }
 }

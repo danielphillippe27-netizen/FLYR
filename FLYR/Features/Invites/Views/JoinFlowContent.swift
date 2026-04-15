@@ -4,7 +4,7 @@ import SwiftUI
 struct JoinFlowContent: View {
     let token: String
     @ObservedObject var viewModel: JoinFlowViewModel
-    var onAcceptSuccess: () -> Void
+    var onAcceptSuccess: (InviteAcceptResponse) -> Void
     var onDismiss: () -> Void
     @EnvironmentObject var routeState: AppRouteState
     @StateObject private var auth = AuthManager.shared
@@ -78,8 +78,8 @@ struct JoinFlowContent: View {
                             viewModel.errorMessage = nil
                             defer { viewModel.isLoading = false }
                             do {
-                                try await viewModel.accept(token: token)
-                                onAcceptSuccess()
+                                let response = try await viewModel.accept(token: token)
+                                onAcceptSuccess(response)
                             } catch {
                                 viewModel.errorMessage = error.localizedDescription
                             }

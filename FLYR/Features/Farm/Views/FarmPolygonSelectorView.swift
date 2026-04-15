@@ -70,7 +70,7 @@ struct FarmPolygonSelectorView: View {
         let newMapView = MapView(frame: .zero)
         // Configure map with custom light style
         if let map = newMapView.mapboxMap {
-            map.loadStyleURI(StyleURI(rawValue: "mapbox://styles/fliper27/cml6z0dhg002301qo9xxc08k4")!)
+            map.loadStyle(StyleURI(rawValue: "mapbox://styles/fliper27/cml6z0dhg002301qo9xxc08k4")!)
         }
         self.mapView = newMapView
     }
@@ -91,4 +91,3 @@ struct FarmMapboxMapViewRepresentable: UIViewRepresentable {
 #Preview {
     FarmPolygonSelectorView(polygon: .constant(nil))
 }
-

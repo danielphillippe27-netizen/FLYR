@@ -69,6 +69,14 @@ actor ContactsService {
         
         return response
     }
+
+    /// Deletes every contact linked to this campaign address (`contact_activities` rows cascade).
+    func deleteContactsForAddress(addressId: UUID) async throws {
+        let contacts = try await fetchContactsForAddress(addressId: addressId)
+        for contact in contacts {
+            try await deleteContact(contact)
+        }
+    }
     
     /// Fetches contacts for an address using text matching (fallback for legacy data)
     /// - Parameters:
@@ -91,24 +99,46 @@ actor ContactsService {
     /// Links a contact to an address via FK
     /// - Parameters:
     ///   - workspaceId: When non-nil, set on insert for workspace-scoped contact.
-    func addContact(_ contact: Contact, userID: UUID, workspaceId: UUID? = nil, addressId: UUID? = nil) async throws -> Contact {
-        var contactToInsert = contact
+    func addContact(
+        _ contact: Contact,
+        userID: UUID,
+        workspaceId: UUID? = nil,
+        addressId: UUID? = nil,
+        syncToCRM: Bool = true
+    ) async throws -> Contact {
+        let normalizedInput = Self.normalized(contact, overrideAddressId: addressId)
+        if let existing = try await findExistingContact(
+            matching: normalizedInput,
+            userID: userID,
+            workspaceId: workspaceId
+        ) {
+            let merged = Self.merged(existing: existing, incoming: normalizedInput)
+            let updated = try await updateContact(merged, addressId: merged.addressId)
+            if syncToCRM {
+                Task.detached(priority: .utility) {
+                    let leadModel = LeadModel(from: updated)
+                    await LeadSyncManager.shared.syncLeadToCRM(lead: leadModel, userId: userID)
+                }
+            }
+            return updated
+        }
+
+        let contactToInsert = normalizedInput
         var insertData: [String: AnyCodable] = [
             "id": AnyCodable(contactToInsert.id),
             "user_id": AnyCodable(userID),
             "full_name": AnyCodable(contactToInsert.fullName),
-            "phone": AnyCodable(contactToInsert.phone),
-            "email": AnyCodable(contactToInsert.email),
+            "phone": AnyCodable(contactToInsert.phone as Any),
+            "email": AnyCodable(contactToInsert.email as Any),
             "address": AnyCodable(contactToInsert.address),
-            "campaign_id": AnyCodable(contactToInsert.campaignId),
-            "farm_id": AnyCodable(contactToInsert.farmId),
-            "gers_id": AnyCodable(contactToInsert.gersId),
-            "address_id": AnyCodable(contactToInsert.addressId),
-            "tags": AnyCodable(contactToInsert.tags),
+            "campaign_id": AnyCodable(contactToInsert.campaignId as Any),
+            "farm_id": AnyCodable(contactToInsert.farmId as Any),
+            "gers_id": AnyCodable(contactToInsert.gersId as Any),
+            "address_id": AnyCodable(contactToInsert.addressId as Any),
             "status": AnyCodable(contactToInsert.status.rawValue),
-            "last_contacted": AnyCodable(contactToInsert.lastContacted),
-            "notes": AnyCodable(contactToInsert.notes),
-            "reminder_date": AnyCodable(contactToInsert.reminderDate)
+            "last_contacted": AnyCodable(contactToInsert.lastContacted as Any),
+            "notes": AnyCodable(contactToInsert.notes as Any),
+            "reminder_date": AnyCodable(contactToInsert.reminderDate as Any)
         ]
         if let workspaceId = workspaceId {
             insertData["workspace_id"] = AnyCodable(workspaceId)
@@ -128,12 +158,178 @@ actor ContactsService {
             throw NSError(domain: "ContactsService", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to insert contact"])
         }
         
-        Task.detached(priority: .utility) {
-            let leadModel = LeadModel(from: inserted)
-            await LeadSyncManager.shared.syncLeadToCRM(lead: leadModel, userId: userID)
+        if syncToCRM {
+            Task.detached(priority: .utility) {
+                let leadModel = LeadModel(from: inserted)
+                await LeadSyncManager.shared.syncLeadToCRM(lead: leadModel, userId: userID)
+            }
         }
         
         return inserted
+    }
+
+    private func findExistingContact(
+        matching contact: Contact,
+        userID: UUID,
+        workspaceId: UUID?
+    ) async throws -> Contact? {
+        var query = client
+            .from("contacts")
+            .select()
+
+        if let workspaceId {
+            query = query.eq("workspace_id", value: workspaceId)
+        } else {
+            query = query.eq("user_id", value: userID)
+        }
+
+        if let campaignId = contact.campaignId {
+            query = query.eq("campaign_id", value: campaignId)
+        }
+
+        if let addressId = contact.addressId {
+            query = query.eq("address_id", value: addressId)
+        } else {
+            query = query.eq("address", value: contact.address)
+        }
+
+        let candidates: [Contact] = try await query
+            .order("updated_at", ascending: false)
+            .limit(20)
+            .execute()
+            .value
+
+        return candidates.first {
+            Self.isSameContactIdentity(existing: $0, incoming: contact)
+        }
+    }
+
+    private static func isSameContactIdentity(existing: Contact, incoming: Contact) -> Bool {
+        let hasExactAddressIdMatch: Bool = {
+            guard let incomingAddressId = incoming.addressId, let existingAddressId = existing.addressId else { return false }
+            return incomingAddressId == existingAddressId
+        }()
+
+        if let incomingAddressId = incoming.addressId, let existingAddressId = existing.addressId {
+            if incomingAddressId != existingAddressId { return false }
+        } else {
+            let existingAddress = normalizedText(existing.address)
+            let incomingAddress = normalizedText(incoming.address)
+            if !existingAddress.isEmpty && !incomingAddress.isEmpty && existingAddress != incomingAddress {
+                return false
+            }
+        }
+
+        if let incomingCampaign = incoming.campaignId, let existingCampaign = existing.campaignId, incomingCampaign != existingCampaign {
+            return false
+        }
+
+        let existingName = normalizedText(existing.fullName)
+        let incomingName = normalizedText(incoming.fullName)
+        let existingPhone = normalizedPhone(existing.phone)
+        let incomingPhone = normalizedPhone(incoming.phone)
+        let existingEmail = normalizedText(existing.email)
+        let incomingEmail = normalizedText(incoming.email)
+
+        let phoneMatches = !existingPhone.isEmpty && !incomingPhone.isEmpty && existingPhone == incomingPhone
+        let emailMatches = !existingEmail.isEmpty && !incomingEmail.isEmpty && existingEmail == incomingEmail
+        let nameMatches = !existingName.isEmpty && !incomingName.isEmpty && existingName == incomingName
+        if phoneMatches || emailMatches || nameMatches {
+            return true
+        }
+
+        // For exact address matches, treat placeholder-only records as same lead to avoid double inserts.
+        if hasExactAddressIdMatch {
+            let hasNoStrongIdentity = (existingPhone.isEmpty && existingEmail.isEmpty && existingName.isEmpty)
+                || (incomingPhone.isEmpty && incomingEmail.isEmpty && incomingName.isEmpty)
+            let hasPlaceholderName = isPlaceholderName(existing.fullName) || isPlaceholderName(incoming.fullName)
+            if hasNoStrongIdentity || hasPlaceholderName {
+                return true
+            }
+        }
+        return false
+    }
+
+    private static func merged(existing: Contact, incoming: Contact) -> Contact {
+        Contact(
+            id: existing.id,
+            fullName: preferredNonEmptyRequired(incoming.fullName, fallback: existing.fullName),
+            phone: preferredNonEmptyOptional(incoming.phone, fallback: existing.phone),
+            email: preferredNonEmptyOptional(incoming.email, fallback: existing.email),
+            address: preferredNonEmptyRequired(incoming.address, fallback: existing.address),
+            campaignId: incoming.campaignId ?? existing.campaignId,
+            farmId: incoming.farmId ?? existing.farmId,
+            gersId: preferredNonEmptyOptional(incoming.gersId, fallback: existing.gersId),
+            addressId: incoming.addressId ?? existing.addressId,
+            tags: preferredNonEmptyOptional(incoming.tags, fallback: existing.tags),
+            status: existing.status == .new ? incoming.status : existing.status,
+            lastContacted: incoming.lastContacted ?? existing.lastContacted,
+            notes: preferredNonEmptyOptional(incoming.notes, fallback: existing.notes),
+            reminderDate: incoming.reminderDate ?? existing.reminderDate,
+            createdAt: existing.createdAt,
+            updatedAt: Date()
+        )
+    }
+
+    private static func normalized(_ contact: Contact, overrideAddressId: UUID?) -> Contact {
+        Contact(
+            id: contact.id,
+            fullName: contact.fullName.trimmingCharacters(in: .whitespacesAndNewlines),
+            phone: normalizedOptional(contact.phone),
+            email: normalizedOptional(contact.email),
+            address: contact.address.trimmingCharacters(in: .whitespacesAndNewlines),
+            campaignId: contact.campaignId,
+            farmId: contact.farmId,
+            gersId: normalizedOptional(contact.gersId),
+            addressId: overrideAddressId ?? contact.addressId,
+            tags: normalizedOptional(contact.tags),
+            status: contact.status,
+            lastContacted: contact.lastContacted,
+            notes: normalizedOptional(contact.notes),
+            reminderDate: contact.reminderDate,
+            createdAt: contact.createdAt,
+            updatedAt: contact.updatedAt
+        )
+    }
+
+    private static func normalizedText(_ value: String?) -> String {
+        value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+    }
+
+    private static func normalizedPhone(_ value: String?) -> String {
+        guard let value else { return "" }
+        return value.unicodeScalars
+            .filter { CharacterSet.decimalDigits.contains($0) }
+            .map(String.init)
+            .joined()
+    }
+
+    private static func normalizedOptional(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let trimmed, !trimmed.isEmpty else { return nil }
+        return trimmed
+    }
+
+    private static func preferredNonEmptyOptional(_ primary: String?, fallback: String?) -> String? {
+        if let value = normalizedOptional(primary) {
+            return value
+        }
+        return normalizedOptional(fallback)
+    }
+
+    private static func preferredNonEmptyRequired(_ primary: String, fallback: String) -> String {
+        if let value = normalizedOptional(primary) {
+            return value
+        }
+        if let value = normalizedOptional(fallback) {
+            return value
+        }
+        return ""
+    }
+
+    private static func isPlaceholderName(_ value: String) -> Bool {
+        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return normalized.isEmpty || normalized == "lead" || normalized == "new contact"
     }
     
     /// Links a contact to an address via FK
@@ -155,18 +351,17 @@ actor ContactsService {
     func updateContact(_ contact: Contact, addressId: UUID? = nil) async throws -> Contact {
         var updateData: [String: AnyCodable] = [
             "full_name": AnyCodable(contact.fullName),
-            "phone": AnyCodable(contact.phone),
-            "email": AnyCodable(contact.email),
+            "phone": AnyCodable(contact.phone as Any),
+            "email": AnyCodable(contact.email as Any),
             "address": AnyCodable(contact.address),
-            "campaign_id": AnyCodable(contact.campaignId),
-            "farm_id": AnyCodable(contact.farmId),
-            "gers_id": AnyCodable(contact.gersId),
-            "address_id": AnyCodable(contact.addressId),
-            "tags": AnyCodable(contact.tags),
+            "campaign_id": AnyCodable(contact.campaignId as Any),
+            "farm_id": AnyCodable(contact.farmId as Any),
+            "gers_id": AnyCodable(contact.gersId as Any),
+            "address_id": AnyCodable(contact.addressId as Any),
             "status": AnyCodable(contact.status.rawValue),
-            "last_contacted": AnyCodable(contact.lastContacted),
-            "notes": AnyCodable(contact.notes),
-            "reminder_date": AnyCodable(contact.reminderDate)
+            "last_contacted": AnyCodable(contact.lastContacted as Any),
+            "notes": AnyCodable(contact.notes as Any),
+            "reminder_date": AnyCodable(contact.reminderDate as Any)
         ]
         
         // Add address_id if provided
@@ -204,7 +399,7 @@ actor ContactsService {
         let activityData: [String: AnyCodable] = [
             "contact_id": AnyCodable(contactID),
             "type": AnyCodable(type.rawValue),
-            "note": AnyCodable(note),
+            "note": AnyCodable(note as Any),
             "timestamp": AnyCodable(timestamp)
         ]
         

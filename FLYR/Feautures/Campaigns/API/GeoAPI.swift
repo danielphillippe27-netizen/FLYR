@@ -499,7 +499,7 @@ final class GeoAPI {
       https://api.mapbox.com/geocoding/v5/mapbox.places/\(center.longitude),\(center.latitude).json
       ?types=address
       &radius=\(radius)
-      &limit=\(min(max(limit, 50), 1000))
+      &limit=\(min(max(limit, 50), 2500))
       &access_token=\(token)
       """
       .replacingOccurrences(of: "\n", with: "")
@@ -556,7 +556,7 @@ final class GeoAPI {
       https://api.mapbox.com/geocoding/v5/mapbox.places/\(center.longitude),\(center.latitude).json
       ?types=address
       &bbox=\(bbox.minLon),\(bbox.minLat),\(bbox.maxLon),\(bbox.maxLat)
-      &limit=\(min(max(limit, 50), 1000))
+      &limit=\(min(max(limit, 50), 2500))
       &access_token=\(token)
       """
       .replacingOccurrences(of: "\n", with: "")
@@ -600,7 +600,7 @@ final class GeoAPI {
     let urlStr = """
       https://api.mapbox.com/geocoding/v5/mapbox.places/\(center.longitude),\(center.latitude).json
       ?radius=3000
-      &limit=\(min(max(limit, 100), 2000))
+      &limit=\(min(max(limit, 100), 2500))
       &access_token=\(token)
       """
       .replacingOccurrences(of: "\n", with: "")

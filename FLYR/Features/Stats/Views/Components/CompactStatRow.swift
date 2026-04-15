@@ -44,7 +44,7 @@ struct CompactStatRow: View {
 
 #Preview {
     VStack(spacing: 8) {
-        CompactStatRow(icon: "door.left.hand.open", label: "Doors", progress: 0.6, value: "124")
+        CompactStatRow(icon: "door.left.hand.closed", label: "Doors", progress: 0.6, value: "124")
         CompactStatRow(icon: "doc.text", label: "Flyers", progress: 0.45, value: "89")
     }
     .padding()

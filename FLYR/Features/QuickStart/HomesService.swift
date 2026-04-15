@@ -38,11 +38,27 @@ final class HomesService {
         print("🌐 [QuickStart] Creating campaign shell for closest-home flow")
         let campaign = try await CampaignsAPI.shared.createV2(payload)
 
-        let polygonGeoJSON = quickStartPolygonGeoJSON(center: center, radiusMeters: radiusMeters)
+        let polygon = quickStartPolygon(center: center, radiusMeters: radiusMeters)
+        let polygonGeoJSON = quickStartPolygonGeoJSON(polygon)
         try await CampaignsAPI.shared.updateTerritoryBoundary(
             campaignId: campaign.id,
             polygonGeoJSON: polygonGeoJSON
         )
+
+        let preparedRoads = try await CampaignRoadService.shared.prepareCampaignRoads(
+            campaignId: campaign.id.uuidString,
+            bounds: BoundingBox(from: polygon),
+            polygon: polygon
+        )
+        guard !preparedRoads.isEmpty else {
+            throw NSError(
+                domain: "QuickStart",
+                code: 502,
+                userInfo: [NSLocalizedDescriptionKey: "Quick Start roads could not be prepared for this area."]
+            )
+        }
+        await CampaignRoadService.shared.ensureLocalCache(campaignId: campaign.id.uuidString)
+        print("✅ [QuickStart] Prepared \(preparedRoads.count) roads")
 
         let provision = try await CampaignsAPI.shared.provisionCampaign(campaignId: campaign.id)
         let state = try await CampaignsAPI.shared.waitForProvisionReady(campaignId: campaign.id)
@@ -134,28 +150,31 @@ final class HomesService {
         return "Quick Start - \(formatter.string(from: Date())) - \(radiusMeters)m"
     }
 
-    private func quickStartPolygonGeoJSON(
+    private func quickStartPolygon(
         center: CLLocationCoordinate2D,
         radiusMeters: Int,
         segments: Int = 32
-    ) -> String {
+    ) -> [CLLocationCoordinate2D] {
         let radius = max(Double(radiusMeters), 1)
         let latDelta = radius / 111_320.0
         let metersPerLonDegree = max(111_320.0 * cos(center.latitude * .pi / 180.0), 1e-6)
         let lonDelta = radius / metersPerLonDegree
 
-        var ring: [[Double]] = []
+        var ring: [CLLocationCoordinate2D] = []
         ring.reserveCapacity(segments + 1)
         for index in 0...segments {
             let angle = (2.0 * Double.pi * Double(index)) / Double(segments)
             let lon = center.longitude + (lonDelta * cos(angle))
             let lat = center.latitude + (latDelta * sin(angle))
-            ring.append([lon, lat])
+            ring.append(CLLocationCoordinate2D(latitude: lat, longitude: lon))
         }
+        return ring
+    }
 
+    private func quickStartPolygonGeoJSON(_ polygon: [CLLocationCoordinate2D]) -> String {
         let geojson: [String: Any] = [
             "type": "Polygon",
-            "coordinates": [ring]
+            "coordinates": [polygon.map { [$0.longitude, $0.latitude] }]
         ]
 
         guard let data = try? JSONSerialization.data(withJSONObject: geojson),

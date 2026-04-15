@@ -103,21 +103,38 @@ final class UseCampaignV2: ObservableObject {
         // First check if campaign exists in the store with addresses loaded
         if let store = store, var campaign = store.campaign(id: id) {
             print("🎣 [HOOK DEBUG] Campaign found in store: '\(campaign.name)'")
-            
-            // If addresses are empty, fetch them (lazy loading)
-            if campaign.addresses.isEmpty {
-                print("🎣 [HOOK DEBUG] Campaign has no addresses, fetching them...")
+
+            let needsRefresh = campaign.addresses.isEmpty || campaign.dataConfidence == nil
+
+            // Refresh from API if key derived data has not landed in memory yet.
+            if needsRefresh {
+                let missingReasons = [
+                    campaign.addresses.isEmpty ? "addresses" : nil,
+                    campaign.dataConfidence == nil ? "data confidence" : nil
+                ]
+                .compactMap { $0 }
+                .joined(separator: " + ")
+
+                print("🎣 [HOOK DEBUG] Campaign missing \(missingReasons), fetching fresh campaign...")
                 do {
                     let fullCampaign = try await api.fetchCampaign(id: id)
                     campaign.addresses = fullCampaign.addresses
                     campaign.totalFlyers = fullCampaign.totalFlyers
-                    // Update store with full campaign data
+                    campaign.dataConfidence = fullCampaign.dataConfidence
+                    campaign.addressSource = fullCampaign.addressSource
+                    campaign.type = fullCampaign.type
+                    campaign.status = fullCampaign.status
+                    campaign.seedQuery = fullCampaign.seedQuery
+                    campaign.scans = fullCampaign.scans
+                    campaign.conversions = fullCampaign.conversions
+
+                    // Update store with the refreshed campaign data
                     store.update(campaign)
                     item = campaign
-                    print("🎣 [HOOK DEBUG] Addresses loaded: \(campaign.addresses.count) addresses")
+                    print("🎣 [HOOK DEBUG] Refreshed campaign: \(campaign.addresses.count) addresses, confidence present: \(campaign.dataConfidence != nil)")
                 } catch {
-                    print("⚠️ [HOOK DEBUG] Failed to load addresses: \(error.localizedDescription)")
-                    // Still show campaign without addresses
+                    print("⚠️ [HOOK DEBUG] Failed to refresh campaign: \(error.localizedDescription)")
+                    // Still show the store version if refresh fails.
                     item = campaign
                 }
             } else {

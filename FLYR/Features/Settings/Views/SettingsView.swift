@@ -1,5 +1,4 @@
 import SwiftUI
-import StoreKit
 import UIKit
 
 struct SettingsView: View {
@@ -13,6 +12,17 @@ struct SettingsView: View {
     @State private var followUpBossKey: String = ""
     @State private var excludeWeekends: Bool = false
     @State private var darkMode: Bool = true
+    @State private var showDeleteAccountConfirm = false
+    @State private var isDeletingAccount = false
+    @State private var deleteAccountError: String?
+    @State private var calendarMessage: String?
+    @State private var showMapInfoSheet = false
+
+    private var appVersionText: String {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0"
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "1"
+        return "\(version) (\(build))"
+    }
     
     var body: some View {
         NavigationStack {
@@ -23,9 +33,9 @@ struct SettingsView: View {
                     
                     // Integrations Section
                     integrationsSection
-                    
-                    // Subscription (always show paywall entry)
-                    subscriptionSection
+
+                    // Calendar
+                    calendarSection
                     
                     // Streak Settings
                     streakSettingsSection
@@ -38,10 +48,6 @@ struct SettingsView: View {
                     
                     // App Info
                     appInfoSection
-
-                    #if DEBUG
-                    debugSection
-                    #endif
                 } else {
                     Section {
                         Text("Please sign in to view settings")
@@ -63,7 +69,7 @@ struct SettingsView: View {
                     vm.refreshStepsIfEnabled()
                 }
             }
-            .onChange(of: vm.settings) { newSettings in
+            .onChange(of: vm.settings) { _, newSettings in
                 if let settings = newSettings {
                     followUpBossKey = settings.follow_up_boss_key ?? ""
                     excludeWeekends = settings.exclude_weekends
@@ -77,6 +83,43 @@ struct SettingsView: View {
             }
             .sheet(isPresented: $showPaywall) {
                 PaywallView()
+            }
+            .sheet(isPresented: $showMapInfoSheet) {
+                MapGestureInfoSheet()
+            }
+            .confirmationDialog(
+                "Delete Account?",
+                isPresented: $showDeleteAccountConfirm,
+                titleVisibility: .visible
+            ) {
+                Button("Delete Account", role: .destructive) {
+                    Task { await deleteAccount() }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This permanently removes your FLYR account from Supabase and cannot be undone.")
+            }
+            .alert(
+                "Delete Account Failed",
+                isPresented: Binding(
+                    get: { deleteAccountError != nil },
+                    set: { if !$0 { deleteAccountError = nil } }
+                )
+            ) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(deleteAccountError ?? "")
+            }
+            .alert(
+                "Calendar",
+                isPresented: Binding(
+                    get: { calendarMessage != nil },
+                    set: { if !$0 { calendarMessage = nil } }
+                )
+            ) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(calendarMessage ?? "")
             }
         }
     }
@@ -176,45 +219,61 @@ struct SettingsView: View {
         }
     }
 
-    // MARK: - Subscription Section
+    // MARK: - Calendar Section
 
-    private var subscriptionSection: some View {
+    private var calendarSection: some View {
         Section {
             Button {
-                if entitlementsService.canUsePro {
-                    Task { await openManageSubscriptions() }
-                } else {
-                    showPaywall = true
-                }
+                openAppleCalendar()
             } label: {
                 HStack {
-                    Image(systemName: "crown.fill")
+                    Image(systemName: "apple.logo")
+                        .foregroundColor(.text)
+                    Text("Apple Calendar")
+                        .foregroundColor(.text)
+                }
+            }
+
+            Button {
+                openGoogleCalendar()
+            } label: {
+                HStack {
+                    Image(systemName: "calendar")
                         .foregroundColor(.info)
-                    Text(entitlementsService.canUsePro ? "Manage subscription" : "Upgrade to Pro")
+                    Text("Google Calendar")
                         .foregroundColor(.text)
                 }
             }
         } header: {
-            Text("Subscription")
+            Text("Calendar")
+        } footer: {
+            Text("Open your preferred calendar app here instead of from the contact card.")
         }
     }
 
-    private func openManageSubscriptions() async {
-        if let scene = UIApplication.shared.connectedScenes
-            .compactMap({ $0 as? UIWindowScene })
-            .first {
-            do {
-                try await AppStore.showManageSubscriptions(in: scene)
-                return
-            } catch {
-                #if DEBUG
-                print("⚠️ [Settings] Failed to open App Store subscriptions sheet: \(error)")
-                #endif
-            }
+    private func openAppleCalendar() {
+        guard let url = URL(string: "calshow:\(Date().timeIntervalSinceReferenceDate)") else {
+            calendarMessage = "Unable to open Apple Calendar."
+            return
+        }
+        UIApplication.shared.open(url)
+    }
+
+    private func openGoogleCalendar() {
+        let appURL = URL(string: "googlecalendar://")
+        let webURL = URL(string: "https://calendar.google.com/calendar/u/0/r")
+
+        if let appURL, UIApplication.shared.canOpenURL(appURL) {
+            UIApplication.shared.open(appURL)
+            return
         }
 
-        guard let url = URL(string: "https://apps.apple.com/account/subscriptions") else { return }
-        await UIApplication.shared.open(url)
+        if let webURL {
+            UIApplication.shared.open(webURL)
+            return
+        }
+
+        calendarMessage = "Unable to open Google Calendar."
     }
     
     // MARK: - Streak Settings Section
@@ -222,7 +281,7 @@ struct SettingsView: View {
     private var streakSettingsSection: some View {
         Section {
             Toggle("Exclude Weekends from Streak", isOn: $excludeWeekends)
-                .onChange(of: excludeWeekends) { newValue in
+                .onChange(of: excludeWeekends) { _, newValue in
                     saveExcludeWeekends(newValue)
                 }
         } header: {
@@ -235,7 +294,7 @@ struct SettingsView: View {
     private var appearanceSection: some View {
         Section {
             Toggle("Dark Mode", isOn: $darkMode)
-                .onChange(of: darkMode) { newValue in
+                .onChange(of: darkMode) { _, newValue in
                     saveDarkMode(newValue)
                 }
         } header: {
@@ -299,9 +358,36 @@ struct SettingsView: View {
             HStack {
                 Text("Version")
                 Spacer()
-                Text("1.0.0")
+                Text(appVersionText)
                     .foregroundColor(.muted)
             }
+
+            Button("Terms of Use (EULA)") {
+                openExternalURL("https://www.apple.com/legal/internet-services/itunes/dev/stdeula/")
+            }
+
+            Button("Privacy Policy") {
+                openExternalURL("https://www.flyrpro.app/privacy")
+            }
+
+            Button("Info / how to use map") {
+                showMapInfoSheet = true
+            }
+
+            Button(role: .destructive) {
+                showDeleteAccountConfirm = true
+            } label: {
+                if isDeletingAccount {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("Deleting Account...")
+                    }
+                } else {
+                    Text("Delete Account")
+                }
+            }
+            .disabled(isDeletingAccount)
             
             Button(role: .destructive) {
                 Task {
@@ -315,19 +401,6 @@ struct SettingsView: View {
             Text("App Info")
         }
     }
-
-    #if DEBUG
-    private var debugSection: some View {
-        Section {
-            Button("Reset Onboarding") {
-                LocalStorage.shared.hasCompletedOnboarding = false
-                dismiss()
-            }
-        } header: {
-            Text("Developer")
-        }
-    }
-    #endif
     
     // MARK: - Save Methods
     
@@ -352,6 +425,29 @@ struct SettingsView: View {
             await uiState.updateAppearancePreference(userID: userID, isDarkMode: value)
             // Also save via view model (for consistency)
             await vm.updateSetting(userID: userID, key: "dark_mode", value: value)
+        }
+    }
+
+    private func openExternalURL(_ raw: String) {
+        guard let url = URL(string: raw) else { return }
+        Task {
+            await UIApplication.shared.open(url)
+        }
+    }
+
+    @MainActor
+    private func deleteAccount() async {
+        guard !isDeletingAccount else { return }
+        isDeletingAccount = true
+        deleteAccountError = nil
+        defer { isDeletingAccount = false }
+
+        do {
+            try await AccessAPI.shared.deleteCurrentAccount()
+            await auth.signOut()
+            dismiss()
+        } catch {
+            deleteAccountError = error.localizedDescription
         }
     }
 }

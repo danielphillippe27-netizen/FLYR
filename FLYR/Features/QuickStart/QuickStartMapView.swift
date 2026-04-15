@@ -7,6 +7,7 @@ import Lottie
 struct QuickStartMapView: View {
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var entitlementsService: EntitlementsService
+    @ObservedObject private var sessionManager = SessionManager.shared
     @StateObject private var locationManager = LocationManager()
 
     @State private var createdCampaignId: UUID?
@@ -23,6 +24,11 @@ struct QuickStartMapView: View {
     /// Pro users always allowed; non-Pro allowed for their first Quick Start only.
     private var canUseQuickStart: Bool {
         entitlementsService.canUsePro || isFreeQuickStartEligible == true
+    }
+
+    private var isQuickStartSessionActive: Bool {
+        guard let createdCampaignId else { return false }
+        return sessionManager.sessionId != nil && sessionManager.campaignId == createdCampaignId
     }
 
     var body: some View {
@@ -42,6 +48,7 @@ struct QuickStartMapView: View {
         }
         .navigationTitle("Quick Start")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar(isQuickStartSessionActive ? .hidden : .visible, for: .navigationBar)
         .task {
             if entitlementsService.canUsePro {
                 isFreeQuickStartEligible = true

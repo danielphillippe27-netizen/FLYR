@@ -16,8 +16,6 @@ enum FarmIntegrationHelper {
         // 3. Create a farm_lead record with lead_source = "qr_scan"
         // 4. Link the lead to the touch
         
-        let leadService = FarmLeadService.shared
-        
         // Example implementation:
         // let lead = FarmLead(
         //     farmId: farmId,
@@ -80,6 +78,5 @@ struct QRScanData {
     let address: String?
     let timestamp: Date
 }
-
 
 

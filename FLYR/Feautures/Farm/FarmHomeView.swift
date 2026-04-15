@@ -9,6 +9,12 @@ struct FarmHomeView: View {
     @State private var isLoading = false
     
     var body: some View {
+        NavigationStack {
+            farmHomeScroll
+        }
+    }
+
+    private var farmHomeScroll: some View {
         ScrollView {
             LazyVStack(spacing: 16) {
                 // Segmented control - full width
@@ -214,7 +220,5 @@ struct FarmPlaceholder: Identifiable {
 }
 
 #Preview {
-    NavigationStack {
-        FarmHomeView()
-    }
+    FarmHomeView()
 }

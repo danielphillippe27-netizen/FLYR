@@ -25,7 +25,6 @@ struct SessionShareCardView: View {
     private var valueFont: Font { Font.system(size: forExport ? 96 : 34, weight: .bold) }
     private var logoHeight: CGFloat { forExport ? 100 : 50 }
     private var topSpacer: CGFloat { forExport ? 48 : 20 }
-    private var bottomSpacer: CGFloat { forExport ? 8 : 4 }
     private var routeBoxSize: CGFloat { forExport ? 120 : 100 }
 
     var body: some View {
@@ -85,10 +84,16 @@ struct SessionShareCardView: View {
 
                 Spacer().frame(height: metricSpacing)
 
-                // Route squiggle
-                RouteMiniMapView(points: data.pathCoordinates, boxSize: routeBoxSize)
-                    .padding(.top, forExport ? 8 : 4)
-                    .padding(.bottom, forExport ? 2 : 4)
+                // Route squiggle (hidden for demo sessions — map artwork comes from the full-bleed card only when enabled)
+                Group {
+                    if data.isDemoSession {
+                        Color.clear.frame(height: routeBoxSize)
+                    } else {
+                        RouteMiniMapView(segments: data.displayRouteSegments, boxSize: routeBoxSize)
+                    }
+                }
+                .padding(.top, forExport ? 8 : 4)
+                .padding(.bottom, forExport ? 2 : 4)
 
                 // Small fixed gap so FLYR sits right under the route (no big flexible gap)
                 if forExport {
@@ -172,6 +177,11 @@ private struct StravaMetricRow: View {
                 CLLocationCoordinate2D(latitude: 43.652, longitude: -79.382),
                 CLLocationCoordinate2D(latitude: 43.651, longitude: -79.385),
             ],
+            renderedPathSegments: [[
+                CLLocationCoordinate2D(latitude: 43.65, longitude: -79.38),
+                CLLocationCoordinate2D(latitude: 43.652, longitude: -79.382),
+                CLLocationCoordinate2D(latitude: 43.651, longitude: -79.385),
+            ]],
             completedCount: 12,
             conversationsCount: 5,
             startTime: Date()

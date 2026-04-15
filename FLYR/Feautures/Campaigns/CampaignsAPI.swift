@@ -18,6 +18,40 @@ struct CampaignAddressRow {
     let lon: Double
 }
 
+struct CampaignConfidenceHotspot: Decodable {
+    let geohash: String
+    let centerLat: Double
+    let centerLon: Double
+    let campaignsCount: Int
+    let avgConfidenceScore: Double
+    let avgLinkedCoverage: Double
+    let lowCount: Int
+    let mediumCount: Int
+    let highCount: Int
+    let goldExactTotal: Int
+    let silverTotal: Int
+    let bronzeTotal: Int
+    let lambdaTotal: Int
+    let priorityScore: Double
+
+    enum CodingKeys: String, CodingKey {
+        case geohash
+        case centerLat = "center_lat"
+        case centerLon = "center_lon"
+        case campaignsCount = "campaigns_count"
+        case avgConfidenceScore = "avg_confidence_score"
+        case avgLinkedCoverage = "avg_linked_coverage"
+        case lowCount = "low_count"
+        case mediumCount = "medium_count"
+        case highCount = "high_count"
+        case goldExactTotal = "gold_exact_total"
+        case silverTotal = "silver_total"
+        case bronzeTotal = "bronze_total"
+        case lambdaTotal = "lambda_total"
+        case priorityScore = "priority_score"
+    }
+}
+
 /// GeoJSON Polygon for PostGIS territory_boundary (geometry(Polygon, 4326)).
 /// Matches web: { type: "Polygon", coordinates: [[[lng, lat], ...]] }; closed ring, ≥4 points.
 struct GeoJSONPolygon: Codable {
@@ -180,7 +214,7 @@ final class CampaignsAPI {
         let campaign = CampaignV2(
             id: dbRow.id,
             name: dbRow.title,
-            type: payload.type ?? .flyer,
+            type: payload.type ?? dbRow.campaignType,
             addressSource: payload.addressSource,
             addresses: payload.addressesJSON,
             totalFlyers: payload.addressesJSON.count, // Use addresses count instead of DB field
@@ -188,7 +222,8 @@ final class CampaignsAPI {
             conversions: dbRow.conversions,
             createdAt: dbRow.createdAt,
             status: .draft,
-            seedQuery: dbRow.region
+            seedQuery: dbRow.region,
+            dataConfidence: dbRow.dataConfidence
         )
         
         print("✅ [API DEBUG] Campaign creation completed")
@@ -297,21 +332,61 @@ final class CampaignsAPI {
             let campaign = CampaignV2(
                 id: dbRow.id,
                 name: dbRow.title,
-                type: .flyer, // Default - should be stored in DB
-                addressSource: .closestHome, // Default - should be stored in DB
+                type: dbRow.campaignType,
+                addressSource: dbRow.addressSource,
                 addresses: [], // Empty - will be loaded on demand when user opens detail
                 totalFlyers: totalFlyers,
                 scans: dbRow.scans,
                 conversions: dbRow.conversions,
                 createdAt: dbRow.createdAt,
                 status: status,
-                seedQuery: dbRow.region
+                seedQuery: dbRow.region,
+                dataConfidence: dbRow.dataConfidence
             )
             campaigns.append(campaign)
         }
         
         print("✅ [API DEBUG] Converted \(campaigns.count) campaigns to CampaignV2 with house counts")
         return campaigns
+    }
+
+    /// Single RPC: centroid (lat/lon) per campaign for map markers. Skips campaigns with no addresses.
+    func fetchCampaignAddressCentroids() async throws -> [UUID: CLLocationCoordinate2D] {
+        struct CentroidRow: Decodable {
+            let campaignId: UUID
+            let lat: Double
+            let lon: Double
+            enum CodingKeys: String, CodingKey {
+                case campaignId = "campaign_id"
+                case lat, lon
+            }
+        }
+        let res: PostgrestResponse<[CentroidRow]> = try await client
+            .rpc("get_campaign_address_centroids")
+            .execute()
+        return Dictionary(uniqueKeysWithValues: res.value.map {
+            ($0.campaignId, CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon))
+        })
+    }
+
+    /// Aggregated campaign-confidence hotspots for internal diagnostics or future admin UI.
+    func fetchCampaignConfidenceHotspots(
+        precision: Int = 5,
+        workspaceId: UUID? = nil
+    ) async throws -> [CampaignConfidenceHotspot] {
+        struct CampaignConfidenceHotspotsRPCParams: Encodable {
+            let p_precision: Int
+            let p_workspace_id: String?
+        }
+
+        let params = CampaignConfidenceHotspotsRPCParams(
+            p_precision: precision,
+            p_workspace_id: workspaceId?.uuidString
+        )
+        let res: PostgrestResponse<[CampaignConfidenceHotspot]> = try await client
+            .rpc("get_campaign_confidence_hotspots", params: params)
+            .execute()
+        return res.value
     }
     
     // MARK: - Bulk Address Operations
@@ -419,6 +494,28 @@ final class CampaignsAPI {
         print("✅ [API] Updated territory_boundary for campaign \(campaignId)")
     }
 
+    /// Fetch the campaign's territory boundary (same polygon used for addresses/buildings).
+    /// Returns nil if the campaign has no boundary or it fails to decode.
+    func fetchTerritoryBoundary(campaignId: UUID) async -> [CLLocationCoordinate2D]? {
+        struct Row: Decodable {
+            let territory_boundary: GeoJSONPolygon?
+        }
+        do {
+            let res = try await client
+                .from("campaigns")
+                .select("territory_boundary")
+                .eq("id", value: campaignId.uuidString)
+                .single()
+                .execute()
+            let row = try JSONDecoder().decode(Row.self, from: res.data)
+            guard let polygon = row.territory_boundary else { return nil }
+            let ring = polygon.coordinates.first ?? []
+            return ring.map { CLLocationCoordinate2D(latitude: $0[1], longitude: $0[0]) }
+        } catch {
+            return nil
+        }
+    }
+
     /// Update campaign status (e.g. archive).
     func updateCampaignStatus(campaignId: UUID, status: CampaignStatus) async throws {
         let payload = CampaignStatusUpdate(status: status.rawValue)
@@ -428,6 +525,27 @@ final class CampaignsAPI {
             .eq("id", value: campaignId.uuidString)
             .execute()
         print("✅ [API] Updated campaign \(campaignId) status to \(status.rawValue)")
+    }
+
+    func deleteCampaign(campaignId: UUID) async throws {
+        try await client
+            .from("campaigns")
+            .delete()
+            .eq("id", value: campaignId.uuidString)
+            .execute()
+        print("✅ [API] Deleted campaign \(campaignId)")
+    }
+
+    func deleteCampaigns(campaignIDs: [UUID]) async throws {
+        let uniqueIDs = Array(Set(campaignIDs))
+        guard !uniqueIDs.isEmpty else { return }
+
+        try await client
+            .from("campaigns")
+            .delete()
+            .in("id", values: uniqueIDs.map(\.uuidString))
+            .execute()
+        print("✅ [API] Deleted \(uniqueIDs.count) campaign(s)")
     }
 
     /// Trigger provision: backend reads territory_boundary, calls Lambda/S3, ingests into Supabase.
@@ -455,6 +573,13 @@ final class CampaignsAPI {
             print("🌐 [API DEBUG] Provision raw response (\(http.statusCode)): <empty>")
         }
         guard (200...299).contains(http.statusCode) else {
+            if http.statusCode == 422,
+               let provisionErr = try? JSONDecoder().decode(CampaignProvisionResponse.self, from: data) {
+                let msg = provisionErr.error
+                    ?? provisionErr.message
+                    ?? "Provisioning did not meet readiness requirements (e.g. addresses or map roads)."
+                throw NSError(domain: "CampaignsAPI", code: 422, userInfo: [NSLocalizedDescriptionKey: msg])
+            }
             let bodyStr = String(data: data, encoding: .utf8) ?? ""
             let userMessage = Self.extractMessageFromErrorBody(data)
             let displayMessage = userMessage ?? bodyStr
@@ -472,7 +597,8 @@ final class CampaignsAPI {
                     }
                 }
             }
-            print("✅ [API] Provision completed for campaign \(campaignId): addresses=\(provisionResponse.addressesSaved ?? 0), buildings=\(provisionResponse.buildingsSaved ?? 0), roads=\(provisionResponse.roadsSaved ?? 0)")
+            let roadsLogged = provisionResponse.roadsCount ?? provisionResponse.roadsSaved ?? 0
+            print("✅ [API] Provision completed for campaign \(campaignId): addresses=\(provisionResponse.addressesSaved ?? 0), buildings=\(provisionResponse.buildingsSaved ?? 0), roads=\(roadsLogged)")
             return provisionResponse
         } else {
             print("✅ [API] Provision completed for campaign \(campaignId) (response not decoded)")
@@ -592,6 +718,7 @@ final class CampaignsAPI {
         if let city, !city.isEmpty { parts.append(city) }
         if let province, !province.isEmpty { parts.append(province) }
         if let zip, !zip.isEmpty { parts.append(zip) }
+        if let country, !country.isEmpty { parts.append(country) }
         let formatted = parts.joined(separator: ", ")
         if formatted.isEmpty { return nil }
 
@@ -669,11 +796,57 @@ final class CampaignsAPI {
     private func fetchProvisionState(campaignId: UUID) async throws -> CampaignProvisionState {
         let res: PostgrestResponse<CampaignProvisionState> = try await client
             .from("campaigns")
-            .select("id,provision_status,provisioned_at,snapshot_bucket,snapshot_prefix,snapshot_buildings_url,snapshot_roads_url")
+            .select("id,provision_status,provisioned_at,snapshot_bucket,snapshot_prefix,snapshot_buildings_url,snapshot_roads_url,address_source")
             .eq("id", value: campaignId.uuidString)
             .single()
             .execute()
         return res.value
+    }
+
+    /// Row used to gate session start (provision + map roads when applicable).
+    struct CampaignSessionGateRow: Codable {
+        let addressSource: String?
+        let provisionStatus: String?
+
+        enum CodingKeys: String, CodingKey {
+            case addressSource = "address_source"
+            case provisionStatus = "provision_status"
+        }
+    }
+
+    func fetchCampaignSessionGateRow(campaignId: UUID) async throws -> CampaignSessionGateRow {
+        let res: PostgrestResponse<CampaignSessionGateRow> = try await client
+            .from("campaigns")
+            .select("address_source,provision_status")
+            .eq("id", value: campaignId.uuidString)
+            .single()
+            .execute()
+        return res.value
+    }
+
+    /// `nil` = allowed to start session; non-nil = user-facing reason to block.
+    func sessionStartBlockReason(campaignId: UUID) async -> String? {
+        do {
+            let row = try await fetchCampaignSessionGateRow(campaignId: campaignId)
+            let status = (row.provisionStatus ?? "").lowercased()
+            if status == "failed" {
+                return "Campaign provisioning failed. Open the campaign and retry provisioning from details, or contact support."
+            }
+            if status != "ready" {
+                return "Campaign is still provisioning. Wait until it finishes, then try starting a session again."
+            }
+            let src = (row.addressSource ?? "").lowercased()
+            if src == "map" {
+                let roadsOK = await CampaignRoadService.shared.areRoadsReady(campaignId: campaignId.uuidString)
+                if !roadsOK {
+                    return "Campaign roads are not ready yet. Wait a moment, reopen the campaign, or create the campaign again if this persists."
+                }
+            }
+            return nil
+        } catch {
+            print("⚠️ [CampaignsAPI] sessionStartBlockReason failed: \(error.localizedDescription)")
+            return "Could not verify campaign readiness. Check your connection and try again."
+        }
     }
 
     /// Try to extract a "message" (or "error") field from error response JSON for user-facing error.
@@ -692,15 +865,29 @@ struct CampaignProvisionResponse: Codable {
     var success: Bool?
     var addressesSaved: Int?
     var buildingsSaved: Int?
+    /// Canonical road count from `campaign_road_metadata` when backend includes it.
+    var roadsCount: Int?
+    /// Legacy/alternate field name from some deploys.
     var roadsSaved: Int?
     var message: String?
+    var error: String?
+    var dataConfidenceScore: Double?
+    var dataConfidenceLabel: DataConfidenceLabel?
+    var dataConfidenceReason: String?
+    var dataConfidenceSummary: CampaignDataConfidenceSummary?
 
     enum CodingKeys: String, CodingKey {
         case success
         case addressesSaved = "addresses_saved"
         case buildingsSaved = "buildings_saved"
+        case roadsCount = "roads_count"
         case roadsSaved = "roads_saved"
         case message
+        case error
+        case dataConfidenceScore = "data_confidence_score"
+        case dataConfidenceLabel = "data_confidence_label"
+        case dataConfidenceReason = "data_confidence_reason"
+        case dataConfidenceSummary = "data_confidence_summary"
     }
 }
 
@@ -713,6 +900,7 @@ struct CampaignProvisionState: Codable {
     let snapshotPrefix: String?
     let snapshotBuildingsURL: String?
     let snapshotRoadsURL: String?
+    let addressSource: String?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -722,6 +910,7 @@ struct CampaignProvisionState: Codable {
         case snapshotPrefix = "snapshot_prefix"
         case snapshotBuildingsURL = "snapshot_buildings_url"
         case snapshotRoadsURL = "snapshot_roads_url"
+        case addressSource = "address_source"
     }
 }
 
@@ -793,15 +982,16 @@ final class CampaignsV2APISupabase: CampaignsV2APIType {
         return CampaignV2(
             id: dbRow.id,
             name: dbRow.title,
-            type: .flyer, // Default
-            addressSource: .closestHome, // Default
+            type: dbRow.campaignType,
+            addressSource: dbRow.addressSource,
             addresses: campaignAddresses,
             totalFlyers: campaignAddresses.count,
             scans: dbRow.scans,
             conversions: dbRow.conversions,
             createdAt: dbRow.createdAt,
             status: dbRow.status ?? .draft,
-            seedQuery: dbRow.region
+            seedQuery: dbRow.region,
+            dataConfidence: dbRow.dataConfidence
         )
     }
     

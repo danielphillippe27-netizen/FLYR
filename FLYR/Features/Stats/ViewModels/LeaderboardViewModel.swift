@@ -18,7 +18,7 @@ final class LeaderboardViewModel: ObservableObject {
     
     // V3 Properties
     @Published var selectedTab: Int = 0 // 0 = Leaderboard, 1 = You
-    @Published var metric: MetricType = .flyers
+    @Published var metric: MetricType = .doors
     @Published var timeRange: TimeRange = .monthly
     /// Global filter: All or My team (team/workspace name when present).
     @Published var scope: LeaderboardScope = .all
@@ -31,6 +31,8 @@ final class LeaderboardViewModel: ObservableObject {
     @Published var currentUserProfile: UserProfile?
     /// Resolved signed URL for profile image (profile_images bucket) so "You" row shows photo.
     @Published var currentUserProfileImageURL: String?
+    /// Read from auth metadata so realtor users can show brokerage in leaderboard rows.
+    @Published var currentUserBrokerage: String?
     
     func loadLeaderboard() async {
         isLoading = true
@@ -211,6 +213,8 @@ final class LeaderboardViewModel: ObservableObject {
                 await loadCurrentUserProfile(userID: user.id)
             } else {
                 currentUserProfile = nil
+                currentUserProfileImageURL = nil
+                currentUserBrokerage = nil
             }
         } catch {
             // Ignore cancellation (view disappeared or metric/timeframe changed); don't show or log error
@@ -251,6 +255,16 @@ final class LeaderboardViewModel: ObservableObject {
     /// Load current user's profile so leaderboard "You" row shows name and photo from profiles.
     func loadCurrentUserProfile(userID: UUID) async {
         do {
+            let sessionUser = try await supabase.auth.session.user
+            currentUserBrokerage = metadataValue(
+                from: sessionUser.userMetadata,
+                keys: ["brokerage", "brokerage_name"]
+            )
+        } catch {
+            currentUserBrokerage = nil
+        }
+
+        do {
             let result: UserProfile = try await supabase
                 .from("profiles")
                 .select()
@@ -277,5 +291,14 @@ final class LeaderboardViewModel: ObservableObject {
             currentUserProfileImageURL = nil
         }
     }
-}
 
+    private func metadataValue(from metadata: [String: AnyJSON], keys: [String]) -> String? {
+        for key in keys {
+            if let value = metadata[key]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !value.isEmpty {
+                return value
+            }
+        }
+        return nil
+    }
+}

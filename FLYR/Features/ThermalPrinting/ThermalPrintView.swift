@@ -41,7 +41,7 @@ public struct ThermalPrintView: View {
                                     .tag(ThermalLabelSize.size3x3)
                             }
                             .pickerStyle(.segmented)
-                            .onChange(of: selectedSize) { _ in
+                            .onChange(of: selectedSize) { _, _ in
                                 // Reset generated label when size changes
                                 generatedURL = nil
                                 generatedImage = nil
@@ -203,4 +203,3 @@ struct ShareSheet: UIViewControllerRepresentable {
         // No updates needed
     }
 }
-

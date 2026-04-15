@@ -32,12 +32,6 @@ enum MapboxFillLayer {
             let polygon = Polygon(geoJSONRings)
             let geometry = Geometry.polygon(polygon)
             
-            // Create feature with properties
-            let properties: [String: Any] = [
-                "address": addressesWithOutlines.first?.0.address ?? "",
-                "type": "building"
-            ]
-            
             let feature = Feature(geometry: geometry)
             features.append(feature)
         }
@@ -48,7 +42,7 @@ enum MapboxFillLayer {
         source.data = .featureCollection(featureCollection)
         
         // Add source to map
-        try mapView.mapboxMap.style.addSource(source)
+        try mapView.mapboxMap.addSource(source)
         
         // Create fill layer
         var fillLayer = FillLayer(id: "\(id)-fill", source: "\(id)-source")

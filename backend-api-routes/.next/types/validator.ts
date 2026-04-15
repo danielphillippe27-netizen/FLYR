@@ -18,6 +18,15 @@ type RouteHandlerConfig<Route extends AppRouteHandlerRoutes = AppRouteHandlerRou
 
 
 
+// Validate ../../app/api/account/delete/route.ts
+{
+  type __IsExpected<Specific extends RouteHandlerConfig<"/api/account/delete">> = Specific
+  const handler = {} as typeof import("../../app/api/account/delete/route.js")
+  type __Check = __IsExpected<typeof handler>
+  // @ts-ignore
+  type __Unused = __Check
+}
+
 // Validate ../../app/api/billing/apple/verify/route.ts
 {
   type __IsExpected<Specific extends RouteHandlerConfig<"/api/billing/apple/verify">> = Specific
@@ -36,10 +45,46 @@ type RouteHandlerConfig<Route extends AppRouteHandlerRoutes = AppRouteHandlerRou
   type __Unused = __Check
 }
 
+// Validate ../../app/api/campaigns/[campaignId]/addresses/[addressId]/manual/route.ts
+{
+  type __IsExpected<Specific extends RouteHandlerConfig<"/api/campaigns/[campaignId]/addresses/[addressId]/manual">> = Specific
+  const handler = {} as typeof import("../../app/api/campaigns/[campaignId]/addresses/[addressId]/manual/route.js")
+  type __Check = __IsExpected<typeof handler>
+  // @ts-ignore
+  type __Unused = __Check
+}
+
+// Validate ../../app/api/campaigns/[campaignId]/addresses/manual/route.ts
+{
+  type __IsExpected<Specific extends RouteHandlerConfig<"/api/campaigns/[campaignId]/addresses/manual">> = Specific
+  const handler = {} as typeof import("../../app/api/campaigns/[campaignId]/addresses/manual/route.js")
+  type __Check = __IsExpected<typeof handler>
+  // @ts-ignore
+  type __Unused = __Check
+}
+
 // Validate ../../app/api/campaigns/[campaignId]/buildings/[buildingId]/addresses/route.ts
 {
   type __IsExpected<Specific extends RouteHandlerConfig<"/api/campaigns/[campaignId]/buildings/[buildingId]/addresses">> = Specific
   const handler = {} as typeof import("../../app/api/campaigns/[campaignId]/buildings/[buildingId]/addresses/route.js")
+  type __Check = __IsExpected<typeof handler>
+  // @ts-ignore
+  type __Unused = __Check
+}
+
+// Validate ../../app/api/campaigns/[campaignId]/buildings/[buildingId]/manual/route.ts
+{
+  type __IsExpected<Specific extends RouteHandlerConfig<"/api/campaigns/[campaignId]/buildings/[buildingId]/manual">> = Specific
+  const handler = {} as typeof import("../../app/api/campaigns/[campaignId]/buildings/[buildingId]/manual/route.js")
+  type __Check = __IsExpected<typeof handler>
+  // @ts-ignore
+  type __Unused = __Check
+}
+
+// Validate ../../app/api/campaigns/[campaignId]/buildings/manual/route.ts
+{
+  type __IsExpected<Specific extends RouteHandlerConfig<"/api/campaigns/[campaignId]/buildings/manual">> = Specific
+  const handler = {} as typeof import("../../app/api/campaigns/[campaignId]/buildings/manual/route.js")
   type __Check = __IsExpected<typeof handler>
   // @ts-ignore
   type __Unused = __Check
@@ -63,6 +108,51 @@ type RouteHandlerConfig<Route extends AppRouteHandlerRoutes = AppRouteHandlerRou
   type __Unused = __Check
 }
 
+// Validate ../../app/api/integrations/boldtrail/connect/route.ts
+{
+  type __IsExpected<Specific extends RouteHandlerConfig<"/api/integrations/boldtrail/connect">> = Specific
+  const handler = {} as typeof import("../../app/api/integrations/boldtrail/connect/route.js")
+  type __Check = __IsExpected<typeof handler>
+  // @ts-ignore
+  type __Unused = __Check
+}
+
+// Validate ../../app/api/integrations/boldtrail/disconnect/route.ts
+{
+  type __IsExpected<Specific extends RouteHandlerConfig<"/api/integrations/boldtrail/disconnect">> = Specific
+  const handler = {} as typeof import("../../app/api/integrations/boldtrail/disconnect/route.js")
+  type __Check = __IsExpected<typeof handler>
+  // @ts-ignore
+  type __Unused = __Check
+}
+
+// Validate ../../app/api/integrations/boldtrail/push-lead/route.ts
+{
+  type __IsExpected<Specific extends RouteHandlerConfig<"/api/integrations/boldtrail/push-lead">> = Specific
+  const handler = {} as typeof import("../../app/api/integrations/boldtrail/push-lead/route.js")
+  type __Check = __IsExpected<typeof handler>
+  // @ts-ignore
+  type __Unused = __Check
+}
+
+// Validate ../../app/api/integrations/boldtrail/status/route.ts
+{
+  type __IsExpected<Specific extends RouteHandlerConfig<"/api/integrations/boldtrail/status">> = Specific
+  const handler = {} as typeof import("../../app/api/integrations/boldtrail/status/route.js")
+  type __Check = __IsExpected<typeof handler>
+  // @ts-ignore
+  type __Unused = __Check
+}
+
+// Validate ../../app/api/integrations/boldtrail/test/route.ts
+{
+  type __IsExpected<Specific extends RouteHandlerConfig<"/api/integrations/boldtrail/test">> = Specific
+  const handler = {} as typeof import("../../app/api/integrations/boldtrail/test/route.js")
+  type __Check = __IsExpected<typeof handler>
+  // @ts-ignore
+  type __Unused = __Check
+}
+
 // Validate ../../app/api/integrations/fub/connect/route.ts
 {
   type __IsExpected<Specific extends RouteHandlerConfig<"/api/integrations/fub/connect">> = Specific
@@ -76,6 +166,24 @@ type RouteHandlerConfig<Route extends AppRouteHandlerRoutes = AppRouteHandlerRou
 {
   type __IsExpected<Specific extends RouteHandlerConfig<"/api/integrations/fub/disconnect">> = Specific
   const handler = {} as typeof import("../../app/api/integrations/fub/disconnect/route.js")
+  type __Check = __IsExpected<typeof handler>
+  // @ts-ignore
+  type __Unused = __Check
+}
+
+// Validate ../../app/api/integrations/fub/oauth/callback/route.ts
+{
+  type __IsExpected<Specific extends RouteHandlerConfig<"/api/integrations/fub/oauth/callback">> = Specific
+  const handler = {} as typeof import("../../app/api/integrations/fub/oauth/callback/route.js")
+  type __Check = __IsExpected<typeof handler>
+  // @ts-ignore
+  type __Unused = __Check
+}
+
+// Validate ../../app/api/integrations/fub/oauth/start/route.ts
+{
+  type __IsExpected<Specific extends RouteHandlerConfig<"/api/integrations/fub/oauth/start">> = Specific
+  const handler = {} as typeof import("../../app/api/integrations/fub/oauth/start/route.js")
   type __Check = __IsExpected<typeof handler>
   // @ts-ignore
   type __Unused = __Check

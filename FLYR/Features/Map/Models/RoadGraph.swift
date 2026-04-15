@@ -3,23 +3,27 @@ import CoreLocation
 
 /// A graph representation of road networks for pathfinding
 class RoadGraph {
+    private static let nodeCoordinateTolerance = 0.000001
     
     // MARK: - Node
     
     /// A node in the road graph (typically an intersection or endpoint)
     struct Node: Hashable {
         let coordinate: CLLocationCoordinate2D
+
+        private static func normalizedComponent(_ value: Double) -> Int64 {
+            Int64((value / RoadGraph.nodeCoordinateTolerance).rounded())
+        }
         
         // Custom hashable implementation for CLLocationCoordinate2D
         func hash(into hasher: inout Hasher) {
-            hasher.combine(coordinate.latitude)
-            hasher.combine(coordinate.longitude)
+            hasher.combine(Self.normalizedComponent(coordinate.latitude))
+            hasher.combine(Self.normalizedComponent(coordinate.longitude))
         }
         
         static func == (lhs: Node, rhs: Node) -> Bool {
-            // Use small epsilon for floating point comparison
-            abs(lhs.coordinate.latitude - rhs.coordinate.latitude) < 0.000001 &&
-            abs(lhs.coordinate.longitude - rhs.coordinate.longitude) < 0.000001
+            Self.normalizedComponent(lhs.coordinate.latitude) == Self.normalizedComponent(rhs.coordinate.latitude) &&
+            Self.normalizedComponent(lhs.coordinate.longitude) == Self.normalizedComponent(rhs.coordinate.longitude)
         }
         
         /// Distance to another node in meters
@@ -87,10 +91,22 @@ class RoadGraph {
     
     /// Add a road to the graph from a LineString of coordinates
     func addRoad(lineString: [CLLocationCoordinate2D], roadClass: String?) {
-        guard lineString.count >= 2 else { return }
+        let cleanedLineString = lineString.reduce(into: [CLLocationCoordinate2D]()) { result, coordinate in
+            guard CLLocationCoordinate2DIsValid(coordinate) else { return }
+            if let last = result.last {
+                let latDiff = abs(last.latitude - coordinate.latitude)
+                let lonDiff = abs(last.longitude - coordinate.longitude)
+                if latDiff <= RoadGraph.nodeCoordinateTolerance &&
+                    lonDiff <= RoadGraph.nodeCoordinateTolerance {
+                    return
+                }
+            }
+            result.append(coordinate)
+        }
+        guard cleanedLineString.count >= 2 else { return }
         
         // Create nodes for each coordinate
-        let nodes = lineString.map { Node(coordinate: $0) }
+        let nodes = cleanedLineString.map { Node(coordinate: $0) }
         
         // Add all nodes to the set
         allNodes.formUnion(nodes)
@@ -101,6 +117,7 @@ class RoadGraph {
             let to = nodes[i + 1]
             
             let distance = from.distance(to: to)
+            guard distance > 0 else { continue }
             
             // Edge coordinates are just the two endpoints for this segment
             let edgeCoords = [from.coordinate, to.coordinate]
@@ -220,6 +237,12 @@ class RoadGraph {
         
         // Find path between nodes
         guard let nodePath = findShortestPath(from: startNode, to: endNode) else {
+            return nil
+        }
+        guard !nodePath.isEmpty else {
+            return nil
+        }
+        if nodePath.count == 1 {
             return nil
         }
         

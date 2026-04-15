@@ -51,8 +51,7 @@ public class ThermalPrintManager {
         
         // Find the key window's root view controller
         guard let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-              let window = windowScene.windows.first(where: { $0.isKeyWindow }),
-              let rootViewController = window.rootViewController else {
+              windowScene.windows.contains(where: { $0.isKeyWindow }) else {
             print("❌ [ThermalPrint] Could not find root view controller")
             return
         }
@@ -103,4 +102,3 @@ public class ThermalPrintManager {
         print("⚠️ [ThermalPrint] Bluetooth printing not yet implemented")
     }
 }
-

@@ -25,3 +25,140 @@ body {
 #root {
   min-height: 100vh;
 }
+
+.beacon-page {
+  min-height: 100vh;
+  padding: 24px;
+  display: grid;
+  gap: 20px;
+  background: #111;
+}
+
+.beacon-page--centered {
+  place-content: center;
+  text-align: center;
+}
+
+.beacon-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.beacon-header h1 {
+  margin: 0;
+  font-size: clamp(2rem, 3vw, 3rem);
+  line-height: 1.05;
+}
+
+.beacon-eyebrow {
+  margin: 0 0 10px;
+  color: #ff8f8f;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.beacon-muted {
+  color: var(--muted);
+  max-width: 40rem;
+  margin: 0 auto;
+}
+
+.beacon-status {
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: rgba(41, 191, 108, 0.16);
+  color: #9ef0ba;
+  font-weight: 700;
+}
+
+.beacon-status--paused {
+  background: rgba(255, 189, 89, 0.14);
+  color: #ffd17c;
+}
+
+.beacon-alerts {
+  display: grid;
+  gap: 10px;
+}
+
+.beacon-alert {
+  display: grid;
+  gap: 4px;
+  padding: 14px 16px;
+  border-radius: 8px;
+  background: rgba(255, 79, 79, 0.12);
+  border: 1px solid rgba(255, 79, 79, 0.28);
+}
+
+.beacon-alert time {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.beacon-map-shell {
+  overflow: hidden;
+  border-radius: 8px;
+  min-height: 52vh;
+  background: #191919;
+}
+
+.beacon-map {
+  height: 100%;
+  min-height: 52vh;
+  width: 100%;
+}
+
+.beacon-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.beacon-stats article {
+  display: grid;
+  gap: 6px;
+  padding: 16px;
+  border-radius: 8px;
+  background: var(--bg-secondary);
+}
+
+.beacon-stats span {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.beacon-stats strong {
+  font-size: 1.3rem;
+}
+
+.beacon-marker {
+  background: transparent;
+  border: none;
+}
+
+.beacon-marker__dot {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #ff4f4f;
+  border: 3px solid white;
+  box-shadow: 0 0 0 6px rgba(255, 79, 79, 0.2);
+}
+
+@media (max-width: 760px) {
+  .beacon-page {
+    padding: 16px;
+  }
+
+  .beacon-header {
+    flex-direction: column;
+  }
+
+  .beacon-stats {
+    grid-template-columns: 1fr 1fr;
+  }
+}

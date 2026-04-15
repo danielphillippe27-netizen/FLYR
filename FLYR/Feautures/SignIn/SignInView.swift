@@ -14,6 +14,7 @@ struct SignInView: View {
     @State private var showToast = false
     @State private var toastMessage = ""
     @State private var toastType: ToastType = .success
+    @State private var showForgotPasswordSheet = false
 
     enum ToastType {
         case success, error
@@ -115,6 +116,16 @@ struct SignInView: View {
                                 .textFieldStyle(.roundedBorder)
                                 .onChange(of: password) { _, _ in emailSignInError = nil }
                                 .padding(.horizontal, 32)
+                            HStack {
+                                Spacer()
+                                Button("Forgot password?") {
+                                    showForgotPasswordSheet = true
+                                }
+                                .font(.flyrSubheadline)
+                                .foregroundColor(.flyrPrimary)
+                            }
+                            .padding(.horizontal, 32)
+                            .padding(.top, -4)
                             Button {
                                 Task { await continueWithEmail() }
                             } label: {
@@ -173,6 +184,10 @@ struct SignInView: View {
                     .animation(.spring(response: 0.4, dampingFraction: 0.8), value: showToast)
                 }
             }
+        }
+        .sheet(isPresented: $showForgotPasswordSheet) {
+            ForgotPasswordView(initialEmail: email)
+                .environmentObject(routeState)
         }
     }
 

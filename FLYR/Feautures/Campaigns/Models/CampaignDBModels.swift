@@ -9,20 +9,87 @@ struct CampaignDBRow: Codable {
     let id: UUID
     let title: String
     let description: String?
+    let typeRaw: String?
+    let addressSourceRaw: String?
     let scans: Int
     let conversions: Int
     let region: String?
     let tags: String?
     let status: CampaignStatus?
+    let dataConfidenceScore: Double?
+    let dataConfidenceLabel: DataConfidenceLabel?
+    let dataConfidenceReason: String?
+    let dataConfidenceSummary: CampaignDataConfidenceSummary?
+    let dataConfidenceUpdatedAt: Date?
     let createdAt: Date
     let updatedAt: Date
     let ownerId: UUID
 
     enum CodingKeys: String, CodingKey {
         case id, title, description, scans, conversions, region, tags, status
+        case typeRaw = "type"
+        case addressSourceRaw = "address_source"
+        case dataConfidenceScore = "data_confidence_score"
+        case dataConfidenceLabel = "data_confidence_label"
+        case dataConfidenceReason = "data_confidence_reason"
+        case dataConfidenceSummary = "data_confidence_summary"
+        case dataConfidenceUpdatedAt = "data_confidence_updated_at"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
         case ownerId = "owner_id"
+    }
+
+    var campaignType: CampaignType {
+        guard let typeRaw, let parsed = CampaignType(dbValue: typeRaw) else {
+            return .flyer
+        }
+        return parsed
+    }
+
+    var addressSource: AddressSource {
+        guard let addressSourceRaw, let parsed = AddressSource(rawValue: addressSourceRaw) else {
+            return .closestHome
+        }
+        return parsed
+    }
+
+    var dataConfidence: CampaignDataConfidenceSummary? {
+        if let dataConfidenceSummary {
+            return dataConfidenceSummary
+        }
+
+        guard
+            let dataConfidenceScore,
+            let dataConfidenceLabel,
+            let dataConfidenceReason
+        else {
+            return nil
+        }
+
+        return CampaignDataConfidenceSummary(
+            version: 1,
+            score: dataConfidenceScore,
+            label: dataConfidenceLabel,
+            reason: dataConfidenceReason,
+            metrics: CampaignDataConfidenceMetrics(
+                addressesTotal: 0,
+                addressesLinked: 0,
+                linkedCoverage: 0,
+                buildingLinkCount: 0,
+                goldExactCount: 0,
+                goldProximityCount: 0,
+                goldUnlinkedCount: 0,
+                silverCount: 0,
+                bronzeCount: 0,
+                lambdaCount: 0,
+                manualCount: 0,
+                otherCount: 0,
+                unlinkedCount: 0,
+                avgAddressScore: dataConfidenceScore,
+                avgLinkConfidence: 0
+            ),
+            calculatedAt: dataConfidenceUpdatedAt
+        )
     }
 }
 
@@ -177,11 +244,55 @@ enum AddressStatus: String, Codable, CaseIterable {
         case .none, .untouched, .noAnswer: return "not_visited"
         }
     }
+
+    /// Value safe to send to `record_campaign_address_outcome` / DB CHECK constraints (`untouched` is UI-only).
+    var persistedRPCValue: String {
+        switch self {
+        case .untouched: return AddressStatus.none.rawValue
+        default: return rawValue
+        }
+    }
+
+    /// Preserves richer outcomes when automatic flyer-delivered signals arrive later.
+    static func automaticDeliveredStatus(preserving existing: AddressStatus?) -> AddressStatus {
+        guard let existing else { return .delivered }
+        switch existing {
+        case .talked, .appointment, .hotLead, .doNotKnock, .futureSeller:
+            return existing
+        case .none, .untouched, .noAnswer, .delivered:
+            return .delivered
+        }
+    }
+
+    /// Chooses the strongest status for display when local and fetched values race.
+    static func preferredForDisplay(current: AddressStatus?, incoming: AddressStatus) -> AddressStatus {
+        guard let current else { return incoming }
+        return current.displayPriority > incoming.displayPriority ? current : incoming
+    }
+
+    private var displayPriority: Int {
+        switch self {
+        case .none, .untouched:
+            return 0
+        case .noAnswer, .delivered:
+            return 1
+        case .futureSeller:
+            return 2
+        case .doNotKnock:
+            return 3
+        case .talked:
+            return 4
+        case .appointment:
+            return 5
+        case .hotLead:
+            return 6
+        }
+    }
 }
 
 /// Address status row from address_statuses table.
 /// Decodes `id` from "id" or falls back to "address_id" so the app always has a stable UUID for Identifiable.
-struct AddressStatusRow: Codable, Identifiable {
+struct AddressStatusRow: Decodable, Identifiable {
     let id: UUID
     let addressId: UUID
     let campaignId: UUID
@@ -195,6 +306,7 @@ struct AddressStatusRow: Codable, Identifiable {
     enum CodingKeys: String, CodingKey {
         case id
         case addressId = "address_id"
+        case campaignAddressId = "campaign_address_id"
         case campaignId = "campaign_id"
         case status
         case lastVisitedAt = "last_visited_at"
@@ -206,15 +318,25 @@ struct AddressStatusRow: Codable, Identifiable {
     
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        addressId = try c.decode(UUID.self, forKey: .addressId)
-        // Use "id" if present, otherwise use address_id as the stable id (e.g. view or older DB without id)
+        if let cid = try c.decodeIfPresent(UUID.self, forKey: .campaignAddressId) {
+            addressId = cid
+        } else {
+            addressId = try c.decode(UUID.self, forKey: .addressId)
+        }
+        // Use "id" if present, otherwise use campaign_addresses.id as the stable id
         if let decodedId = try? c.decode(UUID.self, forKey: .id) {
             id = decodedId
         } else {
             id = addressId
         }
         campaignId = try c.decode(UUID.self, forKey: .campaignId)
-        status = try c.decode(AddressStatus.self, forKey: .status)
+        let statusRaw = try c.decode(String.self, forKey: .status)
+        switch statusRaw {
+        case "untouched":
+            status = .none
+        default:
+            status = AddressStatus(rawValue: statusRaw) ?? .none
+        }
         lastVisitedAt = try c.decodeIfPresent(Date.self, forKey: .lastVisitedAt)
         notes = try c.decodeIfPresent(String.self, forKey: .notes)
         visitCount = try c.decodeIfPresent(Int.self, forKey: .visitCount) ?? 0
@@ -280,4 +402,3 @@ extension CampaignAddress {
         return json
     }
 }
-

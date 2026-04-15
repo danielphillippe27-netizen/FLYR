@@ -147,7 +147,7 @@ struct ContactDetailSheet: View {
                 .onAppear {
                     editedNotes = contact.notes ?? ""
                 }
-                .onChange(of: editedNotes) { newValue in
+                .onChange(of: editedNotes) { _, newValue in
                     Task {
                         var updatedContact = contact
                         updatedContact.notes = newValue.isEmpty ? nil : newValue
@@ -405,7 +405,6 @@ struct ActionButton: View {
     .padding()
     .background(Color.bgSecondary)
 }
-
 
 
 

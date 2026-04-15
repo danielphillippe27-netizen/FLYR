@@ -64,7 +64,7 @@ class MapboxMapAPI: MapAPIType {
         """
         
         // Add markers to URL
-        for (index, marker) in markers.enumerated() {
+        for marker in markers {
             urlString += "&markers=\(marker.color)|\(marker.coordinate.longitude),\(marker.coordinate.latitude)"
         }
         

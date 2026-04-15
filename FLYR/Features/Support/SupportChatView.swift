@@ -2,6 +2,16 @@ import SwiftUI
 import Supabase
 
 struct SupportChatView: View {
+    private static let diagnosticsAttachmentStart = "[[FLYR_DIAGNOSTICS_ATTACHMENT]]"
+    private static let diagnosticsAttachmentEnd = "[[/FLYR_DIAGNOSTICS_ATTACHMENT]]"
+
+    /// Prefilled draft when opening from Campaign Details (or elsewhere).
+    var initialDraftMessage: String?
+    /// Quick-select lines inserted above the draft when tapped.
+    var quickSuggestions: [String]
+    /// Hidden diagnostics payload appended on first send.
+    var hiddenAttachmentPayload: String?
+
     @StateObject private var auth = AuthManager.shared
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
@@ -12,7 +22,19 @@ struct SupportChatView: View {
     @State private var isLoading = true
     @State private var loadError: String?
     @State private var sendError: String?
-    @State private var realtimeChannel: RealtimeChannel?
+    @State private var realtimeChannel: RealtimeChannelV2?
+    @State private var pendingAttachmentPayload: String?
+
+    init(
+        initialDraftMessage: String? = nil,
+        quickSuggestions: [String] = [],
+        hiddenAttachmentPayload: String? = nil
+    ) {
+        self.initialDraftMessage = initialDraftMessage
+        self.quickSuggestions = quickSuggestions
+        self.hiddenAttachmentPayload = hiddenAttachmentPayload
+        _pendingAttachmentPayload = State(initialValue: hiddenAttachmentPayload)
+    }
 
     var body: some View {
         Group {
@@ -53,9 +75,51 @@ struct SupportChatView: View {
     private func chatContent(thread: SupportThread) -> some View {
         VStack(spacing: 0) {
             messagesList
-            inputBar(threadId: thread.id)
+            VStack(spacing: 0) {
+                if !quickSuggestions.isEmpty {
+                    quickSuggestionsBar
+                    Divider()
+                }
+                inputBar(threadId: thread.id)
+            }
         }
         .background(chatBackground)
+    }
+
+    private var quickSuggestionsBar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(quickSuggestions, id: \.self) { suggestion in
+                    Button {
+                        HapticManager.light()
+                        insertQuickSuggestion(suggestion)
+                    } label: {
+                        Text(suggestion)
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.primary)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .background(Color.primary.opacity(colorScheme == .dark ? 0.18 : 0.1))
+                            .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+        }
+        .background(.ultraThinMaterial)
+    }
+
+    private func insertQuickSuggestion(_ suggestion: String) {
+        let prefix = "\(suggestion)\n\n"
+        let trimmed = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            inputText = prefix
+            return
+        }
+        if inputText.contains(suggestion) { return }
+        inputText = prefix + inputText
     }
 
     private var messagesList: some View {
@@ -138,7 +202,12 @@ struct SupportChatView: View {
             let t = try await SupportService.shared.getOrCreateThread(userId: userId)
             await MainActor.run { thread = t }
             let list = try await SupportService.shared.fetchMessages(threadId: t.id)
-            await MainActor.run { messages = list }
+            await MainActor.run {
+                messages = list
+                if let draft = initialDraftMessage?.trimmingCharacters(in: .whitespacesAndNewlines), !draft.isEmpty {
+                    inputText = draft
+                }
+            }
             try await subscribeRealtime(threadId: t.id)
         } catch {
             await MainActor.run {
@@ -172,18 +241,33 @@ struct SupportChatView: View {
         guard let userId = auth.user?.id else { return }
         let body = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !body.isEmpty else { return }
+        let attachment = pendingAttachmentPayload?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let outgoingBody: String
+        if let attachment, !attachment.isEmpty {
+            outgoingBody = "\(body)\n\n\(Self.diagnosticsAttachmentStart)\n\(attachment)\n\(Self.diagnosticsAttachmentEnd)"
+        } else {
+            outgoingBody = body
+        }
         inputText = ""
         sendError = nil
         Task {
             do {
-                let sent = try await SupportService.shared.sendMessage(threadId: threadId, body: body, senderUserId: userId)
+                let sent = try await SupportService.shared.sendMessage(
+                    threadId: threadId,
+                    body: outgoingBody,
+                    senderUserId: userId
+                )
                 await MainActor.run {
                     if !messages.contains(where: { $0.id == sent.id }) {
                         messages.append(sent)
                     }
+                    pendingAttachmentPayload = nil
                 }
             } catch {
-                await MainActor.run { sendError = error.localizedDescription }
+                await MainActor.run {
+                    sendError = error.localizedDescription
+                    inputText = body
+                }
             }
         }
     }
@@ -192,6 +276,9 @@ struct SupportChatView: View {
 // MARK: - Bubble
 
 private struct SupportBubbleView: View {
+    private static let diagnosticsAttachmentStart = "[[FLYR_DIAGNOSTICS_ATTACHMENT]]"
+    private static let diagnosticsAttachmentEnd = "[[/FLYR_DIAGNOSTICS_ATTACHMENT]]"
+
     let message: SupportMessage
     let isFromUser: Bool
     @Environment(\.colorScheme) private var colorScheme
@@ -202,20 +289,26 @@ private struct SupportBubbleView: View {
         return formatter.string(from: message.createdAt)
     }
 
+    private var displayBody: String {
+        Self.visibleBody(from: message.body)
+    }
+
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             if isFromUser { Spacer(minLength: 48) }
             VStack(alignment: isFromUser ? .trailing : .leading, spacing: 4) {
-                Text(message.body)
+                Text(displayBody)
                     .font(.body)
                     .foregroundStyle(isFromUser ? .white : .primary)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: 260, alignment: .leading)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)
                     .background(
                         isFromUser
                             ? Color.red
                             : Color.primary.opacity(colorScheme == .dark ? 0.2 : 0.12),
-                        in: Capsule()
+                        in: RoundedRectangle(cornerRadius: 18, style: .continuous)
                     )
                 Text(timeString)
                     .font(.caption2)
@@ -224,6 +317,27 @@ private struct SupportBubbleView: View {
             if !isFromUser { Spacer(minLength: 48) }
         }
         .frame(maxWidth: .infinity, alignment: isFromUser ? .trailing : .leading)
+    }
+
+    private static func visibleBody(from rawBody: String) -> String {
+        guard
+            let startRange = rawBody.range(of: diagnosticsAttachmentStart),
+            let endRange = rawBody.range(
+                of: diagnosticsAttachmentEnd,
+                range: startRange.upperBound..<rawBody.endIndex
+            )
+        else {
+            return rawBody
+        }
+
+        var visible = rawBody
+        visible.removeSubrange(startRange.lowerBound..<endRange.upperBound)
+        visible = visible.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if visible.isEmpty {
+            return " "
+        }
+        return visible
     }
 }
 

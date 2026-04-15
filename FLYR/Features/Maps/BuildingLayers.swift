@@ -171,8 +171,6 @@ enum BuildingLayers {
     /// Convert GeoJSONFeature to Mapbox Feature
     private static func convertToMapboxFeature(_ feature: GeoJSONFeature) -> Feature {
         let geometry = convertToMapboxGeometry(feature.geometry)
-        let properties = convertToMapboxProperties(feature.properties)
-        
         return Feature(geometry: geometry)
     }
     

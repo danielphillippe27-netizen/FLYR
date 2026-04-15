@@ -1,14 +1,16 @@
 import { useState, useEffect } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import { fetchLeads } from '../lib/fieldLeads'
-import { fetchCRMConnections, fetchUserIntegrations, connectKVCore, connectZapier } from '../lib/integrations'
+import { fetchCRMConnections, fetchUserIntegrations, connectZapier } from '../lib/integrations'
 import { downloadCsv } from '../lib/exportLeads'
 import type { CRMConnection, UserIntegration } from '../types/leads'
 import ConnectFUBModal from './ConnectFUBModal'
+import ConnectBoldTrailModal from './ConnectBoldTrailModal'
 
 const PROVIDER_NAMES: Record<string, string> = {
+  boldtrail: 'BoldTrail / kvCORE',
   fub: 'Follow Up Boss',
-  kvcore: 'KVCore',
+  kvcore: 'BoldTrail / kvCORE',
   hubspot: 'HubSpot',
   monday: 'Monday.com',
   zapier: 'Zapier / Webhooks',
@@ -24,14 +26,11 @@ export default function SyncSettingsView({ onClose, onSaved }: SyncSettingsViewP
   const [connections, setConnections] = useState<CRMConnection[]>([])
   const [integrations, setIntegrations] = useState<UserIntegration[]>([])
   const [loading, setLoading] = useState(true)
+  const [showBoldTrail, setShowBoldTrail] = useState(false)
   const [showFUB, setShowFUB] = useState(false)
-  const [showKVCore, setShowKVCore] = useState(false)
   const [showZapier, setShowZapier] = useState(false)
-  const [kvcoreKey, setKvcoreKey] = useState('')
   const [zapierUrl, setZapierUrl] = useState('')
-  const [kvcoreError, setKvcoreError] = useState<string | null>(null)
   const [zapierError, setZapierError] = useState<string | null>(null)
-  const [connectingKVCore, setConnectingKVCore] = useState(false)
   const [connectingZapier, setConnectingZapier] = useState(false)
   const [exporting, setExporting] = useState(false)
   const [webhookUrl, setWebhookUrl] = useState(() => localStorage.getItem('flyr_leads_webhook_url') ?? '')
@@ -60,24 +59,6 @@ export default function SyncSettingsView({ onClose, onSaved }: SyncSettingsViewP
       : integrations.some((i) => i.api_key || i.webhook_url)
         ? PROVIDER_NAMES[integrations.find((i) => i.api_key || i.webhook_url)?.provider ?? ''] ?? 'CRM'
         : 'None'
-
-  async function handleConnectKVCore() {
-    if (!user?.id || !kvcoreKey.trim()) return
-    setKvcoreError(null)
-    setConnectingKVCore(true)
-    try {
-      await connectKVCore(user.id, kvcoreKey)
-      setShowKVCore(false)
-      setKvcoreKey('')
-      const ints = await fetchUserIntegrations(user.id)
-      setIntegrations(ints)
-      onSaved?.()
-    } catch (e) {
-      setKvcoreError(e instanceof Error ? e.message : 'Failed to connect')
-    } finally {
-      setConnectingKVCore(false)
-    }
-  }
 
   async function handleConnectZapier() {
     if (!user?.id || !zapierUrl.trim()) return
@@ -185,12 +166,16 @@ export default function SyncSettingsView({ onClose, onSaved }: SyncSettingsViewP
                 <h3 style={{ fontSize: 14, fontWeight: 600, color: 'var(--muted)', marginBottom: 12 }}>Quick Connect</h3>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: 16, background: 'rgba(255,255,255,0.06)', borderRadius: 12 }}>
+                    <span>BoldTrail / kvCORE</span>
+                    <button type="button" onClick={() => setShowBoldTrail(true)} style={{ padding: '8px 14px', background: 'var(--accent)', border: 'none', borderRadius: 10, color: 'white', cursor: 'pointer', fontSize: 14 }}>Connect →</button>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: 16, background: 'rgba(255,255,255,0.06)', borderRadius: 12 }}>
                     <span>Follow Up Boss</span>
                     <button type="button" onClick={() => setShowFUB(true)} style={{ padding: '8px 14px', background: 'var(--accent)', border: 'none', borderRadius: 10, color: 'white', cursor: 'pointer', fontSize: 14 }}>Connect →</button>
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: 16, background: 'rgba(255,255,255,0.06)', borderRadius: 12 }}>
-                    <span>KVCore</span>
-                    <button type="button" onClick={() => setShowKVCore(true)} style={{ padding: '8px 14px', background: 'var(--accent)', border: 'none', borderRadius: 10, color: 'white', cursor: 'pointer', fontSize: 14 }}>Connect →</button>
+                    <span>Monday.com</span>
+                    <button type="button" onClick={() => window.location.assign('/integrations')} style={{ padding: '8px 14px', background: 'var(--accent)', border: 'none', borderRadius: 10, color: 'white', cursor: 'pointer', fontSize: 14 }}>Manage →</button>
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: 16, background: 'rgba(255,255,255,0.06)', borderRadius: 12 }}>
                     <span>Zapier / Webhooks</span>
@@ -224,16 +209,22 @@ export default function SyncSettingsView({ onClose, onSaved }: SyncSettingsViewP
         </div>
       )}
 
-      {showKVCore && (
+      {showBoldTrail && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1001 }}>
-          <div style={{ background: 'var(--bg)', borderRadius: 16, maxWidth: 400, width: '90%', padding: 20, border: '1px solid #333' }}>
-            <h3 style={{ marginBottom: 16 }}>Connect KVCore</h3>
-            <input type="password" value={kvcoreKey} onChange={(e) => setKvcoreKey(e.target.value)} placeholder="API Key" disabled={connectingKVCore} style={{ width: '100%', padding: 12, marginBottom: 12, borderRadius: 10, border: '1px solid #333', background: 'var(--bg-secondary)', color: 'var(--text)' }} />
-            {kvcoreError && <p style={{ color: 'var(--accent)', marginBottom: 8 }}>{kvcoreError}</p>}
-            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-              <button type="button" onClick={() => setShowKVCore(false)} disabled={connectingKVCore}>Cancel</button>
-              <button type="button" onClick={handleConnectKVCore} disabled={!kvcoreKey.trim() || connectingKVCore}>{connectingKVCore ? 'Connecting...' : 'Connect'}</button>
-            </div>
+          <div style={{ background: 'var(--bg)', borderRadius: 16, maxWidth: 440, width: '90%', border: '1px solid #333' }}>
+            <ConnectBoldTrailModal
+              connection={connections.find((connection) => connection.provider === 'boldtrail') ?? null}
+              onSuccess={() => {
+                setShowBoldTrail(false)
+                if (!user?.id) return
+                Promise.all([fetchCRMConnections(user.id), fetchUserIntegrations(user.id)]).then(([conns, ints]) => {
+                  setConnections(conns)
+                  setIntegrations(ints)
+                  onSaved?.()
+                })
+              }}
+              onCancel={() => setShowBoldTrail(false)}
+            />
           </div>
         </div>
       )}

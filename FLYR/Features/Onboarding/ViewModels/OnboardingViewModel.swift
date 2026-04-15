@@ -54,7 +54,7 @@ final class OnboardingViewModel: ObservableObject {
         isLoading = true
         errorMessage = nil
         do {
-            try await upsertProfile(userId: user.id, email: user.email ?? "")
+            try await upsertProfile(userId: user.id, email: user.email)
             LocalStorage.shared.clearOnboardingData()
             LocalStorage.shared.isInPreviewMode = false
             LocalStorage.shared.hasCompletedOnboarding = true
@@ -65,14 +65,20 @@ final class OnboardingViewModel: ObservableObject {
     }
 
     private func upsertProfile(userId: UUID, email: String) async throws {
+        let trimmedFirstName = response.firstName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedLastName = response.lastName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let fullName = [trimmedFirstName, trimmedLastName]
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
         let goalsArray = response.goals.map(\.rawValue)
         let proExpectationsArray = response.proExpectations.map(\.rawValue)
 
-        var row: [String: AnyCodable] = [
+        let row: [String: AnyCodable] = [
             "id": AnyCodable(userId.uuidString),
             "email": AnyCodable(email),
-            "first_name": AnyCodable(response.firstName),
-            "last_name": AnyCodable(response.lastName),
+            "full_name": AnyCodable(fullName),
+            "first_name": AnyCodable(trimmedFirstName),
+            "last_name": AnyCodable(trimmedLastName),
             "contact_preference": AnyCodable(response.contactPreference?.rawValue ?? ""),
             "industry": AnyCodable(response.industry?.rawValue ?? ""),
             "activity_type": AnyCodable(response.activityType?.rawValue ?? ""),
@@ -88,5 +94,21 @@ final class OnboardingViewModel: ObservableObject {
             .from("profiles")
             .upsert(row, onConflict: "id")
             .execute()
+
+        syncCachedAppUserDisplayName(fullName)
+    }
+
+    private func syncCachedAppUserDisplayName(_ fullName: String) {
+        guard let currentUser = AuthManager.shared.user else { return }
+
+        let updatedUser = AppUser(
+            id: currentUser.id,
+            email: currentUser.email,
+            displayName: fullName.isEmpty ? currentUser.displayName : fullName,
+            photoURL: currentUser.photoURL
+        )
+
+        AuthManager.shared.user = updatedUser
+        KeychainAuthStorage.saveAppUser(updatedUser)
     }
 }

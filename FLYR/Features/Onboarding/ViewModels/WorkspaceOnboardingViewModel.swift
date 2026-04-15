@@ -15,7 +15,6 @@ final class WorkspaceOnboardingViewModel: ObservableObject {
     @Published var isBrokerageSearching = false
     @Published var brokerageSearchError: String?
     @Published var inviteEmails: [String] = []
-    @Published var referralCode: String?
     @Published var errorMessage: String?
 
     private var brokerageSearchTask: Task<Void, Never>?
@@ -100,7 +99,6 @@ final class WorkspaceOnboardingViewModel: ObservableObject {
             lastName: lastName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : lastName.trimmingCharacters(in: .whitespacesAndNewlines),
             workspaceName: workspaceName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : workspaceName.trimmingCharacters(in: .whitespacesAndNewlines),
             industry: industry,
-            referralCode: referralCode,
             useCase: useCase,
             inviteEmails: inviteEmails.isEmpty ? nil : inviteEmails,
             brokerage: mappedBrokerageText,

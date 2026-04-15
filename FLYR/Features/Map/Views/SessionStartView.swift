@@ -1,8 +1,14 @@
 import SwiftUI
 
+private struct SessionRouteAssignmentDetailSheetItem: Identifiable {
+    let id: UUID
+}
+
 struct SessionStartView: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var entitlementsService: EntitlementsService
+    @EnvironmentObject private var uiState: AppUIState
+    @StateObject private var authManager = AuthManager.shared
 
     /// When false, Cancel button is hidden (e.g. when used as Record tab root).
     var showCancelButton: Bool = true
@@ -12,6 +18,8 @@ struct SessionStartView: View {
 
     // Data loading
     @State private var campaigns: [CampaignV2] = []
+    @State private var farms: [Farm] = []
+    @State private var routeAssignments: [RouteAssignmentSummary] = []
     @State private var isLoadingData: Bool = false
     @State private var isFetchingData: Bool = false
     @State private var lastFetchTime: Date?
@@ -24,6 +32,11 @@ struct SessionStartView: View {
     @State private var showCampaignMap: Bool = false
     @State private var showQuickCampaign: Bool = false
     @State private var showPaywall: Bool = false
+
+    @State private var routeDetailAssignmentSheetItem: SessionRouteAssignmentDetailSheetItem?
+    @State private var openingRouteAssignmentId: UUID?
+    @State private var routeOpenErrorMessage: String?
+    @State private var plannerFarm: Farm?
 
     var body: some View {
         NavigationStack {
@@ -50,8 +63,31 @@ struct SessionStartView: View {
             .navigationDestination(isPresented: $showQuickCampaign) {
                 QuickStartMapView()
             }
+            .navigationDestination(item: $plannerFarm) { farm in
+                FarmTouchPlannerView(
+                    farmId: farm.id,
+                    onStartSession: { context in
+                        uiState.beginPlannedFarmExecution(context)
+                    }
+                )
+            }
             .sheet(isPresented: $showPaywall) {
                 PaywallView()
+            }
+            .sheet(item: $routeDetailAssignmentSheetItem) { item in
+                NavigationStack {
+                    RouteAssignmentDetailView(assignmentId: item.id)
+                }
+            }
+            .alert("Couldn’t open route", isPresented: Binding(
+                get: { routeOpenErrorMessage != nil },
+                set: { if !$0 { routeOpenErrorMessage = nil } }
+            )) {
+                Button("OK", role: .cancel) {
+                    routeOpenErrorMessage = nil
+                }
+            } message: {
+                Text(routeOpenErrorMessage ?? "")
             }
     }
 
@@ -60,6 +96,12 @@ struct SessionStartView: View {
             VStack(alignment: .leading, spacing: 24) {
                 quickCampaignButton
                 campaignList
+                if !isLoadingData {
+                    farmsList
+                }
+                if !isLoadingData {
+                    routesList
+                }
                 Spacer()
             }
             .padding(.vertical)
@@ -100,7 +142,7 @@ struct SessionStartView: View {
                 Image(systemName: "bolt.fill")
                     .font(.flyrHeadline)
                     .foregroundColor(.black)
-                Text("Quick Campaign")
+                Text("Quick Start")
                     .font(.flyrHeadline)
                     .foregroundColor(.black)
                 Spacer()
@@ -175,6 +217,168 @@ struct SessionStartView: View {
         .padding(.horizontal)
     }
 
+    /// Assignments suitable for starting or continuing work (matches Routes “Active” tab).
+    private var routesForStartSession: [RouteAssignmentSummary] {
+        routeAssignments.filter { $0.status.lowercased() != "completed" }
+    }
+
+    private var farmsForStartSession: [Farm] {
+        farms
+            .filter(\.isActive)
+            .sorted { lhs, rhs in
+                if lhs.createdAt != rhs.createdAt {
+                    return lhs.createdAt > rhs.createdAt
+                }
+                return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+            }
+    }
+
+    private var farmsList: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("FARMS")
+                .font(.flyrHeadline)
+                .foregroundColor(.secondary)
+
+            if farmsForStartSession.isEmpty {
+                Text("No active farms available")
+                    .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity)
+                    .padding()
+            } else {
+                let visible = Array(farmsForStartSession.prefix(maxVisibleItems))
+                let remaining = Array(farmsForStartSession.dropFirst(maxVisibleItems))
+
+                ForEach(visible) { farm in
+                    Button {
+                        openFarm(farm)
+                    } label: {
+                        farmRow(farm)
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                if !remaining.isEmpty {
+                    Menu {
+                        ForEach(remaining) { farm in
+                            Button(farm.name) {
+                                openFarm(farm)
+                            }
+                        }
+                    } label: {
+                        HStack {
+                            Text("More (\(remaining.count) more)")
+                                .font(.flyrHeadline)
+                                .foregroundColor(.primary)
+                            Spacer()
+                            Image(systemName: "chevron.down")
+                                .font(.flyrCaption)
+                                .foregroundColor(.secondary)
+                        }
+                        .padding()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(RoundedRectangle(cornerRadius: 12).fill(Color(.systemGray6)))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .padding(.horizontal)
+    }
+
+    private var routesList: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("ROUTES")
+                .font(.flyrHeadline)
+                .foregroundColor(.secondary)
+
+            if routesForStartSession.isEmpty {
+                Text("No routes assigned")
+                    .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity)
+                    .padding()
+            } else {
+                let visible = Array(routesForStartSession.prefix(maxVisibleItems))
+                let remaining = Array(routesForStartSession.dropFirst(maxVisibleItems))
+
+                ForEach(visible) { route in
+                    Button {
+                        Task { await openRoute(route) }
+                    } label: {
+                        routeRow(route)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(openingRouteAssignmentId != nil)
+                }
+
+                if !remaining.isEmpty {
+                    Menu {
+                        ForEach(remaining) { route in
+                            Button(route.name) {
+                                Task { await openRoute(route) }
+                            }
+                        }
+                    } label: {
+                        HStack {
+                            Text("More (\(remaining.count) more)")
+                                .font(.flyrHeadline)
+                                .foregroundColor(.primary)
+                            Spacer()
+                            Image(systemName: "chevron.down")
+                                .font(.flyrCaption)
+                                .foregroundColor(.secondary)
+                        }
+                        .padding()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(RoundedRectangle(cornerRadius: 12).fill(Color(.systemGray6)))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .padding(.horizontal)
+    }
+
+    private func routeRow(_ route: RouteAssignmentSummary) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(route.name)
+                    .font(.flyrHeadline)
+
+                HStack(spacing: 12) {
+                    Label("\(route.totalStops) stops", systemImage: "mappin.and.ellipse")
+                        .font(.flyrCaption)
+                        .foregroundColor(.secondary)
+
+                    if route.status.lowercased() != "assigned" {
+                        Text(route.statusLabel)
+                            .font(.flyrCaption)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 2)
+                            .background(routeStatusAccent(route.status).opacity(0.2))
+                            .foregroundColor(routeStatusAccent(route.status))
+                            .cornerRadius(4)
+                    }
+                }
+            }
+
+            Spacer()
+
+            if openingRouteAssignmentId == route.id {
+                ProgressView()
+                    .controlSize(.small)
+            } else {
+                Image(systemName: "chevron.right")
+                    .font(.flyrCaption)
+                    .foregroundColor(.secondary)
+            }
+        }
+        .padding()
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color(.systemGray6))
+        )
+    }
+
     private func campaignRow(_ campaign: CampaignV2) -> some View {
         HStack {
             VStack(alignment: .leading, spacing: 4) {
@@ -211,12 +415,117 @@ struct SessionStartView: View {
         )
     }
 
+    private func farmRow(_ farm: Farm) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(farm.name)
+                    .font(.flyrHeadline)
+
+                HStack(spacing: 12) {
+                    Label("\(farm.addressCount ?? 0)", systemImage: "house.fill")
+                        .font(.flyrCaption)
+                        .foregroundColor(.secondary)
+
+                    Text("Active")
+                        .font(.flyrCaption)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 2)
+                        .background(Color.green.opacity(0.2))
+                        .foregroundColor(.green)
+                        .cornerRadius(4)
+                }
+            }
+
+            Spacer()
+
+            Image(systemName: "chevron.right")
+                .font(.flyrCaption)
+                .foregroundColor(.secondary)
+        }
+        .padding()
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color(.systemGray6))
+        )
+    }
+
     // MARK: - Helpers
 
     private func openCampaign(_ campaign: CampaignV2) {
         HapticManager.light()
         mapCampaign = campaign
         showCampaignMap = true
+    }
+
+    private func openFarm(_ farm: Farm) {
+        HapticManager.light()
+        plannerFarm = farm
+    }
+
+    private func openRoute(_ route: RouteAssignmentSummary) async {
+        HapticManager.light()
+        openingRouteAssignmentId = route.id
+        defer { openingRouteAssignmentId = nil }
+
+        do {
+            let detail = try await RouteAssignmentsAPI.shared.fetchAssignmentDetail(assignmentId: route.id)
+            await openResolvedRoute(
+                context: RouteWorkContext(detail: detail),
+                campaignId: detail.campaignId,
+                routeName: detail.displayPlanName,
+                fallbackAssignmentId: route.id
+            )
+        } catch {
+            let originalError = error
+            do {
+                let planDetail = try await RoutePlansAPI.shared.fetchRoutePlanDetail(routePlanId: route.routePlanId)
+                await openResolvedRoute(
+                    context: RouteWorkContext(assignment: route, planDetail: planDetail),
+                    campaignId: planDetail.campaignId,
+                    routeName: RouteAssignmentSummary.displayName(fromRoutePlanName: planDetail.name),
+                    fallbackAssignmentId: route.id
+                )
+            } catch {
+                await MainActor.run {
+                    routeOpenErrorMessage = originalError.localizedDescription
+                }
+            }
+        }
+    }
+
+    @MainActor
+    private func openResolvedRoute(
+        context: RouteWorkContext?,
+        campaignId: UUID?,
+        routeName: String,
+        fallbackAssignmentId: UUID
+    ) {
+        if let context {
+            uiState.selectRoute(context)
+            uiState.selectedTabIndex = 1
+            dismiss()
+            return
+        }
+
+        if let campaignId {
+            uiState.selectCampaign(id: campaignId, name: routeName)
+            uiState.selectedTabIndex = 1
+            dismiss()
+            return
+        }
+
+        routeDetailAssignmentSheetItem = SessionRouteAssignmentDetailSheetItem(id: fallbackAssignmentId)
+    }
+
+    private func routeStatusAccent(_ status: String) -> Color {
+        switch status.lowercased() {
+        case "in_progress", "in progress":
+            return .orange
+        case "cancelled", "declined":
+            return .gray
+        default:
+            return .blue
+        }
     }
 
     private func statusColor(_ status: CampaignStatus) -> Color {
@@ -242,7 +551,10 @@ struct SessionStartView: View {
             isLoadingData = false
         }
 
-        await loadCampaigns()
+        async let campaignsDone: Void = loadCampaigns()
+        async let farmsDone: Void = loadFarms()
+        async let routesDone: Void = loadRoutes()
+        _ = await (campaignsDone, farmsDone, routesDone)
     }
 
     private func loadCampaigns() async {
@@ -257,6 +569,44 @@ struct SessionStartView: View {
             }
             print("❌ Failed to load campaigns: \(error)")
             campaigns = []
+        }
+    }
+
+    private func loadRoutes() async {
+        guard let workspaceId = await RoutePlansAPI.shared.resolveWorkspaceId(preferred: WorkspaceContext.shared.workspaceId) else {
+            routeAssignments = []
+            return
+        }
+
+        do {
+            let result = try await RouteAssignmentsAPI.shared.fetchAssignments(workspaceId: workspaceId)
+            routeAssignments = result.assignments
+        } catch {
+            if (error as NSError).code == NSURLErrorCancelled {
+                return
+            }
+            do {
+                routeAssignments = try await RoutePlansAPI.shared.fetchMyAssignedRoutes(workspaceId: workspaceId)
+            } catch {
+                routeAssignments = []
+            }
+        }
+    }
+
+    private func loadFarms() async {
+        guard let userId = await MainActor.run(body: { authManager.user?.id }) else {
+            farms = []
+            return
+        }
+
+        do {
+            farms = try await FarmService.shared.fetchFarms(userID: userId)
+        } catch {
+            if (error as NSError).code == NSURLErrorCancelled {
+                return
+            }
+            print("❌ Failed to load farms: \(error)")
+            farms = []
         }
     }
 

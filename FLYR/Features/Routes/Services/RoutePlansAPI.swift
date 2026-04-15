@@ -10,19 +10,41 @@ final class RoutePlansAPI {
     private init() {}
 
     func resolveWorkspaceId(preferred workspaceId: UUID?) async -> UUID? {
+        await resolveWorkspaceId(
+            preferred: workspaceId,
+            createIfMissing: true,
+            allowCachedContext: true
+        )
+    }
+
+    /// Resolve only an already-existing workspace for the current user.
+    /// Does not create a default workspace when missing.
+    func existingWorkspaceIdForCurrentUser(preferred workspaceId: UUID? = nil) async -> UUID? {
+        await resolveWorkspaceId(
+            preferred: workspaceId,
+            createIfMissing: false,
+            allowCachedContext: false
+        )
+    }
+
+    private func resolveWorkspaceId(
+        preferred workspaceId: UUID?,
+        createIfMissing: Bool,
+        allowCachedContext: Bool
+    ) async -> UUID? {
         if let workspaceId {
-            print("🏢 [WORKSPACE] Using preferred workspace: \(workspaceId)")
+            debugLog("🏢 [WORKSPACE] Using preferred workspace: \(workspaceId)")
             return workspaceId
         }
-        if let existing = WorkspaceContext.shared.workspaceId {
-            print("🏢 [WORKSPACE] Using cached workspace: \(existing)")
+        if allowCachedContext, let existing = WorkspaceContext.shared.workspaceId {
+            debugLog("🏢 [WORKSPACE] Using cached workspace: \(existing)")
             return existing
         }
 
         // 1) Try access state (backend source of truth for current workspace context).
         do {
             let state = try await AccessAPI.shared.getState()
-            print("🏢 [WORKSPACE] Access state workspaceId: \(state.workspaceId ?? "nil")")
+            debugLog("🏢 [WORKSPACE] Access state workspaceId: \(state.workspaceId ?? "nil")")
             if let workspaceIdString = state.workspaceId,
                let parsedWorkspaceId = UUID(uuidString: workspaceIdString) {
                 WorkspaceContext.shared.update(
@@ -33,77 +55,145 @@ final class RoutePlansAPI {
                 return parsedWorkspaceId
             }
         } catch {
-            print("⚠️ [WORKSPACE] Access state failed: \(error)")
+            debugLog("⚠️ [WORKSPACE] Access state failed: \(error)")
         }
 
         // 2) Try helper RPC when available.
-        do {
-            let session = try await client.auth.session
-            let params: [String: AnyCodable] = [
-                "p_user_id": AnyCodable(session.user.id.uuidString)
-            ]
-            let response = try await client
-                .rpc("primary_workspace_id", params: params)
-                .execute()
-            print("🏢 [WORKSPACE] RPC response: \(String(data: response.data, encoding: .utf8) ?? "nil")")
-            if let resolvedWorkspaceId = Self.extractWorkspaceId(from: response.data) {
-                WorkspaceContext.shared.update(
-                    workspaceId: resolvedWorkspaceId,
-                    name: WorkspaceContext.shared.workspaceName,
-                    role: WorkspaceContext.shared.role
-                )
-                return resolvedWorkspaceId
+        let session = try? await client.auth.session
+        if let session {
+            do {
+                let rpcWorkspaceId = try await fetchPrimaryWorkspaceIdViaRPC(session: session)
+                if let rpcWorkspaceId {
+                    WorkspaceContext.shared.update(
+                        workspaceId: rpcWorkspaceId,
+                        name: WorkspaceContext.shared.workspaceName,
+                        role: WorkspaceContext.shared.role
+                    )
+                    return rpcWorkspaceId
+                }
+                // RPC succeeded and returned null: user likely has no workspace yet.
+                if createIfMissing,
+                   let createdWorkspaceId = await createDefaultWorkspaceIfMissing(session: session) {
+                    WorkspaceContext.shared.update(
+                        workspaceId: createdWorkspaceId,
+                        name: WorkspaceContext.shared.workspaceName,
+                        role: "owner"
+                    )
+                    return createdWorkspaceId
+                }
+            } catch {
+                debugLog("⚠️ [WORKSPACE] RPC failed: \(error)")
+                // Continue to DB fallbacks for legacy environments where RPC is unavailable.
             }
-        } catch {
-            print("⚠️ [WORKSPACE] RPC failed: \(error)")
-            // Continue to DB fallbacks — do NOT return nil here.
         }
 
-        // 3) Fallback to direct table lookup: owned workspace first.
-        do {
-            let session = try await client.auth.session
-            let ownedResponse = try await client
-                .from("workspaces")
-                .select("id")
-                .eq("owner_id", value: session.user.id.uuidString)
-                .order("created_at", ascending: true)
-                .limit(1)
-                .execute()
-            print("🏢 [WORKSPACE] Owned workspaces response: \(String(data: ownedResponse.data, encoding: .utf8) ?? "nil")")
+        // 3) Legacy fallback: direct table lookups when RPC path is unavailable.
+        if let session {
+            do {
+                let memberResponse = try await client
+                    .from("workspace_members")
+                    .select("workspace_id")
+                    .eq("user_id", value: session.user.id.uuidString)
+                    .order("created_at", ascending: true)
+                    .limit(1)
+                    .execute()
+                debugLog("🏢 [WORKSPACE] Workspace members resolved from backend")
 
-            if let ownedId = Self.extractWorkspaceId(from: ownedResponse.data) {
-                WorkspaceContext.shared.update(
-                    workspaceId: ownedId,
-                    name: WorkspaceContext.shared.workspaceName,
-                    role: WorkspaceContext.shared.role
-                )
-                return ownedId
+                if let memberWorkspaceId = Self.extractWorkspaceId(from: memberResponse.data) {
+                    WorkspaceContext.shared.update(
+                        workspaceId: memberWorkspaceId,
+                        name: WorkspaceContext.shared.workspaceName,
+                        role: WorkspaceContext.shared.role
+                    )
+                    return memberWorkspaceId
+                }
+            } catch {
+                debugLog("⚠️ [WORKSPACE] Membership lookup failed: \(error)")
+                // If policy recursion blocks reads, we can still try direct create.
+                if createIfMissing,
+                   isPolicyRecursionError(error),
+                   let createdWorkspaceId = await createDefaultWorkspaceIfMissing(session: session) {
+                    WorkspaceContext.shared.update(
+                        workspaceId: createdWorkspaceId,
+                        name: WorkspaceContext.shared.workspaceName,
+                        role: "owner"
+                    )
+                    return createdWorkspaceId
+                }
             }
-
-            // 4) Fallback to first membership.
-            let memberResponse = try await client
-                .from("workspace_members")
-                .select("workspace_id")
-                .eq("user_id", value: session.user.id.uuidString)
-                .order("created_at", ascending: true)
-                .limit(1)
-                .execute()
-            print("🏢 [WORKSPACE] Workspace members response: \(String(data: memberResponse.data, encoding: .utf8) ?? "nil")")
-
-            if let memberWorkspaceId = Self.extractWorkspaceId(from: memberResponse.data) {
-                WorkspaceContext.shared.update(
-                    workspaceId: memberWorkspaceId,
-                    name: WorkspaceContext.shared.workspaceName,
-                    role: WorkspaceContext.shared.role
-                )
-                return memberWorkspaceId
-            }
-        } catch {
-            print("⚠️ [WORKSPACE] DB lookup failed: \(error)")
         }
 
-        print("❌ [WORKSPACE] All resolution strategies failed — no workspace found")
+        if createIfMissing {
+            debugLog("❌ [WORKSPACE] All resolution strategies failed — no workspace found")
+        } else {
+            debugLog("ℹ️ [WORKSPACE] No existing workspace found for current user")
+        }
         return nil
+    }
+
+    private func createDefaultWorkspaceIfMissing(session: Session) async -> UUID? {
+        let workspaceName = defaultWorkspaceName(for: session)
+        let workspaceValues: [String: AnyCodable] = [
+            "name": AnyCodable(workspaceName),
+            "owner_id": AnyCodable(session.user.id.uuidString)
+        ]
+
+        do {
+            // Insert without a select to avoid policy-recursive reads on some environments.
+            let insertResponse = try await client
+                .from("workspaces")
+                .insert(workspaceValues)
+                .execute()
+            debugLog("🏢 [WORKSPACE] Default workspace insert completed")
+
+            if let insertedId = Self.extractWorkspaceId(from: insertResponse.data) {
+                return insertedId
+            }
+
+            // Resolve freshly-created workspace via SECURITY DEFINER helper.
+            if let resolvedId = try await fetchPrimaryWorkspaceIdViaRPC(session: session) {
+                debugLog("🏢 [WORKSPACE] Resolved workspace after create: \(resolvedId)")
+                return resolvedId
+            }
+        } catch {
+            debugLog("⚠️ [WORKSPACE] Default workspace creation failed: \(error)")
+        }
+        return nil
+    }
+
+    private func fetchPrimaryWorkspaceIdViaRPC(session: Session) async throws -> UUID? {
+        let params: [String: AnyCodable] = [
+            "p_user_id": AnyCodable(session.user.id.uuidString)
+        ]
+        let response = try await client
+            .rpc("primary_workspace_id", params: params)
+            .execute()
+        debugLog("🏢 [WORKSPACE] RPC workspace lookup completed")
+        return Self.extractWorkspaceId(from: response.data)
+    }
+
+    private func isPolicyRecursionError(_ error: Error) -> Bool {
+        if let postgrestError = error as? PostgrestError {
+            if postgrestError.code == "42P17" {
+                return true
+            }
+            if postgrestError.message.localizedCaseInsensitiveContains("infinite recursion") {
+                return true
+            }
+        }
+        return error.localizedDescription.localizedCaseInsensitiveContains("infinite recursion")
+    }
+
+    private func defaultWorkspaceName(for session: Session) -> String {
+        let emailPrefix = session.user.email?
+            .split(separator: "@")
+            .first
+            .map(String.init)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if let emailPrefix, !emailPrefix.isEmpty {
+            return "\(emailPrefix)'s Workspace"
+        }
+        return "My Workspace"
     }
 
     func fetchMyAssignedRoutes(workspaceId: UUID?) async throws -> [RouteAssignmentSummary] {
@@ -144,6 +234,12 @@ final class RoutePlansAPI {
     /// Returns the current user's primary (universal) workspace ID: uses existing context first, then access state, then RPC/DB. Use for campaign creation so new campaigns save to the user's canonical workspace.
     func primaryWorkspaceIdForCurrentUser() async -> UUID? {
         await resolveWorkspaceId(preferred: nil)
+    }
+
+    private func debugLog(_ message: @autoclosure () -> String) {
+        #if DEBUG
+        print(message())
+        #endif
     }
 }
 

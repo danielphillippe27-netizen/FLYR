@@ -23,7 +23,7 @@ struct MapSearchBar: View {
                     .font(.system(size: 16))
                     .foregroundColor(.secondary)
 
-                TextField("Search campaign or farm", text: $searchText)
+                TextField("Search campaigns", text: $searchText)
                     .font(.system(size: 16))
                     .focused($isFocused)
                     .onTapGesture { onFocus?() }

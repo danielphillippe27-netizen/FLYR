@@ -29,8 +29,8 @@ final class StatsViewModel: ObservableObject {
     func loadRanks(for userID: UUID) async {
         let userIDString = userID.uuidString
         do {
-            let weekly = try await leaderboardService.fetchLeaderboard(metric: "flyers", timeframe: "weekly")
-            let allTime = try await leaderboardService.fetchLeaderboard(metric: "flyers", timeframe: "all_time")
+            let weekly = try await leaderboardService.fetchLeaderboard(metric: "doorknocks", timeframe: "weekly")
+            let allTime = try await leaderboardService.fetchLeaderboard(metric: "doorknocks", timeframe: "all_time")
             weeklyRank = weekly.firstIndex(where: { $0.id == userIDString }).map { $0 + 1 }
             allTimeRank = allTime.firstIndex(where: { $0.id == userIDString }).map { $0 + 1 }
         } catch {
@@ -43,4 +43,3 @@ final class StatsViewModel: ObservableObject {
         await loadStats(for: userID)
     }
 }
-

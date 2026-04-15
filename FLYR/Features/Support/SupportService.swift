@@ -54,46 +54,36 @@ final class SupportService {
     // MARK: - Realtime
 
     /// Subscribe to new messages in this thread. Caller must retain and later unsubscribe the returned channel.
-    func subscribeMessages(threadId: UUID, onMessage: @escaping (SupportMessage) -> Void) async throws -> RealtimeChannel {
-        let channel = client.realtime.channel("support-\(threadId.uuidString)")
-        await channel.on(
-            "postgres_changes",
-            filter: ChannelFilter(
-                event: "INSERT",
-                schema: "public",
-                table: "support_messages",
-                filter: "thread_id=eq.\(threadId.uuidString)"
-            )
-        ) { [weak self] payload in
-            guard let self = self,
-                  let dict = payload as? [String: Any],
-                  let newDict = dict["new"] as? [String: Any] else { return }
-            if let msg = self.decodeMessage(from: newDict) {
-                onMessage(msg)
+    func subscribeMessages(
+        threadId: UUID,
+        onMessage: @escaping @Sendable (SupportMessage) -> Void
+    ) async throws -> RealtimeChannelV2 {
+        let channel = client.channel("support-\(threadId.uuidString)")
+        let inserts = channel.postgresChange(
+            InsertAction.self,
+            schema: "public",
+            table: "support_messages",
+            filter: .eq("thread_id", value: threadId.uuidString)
+        )
+
+        Task { [weak self] in
+            guard let self else { return }
+            for await insert in inserts {
+                if let msg = self.decodeMessage(from: insert.record) {
+                    onMessage(msg)
+                }
             }
         }
-        await channel.subscribe()
+
+        try await channel.subscribeWithError()
         return channel
     }
 
-    private func decodeMessage(from dict: [String: Any]) -> SupportMessage? {
-        guard let idStr = dict["id"] as? String, let id = UUID(uuidString: idStr),
-              let threadIdStr = dict["thread_id"] as? String, let threadId = UUID(uuidString: threadIdStr),
-              let senderType = dict["sender_type"] as? String,
-              let body = dict["body"] as? String,
-              let createdAtStr = dict["created_at"] as? String,
-              let createdAt = Self.parseDate(createdAtStr) else {
-            return nil
-        }
-        let senderUserId: UUID? = (dict["sender_user_id"] as? String).flatMap(UUID.init)
-        return SupportMessage(
-            id: id,
-            threadId: threadId,
-            senderType: senderType,
-            senderUserId: senderUserId,
-            body: body,
-            createdAt: createdAt
-        )
+    private func decodeMessage(from record: [String: AnyJSON]) -> SupportMessage? {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        guard let data = try? JSONEncoder().encode(record) else { return nil }
+        return try? decoder.decode(SupportMessage.self, from: data)
     }
 }
 

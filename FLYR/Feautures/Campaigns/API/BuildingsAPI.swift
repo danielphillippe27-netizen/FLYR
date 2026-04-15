@@ -216,6 +216,17 @@ final class BuildingsAPI {
     private var supabaseClient: SupabaseClient {
         SupabaseManager.shared.client
     }
+
+    private static func isCancellationError(_ error: Error) -> Bool {
+        if error is CancellationError {
+            return true
+        }
+        if let urlError = error as? URLError, urlError.code == .cancelled {
+            return true
+        }
+        let nsError = error as NSError
+        return nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled
+    }
     
     // MARK: - Building Outline
     
@@ -324,6 +335,7 @@ final class BuildingsAPI {
         var aggregatedFeatures: [GeoJSONFeature] = []
         
         for chunkIndex in stride(from: 0, to: addresses.count, by: chunkSize) {
+            try Task.checkCancellation()
             let chunk = Array(addresses[chunkIndex..<min(chunkIndex + chunkSize, addresses.count)])
             
             // Prepare request payload
@@ -423,6 +435,10 @@ final class BuildingsAPI {
                 }
                 
             } catch {
+                if Self.isCancellationError(error) {
+                    print("ℹ️ [BUILDINGS] Cancelled ensure request for chunk \(chunkIndex / chunkSize + 1)")
+                    throw error
+                }
                 print("❌ [BUILDINGS] Error processing chunk: \(error)")
                 // Count chunk as proxies (no polygons found)
                 totalProxies += chunk.count
@@ -449,9 +465,15 @@ final class BuildingsAPI {
         )
     }
     
-    /// Backend base URL for GET buildings API (e.g. https://flyrpro.app).
+    /// Backend base URL for GET buildings API.
+    /// Normalizes flyrpro.app → www.flyrpro.app so URLSession doesn't follow a redirect that
+    /// strips the Authorization header, causing 401 on the snapshot endpoint.
     private static var buildingsAPIBaseURL: String {
-        (Bundle.main.object(forInfoDictionaryKey: "FLYR_PRO_API_URL") as? String)?.trimmingCharacters(in: CharacterSet(charactersIn: "/")) ?? "https://flyrpro.app"
+        let raw = (Bundle.main.object(forInfoDictionaryKey: "FLYR_PRO_API_URL") as? String)?.trimmingCharacters(in: CharacterSet(charactersIn: "/")) ?? "https://flyrpro.app"
+        guard let components = URLComponents(string: raw), components.host == "flyrpro.app" else {
+            return raw
+        }
+        return "https://www.flyrpro.app"
     }
 
     private static let snapshotTimestampFormatter: ISO8601DateFormatter = {
@@ -509,6 +531,56 @@ final class BuildingsAPI {
         return try await fetchBuildingsByAddressIds(addressIds: addressIds)
     }
 
+    /// Fetch buildings intersecting an arbitrary polygon. This mirrors the Gold campaign
+    /// provisioning path and is used by farm maps, whose addresses are polygon query results
+    /// rather than persisted `campaign_addresses` rows with cached `building_polygons`.
+    func fetchBuildingPolygons(polygonGeoJSON: String) async throws -> GeoJSONFeatureCollection {
+        let trimmedPolygon = polygonGeoJSON.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedPolygon.isEmpty else {
+            return GeoJSONFeatureCollection(features: [])
+        }
+
+        print("🏠 [BUILDINGS] Fetching building polygons for arbitrary polygon")
+
+        let response = try await supabaseClient.rpc(
+            "get_gold_buildings_in_polygon_geojson",
+            params: ["p_polygon_geojson": trimmedPolygon]
+        ).execute()
+
+        guard response.data.count > 0 else {
+            print("⚠️ [BUILDINGS] Gold polygon RPC returned empty response")
+            return GeoJSONFeatureCollection(features: [])
+        }
+
+        let decoder = JSONDecoder()
+
+        if let directCollection = try? decoder.decode(GeoJSONFeatureCollection.self, from: response.data) {
+            print("✅ [BUILDINGS] Gold polygon RPC returned \(directCollection.features.count) features")
+            return normalizeGoldPolygonFeatureCollection(directCollection)
+        }
+
+        struct WrappedCollectionRow: Decodable {
+            let get_gold_buildings_in_polygon_geojson: GeoJSONFeatureCollection?
+        }
+
+        if let wrappedRows = try? decoder.decode([WrappedCollectionRow].self, from: response.data),
+           let wrappedCollection = wrappedRows.first?.get_gold_buildings_in_polygon_geojson {
+            print("✅ [BUILDINGS] Wrapped gold polygon RPC returned \(wrappedCollection.features.count) features")
+            return normalizeGoldPolygonFeatureCollection(wrappedCollection)
+        }
+
+        if let wrappedObject = try? decoder.decode(WrappedCollectionRow.self, from: response.data),
+           let wrappedCollection = wrappedObject.get_gold_buildings_in_polygon_geojson {
+            print("✅ [BUILDINGS] Object-wrapped gold polygon RPC returned \(wrappedCollection.features.count) features")
+            return normalizeGoldPolygonFeatureCollection(wrappedCollection)
+        }
+
+        if let text = String(data: response.data, encoding: .utf8) {
+            print("❌ [BUILDINGS] Could not decode gold polygon RPC response: \(text.prefix(500))")
+        }
+        throw BuildingsAPIError.decodeFailed
+    }
+
     /// Fetch buildings from GET /api/campaigns/[campaignId]/buildings (S3 snapshot).
     private func fetchBuildingsFromSnapshotAPI(campaignId: UUID) async -> SnapshotFetchResult {
         guard let url = URL(string: "\(Self.buildingsAPIBaseURL)/api/campaigns/\(campaignId.uuidString)/buildings") else {
@@ -517,6 +589,9 @@ final class BuildingsAPI {
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        if let session = try? await supabaseClient.auth.session {
+            request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
+        }
         let requestTimestamp = Self.snapshotTimestampFormatter.string(from: Date())
         print("🧭 [BUILDINGS] Snapshot request campaign=\(campaignId.uuidString) url=\(url.absoluteString) at=\(requestTimestamp)")
 
@@ -752,12 +827,16 @@ final class BuildingsAPI {
             )
             
         } catch {
+            if Self.isCancellationError(error) {
+                print("ℹ️ [BUILDINGS] Cancelled building polygon fetch")
+                throw error
+            }
             print("❌ [BUILDINGS] Error fetching building polygons: \(error)")
             print("🔍 [BUILDINGS] Error details: \(error.localizedDescription)")
             
             // Re-throw the error but log helpful diagnostic info
             if let postgrestError = error as? PostgrestError {
-                print("🔍 [BUILDINGS] Postgrest error code: \(postgrestError.code)")
+                print("🔍 [BUILDINGS] Postgrest error code: \(String(describing: postgrestError.code))")
                 print("🔍 [BUILDINGS] Postgrest error message: \(postgrestError.message)")
             }
             
@@ -766,6 +845,8 @@ final class BuildingsAPI {
     }
 
     /// Normalize `id`/`gers_id` identity so Mapbox feature-state can consistently key by gers_id.
+    /// When Gold responses expose `building_id` as the strongest identifier, mirror it into
+    /// `gers_id` if needed so stale/staggered backends still decode into the same client shape.
     private func normalizeFeatureIdentity(collection: GeoJSONFeatureCollection, source: String) -> GeoJSONFeatureCollection {
         var normalized: [GeoJSONFeature] = []
         normalized.reserveCapacity(collection.features.count)
@@ -778,8 +859,13 @@ final class BuildingsAPI {
         for feature in collection.features {
             var properties = feature.properties
             let idValue = feature.id?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let buildingValue = (properties["building_id"]?.value as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
             let gersValue = (properties["gers_id"]?.value as? String)?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
+            let canonicalValue = [buildingValue, gersValue, idValue]
+                .compactMap { $0 }
+                .first(where: { !$0.isEmpty })
 
             if let idValue, let gersValue, !idValue.isEmpty, !gersValue.isEmpty, idValue != gersValue {
                 idMismatchCount += 1
@@ -787,11 +873,11 @@ final class BuildingsAPI {
             }
 
             if let gersValue, !gersValue.isEmpty {
-                if idValue == nil || idValue?.isEmpty == true {
+                if (idValue == nil || idValue?.isEmpty == true), canonicalValue != nil {
                     fixedFromPropertyCount += 1
                 }
                 let normalizedFeature = GeoJSONFeature(
-                    id: gersValue,
+                    id: canonicalValue ?? gersValue,
                     geometry: feature.geometry,
                     properties: properties
                 )
@@ -799,11 +885,11 @@ final class BuildingsAPI {
                 continue
             }
 
-            if let idValue, !idValue.isEmpty {
-                properties["gers_id"] = AnyCodable(idValue)
+            if let canonicalValue, !canonicalValue.isEmpty {
+                properties["gers_id"] = AnyCodable(canonicalValue)
                 fixedFromIdCount += 1
                 let normalizedFeature = GeoJSONFeature(
-                    id: idValue,
+                    id: canonicalValue,
                     geometry: feature.geometry,
                     properties: properties
                 )
@@ -821,5 +907,71 @@ final class BuildingsAPI {
         }
 
         return GeoJSONFeatureCollection(features: normalized)
+    }
+
+    private func normalizeGoldPolygonFeatureCollection(_ collection: GeoJSONFeatureCollection) -> GeoJSONFeatureCollection {
+        let normalizedFeatures = collection.features.map { feature -> GeoJSONFeature in
+            var properties = feature.properties
+            let featureId = (feature.id?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap { $0.isEmpty ? nil : $0 }
+            let buildingId = ((properties["building_id"]?.value as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)).flatMap { $0.isEmpty ? nil : $0 }
+            let gersId = ((properties["gers_id"]?.value as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)).flatMap { $0.isEmpty ? nil : $0 }
+            let canonicalId = buildingId ?? gersId ?? featureId
+
+            if properties["building_id"] == nil, let canonicalId {
+                properties["building_id"] = AnyCodable(canonicalId)
+            }
+            if properties["gers_id"] == nil, let canonicalId {
+                properties["gers_id"] = AnyCodable(canonicalId)
+            }
+            if properties["address_text"] == nil,
+               let primaryAddress = (properties["primary_address"]?.value as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+               !primaryAddress.isEmpty {
+                properties["address_text"] = AnyCodable(primaryAddress)
+            }
+            if properties["house_number"] == nil,
+               let streetNumber = (properties["primary_street_number"]?.value as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+               !streetNumber.isEmpty {
+                properties["house_number"] = AnyCodable(streetNumber)
+            }
+            if properties["street_name"] == nil,
+               let streetName = (properties["primary_street_name"]?.value as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+               !streetName.isEmpty {
+                properties["street_name"] = AnyCodable(streetName)
+            }
+            if properties["source"] == nil {
+                properties["source"] = AnyCodable("gold")
+            }
+            if properties["height"] == nil {
+                let heightValue = (properties["height_m"]?.value as? Double)
+                    ?? (properties["height_m"]?.value as? Int).map(Double.init)
+                    ?? 10
+                properties["height"] = AnyCodable(heightValue)
+            }
+            if properties["height_m"] == nil {
+                let heightValue = (properties["height"]?.value as? Double)
+                    ?? (properties["height"]?.value as? Int).map(Double.init)
+                    ?? 10
+                properties["height_m"] = AnyCodable(heightValue)
+            }
+            if properties["min_height"] == nil {
+                properties["min_height"] = AnyCodable(0)
+            }
+
+            return GeoJSONFeature(
+                id: canonicalId ?? feature.id,
+                geometry: feature.geometry,
+                properties: properties
+            )
+        }
+
+        return normalizeFeatureIdentity(
+            collection: GeoJSONFeatureCollection(features: normalizedFeatures),
+            source: "gold_polygon"
+        )
     }
 }

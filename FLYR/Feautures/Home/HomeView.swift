@@ -2,31 +2,34 @@ import SwiftUI
 
 private enum HomeRoute: Hashable {
     case campaigns
-    case quickStart
+    case farm
     case activity
     case stats
+    case routes
+    case challenges
     case support
 }
 
 private enum PendingAfterPaywall {
     case none
-    case quickStart
-    case performanceReports
+    case farm
+}
+
+private enum HomeGridTileIcon {
+    case system(String)
+    case farmGlyph
+    case routesGlyph
 }
 
 struct HomeView: View {
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var entitlementsService: EntitlementsService
-    @State private var path: [HomeRoute] = []
+    @State private var selectedRoute: HomeRoute?
     @State private var showingNewCampaign = false
     @State private var showPaywall = false
     @StateObject private var storeV2 = CampaignV2Store.shared
     @StateObject private var auth = AuthManager.shared
-    @StateObject private var reportsViewModel = IndividualPerformanceReportViewModel()
     @State private var dailyContent = DailyContentService.shared
-    @State private var selectedCampaignID: UUID?
-    @State private var showingPerformanceReports = false
-    @State private var pendingAfterPaywall: PendingAfterPaywall = .none
 
     /// PNG from asset catalog: white logo for dark mode, black logo for light mode.
     private var headerLogoName: String {
@@ -34,67 +37,62 @@ struct HomeView: View {
     }
 
     var body: some View {
-        NavigationStack(path: $path) {
-            ZStack {
-                homeGrid
-                    .blur(radius: showingPerformanceReports ? 8 : 0)
-                    .disabled(showingPerformanceReports)
-
-                if showingPerformanceReports {
-                    performanceReportsOverlay
-                        .zIndex(50)
+        NavigationStack {
+            homeGrid
+                .safeAreaInset(edge: .top, spacing: 0) {
+                    Color.clear.frame(height: 12)
                 }
-            }
-            .safeAreaInset(edge: .top, spacing: 0) {
-                Color.clear.frame(height: 12)
-            }
-            .navigationTitle("")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(.hidden, for: .navigationBar)
-            .toolbarColorScheme(.dark, for: .navigationBar)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button {
-                        path.append(.support)
-                    } label: {
-                        Image(systemName: "message.fill")
-                            .font(.system(size: 18, weight: .semibold))
-                            .foregroundColor(colorScheme == .dark ? .white : .black)
-                            .frame(width: 36, height: 36)
+                .navigationTitle("")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbarBackground(.hidden, for: .navigationBar)
+                .toolbarColorScheme(.dark, for: .navigationBar)
+                .toolbar {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button {
+                            selectedRoute = .support
+                        } label: {
+                            Image(systemName: "message.fill")
+                                .font(.system(size: 18, weight: .semibold))
+                                .foregroundColor(colorScheme == .dark ? .white : .black)
+                                .frame(width: 36, height: 36)
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
-                }
-                ToolbarItem(placement: .principal) {
-                    Image(headerLogoName)
-                        .resizable()
-                        .scaledToFit()
-                        .frame(maxWidth: 360, maxHeight: 80)
-                        .offset(y: 6)
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        createCampaignTapped()
-                    } label: {
-                        Image(systemName: "plus")
-                            .font(.system(size: 18, weight: .semibold))
-                            .foregroundColor(colorScheme == .dark ? .white : .black)
-                            .frame(width: 36, height: 36)
-                            .background(Color.red)
-                            .clipShape(Circle())
+                    ToolbarItem(placement: .principal) {
+                        Image(headerLogoName)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(maxWidth: 360, maxHeight: 80)
+                            .offset(y: 6)
                     }
-                    .buttonStyle(.plain)
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button {
+                            createCampaignTapped()
+                        } label: {
+                            Image(systemName: "plus")
+                                .font(.system(size: 18, weight: .semibold))
+                                .foregroundColor(colorScheme == .dark ? .white : .black)
+                                .frame(width: 36, height: 36)
+                                .background(Color.red)
+                                .clipShape(Circle())
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
-            }
-            .navigationDestination(for: HomeRoute.self) { route in
+                .navigationDestination(item: $selectedRoute) { route in
                     switch route {
                     case .campaigns:
                         CampaignsView()
-                    case .quickStart:
-                        QuickStartMapView()
+                    case .farm:
+                        FarmsView()
                     case .activity:
                         ActivityView()
                     case .stats:
                         YouStatsView()
+                    case .routes:
+                        RoutesListView()
+                    case .challenges:
+                        ChallengesHomeView()
                     case .support:
                         SupportChatView()
                             .transition(.asymmetric(
@@ -104,13 +102,8 @@ struct HomeView: View {
                     }
                 }
         }
-        .task(id: auth.user?.id) {
-            guard let userID = auth.user?.id else { return }
-            await reportsViewModel.refreshUnreadIndicator(for: userID)
-        }
-        .onChange(of: showingPerformanceReports) { _, isPresented in
-            guard !isPresented, let userID = auth.user?.id else { return }
-            Task { await reportsViewModel.refreshUnreadIndicator(for: userID) }
+        .onAppear {
+            selectedRoute = nil
         }
         .fullScreenCover(isPresented: $showingNewCampaign) {
             NavigationStack {
@@ -119,18 +112,16 @@ struct HomeView: View {
                         ToolbarItem(placement: .topBarLeading) {
                             Button("Cancel") {
                                 showingNewCampaign = false
-                }
+                            }
+                        }
+                    }
             }
         }
-        .fullScreenCover(isPresented: $showPaywall, onDismiss: {
+        .sheet(isPresented: $showPaywall, onDismiss: {
             switch pendingAfterPaywall {
-            case .quickStart:
-                if entitlementsService.canUsePro, path.last != .quickStart {
-                    path.append(.quickStart)
-                }
-            case .performanceReports:
-                if entitlementsService.canUsePro {
-                    performOpenPerformanceReports()
+            case .farm:
+                if entitlementsService.canUsePro, selectedRoute != .farm {
+                    selectedRoute = .farm
                 }
             case .none:
                 break
@@ -141,13 +132,12 @@ struct HomeView: View {
                 .environmentObject(entitlementsService)
         }
     }
-        }
-    }
+
+    @State private var pendingAfterPaywall: PendingAfterPaywall = .none
 
     private var homeGrid: some View {
         ScrollView {
             VStack(spacing: 0) {
-                // Quote of the Day (no card, bigger text)
                 QuoteOfTheDaySection(
                     quote: dailyContent.quote,
                     isLoading: dailyContent.isLoading
@@ -156,30 +146,35 @@ struct HomeView: View {
                 .padding(.horizontal, 24)
                 .padding(.bottom, 28)
 
-                // 2x2 grid + Weekly Report (same width, flush; full width minus horizontal padding)
                 VStack(spacing: 0) {
-                    LazyVGrid(columns: [GridItem(.flexible(), spacing: 16), GridItem(.flexible(), spacing: 16)], spacing: 16) {
-                        HomeGridTile(title: "Campaigns", icon: "scope") {
-                            path.append(.campaigns)
+                    LazyVGrid(
+                        columns: [
+                            GridItem(.flexible(), spacing: 16),
+                            GridItem(.flexible(), spacing: 16)
+                        ],
+                        spacing: 16
+                    ) {
+                        HomeGridTile(title: "Campaigns", icon: .system("scope")) {
+                            selectedRoute = .campaigns
                         }
-                        HomeGridTile(title: "Quick Start", icon: "bolt.fill") {
-                            quickStartTapped()
+                        HomeGridTile(title: "Farm", icon: .farmGlyph) {
+                            farmTapped()
                         }
-                        HomeGridTile(title: "Activity", icon: "figure.walk") {
-                            path.append(.activity)
+                        HomeGridTile(title: "Activity", icon: .system("figure.walk")) {
+                            selectedRoute = .activity
                         }
-                        HomeGridTile(title: "Stats", icon: "chart.bar.fill") {
-                            path.append(.stats)
+                        HomeGridTile(title: "Stats", icon: .system("chart.bar.fill")) {
+                            selectedRoute = .stats
+                        }
+                        HomeGridTile(title: "Routes", icon: .routesGlyph) {
+                            selectedRoute = .routes
+                        }
+                        HomeGridTile(title: "Challenges", icon: .system("flag.fill")) {
+                            selectedRoute = .challenges
                         }
                     }
                     .padding(.top, 4)
-
-                    WeeklyReportButton(hasUnread: reportsViewModel.hasUnread) {
-                        pendingAfterPaywall = .performanceReports
-                        showPaywall = true
-                    }
-                        .padding(.top, 16)
-                        .padding(.bottom, 24)
+                    .padding(.bottom, 24)
                 }
                 .padding(.horizontal, 20)
             }
@@ -191,106 +186,20 @@ struct HomeView: View {
         }
     }
 
-    private var performanceReportsOverlay: some View {
-        ZStack {
-            Color.black.opacity(0.30)
-                .ignoresSafeArea()
-                .background(.ultraThinMaterial)
-                .onTapGesture {
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        showingPerformanceReports = false
-                    }
-                }
-
-            IndividualPerformanceReportModal(
-                reports: reportsViewModel.reports,
-                isLoading: reportsViewModel.isLoading,
-                errorMessage: reportsViewModel.errorMessage,
-                onRefresh: {
-                    guard let userID = auth.user?.id else { return }
-                    Task {
-                        await reportsViewModel.loadReports(
-                            userID: userID,
-                            workspaceID: WorkspaceContext.shared.workspaceId
-                        )
-                    }
-                },
-                onDismiss: {
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        showingPerformanceReports = false
-                    }
-                }
-            )
-            .transition(.opacity.combined(with: .scale(scale: 0.98)))
-        }
-    }
-
-    private func performOpenPerformanceReports() {
-        guard let userID = auth.user?.id else { return }
-        HapticManager.light()
-        withAnimation(.easeInOut(duration: 0.2)) {
-            showingPerformanceReports = true
-        }
-        Task {
-            await reportsViewModel.openAndMarkRead(
-                userID: userID,
-                workspaceID: WorkspaceContext.shared.workspaceId
-            )
-        }
-    }
-
-    /// One free Quick Start; after that require Pro.
-    private func quickStartTapped() {
+    private func farmTapped() {
         if entitlementsService.canUsePro {
-            if path.last != .quickStart {
-                path.append(.quickStart)
+            if selectedRoute != .farm {
+                selectedRoute = .farm
             }
             return
         }
-        Task {
-            let workspaceId = await RoutePlansAPI.shared.resolveWorkspaceId(preferred: WorkspaceContext.shared.workspaceId)
-            let hasUsedFreeQuickStart = (try? await CampaignsAPI.shared.hasQuickStartCampaign(workspaceId: workspaceId)) ?? false
-            await MainActor.run {
-                if hasUsedFreeQuickStart {
-                    pendingAfterPaywall = .quickStart
-                    showPaywall = true
-                } else {
-                    if path.last != .quickStart {
-                        path.append(.quickStart)
-                    }
-                }
-            }
-        }
+        pendingAfterPaywall = .farm
+        showPaywall = true
     }
 
     private func createCampaignTapped() {
         HapticManager.light()
-        Task {
-            let canCreate = await canCreateCampaignInCurrentPlan()
-            await MainActor.run {
-                if canCreate {
-                    showingNewCampaign = true
-                } else {
-                    showPaywall = true
-                }
-            }
-        }
-    }
-
-    private func canCreateCampaignInCurrentPlan() async -> Bool {
-        if entitlementsService.canUsePro {
-            return true
-        }
-        if !storeV2.campaigns.isEmpty {
-            return false
-        }
-        let workspaceId = await RoutePlansAPI.shared.resolveWorkspaceId(preferred: WorkspaceContext.shared.workspaceId)
-        do {
-            let campaigns = try await CampaignsAPI.shared.fetchCampaignsMetadata(workspaceId: workspaceId)
-            return campaigns.isEmpty
-        } catch {
-            return storeV2.campaigns.isEmpty
-        }
+        showingNewCampaign = true
     }
 }
 
@@ -355,7 +264,7 @@ private struct QuoteOfTheDaySection: View {
 private struct HomeGridTile: View {
     @Environment(\.colorScheme) private var colorScheme
     let title: String
-    let icon: String
+    let icon: HomeGridTileIcon
     let action: () -> Void
 
     private var foreground: Color {
@@ -368,9 +277,22 @@ private struct HomeGridTile: View {
             action()
         }) {
             VStack(spacing: 12) {
-                Image(systemName: icon)
-                    .font(.system(size: 32, weight: .medium))
-                    .foregroundStyle(foreground)
+                Group {
+                    switch icon {
+                    case .system(let systemName):
+                        Image(systemName: systemName)
+                            .font(.system(size: 32, weight: .medium))
+                            .foregroundStyle(foreground)
+                    case .farmGlyph:
+                        Image(systemName: "leaf")
+                            .font(.system(size: 32, weight: .medium))
+                            .foregroundStyle(foreground)
+                            .frame(width: 34, height: 28)
+                    case .routesGlyph:
+                        RoutesGlyph(color: foreground, lineWidth: 2.8)
+                            .frame(width: 34, height: 28)
+                    }
+                }
                 Text(title)
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(foreground)
@@ -378,53 +300,77 @@ private struct HomeGridTile: View {
             }
             .frame(maxWidth: .infinity)
             .frame(minHeight: 120)
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20))
+            .background {
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .fill(.ultraThinMaterial)
+            }
             .overlay(
-                RoundedRectangle(cornerRadius: 20)
-                    .strokeBorder(Color.primary.opacity(colorScheme == .dark ? 0.25 : 0.15), lineWidth: 1)
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .strokeBorder(
+                        Color.primary.opacity(colorScheme == .dark ? 0.25 : 0.15),
+                        lineWidth: 1
+                    )
             )
         }
         .buttonStyle(.plain)
     }
 }
 
-// MARK: - Individual Performance Reports CTA
-private struct WeeklyReportButton: View {
-    @Environment(\.colorScheme) private var colorScheme
-    let hasUnread: Bool
-    let action: () -> Void
-
-    private var foreground: Color {
-        colorScheme == .dark ? .white : .black
-    }
+/// Matches FLYR-PRO’s Lucide `Route` icon (lucide-react `route`: 24×24 viewBox).
+struct RoutesGlyph: View {
+    var color: Color
+    var lineWidth: CGFloat = 2.5
 
     var body: some View {
-        Button(action: action) {
-            ZStack(alignment: .topTrailing) {
-                Text("Performance Reports")
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(foreground)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 44)
-                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 12)
-                            .strokeBorder(Color.primary.opacity(colorScheme == .dark ? 0.2 : 0.15), lineWidth: 1)
-                    )
+        GeometryReader { geometry in
+            let w = geometry.size.width
+            let h = geometry.size.height
+            let s = min(w, h) / 24
+            let ox = (w - 24 * s) / 2
+            let oy = (h - 24 * s) / 2
+            let toLocal: (CGFloat, CGFloat) -> CGPoint = { x, y in
+                CGPoint(x: ox + x * s, y: oy + y * s)
+            }
+            let nodeR = 3 * s
+            let arcR = 3.5 * s
+            let stroke = StrokeStyle(lineWidth: lineWidth, lineCap: .round, lineJoin: .round)
 
-                if hasUnread {
-                    Circle()
-                        .fill(Color.flyrPrimary)
-                        .frame(width: 10, height: 10)
-                        .overlay(
-                            Circle()
-                                .stroke(Color.white.opacity(0.85), lineWidth: 1)
-                        )
-                        .offset(x: -10, y: 8)
+            ZStack {
+                Path { path in
+                    path.move(to: toLocal(9, 19))
+                    path.addLine(to: toLocal(17.5, 19))
+                    path.addArc(
+                        center: toLocal(17.5, 15.5),
+                        radius: arcR,
+                        startAngle: .radians(.pi / 2),
+                        endAngle: .radians(-.pi / 2),
+                        clockwise: false
+                    )
+                    path.addLine(to: toLocal(6.5, 12))
+                    path.addArc(
+                        center: toLocal(6.5, 8.5),
+                        radius: arcR,
+                        startAngle: .radians(.pi / 2),
+                        endAngle: .radians(-.pi / 2),
+                        clockwise: true
+                    )
+                    path.addLine(to: toLocal(15, 5))
                 }
+                .stroke(color, style: stroke)
+
+                Circle()
+                    .strokeBorder(color, lineWidth: lineWidth)
+                    .frame(width: nodeR * 2, height: nodeR * 2)
+                    .position(toLocal(6, 19))
+
+                Circle()
+                    .strokeBorder(color, lineWidth: lineWidth)
+                    .frame(width: nodeR * 2, height: nodeR * 2)
+                    .position(toLocal(18, 5))
             }
         }
-        .buttonStyle(.plain)
+        .aspectRatio(1.2, contentMode: .fit)
+        .accessibilityHidden(true)
     }
 }
 

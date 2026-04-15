@@ -7,6 +7,7 @@ struct MapDrawingView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     @State private var polygonVertices: [CLLocationCoordinate2D] = []
+    @State private var useSatellite: Bool = true
     @StateObject private var locationManager = LocationManager()
 
     let onPolygonDone: ([CLLocationCoordinate2D]) -> Void
@@ -32,25 +33,76 @@ struct MapDrawingView: View {
         if let first = polygonVertices.first {
             return first
         }
-        return locationManager.currentLocation?.coordinate ?? initialCenter ?? Self.fallbackCenter
+        // Prefer explicit seed (optional address / parent-chosen center) over device GPS so "Draw territory" opens on the submitted location.
+        if let initialCenter {
+            return initialCenter
+        }
+        return locationManager.currentLocation?.coordinate ?? Self.fallbackCenter
     }
 
     var body: some View {
         VStack(spacing: 0) {
-            MapDrawingMapRepresentable(
-                center: mapCenter,
-                startingAddressCoordinate: initialCenter,
-                polygonVertices: polygonVertices,
-                useDarkStyle: colorScheme == .dark,
-                onTap: handleTap,
-                onMoveVertex: { index, newCoord in
-                    guard index >= 0, index < polygonVertices.count else { return }
-                    var updated = polygonVertices
-                    updated[index] = newCoord
-                    polygonVertices = updated
+            ZStack(alignment: .topLeading) {
+                MapDrawingMapRepresentable(
+                    center: mapCenter,
+                    startingAddressCoordinate: initialCenter,
+                    userLocationCoordinate: locationManager.currentLocation?.coordinate,
+                    polygonVertices: polygonVertices,
+                    useDarkStyle: colorScheme == .dark,
+                    useSatellite: useSatellite,
+                    onTap: handleTap,
+                    onMoveVertex: { index, newCoord in
+                        guard index >= 0, index < polygonVertices.count else { return }
+                        var updated = polygonVertices
+                        updated[index] = newCoord
+                        polygonVertices = updated
+                    }
+                )
+                .ignoresSafeArea(edges: .top)
+
+                // Floating controls over the map
+                HStack {
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(.primary)
+                            .frame(width: 40, height: 40)
+                            .background(.ultraThinMaterial, in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.top, 8)
+                    .padding(.leading, 12)
+
+                    Spacer()
+
+                    Menu {
+                        Button {
+                            useSatellite = false
+                        } label: {
+                            Label("Map", systemImage: "map")
+                        }
+                        Button {
+                            useSatellite = true
+                        } label: {
+                            Label("Satellite", systemImage: "globe.americas.fill")
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: useSatellite ? "globe.americas.fill" : "map")
+                            Text(useSatellite ? "Satellite" : "Map")
+                                .font(.subheadline.weight(.medium))
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    }
+                    .padding(.top, 8)
+                    .padding(.trailing, 12)
                 }
-            )
-            .ignoresSafeArea(edges: .top)
+                .padding(.horizontal, 4)
+            }
 
             VStack(alignment: .leading, spacing: 12) {
                 Text("Tap map to add points. Drag a red point to move it. Tap first point again to close polygon.")

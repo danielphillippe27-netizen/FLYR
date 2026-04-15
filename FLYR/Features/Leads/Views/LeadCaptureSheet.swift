@@ -6,13 +6,14 @@ struct LeadCaptureSheet: View {
     let sessionId: UUID?
     let gersIdString: String
     
-    var onSave: (FieldLead) async -> Void
+    var onSave: (FieldLead) async throws -> Void
     var onJustMark: () async -> Void
     var onDismiss: () -> Void
     
     @State private var selectedStatus: FieldLeadStatus = .notHome
     @State private var quickNote: String = ""
     @State private var isSaving = false
+    @State private var saveErrorMessage: String?
     
     var body: some View {
         NavigationStack {
@@ -101,12 +102,18 @@ struct LeadCaptureSheet: View {
                     }
                 }
             }
+            .alert("Couldn't save lead", isPresented: .init(get: { saveErrorMessage != nil }, set: { if !$0 { saveErrorMessage = nil } })) {
+                Button("OK", role: .cancel) { saveErrorMessage = nil }
+            } message: {
+                if let msg = saveErrorMessage { Text(msg) }
+            }
         }
     }
     
     private func saveToLeads() async {
         guard let userId = AuthManager.shared.user?.id else { return }
         isSaving = true
+        saveErrorMessage = nil
         defer { isSaving = false }
         let lead = FieldLead(
             userId: userId,
@@ -119,8 +126,12 @@ struct LeadCaptureSheet: View {
             campaignId: campaignId,
             sessionId: sessionId
         )
-        await onSave(lead)
-        onDismiss()
+        do {
+            try await onSave(lead)
+            onDismiss()
+        } catch {
+            saveErrorMessage = error.localizedDescription
+        }
     }
 }
 

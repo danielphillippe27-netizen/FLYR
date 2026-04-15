@@ -1,6 +1,12 @@
 import Foundation
 import Supabase
 
+/// CRM sync lifecycle for field leads persisted via `FieldLeadsService` (`sync_status` on contacts).
+enum FieldLeadCRMSyncLifecycle: Sendable {
+    case started(leadId: UUID)
+    case finished(leadId: UUID, status: FieldLeadSyncStatus, detail: String?)
+}
+
 /// Optional appointment/task data sent when pushing a lead to CRM (e.g. FUB).
 struct LeadSyncAppointment {
     let date: Date
@@ -33,7 +39,14 @@ actor LeadSyncManager {
     ///   - userId: The user ID who owns the lead
     ///   - appointment: Optional appointment to create in CRM (e.g. FUB) after syncing the person
     ///   - task: Optional task to create in CRM (e.g. FUB) after syncing the person
-    func syncLeadToCRM(lead: LeadModel, userId: UUID, appointment: LeadSyncAppointment? = nil, task: LeadSyncTask? = nil) async {
+    ///   - trackFieldLeadCRMStatus: When true, updates `contacts` / `field_leads` `sync_status` for this lead id.
+    func syncLeadToCRM(
+        lead: LeadModel,
+        userId: UUID,
+        appointment: LeadSyncAppointment? = nil,
+        task: LeadSyncTask? = nil,
+        trackFieldLeadCRMStatus: Bool = false
+    ) async {
         guard lead.isValidLead else {
             print("⚠️ [LeadSyncManager] Skipping sync - lead missing contact information")
             return
@@ -44,8 +57,38 @@ actor LeadSyncManager {
             return
         }
 
+        let enriched = CRMLeadEnrichment.enrichedForSecureProviders(lead)
+        if trackFieldLeadCRMStatus {
+            await FieldLeadsService.shared.applyCRMLifecycle(.started(leadId: lead.id), userId: userId)
+        }
+
+        let leadId = lead.id
         // Push to secure backend providers first, then sync the rest via Edge Function.
         Task.detached(priority: .utility) {
+            var anySecureSuccess = false
+            var explicitFailure = false
+            var edgeSynced = false
+            var edgeHttpNotOk = false
+
+            defer {
+                if trackFieldLeadCRMStatus {
+                    let status: FieldLeadSyncStatus
+                    if anySecureSuccess || edgeSynced {
+                        status = .synced
+                    } else if explicitFailure || edgeHttpNotOk {
+                        status = .failed
+                    } else {
+                        status = .pending
+                    }
+                    Task {
+                        await FieldLeadsService.shared.applyCRMLifecycle(
+                            .finished(leadId: leadId, status: status, detail: nil),
+                            userId: userId
+                        )
+                    }
+                }
+            }
+
             do {
                 var excludedProviders: [String] = []
                 func excludeProvider(_ provider: String) {
@@ -57,11 +100,12 @@ actor LeadSyncManager {
                 // FUB secure push (crm_connection_secrets via FLYR backend routes).
                 do {
                     let fubResponse = try await FUBPushLeadAPI.shared.pushLead(
-                        lead,
+                        enriched,
                         appointment: appointment,
                         task: task
                     )
                     excludeProvider("fub")
+                    anySecureSuccess = true
                     print("✅ [LeadSyncManager] Lead pushed to FUB via secure backend route")
                     if let followUpErrors = fubResponse.followUpErrors, !followUpErrors.isEmpty {
                         let summary = followUpErrors.joined(separator: " | ")
@@ -92,24 +136,29 @@ actor LeadSyncManager {
                         excludeProvider("fub")
                         print("ℹ️ [LeadSyncManager] Skipping secure FUB push: \(msg)")
                     case .unauthorized(let msg):
+                        explicitFailure = true
                         excludeProvider("fub")
                         print("⚠️ [LeadSyncManager] Secure FUB auth failed: \(msg)")
                     case .tokenExpired(let msg):
+                        explicitFailure = true
                         excludeProvider("fub")
                         print("⚠️ [LeadSyncManager] Secure FUB token expired: \(msg)")
                     default:
+                        explicitFailure = true
                         excludeProvider("fub")
                         print("⚠️ [LeadSyncManager] Secure FUB push failed: \(fubError.localizedDescription)")
                     }
                 } catch {
+                    explicitFailure = true
                     excludeProvider("fub")
                     print("⚠️ [LeadSyncManager] Secure FUB push error: \(error.localizedDescription)")
                 }
 
                 // BoldTrail secure push (workspace-scoped connection on FLYR-PRO backend routes).
                 do {
-                    _ = try await BoldTrailPushLeadAPI.shared.pushLead(lead)
+                    _ = try await BoldTrailPushLeadAPI.shared.pushLead(enriched)
                     excludeProvider("boldtrail")
+                    anySecureSuccess = true
                     print("✅ [LeadSyncManager] Lead pushed to BoldTrail via secure backend route")
                 } catch let boldTrailError as BoldTrailPushLeadError {
                     switch boldTrailError {
@@ -119,21 +168,25 @@ actor LeadSyncManager {
                         excludeProvider("boldtrail")
                         print("ℹ️ [LeadSyncManager] Skipping secure BoldTrail push: \(msg)")
                     case .unauthorized(let msg):
+                        explicitFailure = true
                         excludeProvider("boldtrail")
                         print("⚠️ [LeadSyncManager] Secure BoldTrail auth failed: \(msg)")
                     default:
+                        explicitFailure = true
                         excludeProvider("boldtrail")
                         print("⚠️ [LeadSyncManager] Secure BoldTrail push failed: \(boldTrailError.localizedDescription)")
                     }
                 } catch {
+                    explicitFailure = true
                     excludeProvider("boldtrail")
                     print("⚠️ [LeadSyncManager] Secure BoldTrail push error: \(error.localizedDescription)")
                 }
 
                 // HubSpot secure push (FLYR-PRO backend stores tokens server-side).
                 do {
-                    let hubRes = try await HubSpotPushLeadAPI.shared.pushLead(lead, appointment: appointment, task: task)
+                    let hubRes = try await HubSpotPushLeadAPI.shared.pushLead(enriched, appointment: appointment, task: task)
                     excludeProvider("hubspot")
+                    anySecureSuccess = true
                     print("✅ [LeadSyncManager] Lead pushed to HubSpot via secure backend route")
                     if let errs = hubRes.partialErrors, !errs.isEmpty {
                         for err in errs {
@@ -148,13 +201,16 @@ actor LeadSyncManager {
                         excludeProvider("hubspot")
                         print("ℹ️ [LeadSyncManager] Skipping secure HubSpot push: \(msg)")
                     case .unauthorized(let msg):
+                        explicitFailure = true
                         excludeProvider("hubspot")
                         print("⚠️ [LeadSyncManager] Secure HubSpot auth failed: \(msg)")
                     default:
+                        explicitFailure = true
                         excludeProvider("hubspot")
                         print("⚠️ [LeadSyncManager] Secure HubSpot push failed: \(hubSpotError.localizedDescription)")
                     }
                 } catch {
+                    explicitFailure = true
                     excludeProvider("hubspot")
                     print("⚠️ [LeadSyncManager] Secure HubSpot push error: \(error.localizedDescription)")
                 }
@@ -169,15 +225,15 @@ actor LeadSyncManager {
                 request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
                 request.setValue(supabaseKey, forHTTPHeaderField: "apikey")
                 var leadDict: [String: Any] = [
-                    "id": lead.id.uuidString,
-                    "name": lead.name as Any,
-                    "phone": lead.phone as Any,
-                    "email": lead.email as Any,
-                    "address": lead.address as Any,
-                    "source": lead.source,
-                    "campaign_id": lead.campaignId?.uuidString as Any,
-                    "notes": lead.notes as Any,
-                    "created_at": ISO8601DateFormatter().string(from: lead.createdAt)
+                    "id": enriched.id.uuidString,
+                    "name": enriched.name as Any,
+                    "phone": enriched.phone as Any,
+                    "email": enriched.email as Any,
+                    "address": enriched.address as Any,
+                    "source": enriched.source,
+                    "campaign_id": enriched.campaignId?.uuidString as Any,
+                    "notes": enriched.notes as Any,
+                    "created_at": ISO8601DateFormatter().string(from: enriched.createdAt)
                 ]
                 let formatter = ISO8601DateFormatter()
                 formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -212,21 +268,28 @@ actor LeadSyncManager {
                 }
                 
                 let (data, response) = try await URLSession.shared.data(for: request)
-                guard let httpResponse = response as? HTTPURLResponse else { return }
+                guard let httpResponse = response as? HTTPURLResponse else {
+                    edgeHttpNotOk = true
+                    return
+                }
                 if httpResponse.statusCode == 200 {
                     let responseString = String(data: data, encoding: .utf8) ?? ""
                     print("✅ [LeadSyncManager] Lead synced via Edge Function: \(responseString)")
-                    
-                    // Parse response to check results
+
                     if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                        let synced = json["synced"] as? [String] ?? []
+                        let synced = json["synced"] as? [Any] ?? []
                         let failed = json["failed"] as? [[String: Any]] ?? []
-                        
+
+                        if !synced.isEmpty {
+                            edgeSynced = true
+                        }
+
                         print("🔍 [LeadSyncManager] Parsed synced: \(synced.count), failed: \(failed.count)")
-                        
+
                         if synced.isEmpty && failed.isEmpty {
                             print("ℹ️ [LeadSyncManager] No CRM integrations connected. Connect at: https://flyrpro.app/settings/integrations")
-                        } else if !failed.isEmpty {
+                        } else if !failed.isEmpty, synced.isEmpty {
+                            explicitFailure = true
                             for fail in failed {
                                 print("🔍 [LeadSyncManager] Processing fail: \(fail)")
                                 if let provider = fail["provider"] as? String,
@@ -244,9 +307,11 @@ actor LeadSyncManager {
                         print("⚠️ [LeadSyncManager] Failed to parse JSON response")
                     }
                 } else {
+                    edgeHttpNotOk = true
                     print("⚠️ [LeadSyncManager] Edge Function sync failed: \(httpResponse.statusCode) - \(String(data: data, encoding: .utf8) ?? "")")
                 }
             } catch {
+                explicitFailure = true
                 print("⚠️ [LeadSyncManager] Error syncing lead: \(error.localizedDescription)")
             }
         }

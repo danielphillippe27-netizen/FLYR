@@ -300,9 +300,10 @@ enum SupabaseClientShimError: Error, LocalizedError {
 
 /// Type-erased wrapper for Codable values
 public struct AnyCodable: Codable, Equatable, @unchecked Sendable {
-    public let value: Any
+    // Project-wide default MainActor isolation would otherwise isolate this storage.
+    public nonisolated(unsafe) let value: Any
     
-    public init(_ value: Any) {
+    public nonisolated init(_ value: Any) {
         self.value = value
     }
     
@@ -364,9 +365,21 @@ public struct AnyCodable: Codable, Equatable, @unchecked Sendable {
             return
         }
         
+        // Swift Optional: encode nil as null, otherwise encode the wrapped value
+        let mirror = Mirror(reflecting: value)
+        if mirror.displayStyle == .optional {
+            if let child = mirror.children.first, child.label == "some" {
+                try AnyCodable(child.value).encode(to: encoder)
+                return
+            }
+            var container = encoder.singleValueContainer()
+            try container.encodeNil()
+            return
+        }
+
         // Standard encoding for primitive types using single value container
         var container = encoder.singleValueContainer()
-        
+
         if let bool = value as? Bool {
             try container.encode(bool)
         } else if let int = value as? Int {
@@ -375,7 +388,7 @@ public struct AnyCodable: Codable, Equatable, @unchecked Sendable {
             try container.encode(double)
         } else if let string = value as? String {
             try container.encode(string)
-        } else         if let uuid = value as? UUID {
+        } else if let uuid = value as? UUID {
             try container.encode(uuid.uuidString)
         } else if let date = value as? Date {
             let formatter = ISO8601DateFormatter()

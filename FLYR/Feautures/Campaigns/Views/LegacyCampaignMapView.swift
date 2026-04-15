@@ -19,7 +19,7 @@ struct LegacyCampaignMapView: UIViewRepresentable {
     // Load custom light style
     mv.mapboxMap.loadStyle(StyleURI(rawValue: "mapbox://styles/fliper27/cml6z0dhg002301qo9xxc08k4")!)
 
-    mv.mapboxMap.onNext(event: .mapLoaded) { _ in
+    _ = mv.mapboxMap.onMapLoaded.observeNext { _ in
       print("🗺️ [MAP] mapLoaded event fired - starting initialization")
       
       // Add our sources/layers once
@@ -239,12 +239,8 @@ struct LegacyCampaignMapView: UIViewRepresentable {
       
       // Update pin source with new features
       let pinFeatureCollection = FeatureCollection(features: pinFeatures)
-      do {
-        try mv.mapboxMap.updateGeoJSONSource(withId: sourceCampaignPins, geoJSON: .featureCollection(pinFeatureCollection))
-        print("✅ [PINS] Updated \(pinFeatures.count) pin features")
-      } catch {
-        print("❌ [PINS] Failed to update pin source: \(error)")
-      }
+      mv.mapboxMap.updateGeoJSONSource(withId: sourceCampaignPins, geoJSON: .featureCollection(pinFeatureCollection))
+      print("✅ [PINS] Updated \(pinFeatures.count) pin features")
     }
 
     func updateBuildings(_ fc: FeatureCollection, on mv: MapView) {
@@ -254,7 +250,7 @@ struct LegacyCampaignMapView: UIViewRepresentable {
         case .polygon, .multiPolygon:
           return true
         default:
-          print("⚠️ [UPDATE] Filtering out non-polygon geometry: \(feature.geometry)")
+          print("⚠️ [UPDATE] Filtering out non-polygon geometry: \(String(describing: feature.geometry))")
           return false
         }
       }
@@ -264,7 +260,7 @@ struct LegacyCampaignMapView: UIViewRepresentable {
       }
       
       let filteredFC = FeatureCollection(features: polygonFeatures)
-      try? mv.mapboxMap.updateGeoJSONSource(withId: bldgSourceId, geoJSON: .featureCollection(filteredFC))
+      mv.mapboxMap.updateGeoJSONSource(withId: bldgSourceId, geoJSON: .featureCollection(filteredFC))
     }
     
     /// Fit camera to all homes with padding (optional, for initial view)
@@ -473,7 +469,7 @@ struct LegacyCampaignMapView: UIViewRepresentable {
       do {
         // Create or update source
         if map.allSourceIdentifiers.contains(where: { $0.id == drawPolygonSourceId }) {
-          try map.updateGeoJSONSource(withId: drawPolygonSourceId, geoJSON: .feature(feature))
+          map.updateGeoJSONSource(withId: drawPolygonSourceId, geoJSON: .feature(feature))
         } else {
           var source = GeoJSONSource(id: drawPolygonSourceId)
           source.data = .feature(feature)

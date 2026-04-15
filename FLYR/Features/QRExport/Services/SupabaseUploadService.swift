@@ -116,7 +116,7 @@ actor SupabaseUploadService {
         do {
             _ = try await client.storage
                 .from(bucketName)
-                .upload(path: path, file: fileData, options: FileOptions(upsert: true))
+                .upload(path, data: fileData, options: FileOptions(upsert: true))
             
             // Get public URL (or create signed URL if bucket is private)
             // For public buckets, construct URL directly
@@ -188,4 +188,3 @@ actor SupabaseUploadService {
         }
     }
 }
-

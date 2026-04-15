@@ -3,24 +3,41 @@ import SwiftUI
 struct FarmTouchPlannerView: View {
     @StateObject private var viewModel: FarmTouchPlannerViewModel
     @State private var showAddTouch = false
-    @State private var selectedMonth: String?
+    var onStartSession: ((FarmExecutionContext) -> Void)?
     
     let farmId: UUID
     
-    init(farmId: UUID) {
+    init(farmId: UUID, onStartSession: ((FarmExecutionContext) -> Void)? = nil) {
         self.farmId = farmId
+        self.onStartSession = onStartSession
         _viewModel = StateObject(wrappedValue: FarmTouchPlannerViewModel(farmId: farmId))
     }
     
     var body: some View {
         ScrollView {
-            LazyVStack(spacing: 20) {
-                ForEach(viewModel.sortedMonths, id: \.self) { month in
-                    MonthSection(
-                        month: month,
-                        touches: viewModel.touchesForMonth(month),
-                        viewModel: viewModel
+            Group {
+                if viewModel.isLoading && viewModel.touches.isEmpty {
+                    ProgressView("Loading plan...")
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 40)
+                } else if viewModel.sortedMonths.isEmpty {
+                    ContentUnavailableView(
+                        "No Farm Plan Yet",
+                        systemImage: "calendar.badge.exclamationmark",
+                        description: Text("Touches created in FLYR-PRO will show up here, and you can also add or complete them from iOS.")
                     )
+                    .padding(.top, 40)
+                } else {
+                    LazyVStack(spacing: 20) {
+                        ForEach(viewModel.sortedMonths, id: \.self) { month in
+                            MonthSection(
+                                month: month,
+                                touches: viewModel.touchesForMonth(month),
+                                viewModel: viewModel,
+                                onStartSession: onStartSession
+                            )
+                        }
+                    }
                 }
             }
             .padding(.vertical, 16)
@@ -42,6 +59,9 @@ struct FarmTouchPlannerView: View {
         .task {
             await viewModel.loadTouches()
         }
+        .refreshable {
+            await viewModel.loadTouches()
+        }
     }
 }
 
@@ -49,6 +69,7 @@ struct MonthSection: View {
     let month: String
     let touches: [FarmTouch]
     let viewModel: FarmTouchPlannerViewModel
+    let onStartSession: ((FarmExecutionContext) -> Void)?
     
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -57,7 +78,11 @@ struct MonthSection: View {
                 .padding(.horizontal, 16)
             
             ForEach(touches) { touch in
-                TouchCard(touch: touch, viewModel: viewModel)
+                TouchCard(
+                    touch: touch,
+                    viewModel: viewModel,
+                    onStartSession: onStartSession
+                )
                     .padding(.horizontal, 16)
             }
         }
@@ -67,25 +92,62 @@ struct MonthSection: View {
 struct TouchCard: View {
     let touch: FarmTouch
     let viewModel: FarmTouchPlannerViewModel
+    let onStartSession: ((FarmExecutionContext) -> Void)?
     
     var body: some View {
-        HStack {
-            Image(systemName: touch.type.iconName)
-                .foregroundColor(colorForType(touch.type))
-            
-            VStack(alignment: .leading, spacing: 4) {
-                Text(touch.title)
-                    .font(.flyrSubheadline)
-                Text(touch.date, style: .date)
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Image(systemName: touch.type.iconName)
+                    .foregroundColor(colorForType(touch.type))
+                
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(touch.title)
+                        .font(.flyrSubheadline)
+                    Text(touch.date, style: .date)
+                        .font(.flyrCaption)
+                        .foregroundStyle(.secondary)
+                }
+                
+                Spacer()
+                
+                Button {
+                    Task {
+                        await viewModel.markComplete(touch, completed: !touch.completed)
+                    }
+                } label: {
+                    Image(systemName: touch.completed ? "checkmark.circle.fill" : "circle")
+                        .font(.system(size: 22, weight: .semibold))
+                        .foregroundColor(touch.completed ? .green : .secondary)
+                }
+                .buttonStyle(.plain)
+            }
+
+            if touch.campaignId != nil, !touch.completed {
+                Button {
+                    Task {
+                        guard let context = await viewModel.executionContext(for: touch) else { return }
+                        await MainActor.run {
+                            onStartSession?(context)
+                        }
+                    }
+                } label: {
+                    HStack {
+                        Text(touch.type == .flyer ? "Start planned flyer session" : "Start planned session")
+                        Spacer()
+                        Image(systemName: "arrow.right.circle.fill")
+                    }
+                    .font(.flyrCaption.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    .background(Color.red)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                }
+                .buttonStyle(.plain)
+            } else if touch.campaignId == nil && !touch.completed {
+                Text("Attach a campaign to this touch in FLYR-PRO to run it from iOS.")
                     .font(.flyrCaption)
                     .foregroundStyle(.secondary)
-            }
-            
-            Spacer()
-            
-            if touch.completed {
-                Image(systemName: "checkmark.circle.fill")
-                    .foregroundColor(.green)
             }
         }
         .padding(12)
@@ -93,6 +155,12 @@ struct TouchCard: View {
             RoundedRectangle(cornerRadius: 12)
                 .fill(Color(.systemGray6))
         )
+        .overlay(alignment: .leading) {
+            if touch.completed {
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(Color.green.opacity(0.35), lineWidth: 1.5)
+            }
+        }
     }
     
     private func colorForType(_ type: FarmTouchType) -> Color {
@@ -164,6 +232,3 @@ struct AddTouchView: View {
         FarmTouchPlannerView(farmId: UUID())
     }
 }
-
-
-

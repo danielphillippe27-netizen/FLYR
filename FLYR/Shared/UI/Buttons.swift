@@ -15,9 +15,9 @@ struct PrimaryButtonStyle: ButtonStyle {
             .scaleEffect(configuration.isPressed ? 0.95 : 1.0)
             .opacity(configuration.isPressed ? 0.8 : 1.0)
             .animation(reduceMotion ? .reducedMotion : .microInteraction, value: configuration.isPressed)
-            .onTapGesture {
+            .simultaneousGesture(TapGesture().onEnded {
                 HapticManager.lightImpact()
-            }
+            })
     }
 }
 
@@ -39,9 +39,9 @@ struct SecondaryButtonStyle: ButtonStyle {
             .scaleEffect(configuration.isPressed ? 0.95 : 1.0)
             .opacity(configuration.isPressed ? 0.8 : 1.0)
             .animation(reduceMotion ? .reducedMotion : .microInteraction, value: configuration.isPressed)
-            .onTapGesture {
+            .simultaneousGesture(TapGesture().onEnded {
                 HapticManager.lightImpact()
-            }
+            })
     }
 }
 
@@ -60,9 +60,9 @@ struct DestructiveButtonStyle: ButtonStyle {
             .scaleEffect(configuration.isPressed ? 0.95 : 1.0)
             .opacity(configuration.isPressed ? 0.8 : 1.0)
             .animation(reduceMotion ? .reducedMotion : .microInteraction, value: configuration.isPressed)
-            .onTapGesture {
+            .simultaneousGesture(TapGesture().onEnded {
                 HapticManager.lightImpact()
-            }
+            })
     }
 }
 
@@ -79,9 +79,9 @@ struct GhostButtonStyle: ButtonStyle {
             .scaleEffect(configuration.isPressed ? 0.95 : 1.0)
             .opacity(configuration.isPressed ? 0.6 : 1.0)
             .animation(reduceMotion ? .reducedMotion : .microInteraction, value: configuration.isPressed)
-            .onTapGesture {
+            .simultaneousGesture(TapGesture().onEnded {
                 HapticManager.lightImpact()
-            }
+            })
     }
 }
 
@@ -107,4 +107,3 @@ extension View {
         self.buttonStyle(GhostButtonStyle())
     }
 }
-

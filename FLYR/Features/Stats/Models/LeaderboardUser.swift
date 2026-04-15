@@ -4,26 +4,32 @@ struct LeaderboardUser: Identifiable, Codable {
     let id: String // user_id from Supabase
     let name: String
     let avatarUrl: String?
+    let brokerage: String?
     let rank: Int
+    let doorknocks: Int
     let flyers: Int
     let leads: Int
     let conversations: Int
     let distance: Double
     let daily: MetricSnapshot
     let weekly: MetricSnapshot
+    let monthly: MetricSnapshot
     let allTime: MetricSnapshot
     
     enum CodingKeys: String, CodingKey {
         case id
         case name
         case avatarUrl = "avatar_url"
+        case brokerage
         case rank
+        case doorknocks
         case flyers
         case leads
         case conversations
         case distance
         case daily
         case weekly
+        case monthly
         case allTime = "all_time"
     }
     
@@ -32,25 +38,31 @@ struct LeaderboardUser: Identifiable, Codable {
         id: String,
         name: String,
         avatarUrl: String?,
+        brokerage: String?,
         rank: Int,
+        doorknocks: Int,
         flyers: Int,
         leads: Int,
         conversations: Int,
         distance: Double,
         daily: MetricSnapshot,
         weekly: MetricSnapshot,
+        monthly: MetricSnapshot,
         allTime: MetricSnapshot
     ) {
         self.id = id
         self.name = name
         self.avatarUrl = avatarUrl
+        self.brokerage = brokerage
         self.rank = rank
+        self.doorknocks = doorknocks
         self.flyers = flyers
         self.leads = leads
         self.conversations = conversations
         self.distance = distance
         self.daily = daily
         self.weekly = weekly
+        self.monthly = monthly
         self.allTime = allTime
     }
     
@@ -59,9 +71,9 @@ struct LeaderboardUser: Identifiable, Codable {
         let snapshot = snapshot(for: timeframe)
         
         switch metric {
-        case "flyers":
-            return Double(snapshot.flyers)
         case "doorknocks":
+            return Double(snapshot.doorknocks)
+        case "flyers":
             return Double(snapshot.doorknocks)
         case "leads":
             return Double(snapshot.leads)
@@ -76,7 +88,7 @@ struct LeaderboardUser: Identifiable, Codable {
             // Placeholder until backend supports deals
             return 0.0
         default:
-            return Double(snapshot.flyers)
+            return Double(snapshot.doorknocks)
         }
     }
     
@@ -88,11 +100,10 @@ struct LeaderboardUser: Identifiable, Codable {
     // Helper to get formatted value for selected metric
     func formattedValue(for metric: String) -> String {
         switch metric {
-        case "flyers":
-            return "\(flyers)"
         case "doorknocks":
-            let snapshot = allTime
-            return "\(snapshot.doorknocks)"
+            return "\(doorknocks)"
+        case "flyers":
+            return "\(doorknocks)"
         case "leads":
             return "\(leads)"
         case "conversations":
@@ -112,8 +123,7 @@ struct LeaderboardUser: Identifiable, Codable {
         case "weekly":
             return weekly
         case "monthly":
-            // Placeholder: use weekly snapshot until backend supports monthly
-            return weekly
+            return monthly
         case "all_time":
             return allTime
         default:
@@ -121,4 +131,3 @@ struct LeaderboardUser: Identifiable, Codable {
         }
     }
 }
-

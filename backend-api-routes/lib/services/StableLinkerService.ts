@@ -172,6 +172,55 @@ function parseBuildings(
   return results;
 }
 
+function isUuidLike(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
+async function ensureBuildingRows(
+  supabase: any,
+  buildings: BuildingFeatureNormalized[]
+): Promise<Map<string, string>> {
+  const inserts = buildings
+    .filter((building) => isUuidLike(building.id))
+    .map((building) => ({
+      source: "overture",
+      campaign_id: null,
+      gers_id: building.id,
+      geom: JSON.stringify({
+        type: "Polygon",
+        coordinates: [building.polygon],
+      }),
+      height_m: building.height,
+      height: building.height,
+      units_count: 1,
+      latest_status: "default",
+    }));
+
+  if (inserts.length === 0) {
+    return new Map();
+  }
+
+  const { data, error } = await (supabase
+    .from("buildings") as any)
+    .upsert(inserts, { onConflict: "gers_id" })
+    .select("id, gers_id");
+
+  if (error) {
+    console.warn(
+      "[StableLinkerService] Failed to persist building rows, falling back to public IDs:",
+      error
+    );
+    return new Map();
+  }
+
+  const rowIdByPublicId = new Map<string, string>();
+  for (const row of (data ?? []) as Array<{ id: string; gers_id: string | null }>) {
+    rowIdByPublicId.set((row.gers_id ?? row.id).toLowerCase(), row.id);
+  }
+
+  return rowIdByPublicId;
+}
+
 // ---- Main spatial join -----------------------------------------------------
 
 /**
@@ -209,6 +258,7 @@ export async function runSpatialJoin(
     .filter((a) => a.longitude !== 0 || a.latitude !== 0);
 
   const buildings = parseBuildings(buildingsGeoJSON);
+  const buildingRowIdByPublicId = await ensureBuildingRows(supabase, buildings);
   console.log(
     `[StableLinkerService] Matching ${addresses.length} addresses vs ${buildings.length} buildings`
   );
@@ -227,7 +277,7 @@ export async function runSpatialJoin(
       if (pointInPolygon(pt, b.polygon)) {
         matched = {
           campaign_id:        campaignId,
-          building_id:        b.id,
+          building_id:        buildingRowIdByPublicId.get(b.id.toLowerCase()) ?? b.id,
           address_id:         addr.id,
           match_type:         "containment_verified",
           confidence:         1.0,
@@ -256,7 +306,9 @@ export async function runSpatialJoin(
 
     if (closest && minDist <= 5) {
       matched = {
-        campaign_id: campaignId, building_id: closest.id, address_id: addr.id,
+        campaign_id: campaignId,
+        building_id: buildingRowIdByPublicId.get(closest.id.toLowerCase()) ?? closest.id,
+        address_id: addr.id,
         match_type: "point_on_surface", confidence: 0.95,
         distance_meters: minDist, street_match_score: null,
         building_area_sqm: closest.area_sqm, building_class: closest.building_type,
@@ -273,7 +325,9 @@ export async function runSpatialJoin(
       const score = aStreet && bStreet ? jaroWinkler(aStreet, bStreet) : 0;
       if (score >= STREET_MATCH_THRESHOLD) {
         matched = {
-          campaign_id: campaignId, building_id: closest.id, address_id: addr.id,
+          campaign_id: campaignId,
+          building_id: buildingRowIdByPublicId.get(closest.id.toLowerCase()) ?? closest.id,
+          address_id: addr.id,
           match_type: "proximity_verified",
           confidence: Math.max(0, 1 - minDist / PROXIMITY_VERIFIED_DIST),
           distance_meters: minDist, street_match_score: score,
@@ -288,7 +342,9 @@ export async function runSpatialJoin(
     // Tier 4: proximity_fallback — nearest within 30 m
     if (closest && minDist <= PROXIMITY_FALLBACK_DIST) {
       matched = {
-        campaign_id: campaignId, building_id: closest.id, address_id: addr.id,
+        campaign_id: campaignId,
+        building_id: buildingRowIdByPublicId.get(closest.id.toLowerCase()) ?? closest.id,
+        address_id: addr.id,
         match_type: "proximity_fallback",
         confidence: Math.max(0, 1 - minDist / PROXIMITY_FALLBACK_DIST),
         distance_meters: minDist, street_match_score: null,

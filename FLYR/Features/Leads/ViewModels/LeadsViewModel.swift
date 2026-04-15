@@ -70,10 +70,19 @@ final class LeadsViewModel: ObservableObject {
     }
     
     func deleteLead(_ lead: FieldLead) async {
+        await deleteLeads([lead])
+    }
+
+    func deleteLeads(_ leadsToDelete: [FieldLead]) async {
+        let idsToDelete = Set(leadsToDelete.map(\.id))
+        guard !idsToDelete.isEmpty else { return }
+
         do {
-            try await fieldLeadsService.deleteLead(lead)
-            leads.removeAll { $0.id == lead.id }
-            if selectedLead?.id == lead.id { selectedLead = nil }
+            try await fieldLeadsService.deleteLeads(leadsToDelete)
+            leads.removeAll { idsToDelete.contains($0.id) }
+            if let selectedLead, idsToDelete.contains(selectedLead.id) {
+                self.selectedLead = nil
+            }
         } catch {
             errorMessage = error.localizedDescription
         }

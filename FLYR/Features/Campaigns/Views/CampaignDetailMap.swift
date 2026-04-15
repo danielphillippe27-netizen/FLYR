@@ -48,7 +48,7 @@ struct CampaignDetailMap: View {
             // Kick off fetch (tilequery -> upsert -> fetch FC)
             await buildings.fetchMissingBuildings()
         }
-        .onChange(of: buildings.featureCollection) { featureCollection in
+        .onChange(of: buildings.featureCollection) { _, featureCollection in
             guard let featureCollection = featureCollection else { 
                 print("🏢 [DETAIL MAP] No feature collection to update")
                 return 
@@ -57,14 +57,14 @@ struct CampaignDetailMap: View {
             print("🏢 [DETAIL MAP] Feature collection updated: \(featureCollection.features.count) features")
             MapboxBridge.shared.updatePolygons(featureCollection)
         }
-        .onChange(of: buildings.isLoading) { isLoading in
+        .onChange(of: buildings.isLoading) { _, isLoading in
             if isLoading {
                 print("🏢 [DETAIL MAP] Building fetch started")
             } else {
                 print("🏢 [DETAIL MAP] Building fetch completed")
             }
         }
-        .onChange(of: buildings.error) { error in
+        .onChange(of: buildings.error) { _, error in
             if let error = error {
                 print("❌ [DETAIL MAP] Building fetch error: \(error)")
             }

@@ -9,6 +9,8 @@ final class UseAddressAutocomplete: ObservableObject {
   @Published var isLoading: Bool = false
   @Published var error: String?
   @Published var selected: AddressSuggestion?
+  /// When set, debounced `bind()` searches bias results toward this coordinate (e.g. map pin).
+  @Published var autocompleteProximity: CLLocationCoordinate2D?
 
   private var debounceTask: Task<Void, Never>?
   private var currentRequestID: UInt64 = 0   // ← identify latest request
@@ -35,11 +37,12 @@ final class UseAddressAutocomplete: ObservableObject {
       suggestions.removeAll()
       return
     }
+    let resolvedProximity = proximity ?? autocompleteProximity
     isLoading = true
     let req = currentRequestID &+ 1
     currentRequestID = req
     do {
-      let results = try await GeoAPI.shared.autocomplete(text, proximity: proximity)
+      let results = try await GeoAPI.shared.autocomplete(text, proximity: resolvedProximity)
       // Ignore late/outdated responses
       guard req == currentRequestID else { return }
       suggestions = results

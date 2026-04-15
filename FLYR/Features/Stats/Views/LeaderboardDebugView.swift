@@ -15,7 +15,7 @@ struct LeaderboardDebugView: View {
                     debugSection(title: "Current User Stats") {
                         if let stats = vm.userStats {
                             debugRow("User ID", stats.userId)
-                            debugRow("Doors", "\(stats.flyers)")
+                            debugRow("Doors", "\(stats.doorknocks)")
                             debugRow("Conversations", "\(stats.conversations)")
                             debugRow("Distance", String(format: "%.2f km", stats.distance))
                             debugRow("Time", "\(stats.timeMinutes) min")
@@ -37,7 +37,7 @@ struct LeaderboardDebugView: View {
                             ForEach(vm.recentSessions) { session in
                                 VStack(alignment: .leading, spacing: 4) {
                                     debugRow("Started", formattedDate(session.startTime))
-                                    debugRow("Doors", "\(session.flyersDelivered)")
+                                    debugRow("Doors", "\(session.doorknocks)")
                                     debugRow("Conversations", "\(session.conversations)")
                                     debugRow("Distance", String(format: "%.2f m", session.distanceMeters))
                                 }
@@ -60,7 +60,10 @@ struct LeaderboardDebugView: View {
                                 VStack(alignment: .leading, spacing: 4) {
                                     debugRow("Rank", "#\(entry.rank)")
                                     debugRow("Name", entry.name)
-                                    debugRow("Doors", "\(entry.flyers)")
+                                    if let brokerage = entry.brokerage, !brokerage.isEmpty {
+                                        debugRow("Brokerage", brokerage)
+                                    }
+                                    debugRow("Doors", "\(entry.doorknocks)")
                                     debugRow("Conversations", "\(entry.conversations)")
                                 }
                                 .padding(.vertical, 8)
@@ -181,7 +184,7 @@ class LeaderboardDebugViewModel: ObservableObject {
         
         struct Response: Decodable {
             let user_id: String
-            let flyers: Int
+            let doors_knocked: Int
             let conversations: Int
             let distance_walked: Double
             let time_tracked: Int
@@ -202,7 +205,7 @@ class LeaderboardDebugViewModel: ObservableObject {
         
         return DebugUserStats(
             userId: first.user_id,
-            flyers: first.flyers,
+            doorknocks: first.doors_knocked,
             conversations: first.conversations,
             distance: first.distance_walked,
             timeMinutes: first.time_tracked,
@@ -218,7 +221,9 @@ class LeaderboardDebugViewModel: ObservableObject {
         struct Response: Decodable {
             let id: String
             let start_time: String
-            let flyers_delivered: Int
+            let doors_hit: Int?
+            let completed_count: Int?
+            let flyers_delivered: Int?
             let conversations: Int
             let distance_meters: Double
         }
@@ -241,7 +246,7 @@ class LeaderboardDebugViewModel: ObservableObject {
             return DebugSession(
                 id: item.id,
                 startTime: startTime,
-                flyersDelivered: item.flyers_delivered,
+                doorknocks: max(item.doors_hit ?? 0, item.completed_count ?? 0, item.flyers_delivered ?? 0),
                 conversations: item.conversations,
                 distanceMeters: item.distance_meters
             )
@@ -252,14 +257,15 @@ class LeaderboardDebugViewModel: ObservableObject {
         struct Response: Decodable {
             let id: String
             let name: String
+            let brokerage: String?
             let rank: Int
-            let flyers: Int
             let conversations: Int
+            let weekly: MetricSnapshot
         }
         
         let response: [Response] = try await SupabaseManager.shared.client
             .rpc("get_leaderboard", params: [
-                "p_metric": AnyCodable("flyers"),
+                "p_metric": AnyCodable("doorknocks"),
                 "p_timeframe": AnyCodable("weekly")
             ])
             .execute()
@@ -269,8 +275,9 @@ class LeaderboardDebugViewModel: ObservableObject {
             DebugLeaderboardEntry(
                 id: item.id,
                 name: item.name,
+                brokerage: item.brokerage,
                 rank: item.rank,
-                flyers: item.flyers,
+                doorknocks: item.weekly.doorknocks,
                 conversations: item.conversations
             )
         }
@@ -281,7 +288,7 @@ class LeaderboardDebugViewModel: ObservableObject {
 
 struct DebugUserStats {
     let userId: String
-    let flyers: Int
+    let doorknocks: Int
     let conversations: Int
     let distance: Double
     let timeMinutes: Int
@@ -291,7 +298,7 @@ struct DebugUserStats {
 struct DebugSession: Identifiable {
     let id: String
     let startTime: Date
-    let flyersDelivered: Int
+    let doorknocks: Int
     let conversations: Int
     let distanceMeters: Double
 }
@@ -299,8 +306,9 @@ struct DebugSession: Identifiable {
 struct DebugLeaderboardEntry: Identifiable {
     let id: String
     let name: String
+    let brokerage: String?
     let rank: Int
-    let flyers: Int
+    let doorknocks: Int
     let conversations: Int
 }
 

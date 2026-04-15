@@ -158,6 +158,7 @@ struct AddressProperties: Codable {
     let postalCode: String?
     let locality: String?
     let formatted: String?
+    let source: String?
     
     enum CodingKeys: String, CodingKey {
         case id
@@ -168,6 +169,7 @@ struct AddressProperties: Codable {
         case postalCode = "postal_code"
         case locality
         case formatted
+        case source
     }
 }
 
@@ -196,6 +198,193 @@ typealias AddressFeatureCollection = MapFeatureGeoJSONFeatureCollection<AddressP
 
 typealias RoadFeature = MapFeatureGeoJSONFeature<RoadProperties>
 typealias RoadFeatureCollection = MapFeatureGeoJSONFeatureCollection<RoadProperties>
+
+struct ResolvedCampaignTarget {
+    let id: String
+    let label: String
+    let coordinate: CLLocationCoordinate2D
+    let addressId: String?
+    let buildingId: String?
+    let houseNumber: String?
+    let streetName: String?
+}
+
+enum CampaignTargetResolver {
+    static func preferredSessionTargets(
+        buildings: [BuildingFeature],
+        addresses: [AddressFeature]
+    ) -> [ResolvedCampaignTarget] {
+        let buildingTargets = buildingTargets(from: buildings)
+        return buildingTargets.isEmpty ? addressTargets(from: addresses) : buildingTargets
+    }
+
+    /// Flyer sessions score proximity per address whenever address points exist.
+    /// If address coverage is missing, supplement with single-address building centroids.
+    static func flyerTargets(
+        buildings: [BuildingFeature],
+        addresses: [AddressFeature]
+    ) -> [ResolvedCampaignTarget] {
+        let addressTargets = addressTargets(from: addresses)
+        guard !addressTargets.isEmpty else { return buildingTargets(from: buildings) }
+
+        let coveredAddressIds = Set(addressTargets.compactMap { $0.addressId?.lowercased() })
+        let coveredBuildingIds = Set(addressTargets.compactMap { $0.buildingId?.lowercased() })
+        var seenTargetIds = Set(addressTargets.map { $0.id.lowercased() })
+
+        let fallbackTargets = buildings.compactMap { feature -> ResolvedCampaignTarget? in
+            let addressCount = max(feature.properties.addressCount ?? 0, feature.properties.unitsCount)
+            guard addressCount <= 1,
+                  let coordinate = coordinate(for: feature.geometry) else {
+                return nil
+            }
+
+            let buildingId = normalizedSessionTargetId(
+                feature.properties.canonicalBuildingIdentifier ?? feature.id
+            )
+            let addressId = normalizedUUIDString(feature.properties.addressId) ?? normalizedUUIDString(feature.id)
+
+            if let addressId, coveredAddressIds.contains(addressId.lowercased()) {
+                return nil
+            }
+            if let buildingId, coveredBuildingIds.contains(buildingId.lowercased()) {
+                return nil
+            }
+
+            guard let targetId = addressId ?? buildingId,
+                  seenTargetIds.insert(targetId.lowercased()).inserted else {
+                return nil
+            }
+
+            return ResolvedCampaignTarget(
+                id: targetId,
+                label: displayAddressText(
+                    formatted: feature.properties.addressText,
+                    houseNumber: feature.properties.houseNumber,
+                    streetName: feature.properties.streetName
+                ) ?? "Building",
+                coordinate: coordinate,
+                addressId: addressId,
+                buildingId: buildingId,
+                houseNumber: feature.properties.houseNumber,
+                streetName: feature.properties.streetName
+            )
+        }
+
+        return addressTargets + fallbackTargets
+    }
+
+    static func buildingTargets(from features: [BuildingFeature]) -> [ResolvedCampaignTarget] {
+        var seen = Set<String>()
+
+        return features.compactMap { feature in
+            guard let rawId = normalizedSessionTargetId(
+                feature.properties.canonicalBuildingIdentifier ?? feature.id
+            ),
+                  let coordinate = coordinate(for: feature.geometry),
+                  seen.insert(rawId.lowercased()).inserted else {
+                return nil
+            }
+
+            return ResolvedCampaignTarget(
+                id: rawId,
+                label: displayAddressText(
+                    formatted: feature.properties.addressText,
+                    houseNumber: feature.properties.houseNumber,
+                    streetName: feature.properties.streetName
+                ) ?? "Building",
+                coordinate: coordinate,
+                addressId: normalizedUUIDString(feature.properties.addressId) ?? normalizedUUIDString(feature.id),
+                buildingId: rawId,
+                houseNumber: feature.properties.houseNumber,
+                streetName: feature.properties.streetName
+            )
+        }
+    }
+
+    static func addressTargets(from features: [AddressFeature]) -> [ResolvedCampaignTarget] {
+        var seen = Set<String>()
+
+        return features.compactMap { feature in
+            guard let rawId = normalizedUUIDString(feature.properties.id ?? feature.id),
+                  let coordinate = coordinate(for: feature.geometry),
+                  seen.insert(rawId.lowercased()).inserted else {
+                return nil
+            }
+
+            return ResolvedCampaignTarget(
+                id: rawId,
+                label: displayAddressText(
+                    formatted: feature.properties.formatted,
+                    houseNumber: feature.properties.houseNumber,
+                    streetName: feature.properties.streetName
+                ) ?? "Address",
+                coordinate: coordinate,
+                addressId: rawId,
+                buildingId: normalizedSessionTargetId(feature.properties.buildingGersId ?? feature.properties.gersId),
+                houseNumber: feature.properties.houseNumber,
+                streetName: feature.properties.streetName
+            )
+        }
+    }
+
+    static func coordinate(for geometry: MapFeatureGeoJSONGeometry) -> CLLocationCoordinate2D? {
+        if let point = geometry.asPoint, point.count >= 2 {
+            return CLLocationCoordinate2D(latitude: point[1], longitude: point[0])
+        }
+        if let polygon = geometry.asPolygon {
+            return centroidCoordinate(fromPolygonCoordinates: polygon)
+        }
+        if let multiPolygon = geometry.asMultiPolygon {
+            let flattened = multiPolygon.flatMap { $0 }
+            return centroidCoordinate(fromPolygonCoordinates: flattened)
+        }
+        return nil
+    }
+
+    static func displayAddressText(formatted: String?, houseNumber: String?, streetName: String?) -> String? {
+        let formattedValue = formatted?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !formattedValue.isEmpty {
+            return formattedValue
+        }
+        let house = houseNumber?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let street = streetName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let combined = "\(house) \(street)".trimmingCharacters(in: .whitespacesAndNewlines)
+        return combined.isEmpty ? nil : combined
+    }
+
+    private static func centroidCoordinate(fromPolygonCoordinates polygon: [[[Double]]]) -> CLLocationCoordinate2D? {
+        var sumLat = 0.0
+        var sumLon = 0.0
+        var count = 0
+
+        for ring in polygon {
+            for point in ring where point.count >= 2 {
+                sumLon += point[0]
+                sumLat += point[1]
+                count += 1
+            }
+        }
+
+        guard count > 0 else { return nil }
+        return CLLocationCoordinate2D(
+            latitude: sumLat / Double(count),
+            longitude: sumLon / Double(count)
+        )
+    }
+
+    private static func normalizedSessionTargetId(_ rawValue: String?) -> String? {
+        let trimmed = rawValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func normalizedUUIDString(_ rawValue: String?) -> String? {
+        guard let id = normalizedSessionTargetId(rawValue),
+              let uuid = UUID(uuidString: id) else {
+            return nil
+        }
+        return uuid.uuidString.lowercased()
+    }
+}
 
 // MARK: - FeatureCollection Decode Helper (array vs object)
 
@@ -227,10 +416,34 @@ final class MapFeaturesService: ObservableObject {
     @Published var isLoading = false
     @Published var error: Error?
 
+    /// Silver linking table: gers_id (lowercase) → [address_id UUIDs].
+    /// Populated from building_address_links whenever buildings are fetched.
+    /// Used by resolveAddressForBuilding as the primary strategy for Silver S3 buildings.
+    @Published var silverBuildingLinks: [String: [String]] = [:]
+
     // Campaign-scoped prewarmed building polygons (e.g. Quick Start ensure response before DB links are ready).
     private var prewarmedBuildingsByCampaign: [String: BuildingFeatureCollection] = [:]
+    /// Tracks latest campaign fetch so stale async responses are ignored.
+    private var activeCampaignRequestId: UUID?
+    private var activeCampaignIdLower: String?
     
     private init() {}
+
+    private func isCancellationError(_ error: Error) -> Bool {
+        if error is CancellationError {
+            return true
+        }
+        if let urlError = error as? URLError, urlError.code == .cancelled {
+            return true
+        }
+        let nsError = error as NSError
+        return nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled
+    }
+
+    private func isActiveCampaignRequest(campaignId: String, requestId: UUID?) -> Bool {
+        guard let requestId else { return true }
+        return activeCampaignRequestId == requestId && activeCampaignIdLower == campaignId.lowercased()
+    }
 
     func primeBuildingPolygons(campaignId: String, features: [GeoJSONFeature]) {
         let collection = buildingFeatureCollectionFromGeoJSON(GeoJSONFeatureCollection(features: features))
@@ -374,81 +587,63 @@ final class MapFeaturesService: ObservableObject {
         }
     }
     
-    /// Fetch roads in a bounding box
-    func fetchRoadsInBbox(
-        minLon: Double,
-        minLat: Double,
-        maxLon: Double,
-        maxLat: Double,
-        campaignId: String? = nil
-    ) async {
-        do {
-            var params: [String: Any] = [
-                "min_lon": minLon,
-                "min_lat": minLat,
-                "max_lon": maxLon,
-                "max_lat": maxLat
-            ]
-            
-            if let campaignId = campaignId, let campaignUUID = UUID(uuidString: campaignId) {
-                params["p_campaign_id"] = campaignUUID.uuidString
-            }
-            
-            print("🗺️ [MapFeatures] Fetching roads in bbox")
-            
-            let result: RoadFeatureCollection = try await supabase.callRPC(
-                "rpc_get_roads_in_bbox",
-                params: params
-            )
-            
-            self.roads = result
-            print("✅ [MapFeatures] Loaded \(result.features.count) roads")
-            
-        } catch {
-            print("❌ [MapFeatures] Error fetching roads: \(error)")
-        }
-    }
-    
     // MARK: - Campaign All Features (Buildings + Addresses + Roads)
     
-    /// Max addresses to use for closest-home building fallback (avoid excessive Edge Function calls)
-    private static let fallbackAddressCap = 50
+    /// Max addresses to use for closest-home building fallback.
+    /// Set high enough to cover large Silver campaigns (e.g. Texas 832) when S3 snapshot is unavailable.
+    private static let fallbackAddressCap = 400
     
-    /// Fetch all map features for a campaign (buildings, addresses, roads)
+    /// Fetch all map features for a campaign (buildings, addresses, roads).
+    ///
+    /// Building source priority (handled server-side by /api/campaigns/{id}/buildings):
+    ///   1. Gold  — rpc_get_campaign_full_features (building_id FK set)
+    ///   2. Silver DB — rpc_get_campaign_full_features (building_address_links + buildings table)
+    ///   3. S3 snapshot — Lambda-generated buildings.geojson.gz (always present for Lambda campaigns)
+    ///
+    /// Addresses always come from rpc_get_campaign_addresses (enriched with building links + status IDs).
     func fetchAllCampaignFeatures(campaignId: String) async {
+        let campaignIdLower = campaignId.lowercased()
+        let isRefreshingSameCampaign = activeCampaignIdLower == campaignIdLower
+        let requestId = UUID()
+        activeCampaignRequestId = requestId
+        activeCampaignIdLower = campaignIdLower
         isLoading = true
         error = nil
-        
-        // Clear to empty so any updateMapData() before fetch completes gets polygon-only/empty (avoids stale data and FillBucket LineString)
-        self.buildings = BuildingFeatureCollection(type: "FeatureCollection", features: [])
-        self.addresses = AddressFeatureCollection(type: "FeatureCollection", features: [])
-        self.roads = RoadFeatureCollection(type: "FeatureCollection", features: [])
-        
-        // Fetch in parallel
-        await withTaskGroup(of: Void.self) { group in
-            group.addTask {
-                await self.fetchCampaignFullFeatures(campaignId: campaignId)
-            }
-            group.addTask {
-                await self.fetchCampaignAddresses(campaignId: campaignId)
-            }
-            group.addTask {
-                await self.fetchCampaignRoads(campaignId: campaignId)
-            }
+
+        // Keep existing features visible when reloading the same campaign (for example after adding
+        // a manual home) so the map never collapses to empty while refresh requests are in flight.
+        // We still clear immediately when switching to a different campaign.
+        if !isRefreshingSameCampaign {
+            self.buildings = BuildingFeatureCollection(type: "FeatureCollection", features: [])
+            self.addresses = AddressFeatureCollection(type: "FeatureCollection", features: [])
+            self.roads = RoadFeatureCollection(type: "FeatureCollection", features: [])
+            self.silverBuildingLinks = [:]
         }
         
-        // Partition Gold RPC result: Polygon -> buildings, Point -> merge into addresses
-        if let buildings = self.buildings, !buildings.features.isEmpty {
-            let (polygons, points) = partitionFeaturesByGeometry(buildings.features)
-            self.buildings = BuildingFeatureCollection(type: "FeatureCollection", features: polygons)
-            let pointAddressFeatures = addressFeaturesFromPointBuildingFeatures(points)
-            if !pointAddressFeatures.isEmpty {
-                let merged = mergeAddressFeatures(existing: self.addresses, additional: pointAddressFeatures)
-                self.addresses = AddressFeatureCollection(type: "FeatureCollection", features: merged)
+        // Fetch all four in parallel.
+        // Buildings go through the backend API which routes Gold → Silver DB → S3 automatically.
+        // Addresses come from DB (enriched with building link IDs and status metadata).
+        // Silver links (building_address_links) are fetched directly — used by the iOS tap resolver
+        // when Gold address_id is absent (i.e. Silver S3 buildings whose features don't carry address_id).
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask {
+                await self.fetchBuildingsFromAPI(campaignId: campaignId, requestId: requestId)
+            }
+            group.addTask {
+                await self.fetchCampaignAddresses(campaignId: campaignId, requestId: requestId)
+            }
+            group.addTask {
+                await self.fetchCampaignRoads(campaignId: campaignId, requestId: requestId)
+            }
+            group.addTask {
+                await self.fetchSilverBuildingLinks(campaignId: campaignId, requestId: requestId)
             }
         }
 
-        // If campaign RPC only returned address points, use prewarmed polygons captured during ensureBuildingPolygons.
+        guard isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else { return }
+        
+        // Use prewarmed polygons (from Quick Start ensureBuildingPolygons) if API returned nothing.
+        // This covers the window between campaign creation and when the S3 snapshot is available.
         if (self.buildings?.features.isEmpty ?? true),
            let prewarmed = prewarmedBuildingsByCampaign[campaignId.lowercased()],
            !prewarmed.features.isEmpty {
@@ -456,18 +651,210 @@ final class MapFeaturesService: ObservableObject {
             print("✅ [MapFeatures] Using prewarmed building polygons (\(prewarmed.features.count)) for campaign \(campaignId)")
         }
         
-        // Silver fallback: if no polygon buildings, try S3 snapshot
-        if (buildings?.features.isEmpty ?? true), let silverFeatures = try? await BuildingLinkService.shared.fetchBuildings(campaignId: campaignId) {
-            self.buildings = BuildingFeatureCollection(type: "FeatureCollection", features: silverFeatures)
-            print("✅ [MapFeatures] Silver fallback loaded \(silverFeatures.count) building features")
+        // Last resort: Edge Function per-address lookup when S3 snapshot is also unavailable.
+        if (self.buildings?.features.isEmpty ?? true) && (addresses?.features.isEmpty == false) {
+            await fetchBuildingsForAddressesFallback(campaignId: campaignId, requestId: requestId)
         }
-        
-        // Closest-home: if we still have no buildings but have addresses, fetch buildings per address via Edge Function
-        if (buildings?.features.isEmpty ?? true) && (addresses?.features.isEmpty == false) {
-            await fetchBuildingsForAddressesFallback(campaignId: campaignId)
+
+        // If the campaign still has no buildings or addresses, replay the same polygon-backed
+        // create flow used by NewCampaignScreen: generate-address-list -> provision -> reload.
+        if (self.buildings?.features.isEmpty ?? true) && (self.addresses?.features.isEmpty ?? true) {
+            await replayCampaignCreationPathIfNeeded(campaignId: campaignId, requestId: requestId)
         }
         
         isLoading = false
+    }
+
+    /// Fetch route-scoped features from the backend assignment map endpoint.
+    /// Falls back to full campaign loading if the scoped endpoint is unavailable.
+    func fetchRouteScopedCampaignFeatures(assignmentId: UUID, campaignId: String) async {
+        let campaignIdLower = campaignId.lowercased()
+        let requestId = UUID()
+        activeCampaignRequestId = requestId
+        activeCampaignIdLower = campaignIdLower
+        isLoading = true
+        error = nil
+
+        do {
+            let payload = try await RouteAssignmentsAPI.shared.fetchAssignmentMap(assignmentId: assignmentId)
+            await applyRouteScopedPayload(payload, assignmentId: assignmentId, campaignId: campaignId, requestId: requestId)
+        } catch {
+            if isCancellationError(error) {
+                print("ℹ️ [MapFeatures] Route-scoped request cancelled")
+                return
+            }
+
+            if case RouteAssignmentsAPIError.unauthorized = error {
+                print("⚠️ [MapFeatures] Route-scoped load returned unauthorized; retrying once before full fallback")
+                do {
+                    try await Task.sleep(nanoseconds: 350_000_000)
+                    let payload = try await RouteAssignmentsAPI.shared.fetchAssignmentMap(assignmentId: assignmentId)
+                    await applyRouteScopedPayload(payload, assignmentId: assignmentId, campaignId: campaignId, requestId: requestId)
+                    isLoading = false
+                    return
+                } catch {
+                    if isCancellationError(error) {
+                        print("ℹ️ [MapFeatures] Route-scoped retry cancelled")
+                        return
+                    }
+                    print("⚠️ [MapFeatures] Route-scoped retry failed (\(error))")
+                }
+            }
+
+            print("⚠️ [MapFeatures] Route-scoped load failed (\(error)); falling back to full campaign data")
+            await fetchAllCampaignFeatures(campaignId: campaignId)
+            return
+        }
+
+        isLoading = false
+    }
+
+    private func applyRouteScopedPayload(
+        _ payload: RouteAssignmentMapPayload,
+        assignmentId: UUID,
+        campaignId: String,
+        requestId: UUID
+    ) async {
+        guard isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else { return }
+
+        self.buildings = payload.buildings
+        self.addresses = payload.addresses
+        self.roads = payload.roads ?? RoadFeatureCollection(type: "FeatureCollection", features: [])
+
+        print(
+            "✅ [MapFeatures] Loaded route-scoped map for assignment \(assignmentId.uuidString) " +
+            "buildings=\(payload.buildings.features.count) addresses=\(payload.addresses.features.count)"
+        )
+
+        if payload.roads == nil {
+            await fetchCampaignRoads(campaignId: campaignId, requestId: requestId)
+        }
+    }
+    
+    /// Fetch building polygons from the backend API.
+    /// The server handles routing: Gold (RPC) → Silver DB (RPC) → S3 snapshot.
+    /// This is always the authoritative source — no client-side Silver fallback needed.
+    private func fetchBuildingsFromAPI(campaignId: String, requestId: UUID? = nil) async {
+        do {
+            let features = try await BuildingLinkService.shared.fetchBuildings(campaignId: campaignId)
+            guard isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else { return }
+            self.buildings = BuildingFeatureCollection(type: "FeatureCollection", features: features)
+            print("✅ [MapFeatures] Loaded \(features.count) building features from API (Gold/Silver/S3)")
+        } catch {
+            if isCancellationError(error) {
+                print("ℹ️ [MapFeatures] Buildings API request cancelled")
+                return
+            }
+            guard isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else { return }
+            if self.buildings?.features.isEmpty == false {
+                print("⚠️ [MapFeatures] API buildings fetch failed (\(error)); keeping existing buildings")
+            } else {
+                print("⚠️ [MapFeatures] API buildings fetch failed (\(error)); buildings will be empty")
+                self.buildings = BuildingFeatureCollection(type: "FeatureCollection", features: [])
+            }
+        }
+    }
+
+    private func replayCampaignCreationPathIfNeeded(campaignId: String, requestId: UUID? = nil) async {
+        guard let campaignUUID = UUID(uuidString: campaignId) else { return }
+        guard isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else { return }
+
+        let campaignRow: CampaignDBRow
+        do {
+            campaignRow = try await CampaignsAPI.shared.fetchCampaignDBRow(id: campaignUUID)
+        } catch {
+            print("⚠️ [MapFeatures] Could not read campaign metadata for replay: \(error.localizedDescription)")
+            return
+        }
+
+        guard campaignRow.addressSource == .map else {
+            print("ℹ️ [MapFeatures] Empty map payload for non-polygon campaign; no replayable create path")
+            return
+        }
+
+        guard let polygon = await CampaignsAPI.shared.fetchTerritoryBoundary(campaignId: campaignUUID),
+              let polygonGeoJSON = polygonGeoJSONString(from: polygon) else {
+            print("⚠️ [MapFeatures] Empty polygon campaign missing territory_boundary; cannot replay create path")
+            return
+        }
+
+        print("🔁 [MapFeatures] Replaying polygon create flow for empty campaign \(campaignId)")
+
+        do {
+            _ = try await OvertureAddressService.shared.getAddressesInPolygon(
+                polygonGeoJSON: polygonGeoJSON,
+                campaignId: campaignUUID
+            )
+        } catch {
+            print("⚠️ [MapFeatures] generate-address-list replay failed: \(error.localizedDescription)")
+        }
+
+        do {
+            _ = try await CampaignsAPI.shared.provisionCampaign(campaignId: campaignUUID)
+            let state = try await CampaignsAPI.shared.waitForProvisionReady(
+                campaignId: campaignUUID,
+                timeoutSeconds: 45,
+                pollIntervalSeconds: 2
+            )
+            print("✅ [MapFeatures] Replay provision finished with status \(state.provisionStatus ?? "unknown")")
+        } catch {
+            print("⚠️ [MapFeatures] provision replay failed: \(error.localizedDescription)")
+        }
+
+        guard isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else { return }
+
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask {
+                await self.fetchBuildingsFromAPI(campaignId: campaignId, requestId: requestId)
+            }
+            group.addTask {
+                await self.fetchCampaignAddresses(campaignId: campaignId, requestId: requestId)
+            }
+            group.addTask {
+                await self.fetchCampaignRoads(campaignId: campaignId, requestId: requestId)
+            }
+            group.addTask {
+                await self.fetchSilverBuildingLinks(campaignId: campaignId, requestId: requestId)
+            }
+        }
+
+        // If provision still has not yielded polygons, try the address-driven building fallback once more.
+        if (self.buildings?.features.isEmpty ?? true) && (addresses?.features.isEmpty == false) {
+            await fetchBuildingsForAddressesFallback(campaignId: campaignId, requestId: requestId)
+        }
+    }
+
+    private func polygonGeoJSONString(from polygon: [CLLocationCoordinate2D]) -> String? {
+        guard polygon.count >= 3 else { return nil }
+
+        var ring = polygon.map { [$0.longitude, $0.latitude] }
+        if ring.first != ring.last, let first = ring.first {
+            ring.append(first)
+        }
+
+        let geoJSON = GeoJSONPolygon(type: "Polygon", coordinates: [ring])
+        guard let data = try? JSONEncoder().encode(geoJSON) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+    
+    /// Fetch building_address_links for the campaign and build a gers_id → [address_id] lookup.
+    /// Used by resolveAddressForBuilding as the authoritative source for Silver S3 campaigns
+    /// where buildings arrive without address_id embedded in their GeoJSON properties.
+    private func fetchSilverBuildingLinks(campaignId: String, requestId: UUID? = nil) async {
+        do {
+            let links = try await BuildingLinkService.shared.fetchLinks(campaignId: campaignId)
+            guard !links.isEmpty else { return }
+            var dict: [String: [String]] = [:]
+            for link in links {
+                let key = link.buildingId.lowercased()
+                dict[key, default: []].append(link.addressId)
+            }
+            guard isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else { return }
+            self.silverBuildingLinks = dict
+            print("✅ [MapFeatures] Loaded \(links.count) Silver building links (\(dict.count) unique buildings)")
+        } catch {
+            print("⚠️ [MapFeatures] Silver links fetch failed (\(error))")
+        }
     }
     
     /// Partition RPC full-features by geometry: Polygon/MultiPolygon -> buildings, Point -> address fallback.
@@ -499,7 +886,8 @@ final class MapFeaturesService: ObservableObject {
                 streetName: p.streetName,
                 postalCode: nil,
                 locality: nil,
-                formatted: formatted.isEmpty ? nil : formatted
+                formatted: formatted.isEmpty ? nil : formatted,
+                source: p.source
             )
             return AddressFeature(
                 type: "Feature",
@@ -530,7 +918,7 @@ final class MapFeaturesService: ObservableObject {
     
     /// Fetch building polygons for campaigns that have addresses but no buildings (e.g. closest-home).
     /// Calls Edge Function to ensure building_polygons, then RPC to load them, and merges into buildings layer.
-    private func fetchBuildingsForAddressesFallback(campaignId: String) async {
+    private func fetchBuildingsForAddressesFallback(campaignId: String, requestId: UUID? = nil) async {
         guard let addresses = addresses, !addresses.features.isEmpty else { return }
         
         let addressRows = campaignAddressRowsFromAddressFeatures(addresses.features, cap: Self.fallbackAddressCap)
@@ -539,12 +927,16 @@ final class MapFeaturesService: ObservableObject {
         do {
             print("🗺️ [MapFeatures] Closest-home fallback: ensuring building polygons for \(addressRows.count) addresses")
             let ensureResponse = try await BuildingsAPI.shared.ensureBuildingPolygons(addresses: addressRows)
+            var immediateCollection: BuildingFeatureCollection?
 
             // If edge function returned features directly, render those immediately.
             if let ensureFeatures = ensureResponse.features, !ensureFeatures.isEmpty {
                 let immediate = buildingFeatureCollectionFromGeoJSON(GeoJSONFeatureCollection(features: ensureFeatures))
                 if !immediate.features.isEmpty {
+                    immediateCollection = immediate
+                    guard isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else { return }
                     self.buildings = immediate
+                    prewarmedBuildingsByCampaign[campaignId.lowercased()] = immediate
                     print("✅ [MapFeatures] Immediate ensure render loaded \(immediate.features.count) building features")
                 }
             }
@@ -558,13 +950,24 @@ final class MapFeaturesService: ObservableObject {
             }
             
             let buildingCollection = buildingFeatureCollectionFromGeoJSON(collection)
-            self.buildings = buildingCollection
+            guard isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else { return }
+            if !buildingCollection.features.isEmpty {
+                self.buildings = buildingCollection
+            } else if let immediateCollection, !immediateCollection.features.isEmpty {
+                self.buildings = immediateCollection
+            } else {
+                self.buildings = buildingCollection
+            }
             print("✅ [MapFeatures] Fallback loaded \(buildingCollection.features.count) building features")
 
             if !buildingCollection.features.isEmpty {
                 prewarmedBuildingsByCampaign[campaignId.lowercased()] = buildingCollection
             }
         } catch {
+            if isCancellationError(error) {
+                print("ℹ️ [MapFeatures] Fallback buildings fetch cancelled")
+                return
+            }
             print("❌ [MapFeatures] Fallback buildings fetch failed: \(error)")
             // Leave buildings empty; map still shows addresses
         }
@@ -622,10 +1025,10 @@ final class MapFeaturesService: ObservableObject {
         func bool(_ key: String) -> Bool? {
             (p[key]?.value as? Bool) ?? (p[key]?.value as? Int).map { $0 != 0 }
         }
-        let fallbackId = (feature.id ?? UUID().uuidString).lowercased()
-        let rawGersId = str("gers_id") ?? feature.id ?? UUID().uuidString
+        let fallbackId = (str("building_id") ?? str("gers_id") ?? feature.id ?? UUID().uuidString).lowercased()
+        let rawGersId = str("gers_id") ?? str("building_id") ?? feature.id ?? UUID().uuidString
         return BuildingProperties(
-            id: str("id") ?? fallbackId,
+            id: str("building_id") ?? str("id") ?? fallbackId,
             buildingId: str("building_id"),
             addressId: str("address_id"),
             gersId: rawGersId.lowercased(),
@@ -652,7 +1055,7 @@ final class MapFeaturesService: ObservableObject {
     }
     
     /// Fetch addresses for a campaign
-    private func fetchCampaignAddresses(campaignId: String) async {
+    private func fetchCampaignAddresses(campaignId: String, requestId: UUID? = nil) async {
         do {
             guard let campaignUUID = UUID(uuidString: campaignId) else {
                 print("❌ [MapFeatures] Invalid campaign ID format for addresses: \(campaignId)")
@@ -663,6 +1066,7 @@ final class MapFeaturesService: ObservableObject {
                 params: ["p_campaign_id": campaignUUID.uuidString]
             )
             let result: AddressFeatureCollection = try decodeFeatureCollection(data)
+            guard isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else { return }
             self.addresses = result
             print("✅ [MapFeatures] Loaded \(result.features.count) addresses for campaign")
         } catch {
@@ -670,33 +1074,54 @@ final class MapFeaturesService: ObservableObject {
         }
     }
     
-    /// Fetch roads for a campaign
-    func fetchCampaignRoads(campaignId: String) async {
-        do {
-            guard let campaignUUID = UUID(uuidString: campaignId) else {
-                print("❌ [MapFeatures] Invalid campaign ID format for roads: \(campaignId)")
-                return
-            }
-            let data = try await supabase.callRPCData(
-                "rpc_get_campaign_roads",
-                params: ["p_campaign_id": campaignUUID.uuidString]
+    /// Fetch roads for a campaign using the new campaign-scoped architecture
+    /// Uses CampaignRoadService which checks local cache first, then Supabase
+    func fetchCampaignRoads(campaignId: String, requestId: UUID? = nil) async {
+        print("🛣️ [MapFeatures] Loading roads for campaign \(campaignId)")
+        
+        // Use CampaignRoadService which implements the new architecture:
+        // 1. Check local device cache first (fast, offline capable)
+        // 2. Fall back to Supabase canonical store
+        // 3. No Mapbox API calls during session loading
+        let corridors = await CampaignRoadService.shared.getRoadsForSession(campaignId: campaignId)
+        
+        // Convert corridors to RoadFeatureCollection for existing UI compatibility
+        let features = corridors.map { corridor -> RoadFeature in
+            let coords = corridor.polyline.map { [$0.longitude, $0.latitude] }
+            let geometry = MapFeatureGeoJSONGeometry(
+                type: "LineString",
+                coordinates: buildGeoJSONCoordinates(from: coords)
             )
-            let result: RoadFeatureCollection = try decodeFeatureCollection(data)
-            self.roads = result
-            print("✅ [MapFeatures] Loaded \(result.features.count) roads for campaign")
-        } catch {
-            print("❌ [MapFeatures] Error fetching campaign roads: \(error)")
+            let properties = RoadProperties(
+                id: corridor.id,
+                gersId: nil,
+                roadClass: corridor.roadClass ?? "residential",
+                name: corridor.roadName
+            )
+            return RoadFeature(
+                type: "Feature",
+                id: corridor.id,
+                geometry: geometry,
+                properties: properties
+            )
         }
+        guard isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else { return }
+        self.roads = RoadFeatureCollection(type: "FeatureCollection", features: features)
+        print("✅ [MapFeatures] Loaded \(features.count) roads for campaign (zero Mapbox API calls)")
     }
     
     // MARK: - Real-time Updates
     
     /// Update a building's status (for real-time QR scan updates)
     func updateBuildingStatus(gersId: String, status: String, scansTotal: Int) {
-        guard var buildings = self.buildings else { return }
+        guard let buildings = self.buildings else { return }
         
         // Find and update the feature
-        if let index = buildings.features.firstIndex(where: { $0.properties.gersId == gersId }) {
+        if buildings.features.contains(where: { feature in
+            feature.properties.buildingIdentifierCandidates.contains(where: {
+                $0.caseInsensitiveCompare(gersId) == .orderedSame
+            }) || feature.id?.caseInsensitiveCompare(gersId) == .orderedSame
+        }) {
             // Note: In a real implementation, you'd create a mutable copy
             // For now, we'll refetch to get updated data
             print("🔄 [MapFeatures] Building \(gersId) status updated to: \(status), scans: \(scansTotal)")
@@ -742,5 +1167,16 @@ final class MapFeaturesService: ObservableObject {
     func roadsAsGeoJSONData() -> Data? {
         guard let roads = roads else { return nil }
         return try? JSONEncoder().encode(roads)
+    }
+    
+    /// Build GeoJSON coordinates from array
+    private func buildGeoJSONCoordinates(from coordinates: [[Double]]) -> GeoJSONCoordinatesNode {
+        do {
+            let data = try JSONSerialization.data(withJSONObject: coordinates)
+            return try JSONDecoder().decode(GeoJSONCoordinatesNode.self, from: data)
+        } catch {
+            print("⚠️ [MapFeatures] Failed to build coordinates: \(error)")
+            return try! JSONDecoder().decode(GeoJSONCoordinatesNode.self, from: "[]".data(using: .utf8)!)
+        }
     }
 }

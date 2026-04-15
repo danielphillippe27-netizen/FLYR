@@ -14,7 +14,7 @@ const APPLE_BUNDLE_ID = process.env.APPLE_BUNDLE_ID;
 const APPLE_PROD_TRANSACTIONS_URL = "https://api.storekit.itunes.apple.com/inApps/v1/transactions";
 const APPLE_SANDBOX_TRANSACTIONS_URL = "https://api.storekit-sandbox.itunes.apple.com/inApps/v1/transactions";
 
-type VerifyBody = { transactionId: string; productId: string };
+type VerifyBody = { transactionId: string; productId: string; referralCode?: string | null };
 type AppleTransactionLookupResponse = { signedTransactionInfo?: string };
 type AppleTransactionPayload = {
   transactionId?: string | number;
@@ -26,6 +26,87 @@ type AppleTransactionPayload = {
   revocationDate?: string | number;
   environment?: string;
 };
+
+type WorkspaceMembership = {
+  workspace_id: string;
+  role?: string | null;
+  created_at?: string | null;
+};
+
+type WorkspaceReferralRow = {
+  referral_code?: string | null;
+};
+
+function roleRank(role: string | null | undefined): number {
+  if (role === "owner") return 0;
+  if (role === "admin") return 1;
+  if (role === "member") return 2;
+  return 3;
+}
+
+async function resolvePrimaryWorkspaceIdForUser(
+  supabaseAdmin: any,
+  userId: string
+): Promise<string | null> {
+  const { data: ownedWorkspace } = await supabaseAdmin
+    .from("workspaces")
+    .select("id")
+    .eq("owner_id", userId)
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .maybeSingle();
+  if (ownedWorkspace?.id) return ownedWorkspace.id as string;
+
+  const { data: memberships } = await supabaseAdmin
+    .from("workspace_members")
+    .select("workspace_id,role,created_at")
+    .eq("user_id", userId);
+
+  const sorted = ((memberships ?? []) as WorkspaceMembership[])
+    .filter((row) => !!row.workspace_id)
+    .sort((a, b) => {
+      const byRole = roleRank(a.role) - roleRank(b.role);
+      if (byRole !== 0) return byRole;
+      const aTime = a.created_at ? new Date(a.created_at).getTime() : 0;
+      const bTime = b.created_at ? new Date(b.created_at).getTime() : 0;
+      return aTime - bTime;
+    });
+
+  return sorted[0]?.workspace_id ?? null;
+}
+
+async function updateWorkspaceSubscriptionForUser(
+  supabaseAdmin: any,
+  userId: string,
+  isActive: boolean,
+  referralCode?: string | null
+): Promise<void> {
+  const workspaceId = await resolvePrimaryWorkspaceIdForUser(supabaseAdmin, userId);
+  if (!workspaceId) return;
+
+  let referralUpdate: string | undefined;
+  if (referralCode) {
+    const { data: workspace } = await supabaseAdmin
+      .from("workspaces")
+      .select("referral_code")
+      .eq("id", workspaceId)
+      .maybeSingle();
+    const existingReferralCode = ((workspace as WorkspaceReferralRow | null)?.referral_code ?? "").trim();
+    if (!existingReferralCode) {
+      referralUpdate = referralCode;
+    }
+  }
+
+  await supabaseAdmin
+    .from("workspaces")
+    .update({
+      subscription_status: isActive ? "active" : "inactive",
+      trial_ends_at: null,
+      ...(referralUpdate ? { referral_code: referralUpdate } : {}),
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", workspaceId);
+}
 
 function toBase64Url(input: Buffer | string): string {
   const buf = Buffer.isBuffer(input) ? input : Buffer.from(input, "utf8");
@@ -54,6 +135,15 @@ function toDate(value: string | number | undefined): Date | null {
 function isYearlyProduct(productId: string): boolean {
   const normalized = productId.toLowerCase();
   return normalized.includes("yearly") || normalized.includes("annual");
+}
+
+function normalizeReferralCode(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim().toUpperCase();
+  if (!trimmed) return null;
+  const filtered = trimmed.replace(/[^A-Z0-9-]/g, "");
+  if (!filtered) return null;
+  return filtered.slice(0, 24);
 }
 
 function createAppStoreConnectToken(): string {
@@ -137,7 +227,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Missing or invalid authorization" }, { status: 401 });
     }
 
-    const supabaseAnon = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    const supabaseAnon: any = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
     const {
       data: { user },
       error: userError,
@@ -150,6 +240,7 @@ export async function POST(request: Request) {
     const transactionId =
       typeof body.transactionId === "string" ? body.transactionId.trim() : String(body.transactionId ?? "");
     const productId = typeof body.productId === "string" ? body.productId.trim() : "";
+    const referralCode = normalizeReferralCode(body.referralCode);
     if (!transactionId || !productId) {
       return NextResponse.json(
         { error: "Missing transactionId or productId" },
@@ -193,7 +284,7 @@ export async function POST(request: Request) {
 
     const isActive = revokedAt == null && currentPeriodEnd.getTime() > Date.now();
 
-    const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+    const supabaseAdmin: any = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
     const { error: upsertError } = await supabaseAdmin.from("entitlements").upsert(
       {
         user_id: user.id,
@@ -211,11 +302,14 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Failed to update entitlement" }, { status: 500 });
     }
 
+    await updateWorkspaceSubscriptionForUser(supabaseAdmin, user.id, isActive, referralCode);
+
     return NextResponse.json({
       ok: true,
       isActive,
       currentPeriodEnd: currentPeriodEnd.toISOString(),
       environment,
+      referralCodeApplied: Boolean(referralCode),
     });
   } catch (err) {
     console.error("[billing/apple/verify]", err);

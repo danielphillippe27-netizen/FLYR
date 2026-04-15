@@ -3,10 +3,10 @@ import Supabase
 
 struct FarmListView: View {
     @StateObject private var viewModel = FarmViewModel()
+    @StateObject private var authManager = AuthManager.shared
     @State private var farmFilter: FarmFilter = .active
     @State private var recentlyCreatedFarmID: UUID?
     @State private var searchText = ""
-    @EnvironmentObject var authManager: AuthManager
     var externalFilter: Binding<FarmFilter>? = nil
     var onCreateFarmTapped: (() -> Void)?
 
@@ -69,26 +69,6 @@ struct FarmListView: View {
                             filter: effectiveFilter,
                             searchText: searchText
                         )
-                        if let onCreateFarmTapped = onCreateFarmTapped {
-                            Section {
-                                Button(action: {
-                                    HapticManager.light()
-                                    onCreateFarmTapped()
-                                }) {
-                                    HStack {
-                                        Spacer()
-                                        Text("+ New Farm")
-                                            .font(.system(size: 17, weight: .medium))
-                                            .foregroundColor(.red)
-                                        Spacer()
-                                    }
-                                    .padding(.vertical, 14)
-                                }
-                                .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
-                                .listRowSeparator(.hidden)
-                                .listRowBackground(Color.clear)
-                            }
-                        }
                     }
                     .listStyle(.plain)
                     .scrollContentBackground(.hidden)
@@ -324,8 +304,5 @@ struct FarmListEmptyView: View {
 }
 
 #Preview {
-    NavigationStack {
-        FarmListView()
-            .environmentObject(AuthManager.shared)
-    }
+    FarmListView()
 }

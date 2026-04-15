@@ -11,8 +11,8 @@ struct JoinFlowView: View {
         JoinFlowContent(
             token: token,
             viewModel: viewModel,
-            onAcceptSuccess: {
-                Task { await routeState.acceptPendingInviteAndResolve() }
+            onAcceptSuccess: { response in
+                Task { await routeState.completePendingJoinAndResolve(workspaceId: response.workspaceId) }
             },
             onDismiss: {
                 routeState.clearPendingJoinToken()

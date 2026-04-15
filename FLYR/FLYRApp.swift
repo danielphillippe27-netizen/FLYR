@@ -56,17 +56,13 @@ struct FLYRApp: App {
                 }
                 .onOpenURL { url in
                     Task { @MainActor in
-                        #if DEBUG
-                        print("🔗 Received URL: \(url)")
-                        #endif
-                        if url.scheme == "flyr" && url.host == "oauth" {
-                            await handleOAuthRedirect(url: url)
-                        } else if url.scheme == "flyr" && url.host == "join" {
-                            guard let comp = URLComponents(url: url, resolvingAgainstBaseURL: false),
-                                  let token = comp.queryItems?.first(where: { $0.name == "token" })?.value else { return }
-                            routeState.pendingJoinToken = token
-                            await routeState.resolveRoute()
-                        }
+                        await handleIncomingURL(url)
+                    }
+                }
+                .onContinueUserActivity(NSUserActivityTypeBrowsingWeb) { activity in
+                    guard let url = activity.webpageURL else { return }
+                    Task { @MainActor in
+                        await handleIncomingURL(url)
                     }
                 }
         }
@@ -156,6 +152,77 @@ struct FLYRApp: App {
             print("❌ OAuth flow failed: \(error.localizedDescription)")
         }
     }
+
+    private func handleIncomingURL(_ url: URL) async {
+        #if DEBUG
+        print("🔗 Received URL: \(url)")
+        #endif
+
+        if Config.matchesPasswordRecoveryURL(url) {
+            await handlePasswordRecoveryRedirect(url: url)
+            return
+        }
+
+        if url.scheme == "flyr" && url.host == "oauth" {
+            await handleOAuthRedirect(url: url)
+            return
+        }
+
+        if let token = inviteToken(from: url) {
+            routeState.pendingJoinToken = token
+            routeState.pendingChallengeToken = nil
+            await routeState.resolveRoute()
+            return
+        }
+
+        if let token = challengeToken(from: url) {
+            routeState.pendingChallengeToken = token
+            routeState.pendingJoinToken = nil
+            await routeState.resolveRoute()
+        }
+    }
+
+    private func handlePasswordRecoveryRedirect(url: URL) async {
+        routeState.presentPasswordReset(state: .awaitingLink)
+
+        do {
+            let recoveredEmail = try await auth.activatePasswordRecovery(from: url)
+            routeState.presentPasswordReset(
+                state: .ready(email: recoveredEmail),
+                emailHint: recoveredEmail
+            )
+        } catch {
+            routeState.presentPasswordReset(
+                state: .invalid(message: error.localizedDescription),
+                emailHint: routeState.passwordResetEmailHint
+            )
+        }
+    }
+
+    private func inviteToken(from url: URL) -> String? {
+        guard url.scheme == "flyr" && url.host == "join" else { return nil }
+        return URLComponents(url: url, resolvingAgainstBaseURL: false)?
+            .queryItems?
+            .first(where: { $0.name == "token" })?
+            .value
+    }
+
+    private func challengeToken(from url: URL) -> String? {
+        let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        let token = components?.queryItems?.first(where: { $0.name == "token" })?.value
+
+        if url.scheme == "flyr" && url.host == "challenge" {
+            return token
+        }
+
+        if (url.scheme == "https" || url.scheme == "http"),
+           ["flyrpro.app", "www.flyrpro.app"].contains(url.host?.lowercased() ?? ""),
+           url.path == "/challenges/join" {
+            return token
+        }
+
+        return nil
+    }
 }
 
 struct AuthGate: View {
@@ -170,10 +237,16 @@ struct AuthGate: View {
             switch routeState.route {
             case .login:
                 SignInView()
+            case .passwordReset:
+                ResetPasswordView()
             case .onboarding:
                 WorkspaceOnboardingView()
             case .join(let token):
                 JoinFlowView(token: token)
+            case .challengeInvite(let token):
+                NavigationStack {
+                    ChallengeInviteView(token: token)
+                }
             case .subscribe(let memberInactive):
                 PaywallView(memberInactive: memberInactive)
                     .environmentObject(entitlementsService)
@@ -215,11 +288,7 @@ struct AuthGate: View {
                     StoreKitManager.shared.entitlementsService = entitlementsService
                     _ = await entitlementsService.fetchEntitlement()
                     await StoreKitManager.shared.refreshLocalProFromCurrentEntitlements()
-                    if routeState.pendingJoinToken != nil {
-                        await routeState.acceptPendingInviteAndResolve()
-                    } else {
-                        await routeState.resolveRoute()
-                    }
+                    await routeState.resolveRoute()
                     #if DEBUG
                     print("🔍 [AuthGate] After sign-in resolveRoute → route: \(routeState.route)")
                     #endif

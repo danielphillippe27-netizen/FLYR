@@ -1,7 +1,7 @@
 import Foundation
 import CoreLocation
 
-public struct CampaignCreatePayloadV2: Codable, Sendable {
+public struct CampaignCreatePayloadV2: Codable {
     public var name: String
     public var description: String          // Required for DB
     public var type: CampaignType?

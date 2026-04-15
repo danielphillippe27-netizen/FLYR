@@ -115,6 +115,16 @@ struct FieldLead: Codable, Identifiable, Equatable, Hashable {
 // MARK: - Display Helpers
 
 extension FieldLead {
+    /// Row badge for last CRM sync attempt (`sync_status` on `contacts` / `field_leads`).
+    var crmSyncStatusLabel: String? {
+        guard let syncStatus else { return nil }
+        switch syncStatus {
+        case .pending: return "CRM…"
+        case .synced: return "Synced"
+        case .failed: return "Sync failed"
+        }
+    }
+
     var displayNameOrUnknown: String {
         if let name = name, !name.isEmpty { return name }
         return "Unknown"
@@ -135,5 +145,43 @@ extension FieldLead {
             return "QR: \(qr)"
         }
         return ""
+    }
+    
+    /// List row address: drops trailing province (e.g. ON) and postal / ZIP segments after commas.
+    var listDisplayAddress: String {
+        Self.stripTrailingProvinceAndPostal(from: address)
+    }
+    
+    private static func stripTrailingProvinceAndPostal(from raw: String) -> String {
+        var parts = raw.split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard parts.count > 1 else { return trimmed }
+        
+        let twoLetterProvinceOrState = #"^[A-Za-z]{2}$"#
+        let canadianPostal = #"^[A-Za-z]\d[A-Za-z](\s?\d[A-Za-z]\d)?$"#
+        let usZip = #"^\d{5}(-\d{4})?$"#
+        let provinceSpacePostal = #"^[A-Za-z]{2}\s+[A-Za-z]\d[A-Za-z]"#
+        
+        func matches(_ s: String, pattern: String) -> Bool {
+            s.range(of: pattern, options: .regularExpression) != nil
+        }
+        
+        while let last = parts.last {
+            if matches(last, pattern: usZip)
+                || matches(last, pattern: canadianPostal)
+                || matches(last, pattern: provinceSpacePostal) {
+                parts.removeLast()
+                continue
+            }
+            if matches(last, pattern: twoLetterProvinceOrState) {
+                parts.removeLast()
+                continue
+            }
+            break
+        }
+        let result = parts.joined(separator: ", ")
+        return result.isEmpty ? trimmed : result
     }
 }

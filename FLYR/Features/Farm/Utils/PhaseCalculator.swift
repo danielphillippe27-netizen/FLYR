@@ -139,7 +139,7 @@ enum PhaseCalculator {
         
         // ROI calculation (assume $1000 per conversion)
         let conversions = 0 // TODO: Integrate with conversions tracking
-        let roi = conversions > 0 ? (Double(conversions) * 1000.0) / spend : 0.0
+        let roi = 0.0
         
         return [
             "flyers_delivered": AnyCodable(flyers),
@@ -154,6 +154,5 @@ enum PhaseCalculator {
         ]
     }
 }
-
 
 

@@ -157,6 +157,23 @@ struct BuildingProperties: Codable {
         default: return "#ef4444"
         }
     }
+
+    /// Canonical public identifier for a building feature.
+    /// Gold campaigns now persist the ref_buildings_gold UUID in `building_id`,
+    /// while Silver still commonly keys by `gers_id`.
+    var canonicalBuildingIdentifier: String? {
+        buildingIdentifierCandidates.first
+    }
+
+    /// All known identifiers for matching a feature across Gold/Silver responses.
+    var buildingIdentifierCandidates: [String] {
+        let rawValues = [buildingId, gersId, id]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        var seen = Set<String>()
+        return rawValues.filter { seen.insert($0.lowercased()).inserted }
+    }
 }
 
 typealias BuildingFeature = MapFeatureGeoJSONFeature<BuildingProperties>

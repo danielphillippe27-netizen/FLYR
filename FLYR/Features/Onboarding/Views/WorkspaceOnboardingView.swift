@@ -5,6 +5,7 @@ import Supabase
 struct WorkspaceOnboardingView: View {
     @EnvironmentObject var routeState: AppRouteState
     @EnvironmentObject var uiState: AppUIState
+    @EnvironmentObject var entitlementsService: EntitlementsService
     @StateObject private var viewModel = WorkspaceOnboardingViewModel()
     @State private var isSubmitting = false
 
@@ -20,43 +21,50 @@ struct WorkspaceOnboardingView: View {
 
     private func submitAndNavigate() async {
         guard !isSubmitting else { return }
+        guard viewModel.canSubmit, let request = viewModel.buildRequest() else {
+            viewModel.errorMessage = "Please complete all required fields before continuing."
+            return
+        }
         isSubmitting = true
         defer { isSubmitting = false }
+        viewModel.errorMessage = nil
 
-        // Solo: no backend; go straight to in-app paywall (Pay with Apple).
-        if viewModel.useCase == .solo {
-            await MainActor.run {
-                routeState.setRouteToSubscribe(memberInactive: false)
-            }
-            return
-        }
-
-        // Team: call backend to complete onboarding, then always show paywall.
-        guard let request = viewModel.buildRequest() else {
-            await MainActor.run { routeState.setRouteToSubscribe(memberInactive: false) }
-            return
-        }
+        // Complete onboarding on backend for both solo and team so web/app routing sees this user as onboarded.
         do {
             await ensureFreshSession()
-            _ = try await AccessAPI.shared.completeOnboarding(request)
+            let response = try await AccessAPI.shared.completeOnboarding(request)
+            _ = await entitlementsService.fetchEntitlement()
+            await StoreKitManager.shared.refreshLocalProFromCurrentEntitlements()
             await MainActor.run {
-                routeState.setRouteToSubscribe(memberInactive: false)
+                advanceAfterSuccessfulOnboarding(response)
             }
         } catch {
             do {
                 await ensureFreshSession()
-                _ = try await AccessAPI.shared.completeOnboarding(request)
+                let response = try await AccessAPI.shared.completeOnboarding(request)
+                _ = await entitlementsService.fetchEntitlement()
+                await StoreKitManager.shared.refreshLocalProFromCurrentEntitlements()
                 await MainActor.run {
-                    routeState.setRouteToSubscribe(memberInactive: false)
+                    advanceAfterSuccessfulOnboarding(response)
                 }
                 return
             } catch {
                 await MainActor.run {
                     viewModel.errorMessage = error.localizedDescription
-                    routeState.setRouteToSubscribe(memberInactive: false)
                 }
             }
         }
+    }
+    
+    private func advanceAfterSuccessfulOnboarding(_ response: OnboardingCompleteResponse) {
+        let normalizedRedirect = response.redirect?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        if normalizedRedirect == "/subscribe" || normalizedRedirect == "subscribe" {
+            routeState.setRouteToSubscribe(memberInactive: false)
+            return
+        }
+        routeState.setRoute(.dashboard)
     }
 
     private func ensureFreshSession() async {

@@ -19,7 +19,7 @@ final class JoinFlowViewModel: ObservableObject {
         }
     }
 
-    func accept(token: String) async throws {
-        _ = try await InviteService.shared.accept(token: token)
+    func accept(token: String) async throws -> InviteAcceptResponse {
+        try await InviteService.shared.accept(token: token)
     }
 }

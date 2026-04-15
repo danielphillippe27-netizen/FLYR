@@ -22,7 +22,7 @@ final class MapController {
         guard let map = mapView.mapboxMap else { return }
         
         // Wait for map to be loaded before applying changes
-        map.onMapLoaded.observeNext { [weak self] _ in
+        _ = map.onMapLoaded.observeNext { [weak self] _ in
             Task { @MainActor in
                 await self?.applyModeInternal(mode, to: mapView, campaignPolygon: campaignPolygon, campaignId: campaignId, preferLightStyle: preferLightStyle)
             }
@@ -247,7 +247,7 @@ final class MapController {
                 "delivered": .systemGreen,
                 "talked": .systemBlue,
                 "appointment": .systemBlue,
-                "do_not_knock": .systemPurple,
+                "do_not_knock": UIColor(hex: "#9ca3af") ?? .systemGray,
                 "future_seller": .systemOrange,
                 "hot_lead": .systemRed
             ]
@@ -734,7 +734,7 @@ final class MapController {
         applyStatusFeatureState(statuses: statusesDict, mapView: mapView)
         
         // Fetch updated status row to return
-        let statusRows = try await VisitsAPI.shared.fetchStatuses(campaignId: campaignId)
+        let statusRows = try await VisitsAPI.shared.fetchStatuses(campaignId: campaignId, forceRefresh: true)
         guard let updatedStatusRow = statusRows[addressId] else {
             throw NSError(domain: "MapController", code: 404, userInfo: [NSLocalizedDescriptionKey: "Status not found after update"])
         }
@@ -765,4 +765,3 @@ final class MapController {
         print("✅ [MapController] Cleaned up layers")
     }
 }
-

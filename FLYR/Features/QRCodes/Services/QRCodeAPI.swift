@@ -68,8 +68,8 @@ actor QRCodeAPI {
     func recordScan(addressId: UUID, deviceInfo: String? = nil, userAgent: String? = nil) async throws {
         let scanData: [String: AnyCodable] = [
             "address_id": AnyCodable(addressId),
-            "device_info": AnyCodable(deviceInfo),
-            "user_agent": AnyCodable(userAgent)
+            "device_info": AnyCodable(deviceInfo as Any),
+            "user_agent": AnyCodable(userAgent as Any)
         ]
         
         _ = try await client
@@ -115,16 +115,16 @@ actor QRCodeAPI {
         
         // Convert forms JSONB to FormConfig array
         // Forms is stored as JSONB array, decode it properly
-        let forms: [FormConfig] = try {
+        let forms: [FormConfig] = {
             // Try to decode forms as array of dictionaries
             guard let formsArray = row.forms.value as? [[String: Any]] else {
                 return []
             }
             
-            return try formsArray.map { formDict in
+            return formsArray.map { formDict in
                 let formId = formDict["id"] as? String ?? UUID().uuidString
                 let fieldsArray = formDict["fields"] as? [[String: Any]] ?? []
-                let fields = try fieldsArray.map { fieldDict in
+                let fields = fieldsArray.map { fieldDict in
                     FormField(
                         id: UUID(uuidString: fieldDict["id"] as? String ?? "") ?? UUID(),
                         label: fieldDict["label"] as? String ?? "",
@@ -166,12 +166,12 @@ actor QRCodeAPI {
                         "id": AnyCodable(field.id),
                         "label": AnyCodable(field.label),
                         "type": AnyCodable(field.type.rawValue),
-                        "placeholder": AnyCodable(field.placeholder),
+                        "placeholder": AnyCodable(field.placeholder as Any),
                         "required": AnyCodable(field.required),
-                        "options": AnyCodable(field.options)
+                        "options": AnyCodable(field.options as Any)
                     ] as [String: AnyCodable]
                 }),
-                "submit_url": AnyCodable(form.submitURL)
+                "submit_url": AnyCodable(form.submitURL as Any)
             ] as [String: AnyCodable]
         }
         
@@ -196,16 +196,16 @@ actor QRCodeAPI {
         }
         
         // Convert back to AddressContent model
-        let forms: [FormConfig] = try {
+        let forms: [FormConfig] = {
             // Try to decode forms as array of dictionaries
             guard let formsArray = row.forms.value as? [[String: Any]] else {
                 return []
             }
             
-            return try formsArray.map { formDict in
+            return formsArray.map { formDict in
                 let formId = formDict["id"] as? String ?? UUID().uuidString
                 let fieldsArray = formDict["fields"] as? [[String: Any]] ?? []
-                let fields = try fieldsArray.map { fieldDict in
+                let fields = fieldsArray.map { fieldDict in
                     FormField(
                         id: UUID(uuidString: fieldDict["id"] as? String ?? "") ?? UUID(),
                         label: fieldDict["label"] as? String ?? "",
@@ -337,11 +337,11 @@ actor QRCodeAPI {
     /// Create a JSONDecoder with Supabase date handling
     private nonisolated func createSupabaseDecoder() -> JSONDecoder {
         let decoder = JSONDecoder()
-        let iso = ISO8601DateFormatter()
-        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         decoder.dateDecodingStrategy = .custom { dec in
             let c = try dec.singleValueContainer()
             let s = try c.decode(String.self)
+            let iso = ISO8601DateFormatter()
+            iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
             if let dt = iso.date(from: s) { return dt }
             let iso2 = ISO8601DateFormatter()
             iso2.formatOptions = [.withInternetDateTime]
@@ -351,4 +351,3 @@ actor QRCodeAPI {
         return decoder
     }
 }
-

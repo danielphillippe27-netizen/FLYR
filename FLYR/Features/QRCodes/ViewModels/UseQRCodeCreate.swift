@@ -167,7 +167,7 @@ class UseQRCodeCreate: ObservableObject {
             // Update the first QR code in the batch with the PDF preview
             if let firstQRCode = qrCodes.first {
                 // Update the QR code's qr_image with the PDF preview
-                let updatedQRCode = try await qrRepository.updateQRCodePreview(
+                _ = try await qrRepository.updateQRCodePreview(
                     id: firstQRCode.id,
                     previewImage: previewBase64
                 )

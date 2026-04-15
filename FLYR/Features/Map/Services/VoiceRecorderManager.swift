@@ -18,14 +18,21 @@ final class VoiceRecorderManager: NSObject, ObservableObject {
 
     /// Request microphone permission and return true if granted.
     func requestPermission() async -> Bool {
-        await withCheckedContinuation { continuation in
-            AVAudioSession.sharedInstance().requestRecordPermission { [weak self] granted in
-                Task { @MainActor in
-                    self?.permissionGranted = granted
+        let granted: Bool = await withCheckedContinuation { continuation in
+            if #available(iOS 17.0, *) {
+                AVAudioApplication.requestRecordPermission { granted in
+                    continuation.resume(returning: granted)
                 }
-                continuation.resume(returning: granted)
+            } else {
+                AVAudioSession.sharedInstance().requestRecordPermission { granted in
+                    continuation.resume(returning: granted)
+                }
             }
         }
+        await MainActor.run {
+            self.permissionGranted = granted
+        }
+        return granted
     }
 
     /// Start recording to a temporary m4a file. Returns false if permission denied or setup fails.
@@ -33,7 +40,7 @@ final class VoiceRecorderManager: NSObject, ObservableObject {
         guard !isRecording else { return true }
         let session = AVAudioSession.sharedInstance()
         do {
-            try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth])
+            try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetoothHFP])
             try session.setActive(true)
         } catch {
             print("⚠️ [VoiceRecorder] Session setup failed: \(error)")
@@ -57,12 +64,7 @@ final class VoiceRecorderManager: NSObject, ObservableObject {
             recorder?.record()
             startTime = Date()
             recordingDuration = 0
-            timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
-                guard let self = self, let start = self.startTime else { return }
-                DispatchQueue.main.async {
-                    self.recordingDuration = Date().timeIntervalSince(start)
-                }
-            }
+            timer = Timer.scheduledTimer(timeInterval: 0.5, target: self, selector: #selector(handleTimerTick), userInfo: nil, repeats: true)
             RunLoop.main.add(timer!, forMode: .common)
             isRecording = true
             return true
@@ -84,5 +86,10 @@ final class VoiceRecorderManager: NSObject, ObservableObject {
         isRecording = false
         recordingDuration = 0
         return url
+    }
+
+    @objc private func handleTimerTick() {
+        guard let start = startTime else { return }
+        recordingDuration = Date().timeIntervalSince(start)
     }
 }

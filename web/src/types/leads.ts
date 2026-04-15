@@ -11,6 +11,7 @@ export interface FieldLead {
   address: string
   name: string | null
   phone: string | null
+  email: string | null
   status: FieldLeadStatus
   notes: string | null
   qr_code: string | null
@@ -30,6 +31,7 @@ export interface FieldLeadInsert {
   address: string
   name?: string | null
   phone?: string | null
+  email?: string | null
   status?: FieldLeadStatus
   notes?: string | null
   qr_code?: string | null
@@ -48,13 +50,23 @@ export interface CRMConnection {
   status: 'connected' | 'disconnected' | 'error'
   connected_at: string | null
   last_sync_at: string | null
-  metadata: { name?: string | null; company?: string | null } | null
+  metadata: {
+    name?: string | null
+    company?: string | null
+    providerLabel?: string | null
+    accountName?: string | null
+    userEmail?: string | null
+    tokenHint?: string | null
+    lastValidatedAt?: string | null
+    lastTestedAt?: string | null
+    lastTestResult?: string | null
+  } | null
   updated_at: string | null
   error_reason: string | null
 }
 
 /** User integration from user_integrations (KVCore, Zapier, etc.). */
-export type IntegrationProvider = 'fub' | 'kvcore' | 'hubspot' | 'monday' | 'zapier'
+export type IntegrationProvider = 'boldtrail' | 'fub' | 'kvcore' | 'hubspot' | 'monday' | 'zapier'
 
 export interface UserIntegration {
   id: string
@@ -65,8 +77,35 @@ export interface UserIntegration {
   api_key: string | null
   webhook_url: string | null
   expires_at: number | null
+  account_id?: string | null
+  account_name?: string | null
+  selected_board_id?: string | null
+  selected_board_name?: string | null
+  provider_config?: {
+    workspaceId?: string | null
+    workspaceName?: string | null
+    columnMapping?: Record<string, {
+      columnId: string
+      columnTitle?: string | null
+      columnType?: string | null
+      strategy?: string | null
+    }>
+  } | null
   created_at: string
   updated_at: string
+}
+
+export interface MondayBoard {
+  id: string
+  name: string
+  workspaceId?: string | null
+  workspaceName?: string | null
+  state?: string | null
+  columns: Array<{
+    id: string
+    title: string
+    type: string
+  }>
 }
 
 /** Lead payload for crm_sync Edge Function. */

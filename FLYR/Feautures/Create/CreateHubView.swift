@@ -12,62 +12,62 @@ struct CreateHubView: View {
     @State private var showPaywall = false
     
     var body: some View {
-        ZStack {
-            Color(.systemBackground)
-                .ignoresSafeArea()
-            
-            VStack(spacing: 40) {
-                Spacer()
+        NavigationStack {
+            ZStack {
+                Color(.systemBackground)
+                    .ignoresSafeArea()
                 
-                VStack(spacing: 24) {
-                    ForEach(CreateHubOption.allCases) { option in
-                        Button {
-                            handleTap(option)
-                        } label: {
-                            Text(option.title)
-                                .font(.flyrSystem(size: 28, weight: .semibold))
-                                .frame(maxWidth: .infinity)
-                                .foregroundStyle(.primary)
-                                .padding(.vertical, 8)
-                                .contentShape(Rectangle())
+                VStack(spacing: 40) {
+                    Spacer()
+                    
+                    VStack(spacing: 24) {
+                        ForEach(CreateHubOption.allCases) { option in
+                            Button {
+                                handleTap(option)
+                            } label: {
+                                Text(option.title)
+                                    .font(.flyrSystem(size: 28, weight: .semibold))
+                                    .frame(maxWidth: .infinity)
+                                    .foregroundStyle(.primary)
+                                    .padding(.vertical, 8)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .scaleEffectOnTap()
+                            .transition(.opacity.combined(with: .scale))
                         }
-                        .buttonStyle(.plain)
-                        .scaleEffectOnTap()
-                        .transition(.opacity.combined(with: .scale))
                     }
+                    
+                    Spacer()
+                    
+                    Button {
+                        dismiss()
+                    } label: {
+                        Text("Close")
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.bottom, 40)
                 }
-                
-                Spacer()
-                
-                Button {
-                    dismiss()
-                } label: {
-                    Text("Close")
-                        .font(.system(size: 16, weight: .medium))
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.bottom, 40)
+                .padding(.horizontal, 24)
             }
-            .padding(.horizontal, 24)
-        }
-        .onAppear { 
-            uiState.showTabBar = false 
-        }
-        .onDisappear { 
-            uiState.showTabBar = true 
-        }
-        .navigationBarBackButtonHidden(true)
-        .navigationDestination(isPresented: $navigateToCampaign) {
-            NewCampaignScreen(store: storeV2)
-        }
-        .sheet(isPresented: $navigateToFarm) {
-            NavigationStack {
+            .onAppear {
+                uiState.showTabBar = false
+            }
+            .onDisappear {
+                uiState.showTabBar = true
+            }
+            .navigationBarBackButtonHidden(true)
+            .navigationDestination(isPresented: $navigateToCampaign) {
+                NewCampaignScreen(store: storeV2)
+            }
+            .sheet(isPresented: $navigateToFarm) {
                 CreateFarmView()
                     .environmentObject(AuthManager.shared)
             }
-        }
-        .sheet(isPresented: $showPaywall) {
-            PaywallView()
+            .sheet(isPresented: $showPaywall) {
+                PaywallView()
+            }
         }
     }
     
@@ -118,10 +118,8 @@ enum CreateHubOption: String, CaseIterable, Identifiable {
 }
 
 #Preview {
-    NavigationStack {
-        CreateHubView()
-            .environmentObject(AppUIState())
-    }
+    CreateHubView()
+        .environmentObject(AppUIState())
 }
 
 

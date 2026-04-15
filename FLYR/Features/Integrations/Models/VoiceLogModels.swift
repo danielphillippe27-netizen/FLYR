@@ -32,10 +32,27 @@ struct VoiceLogAIAppointment: Codable, Equatable {
     }
 }
 
+struct VoiceLogAIFollowUp: Codable, Equatable {
+    let at: String?
+    let details: String?
+    let taskTitle: String?
+
+    enum CodingKeys: String, CodingKey {
+        case at
+        case details
+        case taskTitle = "task_title"
+    }
+}
+
 struct VoiceLogAIJson: Codable, Equatable {
     let summary: String
+    let note: String?
     let outcome: String
+    let leadStatus: String?
+    let contactUpdate: Bool?
+    let pushToFUB: Bool?
     let followUpAt: String?
+    let followUp: VoiceLogAIFollowUp?
     let nextAction: String
     let priority: String
     let appointment: VoiceLogAIAppointment?
@@ -45,8 +62,13 @@ struct VoiceLogAIJson: Codable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case summary
+        case note
         case outcome
+        case leadStatus = "lead_status"
+        case contactUpdate = "contact_update"
+        case pushToFUB = "push_to_fub"
         case followUpAt = "follow_up_at"
+        case followUp
         case nextAction = "next_action"
         case priority
         case appointment

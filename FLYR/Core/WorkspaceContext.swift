@@ -24,6 +24,8 @@ final class WorkspaceContext: ObservableObject {
         if let workspaceIdString = state.workspaceId,
            let parsedWorkspaceId = UUID(uuidString: workspaceIdString) {
             workspaceId = parsedWorkspaceId
+        } else {
+            workspaceId = nil
         }
         workspaceName = state.workspaceName
         role = state.role

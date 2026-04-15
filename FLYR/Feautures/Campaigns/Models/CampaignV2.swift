@@ -1,5 +1,73 @@
 import Foundation
 
+enum DataConfidenceLabel: String, Codable, Equatable {
+    case low
+    case medium
+    case high
+
+    var title: String {
+        rawValue.capitalized
+    }
+}
+
+struct CampaignDataConfidenceMetrics: Codable, Equatable {
+    let addressesTotal: Int
+    let addressesLinked: Int
+    let linkedCoverage: Double
+    let buildingLinkCount: Int
+    let goldExactCount: Int
+    let goldProximityCount: Int
+    let goldUnlinkedCount: Int
+    let silverCount: Int
+    let bronzeCount: Int
+    let lambdaCount: Int
+    let manualCount: Int
+    let otherCount: Int
+    let unlinkedCount: Int
+    let avgAddressScore: Double
+    let avgLinkConfidence: Double
+
+    enum CodingKeys: String, CodingKey {
+        case addressesTotal = "addresses_total"
+        case addressesLinked = "addresses_linked"
+        case linkedCoverage = "linked_coverage"
+        case buildingLinkCount = "building_link_count"
+        case goldExactCount = "gold_exact_count"
+        case goldProximityCount = "gold_proximity_count"
+        case goldUnlinkedCount = "gold_unlinked_count"
+        case silverCount = "silver_count"
+        case bronzeCount = "bronze_count"
+        case lambdaCount = "lambda_count"
+        case manualCount = "manual_count"
+        case otherCount = "other_count"
+        case unlinkedCount = "unlinked_count"
+        case avgAddressScore = "avg_address_score"
+        case avgLinkConfidence = "avg_link_confidence"
+    }
+}
+
+struct CampaignDataConfidenceSummary: Codable, Equatable {
+    let version: Int
+    let score: Double
+    let label: DataConfidenceLabel
+    let reason: String
+    let metrics: CampaignDataConfidenceMetrics
+    let calculatedAt: Date?
+
+    enum CodingKeys: String, CodingKey {
+        case version
+        case score
+        case label
+        case reason
+        case metrics
+        case calculatedAt = "calculated_at"
+    }
+
+    var scorePercentage: Int {
+        Int((score * 100).rounded())
+    }
+}
+
 // MARK: - Campaign Type
 
 public enum CampaignType: String, CaseIterable, Identifiable, Codable {
@@ -47,6 +115,22 @@ public enum CampaignType: String, CaseIterable, Identifiable, Codable {
       case .letters: return "letters"
     }
   }
+}
+
+extension CampaignType {
+    init?(dbValue: String) {
+        switch dbValue {
+        case "flyer": self = .flyer
+        case "door_knock": self = .doorKnock
+        case "event": self = .event
+        case "survey": self = .survey
+        case "gift": self = .gift
+        case "pop_by": self = .popBy
+        case "open_house": self = .openHouse
+        case "letters": self = .letters
+        default: return nil
+        }
+    }
 }
 
 extension CampaignType: CustomStringConvertible {
@@ -115,6 +199,7 @@ struct CampaignV2: Identifiable, Codable, Equatable {
     var createdAt: Date
     var status: CampaignStatus
     var seedQuery: String?    // Maps to DB region (e.g., "Main St, Toronto")
+    var dataConfidence: CampaignDataConfidenceSummary?
     
     // Computed progress based on scans/total_flyers (0.0-1.0)
     var progress: Double {
@@ -138,6 +223,7 @@ struct CampaignV2: Identifiable, Codable, Equatable {
         createdAt = try container.decode(Date.self, forKey: .createdAt)
         status = try container.decodeIfPresent(CampaignStatus.self, forKey: .status) ?? .draft
         seedQuery = try container.decodeIfPresent(String.self, forKey: .seedQuery)
+        dataConfidence = try container.decodeIfPresent(CampaignDataConfidenceSummary.self, forKey: .dataConfidence)
         
         // New fields with defaults for backward compatibility
         totalFlyers = try container.decodeIfPresent(Int.self, forKey: .totalFlyers) ?? 0
@@ -172,7 +258,7 @@ struct CampaignV2: Identifiable, Codable, Equatable {
     
     enum CodingKeys: String, CodingKey {
         case id, name, type, addressSource, addresses, createdAt, status
-        case totalFlyers, scans, conversions, seedQuery
+        case totalFlyers, scans, conversions, seedQuery, dataConfidence
         case progress // For backward compatibility only
     }
     
@@ -190,6 +276,7 @@ struct CampaignV2: Identifiable, Codable, Equatable {
         try container.encode(createdAt, forKey: .createdAt)
         try container.encode(status, forKey: .status)
         try container.encodeIfPresent(seedQuery, forKey: .seedQuery)
+        try container.encodeIfPresent(dataConfidence, forKey: .dataConfidence)
     }
     
     init(
@@ -203,7 +290,8 @@ struct CampaignV2: Identifiable, Codable, Equatable {
         conversions: Int = 0,
         createdAt: Date = Date(),
         status: CampaignStatus = .draft,
-        seedQuery: String? = nil
+        seedQuery: String? = nil,
+        dataConfidence: CampaignDataConfidenceSummary? = nil
     ) {
         self.id = id
         self.name = name
@@ -216,6 +304,7 @@ struct CampaignV2: Identifiable, Codable, Equatable {
         self.createdAt = createdAt
         self.status = status
         self.seedQuery = seedQuery
+        self.dataConfidence = dataConfidence
     }
     
     static func == (lhs: CampaignV2, rhs: CampaignV2) -> Bool {

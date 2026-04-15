@@ -1,13 +1,13 @@
 import SwiftUI
 
 enum MetricType: String, CaseIterable {
-    case flyers = "flyers"
+    case doors = "doorknocks"
     case conversations = "conversations"
     case distance = "distance"
     
     var displayName: String {
         switch self {
-        case .flyers: return "Doors"
+        case .doors: return "Doors"
         case .conversations: return "Convo's"
         case .distance: return "Distance"
         }
@@ -72,4 +72,3 @@ struct MetricPill: View {
     LeaderboardMetricSelector(selected: .constant("conversations"))
         .background(Color.black)
 }
-

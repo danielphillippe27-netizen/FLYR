@@ -5,6 +5,12 @@ struct FarmRowView: View {
     let farm: Farm
 
     private var subtitleText: String {
+        if let addressCount = farm.addressCount, addressCount > 0 {
+            return "\(addressCount) homes"
+        }
+        if let homeLimit = farm.homeLimit, homeLimit > 0 {
+            return "\(homeLimit) home limit"
+        }
         if let area = farm.areaLabel, !area.isEmpty {
             return area
         }
@@ -60,13 +66,27 @@ struct FarmRowView: View {
         FarmRowView(farm: Farm(
             id: UUID(),
             userId: UUID(),
+            workspaceId: nil,
             name: "Downtown Area",
+            description: nil,
             polygon: nil,
             startDate: Date(),
             endDate: Date().addingTimeInterval(86400 * 30),
             frequency: 2,
             createdAt: Date(),
-            areaLabel: "Downtown"
+            updatedAt: nil,
+            areaLabel: "Downtown",
+            isActiveFlag: true,
+            touchesPerInterval: 2,
+            touchesInterval: "month",
+            goalType: nil,
+            goalTarget: nil,
+            cycleCompletionWindowDays: nil,
+            touchTypes: nil,
+            annualBudgetCents: nil,
+            homeLimit: 5000,
+            addressCount: 348,
+            lastGeneratedAt: nil
         ))
     }
     .padding()

@@ -119,10 +119,18 @@ final class ProfileViewModel: ObservableObject {
         errorMessage = nil
         defer { isSaving = false }
         
+        let trimmedFirstName = firstName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedLastName = lastName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedQuote = quote.trimmingCharacters(in: .whitespacesAndNewlines)
+        let fullName = [trimmedFirstName, trimmedLastName]
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+
         var updates: [String: AnyCodable] = [:]
-        updates["first_name"] = firstName.isEmpty ? AnyCodable(NSNull()) : AnyCodable(firstName)
-        updates["last_name"] = lastName.isEmpty ? AnyCodable(NSNull()) : AnyCodable(lastName)
-        updates["quote"] = quote.isEmpty ? AnyCodable(NSNull()) : AnyCodable(quote)
+        updates["full_name"] = fullName.isEmpty ? AnyCodable(NSNull()) : AnyCodable(fullName)
+        updates["first_name"] = trimmedFirstName.isEmpty ? AnyCodable(NSNull()) : AnyCodable(trimmedFirstName)
+        updates["last_name"] = trimmedLastName.isEmpty ? AnyCodable(NSNull()) : AnyCodable(trimmedLastName)
+        updates["quote"] = trimmedQuote.isEmpty ? AnyCodable(NSNull()) : AnyCodable(trimmedQuote)
         updates["profile_image_url"] = profile.profileImageURL != nil ? AnyCodable(profile.profileImageURL!) : AnyCodable(NSNull())
         
         do {
@@ -134,16 +142,34 @@ final class ProfileViewModel: ObservableObject {
             
             // Update local profile
             var updatedProfile = profile
-            updatedProfile.firstName = firstName.isEmpty ? nil : firstName
-            updatedProfile.lastName = lastName.isEmpty ? nil : lastName
-            updatedProfile.quote = quote.isEmpty ? nil : quote
+            updatedProfile.firstName = trimmedFirstName.isEmpty ? nil : trimmedFirstName
+            updatedProfile.lastName = trimmedLastName.isEmpty ? nil : trimmedLastName
+            updatedProfile.quote = trimmedQuote.isEmpty ? nil : trimmedQuote
             self.profile = updatedProfile
+            self.firstName = trimmedFirstName
+            self.lastName = trimmedLastName
+            self.quote = trimmedQuote
+            syncCachedAppUserDisplayName(fullName)
             
             print("✅ Profile saved successfully")
         } catch {
             errorMessage = "Failed to save profile: \(error.localizedDescription)"
             print("❌ Error saving profile: \(error)")
         }
+    }
+
+    private func syncCachedAppUserDisplayName(_ fullName: String) {
+        guard let currentUser = AuthManager.shared.user, currentUser.id == profile?.id else { return }
+
+        let updatedUser = AppUser(
+            id: currentUser.id,
+            email: currentUser.email,
+            displayName: fullName.isEmpty ? currentUser.displayName : fullName,
+            photoURL: currentUser.photoURL
+        )
+
+        AuthManager.shared.user = updatedUser
+        KeychainAuthStorage.saveAppUser(updatedUser)
     }
     
     // MARK: - Image Upload
@@ -164,7 +190,7 @@ final class ProfileViewModel: ObservableObject {
                 // Upload to Supabase Storage
                 _ = try await supabase.storage
                     .from("profile_images")
-                    .upload(path: path, file: imageData, options: FileOptions(contentType: "image/jpeg", upsert: true))
+                    .upload(path, data: imageData, options: FileOptions(contentType: "image/jpeg", upsert: true))
                 
                 // Update profile with image path
                 var updatedProfile = profile
@@ -215,4 +241,3 @@ final class ProfileViewModel: ObservableObject {
         }
     }
 }
-

@@ -2,7 +2,7 @@ import { supabase } from '../supabase'
 import type { LeaderboardUser, MetricSnapshot, LeaderboardMetric, LeaderboardTimeframe } from '../types/leaderboard'
 
 export const METRICS: { value: LeaderboardMetric; label: string }[] = [
-  { value: 'flyers', label: 'Flyers' },
+  { value: 'doorknocks', label: 'Doors' },
   { value: 'conversations', label: "Convo's" },
   { value: 'distance', label: 'Distance' },
 ]
@@ -17,30 +17,68 @@ export const TIMEFRAMES: { value: LeaderboardTimeframe; label: string }[] = [
 function parseSnapshot(raw: unknown): MetricSnapshot {
   if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
     const o = raw as Record<string, unknown>
+    const doorknocks =
+      typeof o.doorknocks === 'number'
+        ? o.doorknocks
+        : typeof o.flyers === 'number'
+          ? o.flyers
+          : 0
     return {
-      flyers: typeof o.flyers === 'number' ? o.flyers : 0,
+      doorknocks,
+      flyers: typeof o.flyers === 'number' ? o.flyers : doorknocks,
       leads: typeof o.leads === 'number' ? o.leads : 0,
       conversations: typeof o.conversations === 'number' ? o.conversations : 0,
       distance: typeof o.distance === 'number' ? o.distance : 0,
-      doorknocks: typeof o.doorknocks === 'number' ? o.doorknocks : 0,
     }
   }
-  return { flyers: 0, leads: 0, conversations: 0, distance: 0, doorknocks: 0 }
+  return { doorknocks: 0, flyers: 0, leads: 0, conversations: 0, distance: 0 }
+}
+
+function emptySnapshot(): MetricSnapshot {
+  return { doorknocks: 0, flyers: 0, leads: 0, conversations: 0, distance: 0 }
+}
+
+function parseSnapshotWithFallback(raw: unknown, fallback: MetricSnapshot): MetricSnapshot {
+  const parsed = parseSnapshot(raw)
+  const hasData =
+    parsed.doorknocks > 0 ||
+    parsed.flyers > 0 ||
+    parsed.leads > 0 ||
+    parsed.conversations > 0 ||
+    parsed.distance > 0
+
+  return hasData ? parsed : fallback
 }
 
 function mapRow(row: Record<string, unknown>): LeaderboardUser {
+  const doorknocks =
+    typeof row.doorknocks === 'number'
+      ? row.doorknocks
+      : typeof row.flyers === 'number'
+        ? row.flyers
+        : 0
+  const topLevelSnapshot: MetricSnapshot = {
+    doorknocks,
+    flyers: typeof row.flyers === 'number' ? row.flyers : doorknocks,
+    leads: typeof row.leads === 'number' ? row.leads : 0,
+    conversations: typeof row.conversations === 'number' ? row.conversations : 0,
+    distance: typeof row.distance === 'number' ? row.distance : 0,
+  }
+
   return {
     id: typeof row.id === 'string' ? row.id : String(row.id ?? ''),
     name: typeof row.name === 'string' ? row.name : 'User',
     avatar_url: typeof row.avatar_url === 'string' ? row.avatar_url : null,
     rank: typeof row.rank === 'number' ? row.rank : 0,
-    flyers: typeof row.flyers === 'number' ? row.flyers : 0,
-    leads: typeof row.leads === 'number' ? row.leads : 0,
-    conversations: typeof row.conversations === 'number' ? row.conversations : 0,
-    distance: typeof row.distance === 'number' ? row.distance : 0,
-    daily: parseSnapshot(row.daily),
-    weekly: parseSnapshot(row.weekly),
-    all_time: parseSnapshot(row.all_time),
+    doorknocks,
+    flyers: topLevelSnapshot.flyers,
+    leads: topLevelSnapshot.leads,
+    conversations: topLevelSnapshot.conversations,
+    distance: topLevelSnapshot.distance,
+    daily: parseSnapshotWithFallback(row.daily, emptySnapshot()),
+    weekly: parseSnapshotWithFallback(row.weekly, emptySnapshot()),
+    monthly: parseSnapshotWithFallback(row.monthly, topLevelSnapshot),
+    all_time: parseSnapshotWithFallback(row.all_time, emptySnapshot()),
   }
 }
 
@@ -71,18 +109,17 @@ export function getUserValue(
 ): number {
   const snapshot = getSnapshotForTimeframe(user, timeframe)
   switch (metric) {
-    case 'flyers':
-      return snapshot.flyers
+    case 'doorknocks':
+      return snapshot.doorknocks
     case 'conversations':
       return snapshot.conversations
     case 'distance':
       return snapshot.distance
     default:
-      return snapshot.flyers
+      return snapshot.doorknocks
   }
 }
 
-/** Snapshot for timeframe; monthly uses weekly until backend supports it. */
 function getSnapshotForTimeframe(user: LeaderboardUser, timeframe: LeaderboardTimeframe): MetricSnapshot {
   switch (timeframe) {
     case 'daily':
@@ -90,7 +127,7 @@ function getSnapshotForTimeframe(user: LeaderboardUser, timeframe: LeaderboardTi
     case 'weekly':
       return user.weekly
     case 'monthly':
-      return user.weekly
+      return user.monthly
     case 'all_time':
       return user.all_time
     default:
@@ -114,8 +151,8 @@ export function getSubtitle(
 ): string | null {
   const snapshot = getSnapshotForTimeframe(user, timeframe)
   switch (metric) {
-    case 'flyers':
-      return snapshot.flyers > 0 ? `${snapshot.flyers} flyers` : null
+    case 'doorknocks':
+      return snapshot.doorknocks > 0 ? `${snapshot.doorknocks} doors` : null
     case 'conversations':
       return snapshot.conversations > 0 ? `${snapshot.conversations} convo's` : null
     case 'distance':

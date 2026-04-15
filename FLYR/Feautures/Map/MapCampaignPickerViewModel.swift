@@ -27,8 +27,8 @@ class MapCampaignPickerViewModel: ObservableObject {
             isLoading = false
         }
         
-        async let campaignsTask = loadCampaigns()
-        async let farmsTask = loadFarms()
+        async let campaignsTask: Void = loadCampaigns()
+        async let farmsTask: Void = loadFarms()
         
         _ = await (campaignsTask, farmsTask)
     }
@@ -58,4 +58,3 @@ class MapCampaignPickerViewModel: ObservableObject {
         }
     }
 }
-

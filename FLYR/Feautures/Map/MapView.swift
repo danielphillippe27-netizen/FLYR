@@ -18,7 +18,7 @@ private struct MapContentView: View {
     var onMarkerTap: (UUID) -> Void
     var onClearCampaign: () -> Void
     var onStartSession: () -> Void
-    var onShowGestureInfo: () -> Void
+    var onCreateCampaign: () -> Void
     var isLocationDenied: Bool = false
     var currentLocation: CLLocation? = nil
 
@@ -36,7 +36,7 @@ private struct MapContentView: View {
             )
             .ignoresSafeArea()
 
-            // Top: Search, Info, locate
+            // Top: Search and create campaign (+)
             VStack(spacing: 8) {
                 HStack(spacing: 10) {
                     MapSearchBar(
@@ -48,11 +48,11 @@ private struct MapContentView: View {
                     .frame(maxWidth: .infinity)
 
                     Button {
-                        onShowGestureInfo()
+                        onCreateCampaign()
                     } label: {
-                        Image(systemName: "info.circle")
+                        Image(systemName: "plus.circle.fill")
                             .font(.system(size: 22))
-                            .foregroundStyle(.primary)
+                            .foregroundStyle(Color.red)
                     }
                     .buttonStyle(.plain)
                 }
@@ -120,6 +120,7 @@ struct FullScreenMapView: View {
     @State private var campaignPolygon: [CLLocationCoordinate2D]? = nil
     @State private var mapSearchText = ""
     @State private var showGestureInfoSheet = false
+    @State private var showingNewCampaign = false
     @StateObject private var viewModel = MapCampaignPickerViewModel()
     @ObservedObject private var sessionManager = SessionManager.shared
 
@@ -133,6 +134,10 @@ struct FullScreenMapView: View {
     @State private var campaignMarkers: [CampaignMarker] = []
     @State private var farmMarkers: [FarmMarker] = []
     @State private var isLoadingSelectedCampaign = false
+    /// Push campaign detail (same screen as Home → campaign row) without replacing the overview map.
+    @State private var mapCampaignDetailNavigationID: UUID?
+    /// Coalesces campaigns + farms @Published updates into one marker rebuild (~80ms debounce).
+    @State private var mapMarkersReloadWorkItem: DispatchWorkItem?
 
     private var selectedCampaignName: String? {
         guard let id = selectedCampaignId else { return nil }
@@ -141,6 +146,16 @@ struct FullScreenMapView: View {
 
     private func handleShowCampaignPicker() {
         showCampaignPicker = true
+    }
+
+    /// Opens `NewCampaignDetailView` via the tab’s `NavigationStack`. Does not set `selectedCampaignId` (that path is reserved for Record / “Start session” → `CampaignMapView`).
+    private func openCampaignDetailFromMap(_ campaignId: UUID) {
+        HapticManager.light()
+        if let mapView = SimpleMapViewRepresentable.currentMapView,
+           let marker = campaignMarkers.first(where: { $0.id == campaignId }) {
+            mapView.camera.fly(to: CameraOptions(center: marker.coordinate, zoom: 15), duration: 0.35)
+        }
+        mapCampaignDetailNavigationID = campaignId
     }
 
     private var mapContentView: some View {
@@ -155,8 +170,7 @@ struct FullScreenMapView: View {
             campaigns: viewModel.campaigns,
             isLoadingCampaign: isLoadingSelectedCampaign,
             onMarkerTap: { id in
-                selectedCampaignId = id
-                syncSelectionToUIState()
+                openCampaignDetailFromMap(id)
             },
             onClearCampaign: {
                 selectedCampaignId = nil
@@ -165,7 +179,7 @@ struct FullScreenMapView: View {
                 Task { await loadSelectedCampaignOrFarm() }
             },
             onStartSession: { startSessionFromMap() },
-            onShowGestureInfo: { showGestureInfoSheet = true },
+            onCreateCampaign: { showingNewCampaign = true },
             isLocationDenied: locationManager.isLocationDenied,
             currentLocation: locationManager.currentLocation
         )
@@ -175,8 +189,15 @@ struct FullScreenMapView: View {
     }
 
     private func syncSelectionToUIState() {
-        uiState.selectedMapCampaignId = selectedCampaignId
-        uiState.selectedMapCampaignName = selectedCampaignName
+        if let selectedCampaignId,
+           uiState.selectedRouteWorkContext?.campaignId == selectedCampaignId,
+           uiState.selectedMapCampaignId == selectedCampaignId {
+            uiState.selectedMapCampaignId = selectedCampaignId
+            uiState.selectedMapCampaignName = selectedCampaignName ?? uiState.selectedRouteWorkContext?.routeName
+            return
+        }
+
+        uiState.selectCampaign(id: selectedCampaignId, name: selectedCampaignName)
     }
 
     private func syncSelectionFromUIState() {
@@ -184,48 +205,73 @@ struct FullScreenMapView: View {
             selectedCampaignId = uiState.selectedMapCampaignId
         }
     }
-    
-    private var sessionMapContentView: some View {
-        SessionMapView()
-            .ignoresSafeArea()
+
+    private func routeWorkContext(for campaignId: UUID?) -> RouteWorkContext? {
+        guard let campaignId,
+              uiState.selectedRouteWorkContext?.campaignId == campaignId else {
+            return nil
+        }
+        return uiState.selectedRouteWorkContext
+    }
+
+    /// One branch for embedded campaign map so starting a session does not destroy/recreate `CampaignMapView`.
+    private var mapTabEmbeddedCampaignId: UUID? {
+        sessionManager.campaignId ?? selectedCampaignId
+    }
+
+    private var legacySessionFallbackView: some View {
+        ZStack {
+            Color.bg.ignoresSafeArea()
+            VStack(spacing: 14) {
+                Text("Legacy session detected")
+                    .font(.system(size: 20, weight: .bold))
+                    .foregroundColor(.text)
+                Text("This session format is no longer supported. End it and start a campaign session to continue.")
+                    .font(.system(size: 14))
+                    .foregroundColor(.muted)
+                    .multilineTextAlignment(.center)
+                Button {
+                    HapticManager.light()
+                    SessionManager.shared.stop()
+                } label: {
+                    Text("End Session")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 10)
+                        .background(Color.red)
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(24)
+            .background(Color.bgSecondary)
+            .clipShape(RoundedRectangle(cornerRadius: 16))
+            .padding(.horizontal, 24)
+        }
     }
     
     @ViewBuilder
     private var mainContentView: some View {
-        if sessionManager.isActive {
-            sessionMapContentView
-        } else if let campaignId = selectedCampaignId {
-            ZStack(alignment: .topTrailing) {
-                CampaignMapView(campaignId: campaignId.uuidString)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .ignoresSafeArea()
-
-                if sessionManager.sessionId == nil {
-                    VStack {
-                        HStack {
-                            Spacer()
-                            Button {
-                                HapticManager.light()
-                                selectedCampaignId = nil
-                                selectedFarmId = nil
-                                syncSelectionToUIState()
-                                Task { await loadSelectedCampaignOrFarm() }
-                            } label: {
-                                Image(systemName: "xmark.circle.fill")
-                                    .font(.system(size: 30))
-                                    .foregroundColor(.white)
-                                    .padding(8)
-                                    .background(Color.black.opacity(0.4))
-                                    .clipShape(Circle())
-                            }
-                            .padding(.trailing, 8)
-                        }
-                        .padding(.top, 52)
-                        Spacer()
+        if sessionManager.isActive, sessionManager.campaignId == nil {
+            legacySessionFallbackView
+        } else if let campaignId = mapTabEmbeddedCampaignId {
+            CampaignMapView(
+                campaignId: campaignId.uuidString,
+                routeWorkContext: routeWorkContext(for: campaignId),
+                onDismissFromMap: sessionManager.sessionId == nil
+                    ? {
+                        HapticManager.light()
+                        selectedCampaignId = nil
+                        selectedFarmId = nil
+                        syncSelectionToUIState()
+                        Task { await loadSelectedCampaignOrFarm() }
                     }
-                    .ignoresSafeArea(edges: .top)
-                }
-            }
+                    : nil
+            )
+            .id(campaignId.uuidString.lowercased())
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .ignoresSafeArea()
         } else {
             mapContentView
         }
@@ -244,6 +290,18 @@ struct FullScreenMapView: View {
                     )
                     .onDisappear {
                         sessionStartPreselectedCampaign = nil
+                    }
+                }
+                .fullScreenCover(isPresented: $showingNewCampaign) {
+                    NavigationStack {
+                        NewCampaignScreen(store: CampaignV2Store.shared)
+                            .toolbar {
+                                ToolbarItem(placement: .topBarLeading) {
+                                    Button("Cancel") {
+                                        showingNewCampaign = false
+                                    }
+                                }
+                            }
                     }
                 }
         )
@@ -273,7 +331,6 @@ struct FullScreenMapView: View {
             view
                 .task(id: "mapCampaigns") {
                     await viewModel.loadCampaignsAndFarms()
-                    await loadMapMarkers()
                     locationManager.requestLocation()
                 }
                 .onAppear {
@@ -283,6 +340,11 @@ struct FullScreenMapView: View {
                         locationManager.requestLocation()
                         centerOnLocationIfNeeded()
                     }
+                    presentMapInfoIfNeeded()
+                }
+                .onDisappear {
+                    mapMarkersReloadWorkItem?.cancel()
+                    mapMarkersReloadWorkItem = nil
                 }
         )
     }
@@ -308,7 +370,7 @@ struct FullScreenMapView: View {
         )
     }
     
-    /// When user opens the Map tab, center map on user location (if no campaign selected).
+    /// When user opens the Session tab, center map on user location if no campaign is selected.
     private func applyMapTabFocus<V: View>(to view: V) -> AnyView {
         AnyView(
             view
@@ -321,6 +383,7 @@ struct FullScreenMapView: View {
                     if let location = locationManager.currentLocation {
                         centerMapOnLocation(location.coordinate)
                     }
+                    presentMapInfoIfNeeded()
                 }
         )
     }
@@ -336,6 +399,15 @@ struct FullScreenMapView: View {
     
     var body: some View {
         buildBody()
+            .navigationDestination(item: $mapCampaignDetailNavigationID) { campaignID in
+                NewCampaignDetailView(campaignID: campaignID, store: CampaignV2Store.shared)
+            }
+    }
+
+    private func presentMapInfoIfNeeded() {
+        guard !LocalStorage.shared.hasSeenMapInfoSheet else { return }
+        LocalStorage.shared.hasSeenMapInfoSheet = true
+        showGestureInfoSheet = true
     }
     
     private var campaignPickerSheet: some View {
@@ -345,6 +417,11 @@ struct FullScreenMapView: View {
             viewModel: viewModel
         ) {
             showCampaignPicker = false
+            if let id = selectedCampaignId {
+                mapCampaignDetailNavigationID = id
+                selectedCampaignId = nil
+                syncSelectionToUIState()
+            }
             Task {
                 await loadSelectedCampaignOrFarm()
             }
@@ -389,16 +466,23 @@ struct FullScreenMapView: View {
         }
     }
     
-    private func handleCampaignsChange() {
-        Task {
-            await loadMapMarkers()
+    private func requestMapMarkersReloadDebounced() {
+        mapMarkersReloadWorkItem?.cancel()
+        let item = DispatchWorkItem {
+            Task { @MainActor in
+                await loadMapMarkers()
+            }
         }
+        mapMarkersReloadWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: item)
     }
-    
+
+    private func handleCampaignsChange() {
+        requestMapMarkersReloadDebounced()
+    }
+
     private func handleFarmsChange() {
-        Task {
-            await loadMapMarkers()
-        }
+        requestMapMarkersReloadDebounced()
     }
     
     private func handleLocationChange(_ newLocation: CLLocation?) {
@@ -439,18 +523,18 @@ struct FullScreenMapView: View {
     }
     
     private func loadMapMarkers() async {
-        // Load campaign markers
+        let centroidByCampaignId: [UUID: CLLocationCoordinate2D]
+        do {
+            centroidByCampaignId = try await CampaignsAPI.shared.fetchCampaignAddressCentroids()
+        } catch {
+            print("⚠️ [Map] Failed to fetch campaign address centroids: \(error)")
+            centroidByCampaignId = [:]
+        }
+
         var newCampaignMarkers: [CampaignMarker] = []
         for campaign in viewModel.campaigns {
-            do {
-                // Fetch addresses for this campaign
-                let addresses = try await CampaignsAPI.shared.fetchAddresses(campaignId: campaign.id)
-                if let marker = CampaignMarker.fromCampaign(campaign, addresses: addresses) {
-                    newCampaignMarkers.append(marker)
-                }
-            } catch {
-                print("⚠️ [Map] Failed to fetch addresses for campaign \(campaign.id): \(error)")
-            }
+            guard let center = centroidByCampaignId[campaign.id] else { continue }
+            newCampaignMarkers.append(CampaignMarker.fromCampaign(campaign, center: center))
         }
         campaignMarkers = newCampaignMarkers
         
@@ -502,7 +586,7 @@ struct FullScreenMapView: View {
             print("📍 [Map] Centered map on current location: \(coordinate)")
         } else {
             // Wait for map to load, then center
-            map.onMapLoaded.observeNext { _ in
+            _ = map.onMapLoaded.observeNext { _ in
                 let cameraOptions = CameraOptions(
                     center: coordinate,
                     zoom: 15
@@ -597,7 +681,7 @@ struct SimpleMapViewRepresentable: UIViewRepresentable {
         Self.currentMapView = mapView
 
         // Add user location layer once style is loaded (red circle with black outline)
-        mapView.mapboxMap?.onStyleLoaded.observeNext { _ in
+        _ = mapView.mapboxMap?.onStyleLoaded.observeNext { _ in
             context.coordinator.addUserLocationLayerIfNeeded(mapView: mapView)
         }
 
@@ -639,7 +723,7 @@ struct SimpleMapViewRepresentable: UIViewRepresentable {
 
         func addUserLocationLayerIfNeeded(mapView: MapView) {
             guard let map = mapView.mapboxMap else { return }
-            guard !map.style.sourceExists(withId: SimpleMapViewRepresentable.userLocationSourceId) else { return }
+            guard !map.sourceExists(withId: SimpleMapViewRepresentable.userLocationSourceId) else { return }
             do {
                 var source = GeoJSONSource(id: SimpleMapViewRepresentable.userLocationSourceId)
                 source.data = .featureCollection(FeatureCollection(features: []))
@@ -659,12 +743,12 @@ struct SimpleMapViewRepresentable: UIViewRepresentable {
 
         func updateUserLocation(_ location: CLLocation?) {
             guard let mapView = mapView, let map = mapView.mapboxMap else { return }
-            guard map.style.sourceExists(withId: SimpleMapViewRepresentable.userLocationSourceId) else { return }
+            guard map.sourceExists(withId: SimpleMapViewRepresentable.userLocationSourceId) else { return }
             if let loc = location {
                 let feature = Feature(geometry: .point(Point(loc.coordinate)))
-                try? map.updateGeoJSONSource(withId: SimpleMapViewRepresentable.userLocationSourceId, geoJSON: .feature(feature))
+                map.updateGeoJSONSource(withId: SimpleMapViewRepresentable.userLocationSourceId, geoJSON: .feature(feature))
             } else {
-                try? map.updateGeoJSONSource(withId: SimpleMapViewRepresentable.userLocationSourceId, geoJSON: .featureCollection(FeatureCollection(features: [])))
+                map.updateGeoJSONSource(withId: SimpleMapViewRepresentable.userLocationSourceId, geoJSON: .featureCollection(FeatureCollection(features: [])))
             }
         }
 
@@ -692,8 +776,10 @@ struct SimpleMapViewRepresentable: UIViewRepresentable {
             if !hasLoadedTargetIcon, let map = mapView.mapboxMap {
                 loadTargetIcon(to: map)
             }
-            MapMarkersManager.shared.addCampaignMarkers(campaigns: campaignMarkers, to: mapView, selectedCampaignId: selectedCampaignId)
-            MapMarkersManager.shared.addFarmMarkers(farms: farmMarkers, to: mapView)
+            Task { @MainActor in
+                MapMarkersManager.shared.addCampaignMarkers(campaigns: campaignMarkers, to: mapView, selectedCampaignId: selectedCampaignId)
+                MapMarkersManager.shared.addFarmMarkers(farms: farmMarkers, to: mapView)
+            }
         }
 
         private func loadTargetIcon(to map: MapboxMap) {
@@ -706,7 +792,7 @@ struct SimpleMapViewRepresentable: UIViewRepresentable {
                   currentStyle != style else { return }
             currentStyle = style
             map.loadStyle(style.mapboxStyleURI)
-            map.onStyleLoaded.observeNext { [weak self] _ in
+            _ = map.onStyleLoaded.observeNext { [weak self] _ in
                 guard let self = self, let mapView = self.mapView else { return }
                 self.addUserLocationLayerIfNeeded(mapView: mapView)
             }

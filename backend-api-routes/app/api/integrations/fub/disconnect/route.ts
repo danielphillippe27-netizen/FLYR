@@ -5,7 +5,7 @@ const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY!;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 
-export async function DELETE(request: Request) {
+async function handleDisconnect(request: Request) {
   try {
     const authHeader = request.headers.get("authorization");
     const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
@@ -32,12 +32,27 @@ export async function DELETE(request: Request) {
       .maybeSingle();
 
     if (row?.id) {
+      await supabaseAdmin.from("crm_connection_secrets").delete().eq("connection_id", row.id);
       await supabaseAdmin.from("crm_connections").delete().eq("id", row.id);
     }
+
+    await supabaseAdmin
+      .from("user_integrations")
+      .delete()
+      .eq("user_id", userId)
+      .eq("provider", "fub");
 
     return NextResponse.json({ disconnected: true });
   } catch (err) {
     console.error("[fub/disconnect]", err);
     return NextResponse.json({ error: "Something went wrong" }, { status: 500 });
   }
+}
+
+export async function POST(request: Request) {
+  return handleDisconnect(request);
+}
+
+export async function DELETE(request: Request) {
+  return handleDisconnect(request);
 }

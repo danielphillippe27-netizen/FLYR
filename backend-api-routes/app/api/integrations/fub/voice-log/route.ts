@@ -1,13 +1,15 @@
 import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
-import { getFubApiKeyForUser } from "../../../../../lib/crm-auth";
+import { getFubApiKeyForUser } from "../../../../lib/crm-auth";
 import {
   createOrUpdateLeadViaEvents,
   createNote,
   createTask,
   createAppointment,
+  getCurrentUserId,
   type FubPersonPayload,
-} from "../../../../../lib/followupboss";
+  withFubPersonRetry,
+} from "../../../../lib/followupboss";
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY!;
@@ -22,16 +24,27 @@ type AIAppointment = {
   location: string | null;
   invitee_email: string | null;
 };
+type AIFollowUp = {
+  at: string | null;
+  details: string | null;
+  task_title: string | null;
+};
 type AIContact = {
   first_name: string | null;
   last_name: string | null;
   email: string | null;
   phone: string | null;
 };
+const LEAD_STATUSES = ["no_answer", "talked", "appointment", "do_not_knock", "hot_lead"] as const;
 type AIJson = {
   summary: string;
+  note: string;
   outcome: string;
+  lead_status: (typeof LEAD_STATUSES)[number];
+  contact_update: boolean;
+  push_to_fub: boolean;
   follow_up_at: string | null;
+  follow_up: AIFollowUp | null;
   next_action: string;
   priority: string;
   appointment: AIAppointment | null;
@@ -46,8 +59,13 @@ const CONFIDENCE_THRESHOLD = 0.65;
 const VOICE_LOG_SYSTEM_PROMPT = `You are a field sales assistant. Extract structured data from this door-knocking voice note.
 Return ONLY valid JSON with no markdown, no code block, no extra text. Use exactly these keys:
 - summary (string): clean 1-3 sentence summary
+- note (string): clean note text to save on the lead/contact record
 - outcome (exactly one of: no_answer, spoke, follow_up, not_interested, hot_lead, appointment_set)
+- lead_status (exactly one of: no_answer, talked, appointment, do_not_knock, hot_lead)
+- contact_update (boolean): true if the note contains new or corrected contact information
+- push_to_fub (boolean): true only when this should be sent to CRM after user review
 - follow_up_at (ISO 8601 datetime string or null; resolve relative times like "next Tuesday at 6" using the provided timezone and current date)
+- follow_up (object or null): { at, details, task_title }; use null when there is no concrete follow-up request
 - next_action (one of: call, text, email, drop_by, send_cma, none)
 - priority (one of: hot, warm, cold)
 - appointment (object or null): { title, start_at (ISO8601), end_at (ISO8601), location (string or null), invitee_email (string or null) }; if end missing use start + 30 minutes
@@ -58,9 +76,18 @@ Return ONLY valid JSON with no markdown, no code block, no extra text. Use exact
 Rules:
 - "No answer", "left flyer", "nobody home" -> outcome: no_answer
 - "Talked to [name]", "spoke with" -> outcome: spoke or follow_up
+- Map lead_status as:
+  - no_answer -> no_answer
+  - spoke -> talked
+  - follow_up or appointment_set -> appointment
+  - not_interested -> do_not_knock
+  - hot_lead -> hot_lead
 - "Follow up next Tuesday at 6" -> set follow_up_at to that datetime in the given timezone
+- If follow_up_at is set, also return follow_up.at and include details/task_title when spoken
 - If appointment intent is clear (e.g. "booked a showing", "scheduled for Friday 2pm") set appointment object; else null
 - Extract any spoken name/phone/email into contact
+- contact_update should be true only if the contact object includes actual extracted data
+- push_to_fub should be false when confidence is low, no lead/contact signal exists, or the user is clearly just dictating a private note
 - Today's date for relative parsing: [CURRENT_DATE]
 - If follow_up_at is ambiguous, set null and put the suggestion in summary
 - confidence: 0.9+ when clear, &lt; 0.65 when ambiguous (then we will not auto-create task/appointment)`;
@@ -77,9 +104,43 @@ function parseAIJson(content: string): AIJson | null {
     const cleaned = stripJsonBlock(content);
     const parsed = JSON.parse(cleaned) as AIJson;
     if (typeof parsed.summary !== "string") return null;
+    if (typeof parsed.note !== "string") parsed.note = parsed.summary;
     if (!OUTCOMES.includes(parsed.outcome)) parsed.outcome = "follow_up";
+    if (!LEAD_STATUSES.includes(parsed.lead_status)) {
+      parsed.lead_status =
+        parsed.outcome === "no_answer"
+          ? "no_answer"
+          : parsed.outcome === "not_interested"
+          ? "do_not_knock"
+          : parsed.outcome === "hot_lead"
+          ? "hot_lead"
+          : parsed.outcome === "appointment_set" || parsed.outcome === "follow_up"
+          ? "appointment"
+          : "talked";
+    }
+    const hasContactData = Boolean(
+      parsed.contact?.first_name || parsed.contact?.last_name || parsed.contact?.email || parsed.contact?.phone
+    );
+    parsed.contact_update = parsed.contact_update === true || hasContactData;
+    parsed.push_to_fub =
+      parsed.push_to_fub === true ||
+      parsed.lead_status === "hot_lead" ||
+      parsed.lead_status === "appointment" ||
+      hasContactData;
+    if (!parsed.follow_up) {
+      parsed.follow_up = parsed.follow_up_at
+        ? {
+            at: parsed.follow_up_at,
+            details: parsed.next_action === "none" ? null : parsed.next_action.replace(/_/g, " "),
+            task_title: parsed.next_action === "none" ? null : parsed.next_action.replace(/_/g, " "),
+          }
+        : null;
+    }
     const conf = Number(parsed.confidence);
     parsed.confidence = Number.isFinite(conf) ? Math.max(0, Math.min(1, conf)) : 0.5;
+    if (parsed.confidence < CONFIDENCE_THRESHOLD) {
+      parsed.push_to_fub = false;
+    }
     return parsed;
   } catch {
     return null;
@@ -103,18 +164,9 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Invalid or expired token" }, { status: 401 });
     }
 
-    const apiKey = await getFubApiKeyForUser(
-      createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY),
-      user.id
-    );
-    if (!apiKey) {
-      return NextResponse.json(
-        { error: "Follow Up Boss not connected" },
-        { status: 400 }
-      );
-    }
-
     const formData = await request.formData();
+    const mode = formData.get("mode")?.toString()?.trim() ?? "push";
+    const parseOnly = mode === "parse_only";
     const audio = formData.get("audio");
     const flyrEventIdRaw = formData.get("flyr_event_id")?.toString()?.trim();
     const leadIdRaw = formData.get("lead_id")?.toString()?.trim();
@@ -138,28 +190,43 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Server configuration error" }, { status: 500 });
     }
 
+    const apiKey = parseOnly
+      ? null
+      : await getFubApiKeyForUser(
+          createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY),
+          user.id
+        );
+    if (!parseOnly && !apiKey) {
+      return NextResponse.json(
+        { error: "Follow Up Boss not connected" },
+        { status: 400 }
+      );
+    }
+
     const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
     // Idempotency: already processed?
-    const { data: existingEvent } = await supabaseAdmin
-      .from("crm_events")
-      .select("transcript, ai_json, fub_person_id, fub_note_id, fub_task_id, fub_appointment_id")
-      .eq("user_id", user.id)
-      .eq("flyr_event_id", flyrEventIdRaw)
-      .maybeSingle();
+    if (!parseOnly) {
+      const { data: existingEvent } = await supabaseAdmin
+        .from("crm_events")
+        .select("transcript, ai_json, fub_person_id, fub_note_id, fub_task_id, fub_appointment_id")
+        .eq("user_id", user.id)
+        .eq("flyr_event_id", flyrEventIdRaw)
+        .maybeSingle();
 
-    if (existingEvent) {
-      const aiJson = existingEvent.ai_json as AIJson | null;
-      return NextResponse.json({
-        transcript: existingEvent.transcript ?? "",
-        ai_json: aiJson,
-        fub_results: {
-          personId: existingEvent.fub_person_id ?? undefined,
-          noteId: existingEvent.fub_note_id ?? undefined,
-          taskId: existingEvent.fub_task_id ?? undefined,
-          appointmentId: existingEvent.fub_appointment_id ?? undefined,
-        },
-      });
+      if (existingEvent) {
+        const aiJson = existingEvent.ai_json as AIJson | null;
+        return NextResponse.json({
+          transcript: existingEvent.transcript ?? "",
+          ai_json: aiJson,
+          fub_results: {
+            personId: existingEvent.fub_person_id ?? undefined,
+            noteId: existingEvent.fub_note_id ?? undefined,
+            taskId: existingEvent.fub_task_id ?? undefined,
+            appointmentId: existingEvent.fub_appointment_id ?? undefined,
+          },
+        });
+      }
     }
 
     // Transcribe with Whisper
@@ -266,9 +333,26 @@ export async function POST(request: Request) {
     } = {};
     const errors: string[] = [];
 
-    const lowConfidence = aiJson.confidence < CONFIDENCE_THRESHOLD;
+    if (parseOnly) {
+      return NextResponse.json({
+        transcript,
+        ai_json: aiJson,
+      });
+    }
+
+    const lowConfidence = aiJson.confidence < CONFIDENCE_THRESHOLD || !aiJson.push_to_fub;
     if (lowConfidence && (aiJson.follow_up_at || aiJson.appointment)) {
       fubResults.skippedLowConfidence = true;
+    }
+
+    if (!aiJson.push_to_fub) {
+      return NextResponse.json({
+        transcript,
+        ai_json: aiJson,
+        fub_results: {
+          skippedLowConfidence: true,
+        },
+      });
     }
 
     try {
@@ -317,35 +401,52 @@ export async function POST(request: Request) {
         personPayload.emails = [{ value: `lead+${addressIdUuid}@flyr.placeholder` }];
       }
 
-      const { personId: createdPersonId } = await createOrUpdateLeadViaEvents(apiKey, personPayload);
+      const { personId: createdPersonId } = await createOrUpdateLeadViaEvents(apiKey!, personPayload);
       personId = createdPersonId;
       fubResults.personId = personId;
+      const currentUserId = await getCurrentUserId(apiKey!).catch(() => undefined);
 
       // Note (summary + optional transcript snippet)
-      const noteBody = [aiJson.summary].concat(transcript ? [`\n\nTranscript: ${transcript.slice(0, 2000)}`] : []).join("");
-      const { id: noteId } = await createNote(apiKey, personId, noteBody, "Voice log");
+      const normalizedNote = aiJson.note?.trim() || aiJson.summary;
+      const noteBody = [normalizedNote].concat(transcript ? [`\n\nTranscript: ${transcript.slice(0, 2000)}`] : []).join("");
+      const { id: noteId } = await withFubPersonRetry(() =>
+        createNote(apiKey!, personId!, noteBody, "Voice log")
+      );
       fubResults.noteId = noteId;
 
       if (!lowConfidence && aiJson.follow_up_at) {
-        const { id: taskId } = await createTask(
-          apiKey,
-          personId,
-          aiJson.follow_up_at,
-          `Follow up: ${aiJson.summary.slice(0, 80)}`,
-          "Follow Up"
+        const taskTitle =
+          aiJson.follow_up?.task_title?.trim() ||
+          `Follow up: ${aiJson.summary.slice(0, 80)}`;
+        const { id: taskId } = await withFubPersonRetry(() =>
+          createTask(apiKey!, personId!, aiJson.follow_up_at!, taskTitle, {
+            type: "Follow Up",
+            assignedUserId: currentUserId,
+          })
         );
         fubResults.taskId = taskId;
       }
 
       if (!lowConfidence && aiJson.appointment?.start_at && aiJson.appointment?.end_at) {
-        const { id: appointmentId } = await createAppointment(
-          apiKey,
-          personId,
-          aiJson.appointment.start_at,
-          aiJson.appointment.end_at,
-          aiJson.appointment.title || "Appointment",
-          aiJson.appointment.location ?? undefined,
-          aiJson.appointment.invitee_email ?? undefined
+        const appointmentDescriptionParts = [
+          normalizedNote,
+          aiJson.appointment.invitee_email
+            ? `Requested external invitee email: ${aiJson.appointment.invitee_email}`
+            : null,
+        ].filter((value): value is string => Boolean(value));
+        const { id: appointmentId } = await withFubPersonRetry(() =>
+          createAppointment(
+            apiKey!,
+            personId!,
+            aiJson.appointment!.start_at,
+            aiJson.appointment!.end_at,
+            aiJson.appointment!.title || "Appointment",
+            {
+              location: aiJson.appointment?.location ?? undefined,
+              description: appointmentDescriptionParts.join("\n\n") || undefined,
+              assignedUserId: currentUserId,
+            }
+          )
         );
         fubResults.appointmentId = appointmentId;
       }

@@ -5,7 +5,7 @@ import SwiftUI
 struct IntegrationCardView: View {
     let provider: IntegrationProvider
     let integration: UserIntegration?
-    /// For FUB, use CRMConnectionStore.shared.fubConnection so "Connected ●" comes from crm_connections.
+    /// Secure providers like FUB and BoldTrail read status from crm_connections.
     let crmConnection: CRMConnection?
     let onConnect: () -> Void
     let onDisconnect: () -> Void
@@ -13,15 +13,19 @@ struct IntegrationCardView: View {
     @State private var isConnecting = false
     
     private var isConnected: Bool {
-        if provider == .fub, let crm = crmConnection {
-            return crm.isConnected
-        }
-        return integration?.isConnected ?? false
+        crmConnection?.isConnected ?? integration?.isConnected ?? false
     }
 
     private var connectionStatusText: String {
-        if provider == .fub, crmConnection?.isConnected == true { return "Connected ●" }
+        if crmConnection?.isConnected == true { return "Connected ●" }
         return integration?.connectionStatusText ?? "Connected"
+    }
+
+    private var actionTitle: String {
+        if [.fub, .boldtrail, .monday].contains(provider), isConnected {
+            return "Manage"
+        }
+        return isConnected ? "Disconnect" : "Connect"
     }
     
     var body: some View {
@@ -50,20 +54,20 @@ struct IntegrationCardView: View {
                 
                 // Connect/Disconnect Button
                 Button(action: {
-                    if isConnected {
+                    if isConnected && ![.fub, .boldtrail, .monday].contains(provider) {
                         onDisconnect()
                     } else {
                         onConnect()
                     }
                 }) {
-                    Text(isConnected ? "Disconnect" : "Connect")
+                    Text(actionTitle)
                         .font(.system(size: 15, weight: .medium))
-                        .foregroundColor(isConnected ? .error : .white)
+                        .foregroundColor(isConnected && ![.fub, .boldtrail, .monday].contains(provider) ? .error : .white)
                         .padding(.horizontal, 16)
                         .padding(.vertical, 8)
                         .background(
                             RoundedRectangle(cornerRadius: 8)
-                                .fill(isConnected ? Color.error.opacity(0.1) : Color.info)
+                                .fill(isConnected && ![.fub, .boldtrail, .monday].contains(provider) ? Color.error.opacity(0.1) : Color.info)
                         )
                 }
                 .disabled(isConnecting)
@@ -82,6 +86,22 @@ struct IntegrationCardView: View {
                         .font(.system(size: 13))
                         .foregroundColor(.muted)
                     
+                    if provider == .monday, let boardLabel = integration?.mondayBoardLabel {
+                        Text("•")
+                            .foregroundColor(.muted)
+                        Text(boardLabel)
+                            .font(.system(size: 13))
+                            .foregroundColor(.muted)
+                    }
+
+                    if provider == .boldtrail, let tokenHint = crmConnection?.metadata?.tokenHint {
+                        Text("•")
+                            .foregroundColor(.muted)
+                        Text(tokenHint)
+                            .font(.system(size: 13))
+                            .foregroundColor(.muted)
+                    }
+
                     if provider.connectionType == .oauth, let expiresAt = integration?.expiresAt, integration?.isTokenExpired != true {
                         Text("•")
                             .foregroundColor(.muted)
@@ -134,4 +154,3 @@ struct IntegrationCardView: View {
     .padding()
     .background(Color.bg)
 }
-

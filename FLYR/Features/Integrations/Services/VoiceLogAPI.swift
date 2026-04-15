@@ -21,13 +21,15 @@ final class VoiceLogAPI {
     ///   - campaignId: Campaign ID.
     ///   - address: Address string for context.
     ///   - leadId: Optional field lead ID if one exists for this address.
+    ///   - parseOnly: When true, return transcript + AI extraction without pushing to CRM/FUB.
     func submitVoiceLog(
         audioURL: URL,
         flyrEventId: UUID,
         addressId: UUID,
         campaignId: UUID,
         address: String,
-        leadId: UUID? = nil
+        leadId: UUID? = nil,
+        parseOnly: Bool = false
     ) async throws -> VoiceLogResponse {
         let session = try await SupabaseManager.shared.client.auth.session
         let url = URL(string: "\(baseURL)/api/integrations/fub/voice-log")!
@@ -52,6 +54,7 @@ final class VoiceLogAPI {
         appendField("campaign_id", campaignId.uuidString)
         appendField("address", address)
         appendField("timezone", TimeZone.current.identifier)
+        appendField("mode", parseOnly ? "parse_only" : "push")
         if let leadId = leadId {
             appendField("lead_id", leadId.uuidString)
         }
@@ -79,7 +82,7 @@ final class VoiceLogAPI {
             if let err = try? decoder.decode(VoiceLogErrorResponse.self, from: data), let msg = err.error {
                 throw VoiceLogError.server(msg)
             }
-            throw VoiceLogError.server("Follow Up Boss not connected or invalid request.")
+            throw VoiceLogError.server(parseOnly ? "Invalid voice note request." : "Follow Up Boss not connected or invalid request.")
         }
         if http.statusCode == 422 {
             if let err = try? decoder.decode(VoiceLogErrorResponse.self, from: data) {

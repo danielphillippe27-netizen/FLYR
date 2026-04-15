@@ -32,11 +32,11 @@ struct MapboxViewContainer: UIViewRepresentable {
         MapboxBridge.shared.mapView = mapView
         
         // Use custom light style
-        try? mapView.mapboxMap.loadStyleURI(StyleURI(rawValue: "mapbox://styles/fliper27/cml6z0dhg002301qo9xxc08k4")!)
+        mapView.mapboxMap.loadStyle(StyleURI(rawValue: "mapbox://styles/fliper27/cml6z0dhg002301qo9xxc08k4")!)
         
         // Set camera position when map loads
         if let center = centerCoordinate {
-            mapView.mapboxMap.onNext(event: .mapLoaded) { _ in
+            _ = mapView.mapboxMap.onMapLoaded.observeNext { _ in
                 let cameraOptions = CameraOptions(
                     center: center,
                     zoom: zoomLevel
@@ -51,6 +51,18 @@ struct MapboxViewContainer: UIViewRepresentable {
     }
     
     func updateUIView(_ mapView: MapView, context: Context) {
+        let fallbackSize = CGSize(width: 320, height: 340)
+        let parentSize = mapView.superview?.bounds.size ?? .zero
+        let resolvedSize: CGSize
+        if parentSize.width.isFinite, parentSize.height.isFinite, parentSize.width > 0, parentSize.height > 0 {
+            resolvedSize = parentSize
+        } else {
+            resolvedSize = fallbackSize
+        }
+        if mapView.bounds.size != resolvedSize {
+            mapView.bounds = CGRect(origin: .zero, size: resolvedSize)
+        }
+
         // Update camera if center coordinate changes
         if let center = centerCoordinate {
             let cameraOptions = CameraOptions(
@@ -59,5 +71,10 @@ struct MapboxViewContainer: UIViewRepresentable {
             )
             mapView.mapboxMap.setCamera(to: cameraOptions)
         }
+        let scale = mapView.window?.screen.scale ?? UIScreen.main.scale
+        if scale.isFinite, scale > 0, mapView.contentScaleFactor != scale {
+            mapView.contentScaleFactor = scale
+        }
+        mapView.setNeedsLayout()
     }
 }

@@ -27,7 +27,7 @@ actor QRRepository {
         campaignId: UUID? = nil,
         batchName: String? = nil
     ) async throws -> QRCode {
-        let deviceUUID = UIDevice.current.identifierForVendor?.uuidString ?? UUID().uuidString
+        let deviceUUID = await MainActor.run { UIDevice.current.identifierForVendor?.uuidString ?? UUID().uuidString }
         
         let qrUrl: String
         if let campaignId = campaignId {
@@ -50,7 +50,7 @@ actor QRRepository {
         // Prepare metadata
         var metadataDict: [String: AnyCodable] = [:]
         metadataDict["entity_name"] = AnyCodable(addressFormatted)
-        metadataDict["device_info"] = AnyCodable(UIDevice.current.model)
+        metadataDict["device_info"] = AnyCodable(await MainActor.run { UIDevice.current.model })
         if let batchName = batchName {
             metadataDict["batch_name"] = AnyCodable(batchName)
         }
@@ -154,7 +154,7 @@ actor QRRepository {
         let entityType = campaignId != nil ? "campaign" : "farm"
         
         // Generate QR URL with device UUID for analytics
-        let deviceUUID = UIDevice.current.identifierForVendor?.uuidString ?? UUID().uuidString
+        let deviceUUID = await MainActor.run { UIDevice.current.identifierForVendor?.uuidString ?? UUID().uuidString }
         let qrUUID = UUID().uuidString
         let qrUrl: String
         if let campaignId = campaignId {
@@ -182,7 +182,7 @@ actor QRRepository {
         if let entityName = entityName {
             metadataDict["entity_name"] = AnyCodable(entityName)
         }
-        metadataDict["device_info"] = AnyCodable(UIDevice.current.model)
+        metadataDict["device_info"] = AnyCodable(await MainActor.run { UIDevice.current.model })
         
         // Insert into database
         // Wrap metadata dictionary in AnyCodable (Supabase client handles nested structures for JSONB)
@@ -529,11 +529,11 @@ actor QRRepository {
     /// Create a JSONDecoder with Supabase date handling (nonisolated)
     private nonisolated func createSupabaseDecoder() -> JSONDecoder {
         let decoder = JSONDecoder()
-        let iso = ISO8601DateFormatter()
-        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         decoder.dateDecodingStrategy = .custom { dec in
             let c = try dec.singleValueContainer()
             let s = try c.decode(String.self)
+            let iso = ISO8601DateFormatter()
+            iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
             if let dt = iso.date(from: s) { return dt }
             let iso2 = ISO8601DateFormatter()
             iso2.formatOptions = [.withInternetDateTime]
@@ -565,4 +565,3 @@ enum QRRepositoryError: Error, LocalizedError {
         }
     }
 }
-

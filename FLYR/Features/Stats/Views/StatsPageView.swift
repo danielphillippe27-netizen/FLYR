@@ -79,7 +79,6 @@ struct TimeFilterPills: View {
 
 private enum StatsProgressMax {
     static let doors = 200.0
-    static let flyers = 200.0
     static let conversations = 100.0
     static let leads = 100.0
     static let appointments = 50.0
@@ -94,79 +93,114 @@ struct YouViewContent: View {
     @StateObject private var auth = AuthManager.shared
 
     private let barAccent = Color(hex: "#FF4F4F")
+    
+    /// Use a single "Doors" number on this page. `doors_knocked` should already
+    /// include flyer-only sessions in newer data, but we keep the max as a safe
+    /// fallback for older rows.
+    private var consolidatedDoors: Int {
+        max(vm.stats?.doors_knocked ?? 0, vm.stats?.flyers ?? 0)
+    }
 
     var body: some View {
         ZStack {
             Color.bg.ignoresSafeArea()
 
             if let userID = auth.user?.id {
-                ScrollView {
-                    VStack(spacing: 0) {
-                        // Hero: streak section (slightly smaller)
-                        streakRingSection
-                            .frame(height: 115)
-                            .padding(.top, 16)
-
-                        // 4 percentage blocks
-                        fourPercentRow
-                            .frame(height: 64)
-                            .padding(.top, 16)
-
-                        // Metric rows
-                        VStack(spacing: 14) {
-                            CompactStatRow(
-                                icon: "door.left.hand.open",
-                                label: "Doors",
-                                progress: progress(actual: Double(vm.stats?.doors_knocked ?? 0), max: StatsProgressMax.doors),
-                                value: "\(vm.stats?.doors_knocked ?? 0)"
-                            )
-                            CompactStatRow(
-                                icon: "bubble.left.and.bubble.right.fill",
-                                label: "Convos",
-                                progress: progress(actual: Double(vm.stats?.conversations ?? 0), max: StatsProgressMax.conversations),
-                                value: "\(vm.stats?.conversations ?? 0)"
-                            )
-                            CompactStatRow(
-                                icon: "person.badge.plus",
-                                label: "Leads",
-                                progress: progress(actual: Double(vm.stats?.leads_created ?? 0), max: StatsProgressMax.leads),
-                                value: "\(vm.stats?.leads_created ?? 0)"
-                            )
-                            CompactStatRow(
-                                icon: "calendar",
-                                label: "Appointments",
-                                progress: progress(actual: Double(vm.stats?.appointments ?? 0), max: StatsProgressMax.appointments),
-                                value: "\(vm.stats?.appointments ?? 0)"
-                            )
-                            CompactStatRow(
-                                icon: "figure.walk",
-                                label: "Distance",
-                                progress: progress(actual: vm.stats?.distance_walked ?? 0, max: StatsProgressMax.distance),
-                                value: String(format: "%.1f mi", Double(vm.stats?.distance_walked ?? 0.0))
-                            )
-                            CompactStatRow(
-                                icon: "doc.text",
-                                label: "Flyers",
-                                progress: progress(actual: Double(vm.stats?.flyers ?? 0), max: StatsProgressMax.flyers),
-                                value: "\(vm.stats?.flyers ?? 0)"
-                            )
-                            CompactStatRow(
-                                icon: "qrcode",
-                                label: "QR Scans",
-                                progress: progress(actual: Double(vm.stats?.qr_codes_scanned ?? 0), max: StatsProgressMax.qrScans),
-                                value: "\(vm.stats?.qr_codes_scanned ?? 0)"
-                            )
+                Group {
+                    if vm.isLoading && vm.stats == nil {
+                        ProgressView()
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else if let errorMessage = vm.errorMessage, vm.stats == nil {
+                        VStack(spacing: 16) {
+                            Image(systemName: "exclamationmark.triangle")
+                                .font(.system(size: 28, weight: .semibold))
+                                .foregroundColor(.muted)
+                            Text(errorMessage)
+                                .font(.body)
+                                .foregroundColor(.muted)
+                                .multilineTextAlignment(.center)
+                            Button("Retry") {
+                                Task { await vm.refreshStats(for: userID) }
+                            }
+                            .buttonStyle(.borderedProminent)
                         }
-                        .padding(.top, 16)
-                        .padding(.horizontal, 20)
-                        .padding(.bottom, 48)
+                        .padding(.horizontal, 24)
+                    } else {
+                        ScrollView {
+                            VStack(spacing: 0) {
+                                if let errorMessage = vm.errorMessage {
+                                    Text(errorMessage)
+                                        .font(.footnote)
+                                        .foregroundColor(.red)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .padding(.horizontal, 12)
+                                        .padding(.vertical, 10)
+                                        .background(Color.red.opacity(0.08))
+                                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                                        .padding(.top, 16)
+                                }
+
+                                // Hero: streak section (slightly smaller)
+                                streakRingSection
+                                    .frame(height: 115)
+                                    .padding(.top, 16)
+
+                                // 4 percentage blocks
+                                fourPercentRow
+                                    .frame(height: 64)
+                                    .padding(.top, 16)
+
+                                // Metric rows
+                                VStack(spacing: 14) {
+                                    CompactStatRow(
+                                        icon: "door.left.hand.closed",
+                                        label: "Doors",
+                                        progress: progress(actual: Double(consolidatedDoors), max: StatsProgressMax.doors),
+                                        value: "\(consolidatedDoors)"
+                                    )
+                                    CompactStatRow(
+                                        icon: "bubble.left.and.bubble.right.fill",
+                                        label: "Convos",
+                                        progress: progress(actual: Double(vm.stats?.conversations ?? 0), max: StatsProgressMax.conversations),
+                                        value: "\(vm.stats?.conversations ?? 0)"
+                                    )
+                                    CompactStatRow(
+                                        icon: "person.badge.plus",
+                                        label: "Leads",
+                                        progress: progress(actual: Double(vm.stats?.leads_created ?? 0), max: StatsProgressMax.leads),
+                                        value: "\(vm.stats?.leads_created ?? 0)"
+                                    )
+                                    CompactStatRow(
+                                        icon: "calendar",
+                                        label: "Appointments",
+                                        progress: progress(actual: Double(vm.stats?.appointments ?? 0), max: StatsProgressMax.appointments),
+                                        value: "\(vm.stats?.appointments ?? 0)"
+                                    )
+                                    CompactStatRow(
+                                        icon: "figure.walk",
+                                        label: "Distance",
+                                        progress: progress(actual: vm.stats?.distance_walked ?? 0, max: StatsProgressMax.distance),
+                                        value: String(format: "%.1f km", Double(vm.stats?.distance_walked ?? 0.0))
+                                    )
+                                    CompactStatRow(
+                                        icon: "qrcode",
+                                        label: "QR Scans",
+                                        progress: progress(actual: Double(vm.stats?.qr_codes_scanned ?? 0), max: StatsProgressMax.qrScans),
+                                        value: "\(vm.stats?.qr_codes_scanned ?? 0)"
+                                    )
+                                }
+                                .padding(.top, 16)
+                                .padding(.horizontal, 20)
+                                .padding(.bottom, 48)
+                            }
+                            .padding(.horizontal, 20)
+                        }
+                        .scrollIndicators(.automatic)
+                        .refreshable {
+                            await vm.refreshStats(for: userID)
+                            HapticManager.rigid()
+                        }
                     }
-                    .padding(.horizontal, 20)
-                }
-                .scrollIndicators(.automatic)
-                .refreshable {
-                    await vm.refreshStats(for: userID)
-                    HapticManager.rigid()
                 }
                 .task {
                     await vm.loadStats(for: userID)
@@ -218,17 +252,16 @@ struct YouViewContent: View {
     // MARK: - 4 percentage blocks
 
     private var fourPercentRow: some View {
-        let doors = Double(vm.stats?.doors_knocked ?? 0)
+        let doors = Double(consolidatedDoors)
         let conv = Double(vm.stats?.conversations ?? 0)
         let leads = Double(vm.stats?.leads_created ?? 0)
         let appts = Double(vm.stats?.appointments ?? 0)
-        let flyers = Double(vm.stats?.flyers ?? 0)
         let qr = Double(vm.stats?.qr_codes_scanned ?? 0)
         return HStack(spacing: 0) {
             miniColumn(label: "D→C %", value: formatPercent(safePercent(numerator: conv, denominator: doors)))
             miniColumn(label: "C→L %", value: formatPercent(safePercent(numerator: leads, denominator: conv)))
             miniColumn(label: "C→A %", value: formatPercent(safePercent(numerator: appts, denominator: conv)))
-            miniColumn(label: "F→Q %", value: formatPercent(safePercent(numerator: qr, denominator: flyers)))
+            miniColumn(label: "D→Q %", value: formatPercent(safePercent(numerator: qr, denominator: doors)))
         }
         .padding(.horizontal, 8)
     }

@@ -21,23 +21,20 @@ private enum OnboardingStyle {
 // MARK: - Step container
 
 struct WorkspaceOnboardingStepsView: View {
+    @Environment(\.colorScheme) private var colorScheme
     @ObservedObject var viewModel: WorkspaceOnboardingViewModel
     var onComplete: () -> Void
 
     @State private var step: Int = 0
     @State private var teamOnboardingURL: IdentifiableURL?
 
-    private static let gradientStart = Color.black
-    private static let gradientEnd = Color(red: 0.25, green: 0.02, blue: 0.02)
+    private static let darkGradientStart = Color.black
+    private static let darkGradientEnd = Color(red: 0.25, green: 0.02, blue: 0.02)
 
     var body: some View {
         ZStack {
-            LinearGradient(
-                colors: [Self.gradientStart, Self.gradientEnd],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .ignoresSafeArea()
+            backgroundGradient
+                .ignoresSafeArea()
 
             VStack(spacing: 0) {
                 if step == 0 { NameStepView(viewModel: viewModel, onContinue: { step = 1 }) }
@@ -57,6 +54,28 @@ struct WorkspaceOnboardingStepsView: View {
         .sheet(item: $teamOnboardingURL) { item in
             TeamWebHandoffSafariView(url: item.url)
         }
+    }
+
+    private var backgroundGradient: LinearGradient {
+        if colorScheme == .dark {
+            return LinearGradient(
+                colors: [Self.darkGradientStart, Self.darkGradientEnd],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        }
+
+        // Match Home light mode: red top band blending into white content area.
+        return LinearGradient(
+            stops: [
+                .init(color: .red, location: 0),
+                .init(color: .red, location: 0.08),
+                .init(color: Color.white.opacity(0.95), location: 0.4),
+                .init(color: .white, location: 1)
+            ],
+            startPoint: .top,
+            endPoint: .bottom
+        )
     }
 
     private func continueTeamOnWeb() {
@@ -370,17 +389,6 @@ private struct WorkspaceStepView: View {
                                 }
                             }
 
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text("Referral code (optional)")
-                                    .font(.subheadline.weight(.medium))
-                                    .foregroundColor(OnboardingStyle.textPrimary)
-                                TextField("e.g. Launch2026", text: Binding(
-                                    get: { viewModel.referralCode ?? "" },
-                                    set: { viewModel.referralCode = $0.isEmpty ? nil : $0 }
-                                ))
-                                    .textFieldStyle(OnboardingTextFieldStyle())
-                            }
-
                             OnboardingBackButton(action: onBack)
                             Button(action: onContinue) {
                                 Text("Continue")
@@ -455,7 +463,7 @@ private struct ValuePropStepView: View {
 
                             HStack(alignment: .top, spacing: 16) {
                                 ValuePropItem(icon: "map", label: "Maps")
-                                ValuePropItem(icon: "door.left.hand.open", label: "D2D")
+                                ValuePropItem(icon: "door.left.hand.closed", label: "D2D")
                                 ValuePropItem(icon: "chart.bar", label: "Tracking")
                             }
 
@@ -544,6 +552,7 @@ private struct FeaturesStepView: View {
 // MARK: - Reusable components
 
 private struct OnboardingCard<Content: View>: View {
+    @Environment(\.colorScheme) private var colorScheme
     @ViewBuilder let content: Content
 
     var body: some View {
@@ -555,11 +564,39 @@ private struct OnboardingCard<Content: View>: View {
             }
             .overlay(
                 RoundedRectangle(cornerRadius: 20)
-                    .stroke(Color.white.opacity(0.15), lineWidth: 1)
+                    .stroke(cardBorderColor, lineWidth: 1)
             )
             .clipShape(RoundedRectangle(cornerRadius: 20))
-            .shadow(color: .black.opacity(0.4), radius: 24, x: 0, y: 12)
-            .shadow(color: .black.opacity(0.25), radius: 8, x: 0, y: 4)
+            .shadow(color: primaryShadowColor, radius: primaryShadowRadius, x: 0, y: primaryShadowYOffset)
+            .shadow(color: secondaryShadowColor, radius: secondaryShadowRadius, x: 0, y: secondaryShadowYOffset)
+    }
+
+    private var cardBorderColor: Color {
+        colorScheme == .dark ? Color.white.opacity(0.15) : Color.primary.opacity(0.15)
+    }
+
+    private var primaryShadowColor: Color {
+        colorScheme == .dark ? .black.opacity(0.4) : .black.opacity(0.10)
+    }
+
+    private var primaryShadowRadius: CGFloat {
+        colorScheme == .dark ? 24 : 12
+    }
+
+    private var primaryShadowYOffset: CGFloat {
+        colorScheme == .dark ? 12 : 6
+    }
+
+    private var secondaryShadowColor: Color {
+        colorScheme == .dark ? .black.opacity(0.25) : .black.opacity(0.04)
+    }
+
+    private var secondaryShadowRadius: CGFloat {
+        colorScheme == .dark ? 8 : 4
+    }
+
+    private var secondaryShadowYOffset: CGFloat {
+        colorScheme == .dark ? 4 : 2
     }
 }
 

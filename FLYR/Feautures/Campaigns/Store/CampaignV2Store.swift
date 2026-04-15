@@ -63,6 +63,14 @@ final class CampaignV2Store: ObservableObject {
         campaigns[index].status = status
         print("📦 [STORE DEBUG] Campaign \(id) status set to \(status.rawValue)")
     }
+
+    func setStatus(ids: Set<UUID>, status: CampaignStatus) {
+        guard !ids.isEmpty else { return }
+        for index in campaigns.indices where ids.contains(campaigns[index].id) {
+            campaigns[index].status = status
+        }
+        print("📦 [STORE DEBUG] Updated \(ids.count) campaign(s) to status \(status.rawValue)")
+    }
     
     /// Get campaign by ID
     func campaign(id: UUID) -> CampaignV2? {
@@ -81,6 +89,15 @@ final class CampaignV2Store: ObservableObject {
         print("📦 [STORE DEBUG] Removing campaign with ID: \(id)")
         let beforeCount = campaigns.count
         campaigns.removeAll { $0.id == id }
+        let afterCount = campaigns.count
+        print("📦 [STORE DEBUG] Removed \(beforeCount - afterCount) campaign(s). Store now has \(afterCount) campaigns")
+    }
+
+    func remove(ids: Set<UUID>) {
+        guard !ids.isEmpty else { return }
+        print("📦 [STORE DEBUG] Removing \(ids.count) campaign(s)")
+        let beforeCount = campaigns.count
+        campaigns.removeAll { ids.contains($0.id) }
         let afterCount = campaigns.count
         print("📦 [STORE DEBUG] Removed \(beforeCount - afterCount) campaign(s). Store now has \(afterCount) campaigns")
     }

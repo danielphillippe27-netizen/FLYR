@@ -16,6 +16,12 @@ struct QRHomeView: View {
     @Environment(\.colorScheme) private var colorScheme
     
     var body: some View {
+        NavigationStack {
+            qrHomeRoot
+        }
+    }
+
+    private var qrHomeRoot: some View {
         ZStack {
             // Dynamic gradient background that adapts to color scheme
             LinearGradient(
@@ -156,8 +162,6 @@ struct QRHomeTile: View {
 // MARK: - Preview
 
 #Preview {
-    NavigationStack {
-        QRHomeView()
-    }
+    QRHomeView()
 }
 

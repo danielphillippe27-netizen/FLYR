@@ -53,7 +53,6 @@ struct OvertureAddressRow: Codable {
         guard let json = geometryJson,
               let data = json.data(using: .utf8),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let type = obj["type"] as? String,
               let coords = obj["coordinates"] as? [Double],
               coords.count >= 2 else {
             return CLLocationCoordinate2D(latitude: 0, longitude: 0)

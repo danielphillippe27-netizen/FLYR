@@ -20,7 +20,7 @@ final class SessionEventsAPI {
     ) async throws {
         let metaWrapped = metadata.mapValues { AnyCodable($0) }
         let params: [String: AnyCodable] = [
-            "p_session_id": AnyCodable(sessionId.uuidString),
+            "p_session_id": AnyCodable(sessionId),
             "p_building_id": AnyCodable(buildingId),
             "p_event_type": AnyCodable(eventType.rawValue),
             "p_lat": AnyCodable(lat),
@@ -39,12 +39,12 @@ final class SessionEventsAPI {
         lat: Double? = nil,
         lon: Double? = nil
     ) async throws {
-        let buildingId = ""
         let latVal = lat ?? 0.0
         let lonVal = lon ?? 0.0
+        // Use empty string for lifecycle events so PostgREST sends explicit TEXT (avoids uuid/text binding issues with null).
         let params: [String: AnyCodable] = [
-            "p_session_id": AnyCodable(sessionId.uuidString),
-            "p_building_id": AnyCodable(buildingId),
+            "p_session_id": AnyCodable(sessionId),
+            "p_building_id": AnyCodable(""),
             "p_event_type": AnyCodable(eventType.rawValue),
             "p_lat": AnyCodable(latVal),
             "p_lon": AnyCodable(lonVal),

@@ -2,9 +2,20 @@ import { createHmac, randomBytes } from "crypto";
 
 const HUBSPOT_CLIENT_ID = process.env.HUBSPOT_CLIENT_ID || "";
 const HUBSPOT_CLIENT_SECRET = process.env.HUBSPOT_CLIENT_SECRET || "";
+// Default scopes match HubSpot’s current developer-platform catalog (scope search).
+// Granular `crm.objects.notes.write` / tasks / meetings are not listed there; notes & tasks
+// still use standard CRM activity APIs and typically work with contacts scopes alone.
 const HUBSPOT_OAUTH_SCOPE =
   process.env.HUBSPOT_OAUTH_SCOPE ||
-  "crm.objects.contacts.read crm.objects.contacts.write crm.objects.notes.write crm.objects.tasks.write crm.objects.meetings.write";
+  [
+    "oauth",
+    "crm.objects.contacts.read",
+    "crm.objects.contacts.write",
+    "crm.schemas.appointments.read",
+    "crm.schemas.appointments.write",
+    "crm.objects.appointments.read",
+    "crm.objects.appointments.write",
+  ].join(" ");
 const HUBSPOT_AUTHORIZE_URL =
   process.env.HUBSPOT_OAUTH_AUTHORIZE_URL || "https://app.hubspot.com/oauth/authorize";
 const HUBSPOT_TOKEN_URL = process.env.HUBSPOT_OAUTH_TOKEN_URL || "https://api.hubapi.com/oauth/v1/token";
