@@ -8,3 +8,6 @@ FLYR_PASSWORD_RECOVERY_REDIRECT_URL =
 
 // Mapbox Configuration
 MAPBOX_ACCESS_TOKEN = YOUR_MAPBOX_PUBLIC_TOKEN
+
+// Optional local overrides for machine-specific secrets.
+#include? "Config.local.xcconfig"

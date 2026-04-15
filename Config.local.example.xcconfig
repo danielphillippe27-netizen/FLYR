@@ -1,0 +1,4 @@
+// Copy this file to Config.local.xcconfig and set real local-only secrets there.
+// Config.local.xcconfig is gitignored and will override values from Config.xcconfig.
+
+MAPBOX_ACCESS_TOKEN = pk.your_actual_mapbox_public_token

@@ -44,7 +44,7 @@ enum Config {
         if let configured = urlValue(for: "FLYR_PASSWORD_RECOVERY_PRODUCTION_URL") {
             return configured
         }
-        return URL(string: "https://flyr.software/password/reset")!
+        return URL(string: "https://www.flyrpro.app/password/reset")!
     }
 
     static var passwordRecoveryLocalCallbackURL: URL {
@@ -56,11 +56,15 @@ enum Config {
         if let configured = urlValue(for: "FLYR_PASSWORD_RECOVERY_REDIRECT_URL") {
             return configured
         }
-        return passwordRecoveryLocalCallbackURL
+        return passwordRecoveryProductionURL
     }
 
     static func matchesPasswordRecoveryURL(_ url: URL) -> Bool {
-        passwordRecoveryAcceptedURLs.contains { expected in
+        if isPasswordRecoveryRootFallback(url) {
+            return true
+        }
+
+        return passwordRecoveryAcceptedURLs.contains { expected in
             matches(url, expected: expected)
         }
     }
@@ -134,5 +138,34 @@ enum Config {
         guard !path.isEmpty else { return "/" }
         let trimmed = path.hasSuffix("/") && path.count > 1 ? String(path.dropLast()) : path
         return trimmed
+    }
+
+    private static func isPasswordRecoveryRootFallback(_ url: URL) -> Bool {
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let host = components.host?.lowercased(),
+              ["flyrpro.app", "www.flyrpro.app", "flyr.software", "www.flyr.software"].contains(host),
+              normalizedPath(components.path) == "/" else {
+            return false
+        }
+
+        let queryItems = components.queryItems ?? []
+        let queryMap = Dictionary(uniqueKeysWithValues: queryItems.map { ($0.name.lowercased(), $0.value ?? "") })
+
+        if queryMap["type"]?.lowercased() == "recovery" {
+            return true
+        }
+
+        let fragment = components.fragment ?? ""
+        let fragmentPairs = fragment
+            .split(separator: "&")
+            .map { $0.split(separator: "=", maxSplits: 1) }
+        let fragmentNames: Set<String> = Set(fragmentPairs.compactMap { pair -> String? in
+            guard let raw = pair.first else { return nil }
+            return String(raw).removingPercentEncoding?.lowercased() ?? String(raw).lowercased()
+        })
+
+        let signalNames = Set(queryMap.keys).union(fragmentNames)
+        let recoveryMarkers = ["code", "token", "token_hash", "access_token", "refresh_token"]
+        return recoveryMarkers.contains(where: signalNames.contains)
     }
 }

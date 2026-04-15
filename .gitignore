@@ -40,6 +40,7 @@ node_modules/
 # Env / secrets
 .env
 .env.*
+Config.local.xcconfig
 AuthKey_*.p8
 *apple_secret*.txt
 *_apple_secret*.txt
