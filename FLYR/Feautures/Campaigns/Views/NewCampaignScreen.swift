@@ -376,16 +376,7 @@ struct NewCampaignScreen: View {
                     var shouldNavigateToDetails = true
                     do {
                         try await CampaignsAPI.shared.updateTerritoryBoundary(campaignId: created.id, polygonGeoJSON: geoJSON)
-                        print("🗺️ [CAMPAIGN DEBUG] Territory updated, calling generate-address-list (polygon mode)...")
-                        do {
-                            let preview = try await OvertureAddressService.shared.getAddressesInPolygon(
-                                polygonGeoJSON: geoJSON,
-                                campaignId: created.id
-                            )
-                            print("✅ [CAMPAIGN DEBUG] generate-address-list completed, preview_count=\(preview.count)")
-                        } catch {
-                            print("⚠️ [CAMPAIGN DEBUG] generate-address-list (polygon) failed: \(error)")
-                        }
+                        print("🗺️ [CAMPAIGN DEBUG] Territory updated, skipping pre-provision generate-address-list to avoid duplicate backend work")
                         print("🗺️ [CAMPAIGN DEBUG] Territory updated, starting provision...")
                         let provisionResponse = try await CampaignsAPI.shared.provisionCampaign(campaignId: created.id)
                         if let confidence = provisionResponse?.dataConfidenceSummary {

@@ -617,6 +617,19 @@ final class CampaignsAPI {
         return "https://www.flyrpro.app"
     }
 
+    /// Provision does a full backend pipeline (Lambda/S3 + ingest + linking + routing),
+    /// so give it a longer timeout than the default shared session.
+    private static let provisionRequestTimeout: TimeInterval = 180
+    private static let provisionResourceTimeout: TimeInterval = 300
+
+    private static func makeProvisionSession() -> URLSession {
+        let configuration = URLSessionConfiguration.default
+        configuration.timeoutIntervalForRequest = provisionRequestTimeout
+        configuration.timeoutIntervalForResource = provisionResourceTimeout
+        configuration.waitsForConnectivity = true
+        return URLSession(configuration: configuration)
+    }
+
     /// Update campaign's territory boundary (polygon). Backend reads this when provisioning (Lambda/S3 server-side).
     func updateTerritoryBoundary(campaignId: UUID, polygonGeoJSON: String) async throws {
         guard let data = polygonGeoJSON.data(using: .utf8) else {
@@ -701,12 +714,40 @@ final class CampaignsAPI {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = Self.provisionRequestTimeout
         if let session = try? await client.auth.session {
             request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
         }
         request.httpBody = try JSONSerialization.data(withJSONObject: ["campaign_id": campaignId.uuidString])
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await Self.makeProvisionSession().data(for: request)
+        } catch {
+            let nsError = error as NSError
+            if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorTimedOut {
+                print("⚠️ [API DEBUG] Provision request timed out after \(Self.provisionRequestTimeout)s; polling campaign status...")
+                let state = try await waitForProvisionReady(
+                    campaignId: campaignId,
+                    timeoutSeconds: Self.provisionResourceTimeout,
+                    pollIntervalSeconds: 2
+                )
+                if state.provisionStatus == "ready" {
+                    print("✅ [API DEBUG] Provision completed server-side after client timeout for campaign \(campaignId)")
+                    return nil
+                }
+                if state.provisionStatus == "failed" {
+                    throw NSError(
+                        domain: "CampaignsAPI",
+                        code: NSURLErrorTimedOut,
+                        userInfo: [NSLocalizedDescriptionKey: "Provision timed out and later failed on the server."]
+                    )
+                }
+                print("⚠️ [API DEBUG] Provision still not ready after timeout; last status=\(state.provisionStatus ?? "unknown")")
+            }
+            throw error
+        }
         guard let http = response as? HTTPURLResponse else {
             throw NSError(domain: "CampaignsAPI", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid response"])
         }
