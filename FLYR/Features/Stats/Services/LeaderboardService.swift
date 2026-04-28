@@ -83,12 +83,9 @@ actor LeaderboardService {
             return fallback
         }
 
-        let doorknocks = intValue(from: dict["doorknocks"])
-            ?? intValue(from: dict["flyers"])
-            ?? fallback.doorknocks
+        let doorknocks = intValue(from: dict["doorknocks"]) ?? fallback.doorknocks
 
         return MetricSnapshot(
-            flyers: intValue(from: dict["flyers"]) ?? doorknocks,
             leads: intValue(from: dict["leads"]) ?? fallback.leads,
             conversations: intValue(from: dict["conversations"]) ?? fallback.conversations,
             distance: doubleValue(from: dict["distance"]) ?? fallback.distance,
@@ -201,23 +198,16 @@ actor LeaderboardService {
                 .execute()
             
             // Decode the JSON response
-            let decoder = JSONDecoder()
-            decoder.keyDecodingStrategy = .convertFromSnakeCase
-            
-            // Handle the nested JSONB fields for metric snapshots
             let data = response.data
             
             // First, decode as array of dictionaries to handle JSONB properly
             if let jsonArray = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
                 let users = jsonArray.map { dict -> LeaderboardUser in
-                    let topLevelDoorknocks = intValue(from: dict["doorknocks"])
-                        ?? intValue(from: dict["flyers"])
-                        ?? 0
+                    let topLevelDoorknocks = intValue(from: dict["doorknocks"]) ?? 0
                     let topLevelConversations = intValue(from: dict["conversations"]) ?? 0
                     let topLevelLeads = intValue(from: dict["leads"]) ?? 0
                     let topLevelDistance = doubleValue(from: dict["distance"]) ?? 0.0
                     let topLevelSnapshot = MetricSnapshot(
-                        flyers: intValue(from: dict["flyers"]) ?? topLevelDoorknocks,
                         leads: topLevelLeads,
                         conversations: topLevelConversations,
                         distance: topLevelDistance,
@@ -244,7 +234,6 @@ actor LeaderboardService {
                         brokerage: dict["brokerage"] as? String,
                         rank: intValue(from: dict["rank"]) ?? 0,
                         doorknocks: topLevelDoorknocks,
-                        flyers: intValue(from: dict["flyers"]) ?? topLevelDoorknocks,
                         leads: topLevelLeads,
                         conversations: topLevelConversations,
                         distance: topLevelDistance,
@@ -260,10 +249,7 @@ actor LeaderboardService {
                 print("✅ [LeaderboardService] Successfully fetched \(users.count) users")
                 return users
             } else {
-                // Fallback to standard decoding
-                let users = try decoder.decode([LeaderboardUser].self, from: data)
-                print("✅ [LeaderboardService] Successfully fetched \(users.count) users")
-                return users
+                return []
             }
         } catch {
             let nsError = error as NSError

@@ -133,6 +133,31 @@ final class ActivityFeedService {
         includeMembers: Bool,
         limit: Int
     ) async throws -> [ActivityFeedItem] {
+        if !NetworkMonitor.shared.isOnline {
+            guard !includeMembers else { return [] }
+            let localRows = await SessionRepository.shared.fetchRecentSessions(limit: limit)
+            return localRows.map { row in
+                let durationSeconds = max(60, row.durationSeconds)
+                let durationMinutes = max(1, Int(durationSeconds / 60))
+                let doors = row.doorsCount
+                let conversations = max(0, row.conversations ?? 0)
+                let title = row.end_time == nil ? "Your session active" : "Your session complete"
+                var subtitle = "\(doors) homes • \(durationMinutes) min"
+                if conversations > 0 {
+                    subtitle += " • \(conversations) conv"
+                }
+                return ActivityFeedItem(
+                    id: "session-\(row.id?.uuidString ?? UUID().uuidString)",
+                    title: title,
+                    subtitle: subtitle,
+                    timestamp: row.start_time,
+                    kind: .session,
+                    sessionId: row.id,
+                    sessionDurationSeconds: durationSeconds
+                )
+            }
+        }
+
         var query = client
             .from("session_analytics")
             .select()
@@ -187,16 +212,30 @@ final class ActivityFeedService {
     }
 
     func fetchSessionRecord(sessionId: UUID) async throws -> SessionRecord? {
-        let response = try await client
-            .from("session_analytics")
-            .select()
-            .eq("id", value: sessionId.uuidString)
-            .limit(1)
-            .execute()
+        if !NetworkMonitor.shared.isOnline {
+            return await SessionRepository.shared.fetchSessionRecord(sessionId: sessionId)
+        }
 
-        let decoder = JSONDecoder.supabaseDates
-        let rows = try decoder.decode([SessionRecord].self, from: response.data)
-        return rows.first
+        do {
+            let response = try await client
+                .from("session_analytics")
+                .select()
+                .eq("id", value: sessionId.uuidString)
+                .limit(1)
+                .execute()
+
+            let decoder = JSONDecoder.supabaseDates
+            let rows = try decoder.decode([SessionRecord].self, from: response.data)
+            if let row = rows.first {
+                return row
+            }
+            return await SessionRepository.shared.fetchSessionRecord(sessionId: sessionId)
+        } catch {
+            if let local = await SessionRepository.shared.fetchSessionRecord(sessionId: sessionId) {
+                return local
+            }
+            throw error
+        }
     }
 
     private func fetchContactRows(

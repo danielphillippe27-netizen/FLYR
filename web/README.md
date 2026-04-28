@@ -1,25 +1,26 @@
-# FLYR Leaderboard (Web)
+# Legacy Dashboard Retired
 
-React + Vite app that shows the global leaderboard using the same Supabase RPC as the iOS app.
+`FLYR IOS/web` is no longer an active product surface.
 
-## Setup
+The old Vite dashboard drifted from the current iOS and web behavior around:
 
-1. Copy `.env.example` to `.env` and set:
-   - `VITE_SUPABASE_URL` – your Supabase project URL
-   - `VITE_SUPABASE_ANON_KEY` – your Supabase anon (public) key
+- workspace scoping
+- leaderboard parity
+- leads/contact sourcing
+- CRM connection models
+- stats/reporting behavior
 
-2. Install and run:
+This app now intentionally renders only a retirement notice so nobody keeps
+building on the wrong stack.
 
-   ```bash
-   cd web
-   npm install
-   npm run dev
-   ```
+## Use Instead
 
-3. Open http://localhost:5173 (or the port Vite prints). Routes:
-   - `/` – Leaderboard
-   - `/leaderboard` – Leaderboard
+Use the current web product in `../FLYR-PRO`.
 
-## Backend
+```bash
+cd ../FLYR-PRO
+```
 
-Uses Supabase RPC `get_leaderboard(p_metric, p_timeframe)` only. No extra Node API. Ensure the migration that defines this function is applied to your Supabase project.
+Production web app:
+
+- [https://www.flyrpro.app](https://www.flyrpro.app)

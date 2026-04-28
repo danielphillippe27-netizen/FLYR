@@ -1,18 +1,30 @@
 import SwiftUI
 import UIKit
 import MapboxMaps
+import GoogleMaps
 import Supabase
 @main
 struct FLYRApp: App {
     @StateObject private var auth = AuthManager.shared
     @StateObject private var uiState = AppUIState()
     @StateObject private var entitlementsService = EntitlementsService()
+    @StateObject private var networkMonitor = NetworkMonitor.shared
+    @StateObject private var offlineSyncCoordinator = OfflineSyncCoordinator.shared
+    @StateObject private var campaignDownloadService = CampaignDownloadService.shared
 
     init() {
         let mapboxToken = Config.mapboxAccessToken
         if !mapboxToken.isEmpty {
             MapboxOptions.accessToken = mapboxToken
         }
+        let googleMapsAPIKey = Config.googleMapsAPIKey
+        if !googleMapsAPIKey.isEmpty {
+            GMSServices.provideAPIKey(googleMapsAPIKey)
+        }
+        _ = OfflineDatabase.shared
+        NetworkMonitor.shared.startIfNeeded()
+        _ = OfflineSyncCoordinator.shared
+        _ = CampaignDownloadService.shared
         #if DEBUG
         Self.verifyInterFonts()
         #endif
@@ -45,6 +57,9 @@ struct FLYRApp: App {
                 .environmentObject(uiState)
                 .environmentObject(entitlementsService)
                 .environmentObject(routeState)
+                .environmentObject(networkMonitor)
+                .environmentObject(offlineSyncCoordinator)
+                .environmentObject(campaignDownloadService)
                 .task {
                     // Health check in background with lower priority - don't block UI
                     Task.detached(priority: .utility) {
@@ -53,6 +68,7 @@ struct FLYRApp: App {
                         #endif
                         await AddressServiceHealth.shared.checkHealth(lat: 43.987854, lon: -78.622448)
                     }
+                    offlineSyncCoordinator.scheduleProcessOutbox()
                 }
                 .onOpenURL { url in
                     Task { @MainActor in
@@ -200,11 +216,23 @@ struct FLYRApp: App {
     }
 
     private func inviteToken(from url: URL) -> String? {
-        guard url.scheme == "flyr" && url.host == "join" else { return nil }
-        return URLComponents(url: url, resolvingAgainstBaseURL: false)?
+        let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        let token = components?
             .queryItems?
             .first(where: { $0.name == "token" })?
             .value
+
+        if url.scheme == "flyr" && url.host == "join" {
+            return token
+        }
+
+        if (url.scheme == "https" || url.scheme == "http"),
+           ["flyrpro.app", "www.flyrpro.app", "backend-api-routes.vercel.app"].contains(url.host?.lowercased() ?? ""),
+           url.path == "/join" {
+            return token
+        }
+
+        return nil
     }
 
     private func challengeToken(from url: URL) -> String? {
@@ -278,7 +306,9 @@ struct AuthGate: View {
         }
         .onChange(of: auth.user?.id) { _, newUserId in
             if newUserId == nil {
-                routeState.setRoute(.login)
+                Task { @MainActor in
+                    await routeState.resolveRoute()
+                }
             } else {
                 Task { @MainActor in
                     guard let userId = newUserId else { return }

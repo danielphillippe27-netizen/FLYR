@@ -11,7 +11,11 @@ private struct CampaignSupportFeedbackRoute: Hashable {
 struct NewCampaignDetailView: View {
     let campaignID: UUID
     @ObservedObject var store: CampaignV2Store
+    @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var uiState: AppUIState
+    @EnvironmentObject private var networkMonitor: NetworkMonitor
+    @EnvironmentObject private var offlineSyncCoordinator: OfflineSyncCoordinator
+    @EnvironmentObject private var campaignDownloadService: CampaignDownloadService
     @ObservedObject private var authManager = AuthManager.shared
     @ObservedObject private var sessionManager = SessionManager.shared
     @StateObject private var hook = UseCampaignV2()
@@ -27,6 +31,7 @@ struct NewCampaignDetailView: View {
     @State private var isLeadsExpanded = false
     @State private var campaignLeadsCount: Int = 0
     @State private var campaignLeads: [FieldLead] = []
+    @State private var selectedLead: FieldLead?
     @State private var leadsLoaded = false
     @State private var isActivityExpanded = false
     @State private var campaignActivities: [SessionRecord] = []
@@ -82,6 +87,20 @@ struct NewCampaignDetailView: View {
 
     private var shouldShowFullDemoStatsCard: Bool {
         presentation?.isJustListedMearnsDemo == true
+    }
+
+    private var mapModeTitle: String {
+        hook.item?.mapMode?.settingsTitle ?? "Smart Buildings"
+    }
+
+    private var buildingLinkConfidenceLabel: String {
+        guard let confidence = hook.item?.buildingLinkConfidence else { return "Not available" }
+        return "\(Int(confidence.rounded()))%"
+    }
+
+    private var parcelsAvailabilityLabel: String {
+        guard let hasParcels = hook.item?.hasParcels else { return "Not available" }
+        return hasParcels ? "Yes" : "No"
     }
 
     private var isFounderDemoEnabled: Bool {
@@ -174,10 +193,16 @@ struct NewCampaignDetailView: View {
                                     .foregroundColor(.accent)
                                     .padding(.horizontal, 12)
                                     .padding(.vertical, 6)
-                                    .background(Color.black)
+                                    .background(
+                                        Capsule()
+                                            .fill(Color.bgSecondary)
+                                    )
                                     .overlay(
                                         Capsule()
-                                            .stroke(Color.accent, lineWidth: 1)
+                                            .stroke(
+                                                Color.accent.opacity(colorScheme == .dark ? 0.6 : 0.35),
+                                                lineWidth: 1
+                                            )
                                     )
                                     .clipShape(Capsule())
                             }
@@ -216,6 +241,30 @@ struct NewCampaignDetailView: View {
                 .padding(16)
                 .background(Color.bgSecondary)
                 .cornerRadius(12)
+
+                if hook.item != nil {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Campaign Settings")
+                            .font(.subheading)
+                            .foregroundColor(.text)
+
+                        VStack(alignment: .leading, spacing: 10) {
+                            detailRow(label: "Map Mode", value: mapModeTitle)
+                            detailRow(label: "Building confidence", value: buildingLinkConfidenceLabel)
+                            detailRow(label: "Parcels available", value: parcelsAvailabilityLabel)
+
+                            if hook.item?.mapMode?.usesStandardPins == true {
+                                Text("Every address is still trackable. You can still mark visits, conversations, follow-ups, and outcomes manually.")
+                                    .font(.flyrCaption)
+                                    .foregroundColor(.muted)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                        .padding(16)
+                        .background(Color.bgSecondary)
+                        .cornerRadius(12)
+                    }
+                }
 
                 // Map Section - 3D Campaign Map (MapFeaturesService + MapLayerManager)
                 VStack(alignment: .leading, spacing: 12) {
@@ -297,6 +346,8 @@ struct NewCampaignDetailView: View {
                         .cornerRadius(12)
                     }
                 }
+
+                offlineAvailabilitySection
                 
                 // Leads Section (collapsible, same style as Addresses)
                 VStack(alignment: .leading, spacing: 0) {
@@ -327,7 +378,7 @@ struct NewCampaignDetailView: View {
                     }
                     .buttonStyle(.plain)
                     .onChange(of: isLeadsExpanded) { _, expanded in
-                        if expanded && !leadsLoaded, let userId = AuthManager.shared.user?.id {
+                        if expanded && !leadsLoaded && networkMonitor.isOnline, let userId = AuthManager.shared.user?.id {
                             Task {
                                 do {
                                     let leads = try await FieldLeadsService.shared.fetchLeads(userId: userId, workspaceId: WorkspaceContext.shared.workspaceId, campaignId: campaignID)
@@ -343,6 +394,8 @@ struct NewCampaignDetailView: View {
                                     }
                                 }
                             }
+                        } else if expanded && !leadsLoaded && !networkMonitor.isOnline {
+                            leadsLoaded = true
                         }
                     }
 
@@ -350,23 +403,30 @@ struct NewCampaignDetailView: View {
                         if !effectiveCampaignLeads.isEmpty {
                             VStack(alignment: .leading, spacing: 8) {
                                 ForEach(Array(effectiveCampaignLeads.prefix(5).enumerated()), id: \.element.id) { index, lead in
-                                    HStack {
-                                        Text("\(index + 1).")
-                                            .font(.flyrCaption)
-                                            .foregroundColor(.muted)
-                                            .frame(width: 20, alignment: .leading)
-                                        VStack(alignment: .leading, spacing: 2) {
-                                            Text(lead.address)
-                                                .font(.body)
-                                                .foregroundColor(.text)
-                                            if let name = lead.name, !name.isEmpty {
-                                                Text(name)
-                                                    .font(.flyrCaption)
-                                                    .foregroundColor(.muted)
+                                    Button {
+                                        HapticManager.light()
+                                        selectedLead = lead
+                                    } label: {
+                                        HStack {
+                                            Text("\(index + 1).")
+                                                .font(.flyrCaption)
+                                                .foregroundColor(.muted)
+                                                .frame(width: 20, alignment: .leading)
+                                            VStack(alignment: .leading, spacing: 2) {
+                                                Text(lead.address)
+                                                    .font(.body)
+                                                    .foregroundColor(.text)
+                                                if let name = lead.name, !name.isEmpty {
+                                                    Text(name)
+                                                        .font(.flyrCaption)
+                                                        .foregroundColor(.muted)
+                                                }
                                             }
+                                            Spacer()
                                         }
-                                        Spacer()
                                     }
+                                    .contentShape(Rectangle())
+                                    .buttonStyle(.plain)
                                 }
                                 if effectiveCampaignLeads.count > 5 {
                                     Button("See all \(effectiveCampaignLeads.count) leads") {
@@ -512,24 +572,7 @@ struct NewCampaignDetailView: View {
                     .onChange(of: isActivityExpanded) { _, expanded in
                         if expanded && !activitiesLoaded {
                             Task {
-                                do {
-                                    let sessions = try await SessionsAPI.shared.fetchSessionsForCampaign(
-                                        campaignId: campaignID,
-                                        userId: AuthManager.shared.user?.id,
-                                        workspaceId: WorkspaceContext.shared.workspaceId,
-                                        limit: 500
-                                    )
-                                    await MainActor.run {
-                                        campaignActivities = sessions
-                                        activityCount = sessions.count
-                                        activitiesLoaded = true
-                                    }
-                                } catch {
-                                    await MainActor.run {
-                                        campaignActivities = []
-                                        activitiesLoaded = true
-                                    }
-                                }
+                                await refreshCampaignActivities()
                             }
                         }
                     }
@@ -687,7 +730,11 @@ struct NewCampaignDetailView: View {
         .onAppear {
             print("📱 [DETAIL DEBUG] NewCampaignDetailView appeared for campaign ID: \(campaignID)")
             hook.load(id: campaignID, store: store)
-            Task { await refreshCampaignDetailData() }
+            Task {
+                await campaignDownloadService.refreshState(campaignId: campaignID.uuidString)
+                await campaignDownloadService.prefetchIfNeeded(campaignId: campaignID.uuidString)
+                await refreshCampaignDetailData()
+            }
         }
         .onChange(of: hook.item) { _, campaign in
             if let campaign = campaign {
@@ -695,7 +742,11 @@ struct NewCampaignDetailView: View {
                 print("📱 [DETAIL DEBUG] Campaign progress: \(Int(campaign.progress * 100))%")
                 print("📱 [DETAIL DEBUG] Campaign addresses: \(campaign.addresses.count)")
                 updateMapCenter(for: campaign)
-                Task { await refreshCampaignDetailData() }
+                Task {
+                    await campaignDownloadService.refreshState(campaignId: campaignID.uuidString)
+                    await campaignDownloadService.prefetchIfNeeded(campaignId: campaignID.uuidString)
+                    await refreshCampaignDetailData()
+                }
             }
         }
         .onChange(of: sessionManager.pendingSessionSummary) { _, summary in
@@ -723,6 +774,15 @@ struct NewCampaignDetailView: View {
                 hiddenAttachmentPayload: route.hiddenAttachmentPayload
             )
         }
+        .navigationDestination(item: $selectedLead) { lead in
+            LeadDetailView(
+                lead: lead,
+                onConnectCRM: {},
+                onLeadUpdated: { updated in
+                    handleLeadUpdated(updated)
+                }
+            )
+        }
     }
     
     private var dateFormatter: DateFormatter {
@@ -730,6 +790,89 @@ struct NewCampaignDetailView: View {
         formatter.dateStyle = .medium
         formatter.timeStyle = .short
         return formatter
+    }
+
+    @ViewBuilder
+    private func detailRow(label: String, value: String) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Text("\(label):")
+                .font(.label)
+                .foregroundColor(.muted)
+            Spacer(minLength: 12)
+            Text(value)
+                .font(.label)
+                .fontWeight(.medium)
+                .foregroundColor(.text)
+                .multilineTextAlignment(.trailing)
+        }
+    }
+
+    private var offlineAvailabilitySection: some View {
+        let campaignIdString = campaignID.uuidString
+        let downloadState = campaignDownloadService.state(for: campaignIdString)
+        let readiness = campaignDownloadService.readiness(for: campaignIdString)
+        let isOfflineAvailable = downloadState?.isAvailableOffline == true
+        let isDownloading = downloadState?.status == "downloading"
+
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                offlinePill(
+                    title: "LOCAL DATA",
+                    systemImage: isOfflineAvailable ? "checkmark.circle.fill" : "xmark.circle.fill",
+                    background: isOfflineAvailable ? Color.green.opacity(0.14) : Color.red.opacity(0.16),
+                    foreground: isOfflineAvailable ? Color.green : Color.red
+                )
+                Spacer(minLength: 0)
+            }
+
+            Text(localDataSummary(readiness: readiness, isReady: isOfflineAvailable))
+                .font(.system(size: 14, weight: .medium))
+                .foregroundColor(.muted)
+
+            if let downloadState, isDownloading {
+                ProgressView(value: downloadState.progress)
+                    .progressViewStyle(.linear)
+            }
+
+            Button(isOfflineAvailable ? "Refresh Local Data" : "Download Local Data") {
+                Task {
+                    await campaignDownloadService.makeAvailableOffline(campaignId: campaignIdString)
+                    await campaignDownloadService.refreshState(campaignId: campaignIdString)
+                }
+            }
+            .font(.label)
+            .foregroundColor(.white)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 12)
+            .background(Color.accent)
+            .cornerRadius(10)
+            .buttonStyle(.plain)
+            .disabled(isDownloading)
+            .opacity(isDownloading ? 0.6 : 1)
+        }
+        .padding(16)
+        .background(Color.bgSecondary)
+        .cornerRadius(12)
+    }
+
+    private func localDataSummary(readiness: CampaignOfflineReadiness?, isReady: Bool) -> String {
+        if let readiness {
+            return readiness.summary
+        }
+        if isReady {
+            return "This campaign is stored on your device for field use. Session activity still saves locally first and syncs in the background."
+        }
+        return "FLYR prepares campaign data automatically when you open or start a session. You can also refresh the local cache here."
+    }
+
+    private func offlinePill(title: String, systemImage: String, background: Color, foreground: Color) -> some View {
+        Label(title, systemImage: systemImage)
+            .font(.label)
+            .foregroundColor(foreground)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(background)
+            .clipShape(Capsule())
     }
     
     private func updateMapCenter(for campaign: CampaignV2) {
@@ -756,6 +899,13 @@ struct NewCampaignDetailView: View {
 
     private func refreshCampaignDetailData() async {
         await refreshAddressStatuses()
+        guard networkMonitor.isOnline else {
+            await MainActor.run {
+                leadsLoaded = true
+                activitiesLoaded = true
+            }
+            return
+        }
         await refreshCampaignLeads()
         await refreshCampaignActivities()
     }
@@ -773,6 +923,13 @@ struct NewCampaignDetailView: View {
     }
 
     private func refreshCampaignLeads() async {
+        guard networkMonitor.isOnline else {
+            await MainActor.run {
+                leadsLoaded = true
+            }
+            return
+        }
+
         guard let userId = AuthManager.shared.user?.id else {
             await MainActor.run {
                 campaignLeads = []
@@ -795,21 +952,40 @@ struct NewCampaignDetailView: View {
             }
         } catch {
             await MainActor.run {
-                campaignLeads = []
-                campaignLeadsCount = 0
                 leadsLoaded = true
             }
         }
     }
 
     private func refreshCampaignActivities() async {
+        let cachedSessions = await SessionRepository.shared.fetchSessionsForCampaign(
+            campaignId: campaignID,
+            limit: 500
+        )
+
+        guard networkMonitor.isOnline else {
+            await MainActor.run {
+                if !cachedSessions.isEmpty {
+                    campaignActivities = cachedSessions
+                    activityCount = cachedSessions.count
+                }
+                activitiesLoaded = true
+            }
+            return
+        }
+
         let userId = AuthManager.shared.user?.id
         let workspaceId = WorkspaceContext.shared.workspaceId
 
         guard workspaceId != nil || userId != nil else {
             await MainActor.run {
-                campaignActivities = []
-                activityCount = 0
+                if !cachedSessions.isEmpty {
+                    campaignActivities = cachedSessions
+                    activityCount = cachedSessions.count
+                } else {
+                    campaignActivities = []
+                    activityCount = 0
+                }
                 activitiesLoaded = true
             }
             return
@@ -829,8 +1005,10 @@ struct NewCampaignDetailView: View {
             }
         } catch {
             await MainActor.run {
-                campaignActivities = []
-                activityCount = 0
+                if !cachedSessions.isEmpty {
+                    campaignActivities = cachedSessions
+                    activityCount = cachedSessions.count
+                }
                 activitiesLoaded = true
             }
         }
@@ -871,6 +1049,13 @@ struct NewCampaignDetailView: View {
                 print("❌ [STATUS] Error updating status: \(error)")
             }
         }
+    }
+
+    private func handleLeadUpdated(_ updatedLead: FieldLead) {
+        if let index = campaignLeads.firstIndex(where: { $0.id == updatedLead.id }) {
+            campaignLeads[index] = updatedLead
+        }
+        selectedLead = updatedLead
     }
 
     private func effectiveShareCardData(selectedSession: SessionRecord?) -> SessionSummaryData {
@@ -1131,7 +1316,7 @@ private struct DemoCampaignFullStatsCard: View {
     }
 }
 
-private struct CampaignDetailPresentation {
+struct CampaignDetailPresentation {
     let progressValue: Double
     let analyticsStats: [StatPill]
     let defaultShareCardData: SessionSummaryData
@@ -1179,11 +1364,16 @@ private struct CampaignDetailPresentation {
         let appointmentStatusCount = statusCounts[.appointment] ?? 0
 
         let leadCount = fieldLeads.count
-        let sessionSignalDoors = sessions.isEmpty ? 0 : min(totalAddresses, max(18, sessions.count * 37))
-        let leadSignalDoors = leadCount > 0 ? min(totalAddresses, leadCount * 11) : 0
-        var derivedDoors = max(realDoors, visitedStatusCount, sessionSignalDoors, leadSignalDoors)
-        var derivedConversations = max(realConversations, conversationStatusCount, min(derivedDoors, max(leadCount * 2, sessions.count * 9)))
-        let derivedAppointments = max(realAppointments, appointmentStatusCount, leadCount > 0 ? 1 : 0)
+        let clampedSessionDoors = min(totalAddresses, max(0, realDoors))
+        var derivedDoors = max(clampedSessionDoors, visitedStatusCount)
+        var derivedConversations = max(realConversations, conversationStatusCount)
+        if derivedDoors > 0 {
+            derivedConversations = min(derivedConversations, derivedDoors)
+        }
+        let derivedAppointments = min(
+            derivedConversations,
+            max(realAppointments, appointmentStatusCount)
+        )
         let derivedLeadCount = max(leadCount, leadStatusCount, derivedAppointments)
 
         if isMearnsDemoCampaign {
@@ -1231,7 +1421,7 @@ private struct CampaignDetailPresentation {
         }
 
         let derivedProgress = totalAddresses > 0 ? min(1.0, Double(derivedDoors) / Double(totalAddresses)) : 0
-        let resolvedProgressValue = max(campaign.progress, derivedProgress)
+        let resolvedProgressValue = derivedProgress > 0 ? derivedProgress : campaign.progress
         let resolvedProgressPercent = Int((resolvedProgressValue * 100).rounded())
         progressValue = resolvedProgressValue
         progressPercent = resolvedProgressPercent

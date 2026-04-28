@@ -13,8 +13,7 @@ struct SessionMapView: View {
             SessionMapboxViewRepresentable(
                 coordinates: manager.pathCoordinates,
                 currentLocation: manager.currentLocation,
-                currentHeading: manager.currentHeading,
-                roadCorridors: manager.sessionRoadCorridors
+                headingPresentationState: manager.headingPresentationState
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .ignoresSafeArea(.all)

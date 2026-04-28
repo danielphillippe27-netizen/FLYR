@@ -41,9 +41,9 @@ struct CreateFarmView: View {
                 DatePicker("End Date", selection: $viewModel.endDate, displayedComponents: .date)
             }
             
-            Section("Touch Frequency") {
-                Picker("Touches Per Month", selection: $viewModel.frequency) {
-                    ForEach(1...4, id: \.self) { count in
+            Section("Cycle Workload") {
+                Picker("Target Homes Per Cycle", selection: $viewModel.frequency) {
+                    ForEach([100, 250, 500, 750, 1000], id: \.self) { count in
                         Text("\(count)").tag(count)
                     }
                 }
@@ -102,7 +102,10 @@ struct CreateFarmView: View {
                 FarmTouchPlannerView(farmId: farm.id)
             }
         }
-        .alert("Error", isPresented: .constant(viewModel.errorMessage != nil)) {
+        .alert("Error", isPresented: Binding(
+            get: { viewModel.errorMessage != nil },
+            set: { if !$0 { viewModel.errorMessage = nil } }
+        )) {
             Button("OK") {
                 viewModel.errorMessage = nil
             }

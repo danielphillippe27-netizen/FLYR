@@ -107,8 +107,7 @@ class QRExportManager {
     /// Present share sheet for exported ZIP file
     /// - Parameter zipURL: URL of the ZIP file to share
     static func presentShareSheet(for zipURL: URL) {
-        guard let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-              let rootViewController = windowScene.windows.first?.rootViewController else {
+        guard let presenter = ShareCardGenerator.rootViewController() else {
             print("❌ [QR Export] Failed to get root view controller for share sheet")
             return
         }
@@ -120,12 +119,12 @@ class QRExportManager {
         
         // Configure for iPad
         if let popover = activityVC.popoverPresentationController {
-            popover.sourceView = rootViewController.view
-            popover.sourceRect = CGRect(x: rootViewController.view.bounds.midX, y: rootViewController.view.bounds.midY, width: 0, height: 0)
+            popover.sourceView = presenter.view
+            popover.sourceRect = CGRect(x: presenter.view.bounds.midX, y: presenter.view.bounds.midY, width: 0, height: 0)
             popover.permittedArrowDirections = []
         }
-        
-        rootViewController.present(activityVC, animated: true)
+
+        presenter.present(activityVC, animated: true)
     }
     
     // MARK: - New Export Functions for QR Sets

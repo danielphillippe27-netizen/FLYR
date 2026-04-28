@@ -103,6 +103,16 @@ enum ShareCardGenerator {
         return UIGraphicsGetImageFromCurrentImageContext()
     }
 
+    static func imageHasTransparency(_ image: UIImage) -> Bool {
+        guard let alphaInfo = image.cgImage?.alphaInfo else { return false }
+        switch alphaInfo {
+        case .first, .last, .premultipliedFirst, .premultipliedLast:
+            return true
+        default:
+            return false
+        }
+    }
+
     /// Presents the system share sheet from the topmost view controller (works from nested SwiftUI navigation; avoids hosting `UIActivityViewController` inside a SwiftUI `.sheet`).
     /// - Returns: `false` if there was nothing to share or no presenter was found (caller may show `shareSheetUnavailableUserMessage`).
     @MainActor
@@ -219,24 +229,35 @@ extension ShareCardGenerator {
         showVectorOverlay: Bool? = nil
     ) -> [UIImage] {
         let vectors = showVectorOverlay ?? (!data.isDemoSession)
+        let shouldIncludeHomesMapCard = data.includesHomesRouteShareCard || homesMapSnapshot != nil
         var result: [UIImage] = []
-        if data.includesHomesRouteShareCard {
-            if let img = renderImage(
-                content: SessionHomesShareCardView(
-                    data: data,
-                    forExport: true,
-                    backgroundSnapshot: homesMapSnapshot,
-                    showVectorOverlay: vectors
-                )
-            ) {
-                result.append(img)
+        if data.isNetworkingSession {
+            for variant in NetworkingShareCardVariant.allCases {
+                if let img = renderImage(
+                    content: NetworkingShareCardView(data: data, forExport: true, variant: variant)
+                ) {
+                    result.append(img)
+                }
             }
-        }
-        for metrics in [ShareCardMetrics.doorsDistanceTime, .doorsConvoTime] {
-            if let img = renderImage(
-                content: SessionShareCardView(data: data, forExport: true, metrics: metrics)
-            ) {
-                result.append(img)
+        } else {
+            if shouldIncludeHomesMapCard {
+                if let img = renderImage(
+                    content: SessionHomesShareCardView(
+                        data: data,
+                        forExport: true,
+                        backgroundSnapshot: homesMapSnapshot,
+                        showVectorOverlay: vectors
+                    )
+                ) {
+                    result.append(img)
+                }
+            }
+            for metrics in [ShareCardMetrics.doorsDistanceTime, .doorsConvoTime] {
+                if let img = renderImage(
+                    content: SessionShareCardView(data: data, forExport: true, metrics: metrics)
+                ) {
+                    result.append(img)
+                }
             }
         }
         return result
@@ -277,6 +298,7 @@ extension ShareCardGenerator {
         size: CGSize
     ) async -> UIImage? {
         guard data.includesHomesRouteShareCard else { return nil }
+        guard NetworkMonitor.shared.isOnline else { return nil }
         let coordinates = preferredSnapshotCoordinates(for: data)
         guard !coordinates.isEmpty else { return nil }
 

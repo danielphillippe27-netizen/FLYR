@@ -7,8 +7,17 @@ actor ContactsService {
     private var client: SupabaseClient {
         SupabaseManager.shared.client
     }
+    private let contactRepository = ContactRepository.shared
+    private let outboxRepository = OutboxRepository.shared
     
     private init() {}
+
+    private func shouldUseWorkspaceScope(
+        workspaceId: UUID?,
+        campaignId: UUID?
+    ) -> Bool {
+        workspaceId != nil && campaignId == nil
+    }
     
     // MARK: - Fetch Contacts
     
@@ -16,35 +25,21 @@ actor ContactsService {
     ///   - userID: Legacy; used when workspaceId is nil for backward compatibility.
     ///   - workspaceId: When non-nil, scope by workspace (RLS allows workspace members); when nil, filter by user_id only.
     func fetchContacts(userID: UUID, workspaceId: UUID? = nil, filter: ContactFilter? = nil) async throws -> [Contact] {
-        var query = client
-            .from("contacts")
-            .select()
-        if let workspaceId = workspaceId {
-            query = query.eq("workspace_id", value: workspaceId)
-        } else {
-            query = query.eq("user_id", value: userID)
+        if await isOffline() {
+            return await contactRepository.fetchContacts(userId: userID, workspaceId: workspaceId, filter: filter)
         }
-        
-        if let filter = filter {
-            if let status = filter.status {
-                query = query.eq("status", value: status.rawValue)
+
+        do {
+            let contacts = try await performRemoteFetchContacts(userID: userID, workspaceId: workspaceId, filter: filter)
+            await contactRepository.upsertContacts(contacts, userId: userID, workspaceId: workspaceId, dirty: false, syncedAt: Date())
+            return contacts
+        } catch {
+            let cached = await contactRepository.fetchContacts(userId: userID, workspaceId: workspaceId, filter: filter)
+            if !cached.isEmpty {
+                return cached
             }
-            if let campaignId = filter.campaignId {
-                query = query.eq("campaign_id", value: campaignId)
-            }
-            if let farmId = filter.farmId {
-                query = query.eq("farm_id", value: farmId)
-            }
-            // Note: Search filtering is done client-side for multi-field support
-            // The searchText filter is applied in the ViewModel after fetching
+            throw error
         }
-        
-        let response: [Contact] = try await query
-            .order("updated_at", ascending: false)
-            .execute()
-            .value
-        
-        return response
     }
     
     func fetchContactsByCampaign(userID: UUID, workspaceId: UUID? = nil, campaignID: UUID) async throws -> [Contact] {
@@ -59,22 +54,28 @@ actor ContactsService {
     /// - Parameter addressId: The campaign_addresses.id to fetch contacts for
     /// - Returns: Array of contacts linked to this address
     func fetchContactsForAddress(addressId: UUID) async throws -> [Contact] {
-        let response: [Contact] = try await client
-            .from("contacts")
-            .select()
-            .eq("address_id", value: addressId)
-            .order("created_at", ascending: false)
-            .execute()
-            .value
-        
-        return response
+        if await isOffline() {
+            return await contactRepository.fetchContactsForAddress(addressId: addressId)
+        }
+
+        do {
+            let contacts = try await performRemoteFetchContactsForAddress(addressId: addressId)
+            await contactRepository.upsertContacts(contacts, userId: nil, workspaceId: nil, dirty: false, syncedAt: Date())
+            return contacts
+        } catch {
+            let cached = await contactRepository.fetchContactsForAddress(addressId: addressId)
+            if !cached.isEmpty {
+                return cached
+            }
+            throw error
+        }
     }
 
     /// Deletes every contact linked to this campaign address (`contact_activities` rows cascade).
     func deleteContactsForAddress(addressId: UUID) async throws {
-        let contacts = try await fetchContactsForAddress(addressId: addressId)
+        let contacts = await contactRepository.deleteContactsForAddress(addressId: addressId)
         for contact in contacts {
-            try await deleteContact(contact)
+            try await deleteContact(contact, alreadyDeletedLocally: true)
         }
     }
     
@@ -107,65 +108,28 @@ actor ContactsService {
         syncToCRM: Bool = true
     ) async throws -> Contact {
         let normalizedInput = Self.normalized(contact, overrideAddressId: addressId)
-        if let existing = try await findExistingContact(
-            matching: normalizedInput,
-            userID: userID,
-            workspaceId: workspaceId
-        ) {
-            let merged = Self.merged(existing: existing, incoming: normalizedInput)
-            let updated = try await updateContact(merged, addressId: merged.addressId)
-            if syncToCRM {
-                Task.detached(priority: .utility) {
-                    let leadModel = LeadModel(from: updated)
-                    await LeadSyncManager.shared.syncLeadToCRM(lead: leadModel, userId: userID)
-                }
-            }
-            return updated
+        let cachedContext = await contactRepository.upsertContactLocally(
+            normalizedInput,
+            userId: userID,
+            workspaceId: workspaceId,
+            addressId: addressId
+        )
+        if let contactJSON = OfflineJSONCodec.encode(cachedContext.contact) {
+            await outboxRepository.enqueue(
+                entityType: "contact",
+                entityId: cachedContext.contact.id.uuidString,
+                operation: .upsertContact,
+                payload: ContactOutboxPayload(
+                    contactJSON: contactJSON,
+                    userId: cachedContext.userId?.uuidString,
+                    workspaceId: cachedContext.workspaceId?.uuidString,
+                    addressId: cachedContext.contact.addressId?.uuidString,
+                    syncToCRM: syncToCRM
+                )
+            )
         }
-
-        let contactToInsert = normalizedInput
-        var insertData: [String: AnyCodable] = [
-            "id": AnyCodable(contactToInsert.id),
-            "user_id": AnyCodable(userID),
-            "full_name": AnyCodable(contactToInsert.fullName),
-            "phone": AnyCodable(contactToInsert.phone as Any),
-            "email": AnyCodable(contactToInsert.email as Any),
-            "address": AnyCodable(contactToInsert.address),
-            "campaign_id": AnyCodable(contactToInsert.campaignId as Any),
-            "farm_id": AnyCodable(contactToInsert.farmId as Any),
-            "gers_id": AnyCodable(contactToInsert.gersId as Any),
-            "address_id": AnyCodable(contactToInsert.addressId as Any),
-            "status": AnyCodable(contactToInsert.status.rawValue),
-            "last_contacted": AnyCodable(contactToInsert.lastContacted as Any),
-            "notes": AnyCodable(contactToInsert.notes as Any),
-            "reminder_date": AnyCodable(contactToInsert.reminderDate as Any)
-        ]
-        if let workspaceId = workspaceId {
-            insertData["workspace_id"] = AnyCodable(workspaceId)
-        }
-        if let addressId = addressId {
-            insertData["address_id"] = AnyCodable(addressId)
-        }
-        
-        let response: [Contact] = try await client
-            .from("contacts")
-            .insert(insertData)
-            .select()
-            .execute()
-            .value
-        
-        guard let inserted = response.first else {
-            throw NSError(domain: "ContactsService", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to insert contact"])
-        }
-        
-        if syncToCRM {
-            Task.detached(priority: .utility) {
-                let leadModel = LeadModel(from: inserted)
-                await LeadSyncManager.shared.syncLeadToCRM(lead: leadModel, userId: userID)
-            }
-        }
-        
-        return inserted
+        await scheduleSyncIfPossible()
+        return cachedContext.contact
     }
 
     private func findExistingContact(
@@ -177,9 +141,10 @@ actor ContactsService {
             .from("contacts")
             .select()
 
-        if let workspaceId {
+        if shouldUseWorkspaceScope(workspaceId: workspaceId, campaignId: contact.campaignId),
+           let workspaceId {
             query = query.eq("workspace_id", value: workspaceId)
-        } else {
+        } else if contact.campaignId == nil {
             query = query.eq("user_id", value: userID)
         }
 
@@ -348,7 +313,243 @@ actor ContactsService {
             .execute()
     }
     
-    func updateContact(_ contact: Contact, addressId: UUID? = nil) async throws -> Contact {
+    func updateContact(
+        _ contact: Contact,
+        userID: UUID? = nil,
+        workspaceId: UUID? = nil,
+        addressId: UUID? = nil,
+        syncToCRM: Bool = true
+    ) async throws -> Contact {
+        let cachedContext = await contactRepository.upsertContactLocally(
+            contact,
+            userId: userID,
+            workspaceId: workspaceId,
+            addressId: addressId
+        )
+        if let contactJSON = OfflineJSONCodec.encode(cachedContext.contact) {
+            await outboxRepository.enqueue(
+                entityType: "contact",
+                entityId: cachedContext.contact.id.uuidString,
+                operation: .upsertContact,
+                payload: ContactOutboxPayload(
+                    contactJSON: contactJSON,
+                    userId: cachedContext.userId?.uuidString,
+                    workspaceId: cachedContext.workspaceId?.uuidString,
+                    addressId: cachedContext.contact.addressId?.uuidString,
+                    syncToCRM: syncToCRM
+                )
+            )
+        }
+        await scheduleSyncIfPossible()
+        return cachedContext.contact
+    }
+    
+    func deleteContact(_ contact: Contact) async throws {
+        try await deleteContact(contact, alreadyDeletedLocally: false)
+    }
+    
+    // MARK: - Activities
+    
+    func logActivity(contactID: UUID, type: ActivityType, note: String?) async throws -> ContactActivity {
+        let activity = await contactRepository.addActivityLocally(
+            contactId: contactID,
+            type: type,
+            note: note
+        )
+        await outboxRepository.enqueue(
+            entityType: "contact_activity",
+            entityId: activity.id.uuidString,
+            operation: .createContactActivity,
+            payload: ContactActivityOutboxPayload(
+                localActivityId: activity.id.uuidString,
+                contactId: activity.contactId.uuidString,
+                type: activity.type.rawValue,
+                note: activity.note,
+                timestamp: OfflineDateCodec.string(from: activity.timestamp)
+            )
+        )
+        await scheduleSyncIfPossible()
+        return activity
+    }
+    
+    func fetchActivities(contactID: UUID) async throws -> [ContactActivity] {
+        if await isOffline() {
+            return await contactRepository.fetchActivities(contactId: contactID)
+        }
+
+        do {
+            let response: [ContactActivity] = try await client
+                .from("contact_activities")
+                .select()
+                .eq("contact_id", value: contactID)
+                .order("timestamp", ascending: false)
+                .execute()
+                .value
+            await contactRepository.upsertActivities(response, dirty: false, syncedAt: Date())
+            return response
+        } catch {
+            let cached = await contactRepository.fetchActivities(contactId: contactID)
+            if !cached.isEmpty {
+                return cached
+            }
+            throw error
+        }
+    }
+
+    func performRemoteUpsertContact(
+        _ contact: Contact,
+        userID: UUID?,
+        workspaceId: UUID?,
+        addressId: UUID?,
+        syncToCRM: Bool
+    ) async throws -> Contact {
+        if let updated = try await performRemoteUpdateContact(contact, addressId: addressId) {
+            if syncToCRM, let userID {
+                Task.detached(priority: .utility) {
+                    let leadModel = LeadModel(from: updated)
+                    await LeadSyncManager.shared.syncLeadToCRM(lead: leadModel, userId: userID)
+                }
+            }
+            return updated
+        }
+        guard let userID else {
+            throw NSError(domain: "ContactsService", code: -1, userInfo: [NSLocalizedDescriptionKey: "Missing user ID for remote contact insert"])
+        }
+        return try await performRemoteAddContact(contact, userID: userID, workspaceId: workspaceId, addressId: addressId, syncToCRM: syncToCRM)
+    }
+
+    func performRemoteLogActivity(
+        contactID: UUID,
+        type: ActivityType,
+        note: String?,
+        timestamp: Date? = nil
+    ) async throws -> ContactActivity {
+        let activityTimestamp = ISO8601DateFormatter().string(from: timestamp ?? Date())
+        let activityData: [String: AnyCodable] = [
+            "contact_id": AnyCodable(contactID),
+            "type": AnyCodable(type.rawValue),
+            "note": AnyCodable(note as Any),
+            "timestamp": AnyCodable(activityTimestamp)
+        ]
+
+        let response: [ContactActivity] = try await client
+            .from("contact_activities")
+            .insert(activityData)
+            .select()
+            .execute()
+            .value
+
+        guard let inserted = response.first else {
+            throw NSError(domain: "ContactsService", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to insert activity"])
+        }
+
+        return inserted
+    }
+
+    func performRemoteDeleteContact(contactId: UUID) async throws {
+        try await client
+            .from("contacts")
+            .delete()
+            .eq("id", value: contactId)
+            .execute()
+    }
+
+    private func performRemoteFetchContacts(userID: UUID, workspaceId: UUID? = nil, filter: ContactFilter? = nil) async throws -> [Contact] {
+        var query = client
+            .from("contacts")
+            .select()
+        if shouldUseWorkspaceScope(workspaceId: workspaceId, campaignId: filter?.campaignId),
+           let workspaceId = workspaceId {
+            query = query.eq("workspace_id", value: workspaceId)
+        } else if filter?.campaignId == nil {
+            query = query.eq("user_id", value: userID)
+        }
+
+        if let filter = filter {
+            if let status = filter.status {
+                query = query.eq("status", value: status.rawValue)
+            }
+            if let campaignId = filter.campaignId {
+                query = query.eq("campaign_id", value: campaignId)
+            }
+            if let farmId = filter.farmId {
+                query = query.eq("farm_id", value: farmId)
+            }
+        }
+
+        let response: [Contact] = try await query
+            .order("updated_at", ascending: false)
+            .execute()
+            .value
+
+        return response
+    }
+
+    private func performRemoteFetchContactsForAddress(addressId: UUID) async throws -> [Contact] {
+        let response: [Contact] = try await client
+            .from("contacts")
+            .select()
+            .eq("address_id", value: addressId)
+            .order("created_at", ascending: false)
+            .execute()
+            .value
+
+        return response
+    }
+
+    private func performRemoteAddContact(
+        _ contact: Contact,
+        userID: UUID,
+        workspaceId: UUID? = nil,
+        addressId: UUID? = nil,
+        syncToCRM: Bool = true
+    ) async throws -> Contact {
+        let contactToInsert = Self.normalized(contact, overrideAddressId: addressId)
+        var insertData: [String: AnyCodable] = [
+            "id": AnyCodable(contactToInsert.id),
+            "user_id": AnyCodable(userID),
+            "full_name": AnyCodable(contactToInsert.fullName),
+            "phone": AnyCodable(contactToInsert.phone as Any),
+            "email": AnyCodable(contactToInsert.email as Any),
+            "address": AnyCodable(contactToInsert.address),
+            "campaign_id": AnyCodable(contactToInsert.campaignId as Any),
+            "farm_id": AnyCodable(contactToInsert.farmId as Any),
+            "gers_id": AnyCodable(contactToInsert.gersId as Any),
+            "address_id": AnyCodable(contactToInsert.addressId as Any),
+            "status": AnyCodable(contactToInsert.status.rawValue),
+            "last_contacted": AnyCodable(contactToInsert.lastContacted as Any),
+            "notes": AnyCodable(contactToInsert.notes as Any),
+            "reminder_date": AnyCodable(contactToInsert.reminderDate as Any)
+        ]
+        if contactToInsert.campaignId == nil, let workspaceId = workspaceId {
+            insertData["workspace_id"] = AnyCodable(workspaceId)
+        }
+        if let addressId = addressId {
+            insertData["address_id"] = AnyCodable(addressId)
+        }
+
+        let response: [Contact] = try await client
+            .from("contacts")
+            .insert(insertData)
+            .select()
+            .execute()
+            .value
+
+        guard let inserted = response.first else {
+            throw NSError(domain: "ContactsService", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to insert contact"])
+        }
+
+        if syncToCRM {
+            Task.detached(priority: .utility) {
+                let leadModel = LeadModel(from: inserted)
+                await LeadSyncManager.shared.syncLeadToCRM(lead: leadModel, userId: userID)
+            }
+        }
+
+        return inserted
+    }
+
+    private func performRemoteUpdateContact(_ contact: Contact, addressId: UUID? = nil) async throws -> Contact? {
         var updateData: [String: AnyCodable] = [
             "full_name": AnyCodable(contact.fullName),
             "phone": AnyCodable(contact.phone as Any),
@@ -363,12 +564,11 @@ actor ContactsService {
             "notes": AnyCodable(contact.notes as Any),
             "reminder_date": AnyCodable(contact.reminderDate as Any)
         ]
-        
-        // Add address_id if provided
+
         if let addressId = addressId {
             updateData["address_id"] = AnyCodable(addressId)
         }
-        
+
         let response: [Contact] = try await client
             .from("contacts")
             .update(updateData)
@@ -376,57 +576,33 @@ actor ContactsService {
             .select()
             .execute()
             .value
-        
-        guard let updated = response.first else {
-            throw NSError(domain: "ContactsService", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to update contact"])
+
+        return response.first
+    }
+
+    private func isOffline() async -> Bool {
+        await MainActor.run { !NetworkMonitor.shared.isOnline }
+    }
+
+    private func scheduleSyncIfPossible() async {
+        let shouldSchedule = await MainActor.run { NetworkMonitor.shared.isOnline }
+        guard shouldSchedule else { return }
+        await MainActor.run {
+            OfflineSyncCoordinator.shared.scheduleProcessOutbox()
         }
-        
-        return updated
     }
-    
-    func deleteContact(_ contact: Contact) async throws {
-        try await client
-            .from("contacts")
-            .delete()
-            .eq("id", value: contact.id)
-            .execute()
-    }
-    
-    // MARK: - Activities
-    
-    func logActivity(contactID: UUID, type: ActivityType, note: String?) async throws -> ContactActivity {
-        let timestamp = ISO8601DateFormatter().string(from: Date())
-        let activityData: [String: AnyCodable] = [
-            "contact_id": AnyCodable(contactID),
-            "type": AnyCodable(type.rawValue),
-            "note": AnyCodable(note as Any),
-            "timestamp": AnyCodable(timestamp)
-        ]
-        
-        let response: [ContactActivity] = try await client
-            .from("contact_activities")
-            .insert(activityData)
-            .select()
-            .execute()
-            .value
-        
-        guard let inserted = response.first else {
-            throw NSError(domain: "ContactsService", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to insert activity"])
+
+    private func deleteContact(_ contact: Contact, alreadyDeletedLocally: Bool) async throws {
+        if !alreadyDeletedLocally {
+            await contactRepository.deleteContacts(ids: [contact.id])
         }
-        
-        return inserted
-    }
-    
-    func fetchActivities(contactID: UUID) async throws -> [ContactActivity] {
-        let response: [ContactActivity] = try await client
-            .from("contact_activities")
-            .select()
-            .eq("contact_id", value: contactID)
-            .order("timestamp", ascending: false)
-            .execute()
-            .value
-        
-        return response
+        await outboxRepository.enqueue(
+            entityType: "contact",
+            entityId: contact.id.uuidString,
+            operation: .deleteContact,
+            payload: DeleteContactOutboxPayload(contactId: contact.id.uuidString)
+        )
+        await scheduleSyncIfPossible()
     }
 }
 

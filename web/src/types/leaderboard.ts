@@ -1,7 +1,6 @@
 /** Snapshot of metrics for a timeframe (daily, weekly, all_time). */
 export interface MetricSnapshot {
   doorknocks: number
-  flyers: number
   leads: number
   conversations: number
   distance: number
@@ -14,7 +13,6 @@ export interface LeaderboardUser {
   avatar_url: string | null
   rank: number
   doorknocks: number
-  flyers: number
   leads: number
   conversations: number
   distance: number

@@ -45,21 +45,6 @@ final class HomesService {
             polygonGeoJSON: polygonGeoJSON
         )
 
-        let preparedRoads = try await CampaignRoadService.shared.prepareCampaignRoads(
-            campaignId: campaign.id.uuidString,
-            bounds: BoundingBox(from: polygon),
-            polygon: polygon
-        )
-        guard !preparedRoads.isEmpty else {
-            throw NSError(
-                domain: "QuickStart",
-                code: 502,
-                userInfo: [NSLocalizedDescriptionKey: "Quick Start roads could not be prepared for this area."]
-            )
-        }
-        await CampaignRoadService.shared.ensureLocalCache(campaignId: campaign.id.uuidString)
-        print("✅ [QuickStart] Prepared \(preparedRoads.count) roads")
-
         let provision = try await CampaignsAPI.shared.provisionCampaign(campaignId: campaign.id)
         let state = try await CampaignsAPI.shared.waitForProvisionReady(campaignId: campaign.id)
 

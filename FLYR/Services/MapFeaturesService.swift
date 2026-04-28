@@ -426,6 +426,7 @@ final class MapFeaturesService: ObservableObject {
     /// Tracks latest campaign fetch so stale async responses are ignored.
     private var activeCampaignRequestId: UUID?
     private var activeCampaignIdLower: String?
+    private let campaignRepository = CampaignRepository.shared
     
     private init() {}
 
@@ -443,6 +444,10 @@ final class MapFeaturesService: ObservableObject {
     private func isActiveCampaignRequest(campaignId: String, requestId: UUID?) -> Bool {
         guard let requestId else { return true }
         return activeCampaignRequestId == requestId && activeCampaignIdLower == campaignId.lowercased()
+    }
+
+    func isScopedToCampaign(_ campaignId: String) -> Bool {
+        activeCampaignIdLower == campaignId.lowercased()
     }
 
     func primeBuildingPolygons(campaignId: String, features: [GeoJSONFeature]) {
@@ -619,8 +624,31 @@ final class MapFeaturesService: ObservableObject {
             self.roads = RoadFeatureCollection(type: "FeatureCollection", features: [])
             self.silverBuildingLinks = [:]
         }
+
+        if let cachedBundle = await campaignRepository.getCampaignMapBundle(campaignId: campaignId),
+           isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) {
+            self.buildings = cachedBundle.buildings
+            self.addresses = cachedBundle.addresses
+            self.roads = cachedBundle.roads
+            self.silverBuildingLinks = cachedBundle.silverBuildingLinks
+            isLoading = false
+        } else {
+            self.roads = RoadFeatureCollection(type: "FeatureCollection", features: [])
+        }
+
+        guard NetworkMonitor.shared.isOnline else {
+            if (buildings?.features.isEmpty ?? true) && (addresses?.features.isEmpty ?? true) {
+                self.error = NSError(
+                    domain: "MapFeatures",
+                    code: -1009,
+                    userInfo: [NSLocalizedDescriptionKey: "Campaign data is not cached on this device yet."]
+                )
+            }
+            isLoading = false
+            return
+        }
         
-        // Fetch all four in parallel.
+        // Fetch the core campaign map data in parallel.
         // Buildings go through the backend API which routes Gold → Silver DB → S3 automatically.
         // Addresses come from DB (enriched with building link IDs and status metadata).
         // Silver links (building_address_links) are fetched directly — used by the iOS tap resolver
@@ -633,10 +661,10 @@ final class MapFeaturesService: ObservableObject {
                 await self.fetchCampaignAddresses(campaignId: campaignId, requestId: requestId)
             }
             group.addTask {
-                await self.fetchCampaignRoads(campaignId: campaignId, requestId: requestId)
+                await self.fetchSilverBuildingLinks(campaignId: campaignId, requestId: requestId)
             }
             group.addTask {
-                await self.fetchSilverBuildingLinks(campaignId: campaignId, requestId: requestId)
+                await self.fetchCampaignRoads(campaignId: campaignId, requestId: requestId)
             }
         }
 
@@ -719,16 +747,13 @@ final class MapFeaturesService: ObservableObject {
 
         self.buildings = payload.buildings
         self.addresses = payload.addresses
-        self.roads = payload.roads ?? RoadFeatureCollection(type: "FeatureCollection", features: [])
+        self.roads = RoadFeatureCollection(type: "FeatureCollection", features: [])
 
         print(
             "✅ [MapFeatures] Loaded route-scoped map for assignment \(assignmentId.uuidString) " +
             "buildings=\(payload.buildings.features.count) addresses=\(payload.addresses.features.count)"
         )
 
-        if payload.roads == nil {
-            await fetchCampaignRoads(campaignId: campaignId, requestId: requestId)
-        }
     }
     
     /// Fetch building polygons from the backend API.
@@ -739,6 +764,7 @@ final class MapFeaturesService: ObservableObject {
             let features = try await BuildingLinkService.shared.fetchBuildings(campaignId: campaignId)
             guard isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else { return }
             self.buildings = BuildingFeatureCollection(type: "FeatureCollection", features: features)
+            await campaignRepository.upsertBuildings(campaignId: campaignId, features: features)
             print("✅ [MapFeatures] Loaded \(features.count) building features from API (Gold/Silver/S3)")
         } catch {
             if isCancellationError(error) {
@@ -811,9 +837,6 @@ final class MapFeaturesService: ObservableObject {
                 await self.fetchCampaignAddresses(campaignId: campaignId, requestId: requestId)
             }
             group.addTask {
-                await self.fetchCampaignRoads(campaignId: campaignId, requestId: requestId)
-            }
-            group.addTask {
                 await self.fetchSilverBuildingLinks(campaignId: campaignId, requestId: requestId)
             }
         }
@@ -851,6 +874,7 @@ final class MapFeaturesService: ObservableObject {
             }
             guard isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else { return }
             self.silverBuildingLinks = dict
+            await campaignRepository.upsertBuildingAddressLinks(campaignId: campaignId, links: links)
             print("✅ [MapFeatures] Loaded \(links.count) Silver building links (\(dict.count) unique buildings)")
         } catch {
             print("⚠️ [MapFeatures] Silver links fetch failed (\(error))")
@@ -1068,46 +1092,26 @@ final class MapFeaturesService: ObservableObject {
             let result: AddressFeatureCollection = try decodeFeatureCollection(data)
             guard isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else { return }
             self.addresses = result
+            await campaignRepository.upsertAddresses(campaignId: campaignId, features: result.features)
             print("✅ [MapFeatures] Loaded \(result.features.count) addresses for campaign")
         } catch {
             print("❌ [MapFeatures] Error fetching campaign addresses: \(error)")
         }
     }
     
-    /// Fetch roads for a campaign using the new campaign-scoped architecture
-    /// Uses CampaignRoadService which checks local cache first, then Supabase
+    /// Load roads from local cache first, then refresh from the existing campaign road service.
     func fetchCampaignRoads(campaignId: String, requestId: UUID? = nil) async {
-        print("🛣️ [MapFeatures] Loading roads for campaign \(campaignId)")
-        
-        // Use CampaignRoadService which implements the new architecture:
-        // 1. Check local device cache first (fast, offline capable)
-        // 2. Fall back to Supabase canonical store
-        // 3. No Mapbox API calls during session loading
-        let corridors = await CampaignRoadService.shared.getRoadsForSession(campaignId: campaignId)
-        
-        // Convert corridors to RoadFeatureCollection for existing UI compatibility
-        let features = corridors.map { corridor -> RoadFeature in
-            let coords = corridor.polyline.map { [$0.longitude, $0.latitude] }
-            let geometry = MapFeatureGeoJSONGeometry(
-                type: "LineString",
-                coordinates: buildGeoJSONCoordinates(from: coords)
-            )
-            let properties = RoadProperties(
-                id: corridor.id,
-                gersId: nil,
-                roadClass: corridor.roadClass ?? "residential",
-                name: corridor.roadName
-            )
-            return RoadFeature(
-                type: "Feature",
-                id: corridor.id,
-                geometry: geometry,
-                properties: properties
-            )
+        if let cachedBundle = await campaignRepository.getCampaignMapBundle(campaignId: campaignId),
+           isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) {
+            self.roads = cachedBundle.roads
         }
+
+        let corridors = await CampaignRoadService.shared.getRoadsForSession(campaignId: campaignId)
+        await campaignRepository.upsertRoads(campaignId: campaignId, corridors: corridors)
         guard isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else { return }
-        self.roads = RoadFeatureCollection(type: "FeatureCollection", features: features)
-        print("✅ [MapFeatures] Loaded \(features.count) roads for campaign (zero Mapbox API calls)")
+        if let refreshedBundle = await campaignRepository.getCampaignMapBundle(campaignId: campaignId) {
+            self.roads = refreshedBundle.roads
+        }
     }
     
     // MARK: - Real-time Updates

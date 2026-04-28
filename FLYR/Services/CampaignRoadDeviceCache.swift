@@ -137,8 +137,12 @@ actor CampaignRoadDeviceCache {
             let corridors = cachedRoads.map { road in
                 StreetCorridor(id: road.id, polyline: road.polyline, roadName: road.roadName, roadClass: road.roadClass)
             }
+            let normalizedCorridors = StreetCorridor.ensuringUniqueIds(corridors)
+            if normalizedCorridors.map(\.id) != corridors.map(\.id) {
+                print("🛣️ [RoadDeviceCache] Normalized duplicate corridor IDs for campaign \(campaignId)")
+            }
             
-            return corridors
+            return normalizedCorridors
             
         } catch {
             print("❌ [RoadDeviceCache] Failed to load: \(error)")

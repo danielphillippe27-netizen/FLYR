@@ -7,14 +7,19 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test": "tsx --test app/lib/crm-sparse-enrich.test.ts"
+    "test": "tsx --test app/lib/crm-sparse-enrich.test.ts",
+    "test:stable-linker": "tsx lib/services/__tests__/StableLinkerService.test.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.758.0",
+    "@supabase/ssr": "^0.7.0",
     "@supabase/supabase-js": "^2.49.1",
+    "@turf/turf": "^7.3.1",
+    "livekit-server-sdk": "^2.15.1",
     "next": "^15.2.0",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "wkx": "^0.5.0"
   },
   "devDependencies": {
     "@types/node": "^22.13.5",

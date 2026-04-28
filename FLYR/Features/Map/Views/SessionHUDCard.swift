@@ -18,10 +18,15 @@ struct SessionHUDCard: View {
                         .fill(Color.gray.opacity(0.2))
                     RoundedRectangle(cornerRadius: 4)
                         .fill(Color.green)
-                        .frame(width: max(0, geometry.size.width * sessionManager.progressPercentage))
+                        .frame(width: max(0, geometry.size.width * sessionManager.goalProgressPercentage))
                 }
             }
             .frame(height: 8)
+
+            Text(sessionManager.goalProgressText)
+                .font(.flyrCaption)
+                .foregroundColor(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
 
             HStack(spacing: 16) {
                 StatColumn(title: "Time", value: formatTime(sessionManager.elapsedTime))

@@ -9,6 +9,7 @@ struct SessionStartView: View {
     @EnvironmentObject private var entitlementsService: EntitlementsService
     @EnvironmentObject private var uiState: AppUIState
     @StateObject private var authManager = AuthManager.shared
+    @ObservedObject private var workspaceContext = WorkspaceContext.shared
 
     /// When false, Cancel button is hidden (e.g. when used as Record tab root).
     var showCancelButton: Bool = true
@@ -31,7 +32,9 @@ struct SessionStartView: View {
     @State private var mapCampaign: CampaignV2?
     @State private var showCampaignMap: Bool = false
     @State private var showQuickCampaign: Bool = false
+    @State private var showNetworkingSession: Bool = false
     @State private var showPaywall: Bool = false
+    @State private var showJoinSessionCodeSheet: Bool = false
 
     @State private var routeDetailAssignmentSheetItem: SessionRouteAssignmentDetailSheetItem?
     @State private var openingRouteAssignmentId: UUID?
@@ -63,6 +66,9 @@ struct SessionStartView: View {
             .navigationDestination(isPresented: $showQuickCampaign) {
                 QuickStartMapView()
             }
+            .navigationDestination(isPresented: $showNetworkingSession) {
+                NetworkingSessionView()
+            }
             .navigationDestination(item: $plannerFarm) { farm in
                 FarmTouchPlannerView(
                     farmId: farm.id,
@@ -73,6 +79,10 @@ struct SessionStartView: View {
             }
             .sheet(isPresented: $showPaywall) {
                 PaywallView()
+            }
+            .sheet(isPresented: $showJoinSessionCodeSheet) {
+                JoinSessionCodeSheet()
+                    .environmentObject(uiState)
             }
             .sheet(item: $routeDetailAssignmentSheetItem) { item in
                 NavigationStack {
@@ -94,7 +104,7 @@ struct SessionStartView: View {
     private var scrollContent: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
-                quickCampaignButton
+                sessionActionButtons
                 campaignList
                 if !isLoadingData {
                     farmsList
@@ -129,36 +139,69 @@ struct SessionStartView: View {
 
     // MARK: - Campaign List
 
-    private var quickCampaignButton: some View {
-        Button {
-            HapticManager.light()
-            if entitlementsService.canUsePro {
-                showQuickCampaign = true
-            } else {
-                showPaywall = true
+    private var sessionActionButtons: some View {
+        HStack(spacing: 12) {
+            quickActionButton(
+                title: "Quick Start",
+                systemImage: "bolt.fill",
+                backgroundColor: .yellow
+            ) {
+                HapticManager.light()
+                if entitlementsService.canUsePro {
+                    showQuickCampaign = true
+                } else {
+                    showPaywall = true
+                }
             }
-        } label: {
-            HStack(spacing: 10) {
-                Image(systemName: "bolt.fill")
-                    .font(.flyrHeadline)
-                    .foregroundColor(.black)
-                Text("Quick Start")
-                    .font(.flyrHeadline)
-                    .foregroundColor(.black)
-                Spacer()
-                Image(systemName: "chevron.right")
-                    .font(.flyrCaption)
-                    .foregroundColor(.black.opacity(0.7))
+
+            quickActionButton(
+                title: "Network",
+                systemImage: "person.2.circle",
+                backgroundColor: .info
+            ) {
+                HapticManager.light()
+                showNetworkingSession = true
             }
-            .padding()
-            .frame(maxWidth: .infinity, alignment: .leading)
+
+            quickActionButton(
+                title: "Join Session",
+                systemImage: "person.2.fill",
+                backgroundColor: .success
+            ) {
+                HapticManager.light()
+                showJoinSessionCodeSheet = true
+            }
+        }
+        .padding(.horizontal)
+    }
+
+    private func quickActionButton(
+        title: String,
+        systemImage: String,
+        backgroundColor: Color,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            VStack(spacing: 10) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 24, weight: .semibold))
+                    .foregroundColor(.black)
+
+                Text(title)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundColor(.black)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.85)
+            }
+            .frame(maxWidth: .infinity, minHeight: 104)
+            .padding(.horizontal, 8)
             .background(
                 RoundedRectangle(cornerRadius: 12)
-                    .fill(Color.yellow)
+                    .fill(backgroundColor)
             )
         }
         .buttonStyle(.plain)
-        .padding(.horizontal)
     }
 
     private var campaignList: some View {
@@ -610,4 +653,154 @@ struct SessionStartView: View {
         }
     }
 
+}
+
+private struct JoinSessionCodeSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var uiState: AppUIState
+
+    @FocusState private var isCodeFieldFocused: Bool
+    @State private var sessionCode = ""
+    @State private var isJoining = false
+    @State private var errorMessage: String?
+
+    private let requiredCodeLength = 6
+
+    var body: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 20) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Label("Join a teammate's live session", systemImage: "person.2.fill")
+                        .font(.flyrHeadline)
+                        .foregroundStyle(.primary)
+                    Text("Enter the \(requiredCodeLength)-character team code. This joins the session only and does not merge workspaces.")
+                        .font(.flyrSubheadline)
+                        .foregroundStyle(.secondary)
+                }
+
+                TextField("ABC123", text: sessionCodeBinding)
+                    .textInputAutocapitalization(.characters)
+                    .autocorrectionDisabled()
+                    .font(.system(size: 28, weight: .bold, design: .rounded))
+                    .tracking(6)
+                    .multilineTextAlignment(.center)
+                    .padding(.vertical, 18)
+                    .padding(.horizontal, 16)
+                    .background(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .fill(Color.bgSecondary)
+                    )
+                    .focused($isCodeFieldFocused)
+                    .submitLabel(.go)
+                    .onSubmit {
+                        Task { await joinSession() }
+                    }
+
+                if let errorMessage, !errorMessage.isEmpty {
+                    Text(errorMessage)
+                        .font(.flyrCaption)
+                        .foregroundStyle(Color.error)
+                }
+
+                Button {
+                    Task { await joinSession() }
+                } label: {
+                    HStack {
+                        if isJoining {
+                            ProgressView()
+                                .tint(.white)
+                        } else {
+                            Image(systemName: "person.2.fill")
+                        }
+
+                        Text(isJoining ? "Joining..." : "Join Session")
+                            .font(.flyrHeadline)
+                    }
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity, minHeight: 54)
+                    .background(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .fill(canJoin ? Color.success : Color.gray.opacity(0.35))
+                    )
+                }
+                .buttonStyle(.plain)
+                .disabled(!canJoin || isJoining)
+
+                Spacer()
+            }
+            .padding(20)
+            .navigationTitle("Join Session")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Cancel") {
+                        dismiss()
+                    }
+                }
+            }
+        }
+        .presentationDetents([.medium])
+        .presentationDragIndicator(.visible)
+        .onAppear {
+            isCodeFieldFocused = true
+        }
+    }
+
+    private var canJoin: Bool {
+        sanitizedCode.count == requiredCodeLength
+    }
+
+    private var sanitizedCode: String {
+        sessionCode.uppercased().replacingOccurrences(of: "[^A-Z0-9]", with: "", options: .regularExpression)
+    }
+
+    private var sessionCodeBinding: Binding<String> {
+        Binding(
+            get: { sessionCode },
+            set: { newValue in
+                sessionCode = String(
+                    newValue
+                        .uppercased()
+                        .replacingOccurrences(of: "[^A-Z0-9]", with: "", options: .regularExpression)
+                        .prefix(requiredCodeLength)
+                )
+                errorMessage = nil
+            }
+        )
+    }
+
+    private func joinSession() async {
+        guard !isJoining else { return }
+        guard canJoin else {
+            errorMessage = "Enter the \(requiredCodeLength)-character code from your teammate."
+            return
+        }
+
+        isJoining = true
+        errorMessage = nil
+
+        defer { isJoining = false }
+
+        do {
+            let response = try await InviteService.shared.joinLiveSession(code: sanitizedCode)
+            guard let campaignIdString = response.campaignId,
+                  let campaignId = UUID(uuidString: campaignIdString),
+                  let sessionIdString = response.sessionId,
+                  let sessionId = UUID(uuidString: sessionIdString) else {
+                errorMessage = "The session opened, but the response was missing campaign details."
+                return
+            }
+
+            HapticManager.success()
+            uiState.beginLiveInviteHandoff(
+                campaignId: campaignId,
+                name: response.campaignTitle,
+                sourceSessionId: sessionId
+            )
+            dismiss()
+        } catch {
+            HapticManager.error()
+            errorMessage = error.localizedDescription
+        }
+    }
 }

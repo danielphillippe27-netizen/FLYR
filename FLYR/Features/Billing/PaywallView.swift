@@ -53,6 +53,7 @@ struct PaywallView: View {
     @Environment(\.openURL) private var openURL
     @EnvironmentObject var entitlementsService: EntitlementsService
     @EnvironmentObject var routeState: AppRouteState
+    @StateObject private var auth = AuthManager.shared
     @ObservedObject private var storeKit = StoreKitManager.shared
 
     @State private var selectedPlan: PlanKind = .monthly
@@ -292,7 +293,7 @@ struct PaywallView: View {
     // MARK: - Bottom section
 
     private var bottomSubscribeSection: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 10) {
             Button {
                 Task { await performPurchase() }
             } label: {
@@ -334,7 +335,7 @@ struct PaywallView: View {
             .foregroundColor(.white.opacity(0.8))
             .disabled(storeKit.isRestoring)
 
-            VStack(spacing: 6) {
+            HStack(spacing: 18) {
                 Button {
                     openLegalURL(appleStandardEULAURL)
                 } label: {
@@ -351,10 +352,27 @@ struct PaywallView: View {
                         .foregroundColor(.white.opacity(0.7))
                 }
             }
+
+            Button {
+                Task {
+                    await auth.signOut()
+                    routeState.clearPendingJoinToken()
+                    routeState.clearPendingChallengeToken()
+                    routeState.clearPasswordResetFlow()
+                    routeState.setRoute(.login)
+                }
+            } label: {
+                Text("Log out")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(.white.opacity(0.82))
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 6)
+            }
+            .buttonStyle(.plain)
         }
         .padding(.horizontal, 24)
         .padding(.top, 8)
-        .padding(.bottom, 16)
+        .padding(.bottom, 20)
         .background(Color.black)
     }
 

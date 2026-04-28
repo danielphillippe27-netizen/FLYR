@@ -1,6 +1,9 @@
 import Foundation
 
 enum Config {
+    private static let dialerEnabledWorkspaceIDsKey = "DIALER_ENABLED_WORKSPACE_IDS"
+    private static let dialerEnabledEmailsKey = "DIALER_ENABLED_EMAILS"
+
     private static func stringValue(for key: String) -> String? {
         let rawValue = (Bundle.main.object(forInfoDictionaryKey: key) as? String)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -15,6 +18,29 @@ enum Config {
     private static func urlValue(for key: String) -> URL? {
         guard let value = stringValue(for: key) else { return nil }
         return URL(string: value)
+    }
+
+    private static func uuidListValue(for key: String) -> [UUID] {
+        guard let rawValue = stringValue(for: key) else { return [] }
+
+        return rawValue
+            .split(separator: ",")
+            .compactMap { value in
+                UUID(uuidString: value.trimmingCharacters(in: .whitespacesAndNewlines))
+            }
+    }
+
+    private static func normalizedStringListValue(for key: String) -> [String] {
+        guard let rawValue = stringValue(for: key) else { return [] }
+
+        return rawValue
+            .split(separator: ",")
+            .map { value in
+                value
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .lowercased()
+            }
+            .filter { !$0.isEmpty }
     }
 
     static var mapboxAccessToken: String {
@@ -32,8 +58,48 @@ enum Config {
         return rawToken
     }
 
+    static var googleMapsAPIKey: String {
+        let rawKey = (Bundle.main.object(forInfoDictionaryKey: "GOOGLE_MAPS_API_KEY") as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !rawKey.isEmpty,
+              rawKey != "YOUR_GOOGLE_MAPS_API_KEY",
+              !rawKey.hasPrefix("$(") else {
+            return ""
+        }
+        return rawKey
+    }
+
     static var productionAppURL: URL {
         urlValue(for: "FLYR_PRO_API_URL") ?? URL(string: "https://flyrpro.app")!
+    }
+
+    static var dialerEnabledWorkspaceIDs: [UUID] {
+        uuidListValue(for: dialerEnabledWorkspaceIDsKey)
+    }
+
+    static var dialerEnabledEmails: Set<String> {
+        Set(normalizedStringListValue(for: dialerEnabledEmailsKey))
+    }
+
+    static func isDialerEnabled(workspaceID: UUID?, userEmail: String?) -> Bool {
+        let normalizedEmail = userEmail?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+
+        if let normalizedEmail,
+           dialerEnabledEmails.contains(normalizedEmail) {
+            return true
+        }
+
+        guard let workspaceID else {
+            return false
+        }
+
+        return dialerEnabledWorkspaceIDs.contains(workspaceID)
+    }
+
+    static func isDialerEnabledForWorkspace(_ workspaceID: UUID?) -> Bool {
+        isDialerEnabled(workspaceID: workspaceID, userEmail: nil)
     }
 
     static var legacyPasswordRecoveryProductionURL: URL {

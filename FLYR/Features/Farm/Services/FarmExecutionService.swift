@@ -4,9 +4,7 @@ actor FarmExecutionService {
     static let shared = FarmExecutionService()
 
     private let farmService = FarmService.shared
-    private let cycleService = FarmCycleService.shared
     private let touchService = FarmTouchService.shared
-    private let leadService = FarmLeadService.shared
 
     private init() {}
 
@@ -19,8 +17,12 @@ actor FarmExecutionService {
             return nil
         }
 
-        let cycles = try await cycleService.fetchCycles(farmId: touch.farmId)
-        let cycle = cycles.first(where: { touch.date >= $0.startDate && touch.date <= $0.endDate })
+        let allTouches = try await touchService.fetchTouches(farmId: touch.farmId)
+        let cycleNumber = FarmCycleResolver.resolveCycleNumber(
+            for: touch,
+            among: allTouches,
+            touchesPerInterval: max(1, farm.touchesPerInterval ?? farm.frequency)
+        )
 
         return FarmExecutionContext(
             farmId: farm.id,
@@ -30,8 +32,8 @@ actor FarmExecutionService {
             touchDate: touch.date,
             touchType: touch.type,
             campaignId: campaignId,
-            phaseId: cycle?.id,
-            phaseName: cycle?.cycleName
+            cycleNumber: cycleNumber,
+            cycleName: "Cycle \(cycleNumber)"
         )
     }
 
@@ -44,52 +46,15 @@ actor FarmExecutionService {
     ) async throws {
         _ = try await touchService.markExecuted(
             touchId: context.touchId,
-            phaseId: context.phaseId,
+            cycleNumber: context.cycleNumber,
             sessionId: sessionId,
             completedByUserId: userId,
             completedAt: completedAt,
             metrics: metrics
         )
-
-        try await refreshCycleResults(for: context.farmId)
     }
 
     func refreshCycleResults(for farmId: UUID) async throws {
-        let cycles = try await cycleService.fetchCycles(farmId: farmId)
-        guard !cycles.isEmpty else { return }
-
-        let touches = try await touchService.fetchTouches(farmId: farmId)
-        let leads = try await leadService.fetchLeads(farmId: farmId)
-
-        for cycle in cycles {
-            let cycleTouches = touches.filter { touch in
-                if let phaseId = touch.phaseId {
-                    return phaseId == cycle.id
-                }
-                return touch.date >= cycle.startDate && touch.date <= cycle.endDate
-            }
-
-            let touchIds = Set(cycleTouches.map(\.id))
-            let cycleLeads = leads.filter { lead in
-                guard let touchId = lead.touchId else { return false }
-                return touchIds.contains(touchId)
-            }
-
-            let completedTouches = cycleTouches.filter(\.completed)
-            let uniqueSessionCount = Set(completedTouches.compactMap(\.sessionId)).count
-            let uniqueUserCount = Set(completedTouches.compactMap(\.completedByUserId)).count
-
-            let results: [String: AnyCodable] = [
-                "planned_touches": AnyCodable(cycleTouches.count),
-                "completed_touches": AnyCodable(completedTouches.count),
-                "flyers_delivered": AnyCodable(completedTouches.filter { $0.type == .flyer }.count),
-                "knocks": AnyCodable(completedTouches.filter { $0.type == .doorKnock }.count),
-                "sessions": AnyCodable(uniqueSessionCount),
-                "users": AnyCodable(uniqueUserCount),
-                "leads": AnyCodable(cycleLeads.count)
-            ]
-
-            _ = try await cycleService.updateCycleResults(cycleId: cycle.id, results: results)
-        }
+        _ = farmId
     }
 }

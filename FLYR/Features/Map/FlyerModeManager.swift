@@ -9,7 +9,7 @@ struct FlyerAddress {
     let coordinate: CLLocationCoordinate2D
 }
 
-/// Manages flyer mode: visit outcomes use accepted raw + scored engine when available; never the displayed path.
+/// Manages flyer mode with direct proximity+dwell completion against address points.
 @MainActor
 final class FlyerModeManager: ObservableObject {
     static let proximityThresholdMeters: Double = 10.0
@@ -36,24 +36,12 @@ final class FlyerModeManager: ObservableObject {
             CampaignTargetResolver.flyerTargets(buildings: buildingFeatures, addresses: addressFeatures)
         )
 
-        syncFlyerTargetsWithSessionManager()
         currentAddress = nearestAddress(to: SessionManager.shared.currentLocation)
     }
 
     func load(targets: [ResolvedCampaignTarget]) {
         addresses = addressesFromFlyerTargets(targets)
-        syncFlyerTargetsWithSessionManager()
         currentAddress = nearestAddress(to: SessionManager.shared.currentLocation)
-    }
-
-    /// Register remaining addresses with SessionManager so scored visit engine uses accepted raw + corridor (never display path).
-    private func syncFlyerTargetsWithSessionManager() {
-        let ids = addresses.map(\.id.uuidString)
-        let centroids = Dictionary(uniqueKeysWithValues: addresses.map { ($0.id.uuidString, CLLocation(latitude: $0.coordinate.latitude, longitude: $0.coordinate.longitude)) })
-        SessionManager.shared.setFlyerTargets(ids: ids, centroids: centroids)
-        SessionManager.shared.onFlyerAddressesCompleted = { [weak self] completedIds in
-            self?.handleScoredCompletions(ids: completedIds)
-        }
     }
 
     func startObservingLocation() {
@@ -76,8 +64,6 @@ final class FlyerModeManager: ObservableObject {
         addresses = []
         currentAddress = nil
         dwellTracker = [:]
-        SessionManager.shared.setFlyerTargets(ids: [], centroids: [:])
-        SessionManager.shared.onFlyerAddressesCompleted = nil
     }
 
     private func addressesFromFlyerTargets(_ targets: [ResolvedCampaignTarget]) -> [FlyerAddress] {
@@ -123,11 +109,6 @@ final class FlyerModeManager: ObservableObject {
 
         let threshold = adaptiveThresholdMeters(for: location)
         currentAddress = nearestAddress(to: location)
-
-        // When SessionManager uses scored engine for flyer, completions come from accepted raw + corridor; skip legacy dwell completion.
-        if SessionManager.shared.isUsingScoredVisitForFlyer {
-            return
-        }
 
         // Keep dwell state only for addresses still within proximity.
         dwellTracker = dwellTracker.filter { addressId, _ in
@@ -176,47 +157,6 @@ final class FlyerModeManager: ObservableObject {
         addresses.remove(at: matchedIndex)
         dwellTracker[addressId] = nil
         currentAddress = nearestAddress(to: location)
-    }
-
-    /// Handle completions from scored visit engine (accepted raw + corridor). Updates UI and VisitsAPI.
-    private func handleScoredCompletions(ids: [String]) {
-        guard let campaignId = SessionManager.shared.campaignId else { return }
-        let sessionId = SessionManager.shared.sessionId
-        let location = SessionManager.shared.currentLocation
-
-        for idStr in ids {
-            guard let uuid = UUID(uuidString: idStr),
-                  addresses.contains(where: { $0.id == uuid }) else { continue }
-            let addressId = uuid
-            Task {
-                let completionStatus = self.automaticStatusForAddress?(addressId) ?? .delivered
-                do {
-                    if completionStatus == .delivered {
-                        try await VisitsAPI.shared.updateStatus(
-                            addressId: addressId,
-                            campaignId: campaignId,
-                            status: .delivered,
-                            notes: nil,
-                            sessionId: sessionId,
-                            sessionTargetId: nil,
-                            sessionEventType: .flyerLeft,
-                            location: location
-                        )
-                    }
-                    await MainActor.run {
-                        if let persistedIndex = self.addresses.firstIndex(where: { $0.id == addressId }) {
-                            self.addresses.remove(at: persistedIndex)
-                        }
-                        self.dwellTracker[addressId] = nil
-                        self.onAddressCompleted?(addressId, completionStatus)
-                        self.currentAddress = self.nearestAddress(to: SessionManager.shared.currentLocation)
-                        self.syncFlyerTargetsWithSessionManager()
-                    }
-                } catch {
-                    print("⚠️ [FlyerModeManager] Failed to persist scored flyer completion for \(addressId): \(error)")
-                }
-            }
-        }
     }
 
     private func adaptiveThresholdMeters(for location: CLLocation) -> Double {

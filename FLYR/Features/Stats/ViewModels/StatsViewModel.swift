@@ -21,6 +21,11 @@ final class StatsViewModel: ObservableObject {
             stats = try await statsService.fetchUserStats(userID: userID)
             await loadRanks(for: userID)
         } catch {
+            let nsError = error as NSError
+            let isCancelled = (nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled)
+                || error.localizedDescription.lowercased().contains("cancelled")
+            if isCancelled { return }
+
             errorMessage = "Failed to load stats: \(error.localizedDescription)"
             print("❌ Error loading stats: \(error)")
         }

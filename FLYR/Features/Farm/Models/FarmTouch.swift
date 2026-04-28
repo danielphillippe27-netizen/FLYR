@@ -49,7 +49,7 @@ enum FarmTouchType: String, Codable, CaseIterable, Identifiable, Sendable {
 struct FarmTouch: Identifiable, Codable, Equatable {
     let id: UUID
     let farmId: UUID
-    let phaseId: UUID?
+    let cycleNumber: Int?
     let date: Date
     let type: FarmTouchType
     let title: String
@@ -67,7 +67,7 @@ struct FarmTouch: Identifiable, Codable, Equatable {
     enum CodingKeys: String, CodingKey {
         case id
         case farmId = "farm_id"
-        case phaseId = "phase_id"
+        case cycleNumber = "cycle_number"
         case date
         case type
         case title
@@ -88,7 +88,7 @@ struct FarmTouch: Identifiable, Codable, Equatable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(UUID.self, forKey: .id)
         farmId = try container.decode(UUID.self, forKey: .farmId)
-        phaseId = try container.decodeIfPresent(UUID.self, forKey: .phaseId)
+        cycleNumber = try container.decodeIfPresent(Int.self, forKey: .cycleNumber)
         
         // Decode date (can be date-only string or full timestamp)
         if let dateString = try? container.decode(String.self, forKey: .date) {
@@ -124,7 +124,7 @@ struct FarmTouch: Identifiable, Codable, Equatable {
     init(
         id: UUID = UUID(),
         farmId: UUID,
-        phaseId: UUID? = nil,
+        cycleNumber: Int? = nil,
         date: Date,
         type: FarmTouchType,
         title: String,
@@ -141,7 +141,7 @@ struct FarmTouch: Identifiable, Codable, Equatable {
     ) {
         self.id = id
         self.farmId = farmId
-        self.phaseId = phaseId
+        self.cycleNumber = cycleNumber
         self.date = date
         self.type = type
         self.title = title
@@ -162,7 +162,7 @@ struct FarmTouch: Identifiable, Codable, Equatable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(id, forKey: .id)
         try container.encode(farmId, forKey: .farmId)
-        try container.encodeIfPresent(phaseId, forKey: .phaseId)
+        try container.encodeIfPresent(cycleNumber, forKey: .cycleNumber)
         
         // Encode date as date-only string
         let dateFormatter = DateFormatter()
@@ -184,4 +184,3 @@ struct FarmTouch: Identifiable, Codable, Equatable {
         try container.encode(createdAt, forKey: .createdAt)
     }
 }
-

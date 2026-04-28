@@ -5,7 +5,6 @@ struct ActivityView: View {
     @ObservedObject private var workspace = WorkspaceContext.shared
     @State private var selectedFilter: ActivityFeedFilter = .activity
     @State private var items: [ActivityFeedItem] = []
-    @State private var includeMembers = false
     @State private var isLoading = true
     @State private var errorMessage: String?
     @State private var selectedSummaryItem: EndSessionSummaryItem?
@@ -15,9 +14,6 @@ struct ActivityView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             filterTabs
-            if canIncludeMembers {
-                includeMembersToggle
-            }
             Group {
                 if isLoading {
                     loadingView
@@ -45,9 +41,6 @@ struct ActivityView: View {
         .onChange(of: selectedFilter) { _, _ in
             Task { await loadItems() }
         }
-        .onChange(of: includeMembers) { _, _ in
-            Task { await loadItems() }
-        }
         .alert("Couldn’t load session summary.", isPresented: $showSummaryError) {
             Button("OK", role: .cancel) {}
         }
@@ -60,15 +53,6 @@ struct ActivityView: View {
                 selectedSummaryItem = nil
             }
         }
-    }
-
-    private var canIncludeMembers: Bool {
-        guard let role = workspace.role?.lowercased() else { return false }
-        return role == "owner" || role == "admin" || role == "team_lead" || role == "lead"
-    }
-
-    private var includeMembersEnabled: Bool {
-        canIncludeMembers && includeMembers
     }
 
     private var filterTabs: some View {
@@ -92,19 +76,6 @@ struct ActivityView: View {
             }
             .frame(maxWidth: 420)
             Spacer(minLength: 0)
-        }
-    }
-
-    private var includeMembersToggle: some View {
-        HStack(spacing: 10) {
-            Toggle("", isOn: $includeMembers)
-                .labelsHidden()
-            Image(systemName: "person.2")
-                .font(.system(size: 18))
-                .foregroundColor(.secondary)
-            Text("Include other members' activity")
-                .font(.system(size: 17, weight: .semibold))
-                .foregroundColor(.text)
         }
     }
 
@@ -332,7 +303,7 @@ struct ActivityView: View {
             items = try await ActivityFeedService.shared.fetchItems(
                 userId: userId,
                 workspaceId: workspace.workspaceId,
-                includeMembers: includeMembersEnabled,
+                includeMembers: false,
                 filter: selectedFilter,
                 limit: 150
             )

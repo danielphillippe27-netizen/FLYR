@@ -1,239 +1,527 @@
-import { createClient } from "@supabase/supabase-js";
+/**
+ * Gold Address Service
+ * 
+ * Queries the Gold Standard municipal address table first,
+ * falls back to Tile Lambda for areas not covered by Gold data.
+ */
 
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+import { createAdminClient } from '@/lib/supabase/server';
+import { TileLambdaService, type LambdaSnapshotResponse } from './TileLambdaService';
 
-const GOLD_THRESHOLD = 10; // Minimum Gold addresses to use Gold path
-
-// Shape returned from get_gold_addresses_in_polygon_geojson RPC
-export interface GoldAddressRow {
-  id: string;
-  source_id: string | null;
-  street_number: string | null;
-  street_name: string | null;
-  unit: string | null;
-  city: string | null;
-  zip: string | null;
-  province: string | null;
-  country: string | null;
-  address_type: string | null;
-  precision: string | null;
-  street_number_normalized: number | null;
-  street_name_normalized: string | null;
-  zip_normalized: string | null;
-  geom_geojson: { type: string; coordinates: [number, number] } | null;
-}
-
-// Normalized shape written into campaign_addresses
-export interface NormalizedCampaignAddress {
-  campaign_id: string;
-  owner_id: string;
-  house_number: string | null;
-  street_name: string | null;
-  locality: string | null;
-  region: string | null;
-  postal_code: string | null;
-  country: string | null;
-  formatted: string;
-  geom: string | null; // GeoJSON geometry string for Supabase PostGIS insert
-  gers_id: string | null;
-  source: "gold" | "lambda" | "silver" | "bronze";
-}
-
-export type AddressSource = "gold" | "lambda" | "silver" | "bronze";
+const DEFAULT_GOLD_ADDRESS_LIMIT = 5000;
+const GOLD_ADDRESS_RPC_FILTERED = 'get_gold_addresses_in_polygon_geojson_filtered';
+const GOLD_RPC_PAGE_SIZE = 1000;
+const LEGACY_GOLD_RPC_CAP = 2500;
 
 export interface GoldAddressResult {
-  addresses: NormalizedCampaignAddress[];
-  source: AddressSource;
-  goldCount: number;
+  source: 'gold' | 'silver' | 'lambda';
+  addresses: any[];
+  buildings: any[];
+  counts: {
+    gold: number;
+    lambda: number;
+    total: number;
+  };
+  /** When source is lambda/silver, the Lambda snapshot so callers can reuse for buildings (avoid duplicate Lambda call). */
+  snapshot?: LambdaSnapshotResponse | null;
 }
 
-function adminClient() {
-  return createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
-}
-
-function isMissingProvinceSignatureError(message: string): boolean {
-  return (
-    message.includes(
-      "Could not find the function public.get_gold_addresses_in_polygon_geojson"
-    ) && message.includes("p_province")
-  );
-}
-
-function parseGoldRows(raw: unknown): GoldAddressRow[] {
-  if (!raw) return [];
-
-  if (Array.isArray(raw)) {
-    return raw as GoldAddressRow[];
+export class GoldAddressService {
+  private static applyRpcRange<T>(builder: T, from: number, to: number): T {
+    const query = builder as T & { range?: (from: number, to: number) => T };
+    return typeof query.range === 'function' ? query.range(from, to) : builder;
   }
 
-  if (typeof raw === "string") {
+  private static parseGoldAddressRows(raw: unknown): any[] {
+    if (!raw) return [];
+
+    if (Array.isArray(raw)) return raw;
+
+    if (typeof raw === 'string') {
+      try {
+        return this.parseGoldAddressRows(JSON.parse(raw));
+      } catch {
+        return [];
+      }
+    }
+
+    if (typeof raw === 'object') {
+      const obj = raw as Record<string, unknown>;
+      if (GOLD_ADDRESS_RPC_FILTERED in obj) {
+        return this.parseGoldAddressRows(obj[GOLD_ADDRESS_RPC_FILTERED]);
+      }
+      if ('get_gold_addresses_in_polygon_geojson' in obj) {
+        return this.parseGoldAddressRows(obj.get_gold_addresses_in_polygon_geojson);
+      }
+      if ('street_name' in obj || 'street_number' in obj || 'id' in obj) {
+        return [obj];
+      }
+    }
+
+    return [];
+  }
+
+  private static parseGoldBuildingRows(raw: unknown): any[] {
+    if (!raw) return [];
+
+    if (Array.isArray(raw)) {
+      // Row shape from RETURNS TABLE rpc
+      if (raw.length === 0) return [];
+      const first = raw[0] as Record<string, unknown>;
+      if ('geom_geojson' in first) return raw;
+      if (first?.type === 'Feature') {
+        return raw.map((feature) => this.featureToGoldBuildingRow(feature as Record<string, unknown>)).filter(Boolean);
+      }
+      return raw;
+    }
+
+    if (typeof raw === 'string') {
+      try {
+        return this.parseGoldBuildingRows(JSON.parse(raw));
+      } catch {
+        return [];
+      }
+    }
+
+    if (typeof raw === 'object') {
+      const obj = raw as Record<string, unknown>;
+
+      if ('get_gold_buildings_in_polygon_geojson' in obj) {
+        return this.parseGoldBuildingRows(obj.get_gold_buildings_in_polygon_geojson);
+      }
+
+      if (obj.type === 'FeatureCollection' && Array.isArray(obj.features)) {
+        return obj.features
+          .map((feature) => this.featureToGoldBuildingRow(feature as Record<string, unknown>))
+          .filter(Boolean);
+      }
+
+      if (obj.type === 'Feature') {
+        const one = this.featureToGoldBuildingRow(obj);
+        return one ? [one] : [];
+      }
+    }
+
+    return [];
+  }
+
+  private static featureToGoldBuildingRow(feature: Record<string, unknown>): any | null {
+    const geometry = feature.geometry as Record<string, unknown> | undefined;
+    if (!geometry) return null;
+    const props = (feature.properties as Record<string, unknown> | undefined) ?? {};
+    return {
+      id: props.id ?? feature.id ?? null,
+      source_id: props.source_id ?? null,
+      external_id: props.external_id ?? null,
+      area_sqm: props.area_sqm ?? null,
+      geom_geojson: JSON.stringify(geometry),
+      centroid_geojson: props.centroid_geojson ?? null,
+      building_type: props.building_type ?? null,
+    };
+  }
+
+  private static normalizeProvince(value?: string | null): string | null {
+    if (typeof value !== 'string') return null;
+    const trimmed = value.trim().toUpperCase();
+    return trimmed || null;
+  }
+
+  private static isMissingFunctionError(message: string, functionName: string): boolean {
+    return (
+      message.includes(`Could not find the function public.${functionName}`) ||
+      message.includes(`Could not find the function ${functionName}`)
+    );
+  }
+
+  private static async queryLegacyGoldAddresses(
+    supabase: ReturnType<typeof createAdminClient>,
+    polygonGeoJSON: string,
+    province?: string
+  ) {
+    const normalizedProvince = this.normalizeProvince(province);
+
+    const twoArgResult = await supabase.rpc(
+      'get_gold_addresses_in_polygon_geojson',
+      { p_polygon_geojson: polygonGeoJSON, p_province: normalizedProvince }
+    );
+
+    if (!twoArgResult.error) {
+      return twoArgResult;
+    }
+
+    const errorMessage = twoArgResult.error.message || '';
+    const twoArgMissing =
+      this.isMissingFunctionError(errorMessage, 'get_gold_addresses_in_polygon_geojson') &&
+      errorMessage.includes('p_province');
+
+    if (!twoArgMissing) {
+      return twoArgResult;
+    }
+
+    return supabase.rpc(
+      'get_gold_addresses_in_polygon_geojson',
+      { p_polygon_geojson: polygonGeoJSON }
+    );
+  }
+
+  private static async queryLegacyGoldAddressesPage(
+    supabase: ReturnType<typeof createAdminClient>,
+    polygonGeoJSON: string,
+    province: string | undefined,
+    from: number,
+    to: number
+  ) {
+    const normalizedProvince = this.normalizeProvince(province);
+
+    const twoArgResult = await this.applyRpcRange(
+      supabase.rpc(
+        'get_gold_addresses_in_polygon_geojson',
+        { p_polygon_geojson: polygonGeoJSON, p_province: normalizedProvince }
+      ),
+      from,
+      to
+    );
+
+    if (!twoArgResult.error) {
+      return twoArgResult;
+    }
+
+    const errorMessage = twoArgResult.error.message || '';
+    const twoArgMissing =
+      this.isMissingFunctionError(errorMessage, 'get_gold_addresses_in_polygon_geojson') &&
+      errorMessage.includes('p_province');
+
+    if (!twoArgMissing) {
+      return twoArgResult;
+    }
+
+    return this.applyRpcRange(
+      supabase.rpc(
+        'get_gold_addresses_in_polygon_geojson',
+        { p_polygon_geojson: polygonGeoJSON }
+      ),
+      from,
+      to
+    );
+  }
+
+  /**
+   * Handles mixed DB states where either the new single-signature RPC exists
+   * or older overloaded RPC signatures are still deployed.
+   */
+  private static async queryGoldAddresses(
+    supabase: ReturnType<typeof createAdminClient>,
+    polygonGeoJSON: string,
+    province?: string
+  ) {
+    const normalizedProvince = this.normalizeProvince(province);
+    const filteredResult = await supabase.rpc(
+      GOLD_ADDRESS_RPC_FILTERED,
+      { p_polygon_geojson: polygonGeoJSON, p_province: normalizedProvince }
+    );
+
+    if (!filteredResult.error) {
+      return filteredResult;
+    }
+
+    const errorMessage = filteredResult.error.message || '';
+    if (!this.isMissingFunctionError(errorMessage, GOLD_ADDRESS_RPC_FILTERED)) {
+      return filteredResult;
+    }
+
+    return this.queryLegacyGoldAddresses(supabase, polygonGeoJSON, normalizedProvince ?? undefined);
+  }
+
+  private static async queryGoldAddressesPage(
+    supabase: ReturnType<typeof createAdminClient>,
+    polygonGeoJSON: string,
+    province: string | undefined,
+    from: number,
+    to: number
+  ) {
+    const normalizedProvince = this.normalizeProvince(province);
+    const filteredResult = await this.applyRpcRange(
+      supabase.rpc(
+        GOLD_ADDRESS_RPC_FILTERED,
+        { p_polygon_geojson: polygonGeoJSON, p_province: normalizedProvince }
+      ),
+      from,
+      to
+    );
+
+    if (!filteredResult.error) {
+      return filteredResult;
+    }
+
+    const errorMessage = filteredResult.error.message || '';
+    if (!this.isMissingFunctionError(errorMessage, GOLD_ADDRESS_RPC_FILTERED)) {
+      return filteredResult;
+    }
+
+    return this.queryLegacyGoldAddressesPage(
+      supabase,
+      polygonGeoJSON,
+      normalizedProvince ?? undefined,
+      from,
+      to
+    );
+  }
+
+  private static async fetchGoldAddressesWithLimit(
+    supabase: ReturnType<typeof createAdminClient>,
+    polygonGeoJSON: string,
+    province: string | undefined,
+    limit: number
+  ): Promise<any[]> {
+    const collectPages = async (provinceOverride?: string) => {
+      const rows: any[] = [];
+
+      for (let from = 0; rows.length < limit; from += GOLD_RPC_PAGE_SIZE) {
+        const to = from + Math.min(GOLD_RPC_PAGE_SIZE, limit - rows.length) - 1;
+        const { data, error } = await this.queryGoldAddressesPage(
+          supabase,
+          polygonGeoJSON,
+          provinceOverride,
+          from,
+          to
+        );
+
+        if (error) {
+          throw error;
+        }
+
+        const batch = this.parseGoldAddressRows(data);
+        if (batch.length === 0) break;
+
+        rows.push(...batch);
+        if (batch.length < GOLD_RPC_PAGE_SIZE) break;
+      }
+
+      return rows.slice(0, limit);
+    };
+
+    const normalizedProvince = this.normalizeProvince(province);
+    const primaryRows = await collectPages(normalizedProvince ?? undefined);
+
+    if (primaryRows.length === 0 && normalizedProvince) {
+      const fallbackRows = await collectPages(undefined);
+      if (fallbackRows.length > 0) {
+        console.warn(
+          `[GoldAddressService] Province-filtered query returned 0 for ${normalizedProvince}; unfiltered returned ${fallbackRows.length}`
+        );
+        return fallbackRows;
+      }
+    }
+
+    return primaryRows;
+  }
+
+  /**
+   * Fetch addresses from Gold Standard database
+   * Returns addresses with geom as GeoJSON string for easy insertion
+   */
+  static async fetchAddressesInPolygon(
+    polygon: GeoJSON.Polygon,
+    province?: string,
+    limit: number = DEFAULT_GOLD_ADDRESS_LIMIT
+  ): Promise<any[]> {
+    const supabase = createAdminClient();
+    const polygonGeoJSON = JSON.stringify(polygon);
+    
+    console.log('[GoldAddressService] Querying Gold Standard addresses...');
+    
     try {
-      return parseGoldRows(JSON.parse(raw));
-    } catch {
+      const goldAddresses = await this.fetchGoldAddressesWithLimit(
+        supabase,
+        polygonGeoJSON,
+        province,
+        limit
+      );
+
+      console.log(`[GoldAddressService] Found ${goldAddresses.length} Gold addresses`);
+      return goldAddresses;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn('[GoldAddressService] Gold query error:', message);
       return [];
     }
   }
 
-  if (typeof raw === "object") {
-    const obj = raw as Record<string, unknown>;
+  /**
+   * Get addresses for a campaign polygon
+   * Priority: Gold table → Tile Lambda (fallback)
+   */
+  static async getAddressesForPolygon(
+    campaignId: string,
+    polygon: GeoJSON.Polygon,
+    regionCode: string = 'ON'
+  ): Promise<GoldAddressResult> {
+    console.log('[GoldAddressService] Starting hybrid address lookup...');
+    
+    const supabase = createAdminClient();
+    
+    // Convert polygon to GeoJSON string for PostGIS
+    const polygonGeoJSON = JSON.stringify(polygon);
+    
+    // =============================================================================
+    // STEP 1: Query Gold Standard addresses within polygon (with GeoJSON geom)
+    // =============================================================================
+    console.log('[GoldAddressService] Querying Gold Standard table...');
+    
+    const normalizedRegion = this.normalizeProvince(regionCode);
+    let goldAddresses: any[] = [];
 
-    if ("get_gold_addresses_in_polygon_geojson" in obj) {
-      return parseGoldRows(obj.get_gold_addresses_in_polygon_geojson);
+    try {
+      goldAddresses = await this.fetchGoldAddressesWithLimit(
+        supabase,
+        polygonGeoJSON,
+        normalizedRegion ?? undefined,
+        DEFAULT_GOLD_ADDRESS_LIMIT
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn('[GoldAddressService] Gold query error:', message);
     }
 
-    if ("street_name" in obj || "street_number" in obj || "id" in obj) {
-      return [obj as unknown as GoldAddressRow];
-    }
-  }
-
-  return [];
-}
-
-async function queryGoldAddressesRPC(
-  polygonGeoJSON: string,
-  province?: string
-) {
-  const supabase = adminClient();
-  const normalizedProvince = province?.trim().toUpperCase();
-
-  if (normalizedProvince) {
-    const twoArg = await supabase.rpc("get_gold_addresses_in_polygon_geojson", {
-      p_polygon_geojson: polygonGeoJSON,
-      p_province: normalizedProvince,
-    });
-
-    if (!twoArg.error) return twoArg;
-
-    if (!isMissingProvinceSignatureError(twoArg.error.message ?? "")) {
-      return twoArg;
-    }
-  }
-
-  return supabase.rpc("get_gold_addresses_in_polygon_geojson", {
-    p_polygon_geojson: polygonGeoJSON,
-  });
-}
-
-function formatAddress(row: GoldAddressRow): string {
-  const parts: string[] = [];
-  if (row.street_number) parts.push(row.street_number);
-  if (row.unit) parts.push(`Unit ${row.unit}`);
-  if (row.street_name) parts.push(row.street_name);
-  if (row.city) parts.push(row.city);
-  if (row.province) parts.push(row.province);
-  if (row.zip) parts.push(row.zip);
-  return parts.join(", ");
-}
-
-function normalizeGoldRow(
-  row: GoldAddressRow,
-  campaignId: string,
-  ownerId: string
-): NormalizedCampaignAddress {
-  return {
-    campaign_id:  campaignId,
-    owner_id:     ownerId,
-    house_number: row.street_number ?? null,
-    street_name:  row.street_name ?? null,
-    locality:     row.city ?? null,
-    region:       row.province ?? null,
-    postal_code:  row.zip ?? null,
-    country:      row.country ?? null,
-    formatted:    formatAddress(row),
-    geom:         row.geom_geojson ? JSON.stringify(row.geom_geojson) : null,
-    gers_id:      null,
-    source:       "gold",
-  };
-}
-
-/**
- * Queries ref_addresses_gold within a polygon and returns normalized campaign addresses.
- *
- * If the Gold count is below GOLD_THRESHOLD, returns source: 'lambda' so the caller
- * can continue with Lambda/S3 path, but still includes the Gold rows so the caller
- * can merge them with Lambda results.
- */
-export async function getGoldAddressesForPolygon(
-  campaignId: string,
-  ownerId: string,
-  polygonGeoJSON: string,
-  province?: string
-): Promise<GoldAddressResult> {
-  const normalizedProvince = province?.trim().toUpperCase();
-  const { data, error } = await queryGoldAddressesRPC(
-    polygonGeoJSON,
-    normalizedProvince
-  );
-
-  if (error) {
-    console.error("[GoldAddressService] RPC error:", error, {
-      campaignId,
-      province: normalizedProvince ?? null,
-    });
-    return { addresses: [], source: "lambda", goldCount: 0 };
-  }
-
-  let rows: GoldAddressRow[] = parseGoldRows(data);
-
-  // If a region filter was applied and yielded zero, retry unfiltered once.
-  if (rows.length === 0 && normalizedProvince) {
-    const fallback = await queryGoldAddressesRPC(polygonGeoJSON);
-    if (!fallback.error) {
-      const unfilteredRows = parseGoldRows(fallback.data);
-      if (unfilteredRows.length > 0) {
-        console.warn(
-          `[GoldAddressService] Province-filtered Gold query returned 0 for ${normalizedProvince}; unfiltered returned ${unfilteredRows.length}`
-        );
-        rows = unfilteredRows;
+    const goldCount = goldAddresses.length;
+    console.log(`[GoldAddressService] Found ${goldCount} Gold Standard addresses`);
+    const shouldTopUpFromLambda =
+      goldCount >= LEGACY_GOLD_RPC_CAP && DEFAULT_GOLD_ADDRESS_LIMIT > goldCount;
+    
+    // =============================================================================
+    // STEP 2: If Gold has good coverage, use it exclusively
+    // =============================================================================
+    if (goldCount >= 10 && !shouldTopUpFromLambda) {
+      console.log('[GoldAddressService] Using Gold Standard exclusively');
+      
+      // Also get buildings from Gold if available (with GeoJSON)
+      const { data: goldBuildingsRaw, error: buildingsError } = await supabase.rpc(
+        'get_gold_buildings_in_polygon_geojson',
+        { p_polygon_geojson: polygonGeoJSON }
+      );
+      
+      if (buildingsError) {
+        console.warn('[GoldAddressService] Gold buildings query error:', buildingsError.message);
       }
+      
+      const goldBuildings = this.parseGoldBuildingRows(goldBuildingsRaw);
+
+      return {
+        source: 'gold',
+        addresses: goldAddresses || [],
+        buildings: goldBuildings || [],
+        counts: {
+          gold: goldCount,
+          lambda: 0,
+          total: goldCount
+        }
+      };
     }
-  }
 
-  const goldCount = rows.length;
-  const addresses = rows.map((r) => normalizeGoldRow(r, campaignId, ownerId));
-
-  if (goldCount < GOLD_THRESHOLD) {
-    console.log(
-      `[GoldAddressService] Gold count ${goldCount} < ${GOLD_THRESHOLD}, using Lambda path (with Gold merge candidates)`
+    if (shouldTopUpFromLambda) {
+      console.log('[GoldAddressService] Gold RPC appears capped at 2500 rows, topping up with Lambda...');
+    }
+    
+    // =============================================================================
+    // STEP 3: Fallback to Tile Lambda for areas not covered by Gold
+    // =============================================================================
+    console.log('[GoldAddressService] Gold coverage insufficient, falling back to Tile Lambda...');
+    
+    const snapshot = await TileLambdaService.generateSnapshots(
+      polygon,
+      regionCode,
+      campaignId,
+      {
+        limitBuildings: 10000,
+        limitAddresses: 10000,
+        includeRoads: false,
+      }
     );
-    return { addresses, source: "lambda", goldCount };
-  }
-
-  console.log(
-    `[GoldAddressService] Gold path: ${goldCount} addresses for campaign ${campaignId}`
-  );
-  return { addresses, source: "gold", goldCount };
-}
-
-/**
- * Inserts or replaces campaign_addresses for a campaign (deletes existing first).
- * Returns count of inserted rows.
- */
-export async function insertCampaignAddresses(
-  campaignId: string,
-  addresses: NormalizedCampaignAddress[]
-): Promise<number> {
-  if (addresses.length === 0) return 0;
-  const supabase = adminClient();
-
-  // Clear existing addresses for this campaign to allow re-provision
-  await supabase
-    .from("campaign_addresses")
-    .delete()
-    .eq("campaign_id", campaignId);
-
-  const BATCH = 500;
-  let inserted = 0;
-  for (let i = 0; i < addresses.length; i += BATCH) {
-    const batch = addresses.slice(i, i + BATCH);
-    const { error } = await supabase.from("campaign_addresses").insert(batch);
-    if (error) {
-      console.error(`[GoldAddressService] Insert batch ${i} error:`, error);
-      throw error;
+    
+    const addressData = await TileLambdaService.downloadAddresses(snapshot.urls.addresses);
+    const lambdaAddresses = TileLambdaService.convertToCampaignAddresses(
+      addressData.features,
+      campaignId,
+      normalizedRegion
+    );
+    
+    console.log(`[GoldAddressService] Tile Lambda returned ${lambdaAddresses.length} addresses`);
+    
+    // =============================================================================
+    // STEP 4: Merge Gold + Lambda (if we had some Gold addresses)
+    // =============================================================================
+    let finalAddresses = lambdaAddresses;
+    
+    if (goldCount > 0 && goldAddresses) {
+      // Convert Gold addresses to campaign format
+      const goldAsCampaign = goldAddresses.map((addr: any) => ({
+        campaign_id: campaignId,
+        formatted: `${addr.street_number} ${addr.street_name}${addr.unit ? ' ' + addr.unit : ''}, ${addr.city}`,
+        house_number: addr.street_number,
+        street_name: addr.street_name,
+        locality: addr.city,
+        region: this.normalizeProvince(addr.province) ?? normalizedRegion,
+        postal_code: addr.zip,
+        coordinate: { lat: addr.lat, lon: addr.lon },
+        geom: addr.geom_geojson, // GeoJSON string from RPC
+        source: 'gold' as const,
+        gers_id: null,
+      }));
+      
+      // Deduplicate: Prefer Gold over Lambda for same location
+      const addressMap = new Map();
+      
+      // Add Lambda addresses first
+      lambdaAddresses.forEach((addr: any) => {
+        const key = `${addr.house_number?.toLowerCase()}|${addr.street_name?.toLowerCase()}`;
+        addressMap.set(key, addr);
+      });
+      
+      // Overwrite with Gold addresses (higher priority)
+      goldAsCampaign.forEach((addr: any) => {
+        const key = `${addr.house_number?.toLowerCase()}|${addr.street_name?.toLowerCase()}`;
+        addressMap.set(key, addr);
+      });
+      
+      finalAddresses = Array.from(addressMap.values()).slice(0, DEFAULT_GOLD_ADDRESS_LIMIT);
+      console.log(`[GoldAddressService] Merged: ${goldCount} Gold + ${lambdaAddresses.length} Lambda = ${finalAddresses.length} total`);
     }
-    inserted += batch.length;
+    
+    return {
+      source: goldCount > 0 ? 'silver' : 'lambda',
+      addresses: finalAddresses,
+      buildings: [], // Buildings come from Lambda snapshot (use result.snapshot for BuildingAdapter)
+      counts: {
+        gold: goldCount,
+        lambda: lambdaAddresses.length,
+        total: finalAddresses.length
+      },
+      snapshot, // Reuse in provision so we don't call Lambda again for buildings
+    };
   }
-  console.log(`[GoldAddressService] Inserted ${inserted} addresses`);
-  return inserted;
+  
+  /**
+   * Get buildings for a campaign polygon
+   * Uses Gold table first, falls back to Lambda
+   */
+  static async getBuildingsForPolygon(
+    polygon: GeoJSON.Polygon
+  ): Promise<{ buildings: any[]; source: 'gold' | 'lambda' }> {
+    const supabase = createAdminClient();
+    const polygonGeoJSON = JSON.stringify(polygon);
+    
+    // Try Gold first (with GeoJSON)
+    const { data: goldBuildings, error } = await supabase.rpc(
+      'get_gold_buildings_in_polygon_geojson',
+      { p_polygon_geojson: polygonGeoJSON }
+    );
+    
+    if (!error && goldBuildings && goldBuildings.length > 0) {
+      console.log(`[GoldAddressService] Using ${goldBuildings.length} Gold buildings`);
+      return { buildings: goldBuildings, source: 'gold' };
+    }
+    
+    // Fall back to Lambda buildings (returned separately)
+    return { buildings: [], source: 'lambda' };
+  }
 }

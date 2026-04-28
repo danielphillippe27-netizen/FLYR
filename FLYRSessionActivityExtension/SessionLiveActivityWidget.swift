@@ -18,15 +18,16 @@ struct SessionLiveActivityWidget: Widget {
                 }
 
                 DynamicIslandExpandedRegion(.trailing) {
-                    Text("\(context.state.completedCount)")
+                    Text(context.state.progressText)
                         .font(.headline.monospacedDigit())
                         .foregroundStyle(.white)
                 }
 
                 DynamicIslandExpandedRegion(.center) {
-                    Text("Doors knocked")
+                    Text(context.state.goalLabel)
                         .font(.caption)
                         .foregroundStyle(.white.opacity(0.72))
+                        .lineLimit(1)
                 }
 
                 DynamicIslandExpandedRegion(.bottom) {
@@ -47,7 +48,7 @@ struct SessionLiveActivityWidget: Widget {
                     }
                 }
             } compactLeading: {
-                Text("\(context.state.completedCount)")
+                Text(context.state.progressText)
                     .font(.caption2.monospacedDigit())
                     .foregroundStyle(.white)
             } compactTrailing: {
@@ -78,12 +79,12 @@ private struct SessionLockScreenView: View {
 
             HStack(spacing: 18) {
                 HStack(spacing: 6) {
-                    Text("\(context.state.completedCount)")
+                    Text(context.state.progressText)
                         .font(.title2.monospacedDigit().weight(.bold))
                         .foregroundStyle(.white)
                         .lineLimit(1)
 
-                    Text("doors")
+                    Text(context.state.metricLabel)
                         .font(.headline.weight(.semibold))
                         .foregroundStyle(.white.opacity(0.82))
                         .lineLimit(1)

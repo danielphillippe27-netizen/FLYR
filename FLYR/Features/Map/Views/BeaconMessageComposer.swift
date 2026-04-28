@@ -1,39 +1,45 @@
-import SwiftUI
 import MessageUI
+import SwiftUI
 
-struct BeaconMessageDraft: Identifiable {
+enum BeaconMessageComposer {
+    static let unavailableUserMessage = "Couldn't open Messages. Try again in a moment."
+
+    static var canSendText: Bool {
+        MFMessageComposeViewController.canSendText()
+    }
+}
+
+struct BeaconMessageComposeRequest: Identifiable, Equatable {
     let id = UUID()
     let recipients: [String]
     let body: String
 }
 
-struct BeaconMessageComposer: UIViewControllerRepresentable {
-    let recipients: [String]
-    let body: String
+struct BeaconMessageComposeSheet: UIViewControllerRepresentable {
+    let request: BeaconMessageComposeRequest
     let onComplete: (MessageComposeResult) -> Void
 
-    @Environment(\.dismiss) private var dismiss
-
     func makeCoordinator() -> Coordinator {
-        Coordinator(dismiss: dismiss, onComplete: onComplete)
+        Coordinator(onComplete: onComplete)
     }
 
     func makeUIViewController(context: Context) -> MFMessageComposeViewController {
         let controller = MFMessageComposeViewController()
         controller.messageComposeDelegate = context.coordinator
-        controller.recipients = recipients
-        controller.body = body
+        controller.recipients = request.recipients
+        controller.body = request.body
         return controller
     }
 
-    func updateUIViewController(_ uiViewController: MFMessageComposeViewController, context: Context) {}
+    func updateUIViewController(_ uiViewController: MFMessageComposeViewController, context: Context) {
+        uiViewController.recipients = request.recipients
+        uiViewController.body = request.body
+    }
 
     final class Coordinator: NSObject, MFMessageComposeViewControllerDelegate {
-        private let dismiss: DismissAction
         private let onComplete: (MessageComposeResult) -> Void
 
-        init(dismiss: DismissAction, onComplete: @escaping (MessageComposeResult) -> Void) {
-            self.dismiss = dismiss
+        init(onComplete: @escaping (MessageComposeResult) -> Void) {
             self.onComplete = onComplete
         }
 
@@ -42,7 +48,19 @@ struct BeaconMessageComposer: UIViewControllerRepresentable {
             didFinishWith result: MessageComposeResult
         ) {
             onComplete(result)
-            dismiss()
+            controller.dismiss(animated: true)
         }
+    }
+}
+
+struct BeaconActivityShareSheet: UIViewControllerRepresentable {
+    let activityItems: [Any]
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: activityItems, applicationActivities: nil)
+    }
+
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {
+        // No-op.
     }
 }

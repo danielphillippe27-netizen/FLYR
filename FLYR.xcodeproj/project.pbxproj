@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		256A6DB64C951F7679B03285 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 79E245EF5F24004170C35541 /* Foundation.framework */; };
+		30A113B02F9C567D00F50F88 /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = A1B2C3D4E5F60718293A4B5C /* GRDB */; };
 		30A4A5E22EA70F3500FA72B1 /* Auth in Frameworks */ = {isa = PBXBuildFile; productRef = 30A4A5E12EA70F3500FA72B1 /* Auth */; };
 		30A4A5E42EA70F3500FA72B1 /* Functions in Frameworks */ = {isa = PBXBuildFile; productRef = 30A4A5E32EA70F3500FA72B1 /* Functions */; };
 		30A4A5E62EA70F3500FA72B1 /* PostgREST in Frameworks */ = {isa = PBXBuildFile; productRef = 30A4A5E52EA70F3500FA72B1 /* PostgREST */; };
@@ -20,6 +21,8 @@
 		30DC41E02F35A3A5003EBA4A /* GoogleSignInSwift in Frameworks */ = {isa = PBXBuildFile; productRef = 30DC41DF2F35A3A5003EBA4A /* GoogleSignInSwift */; };
 		58364365322F42ACD84162FE /* FLYRSessionActivityExtension.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 6D459D5D3353C7164A9DE29E /* FLYRSessionActivityExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		6E6070619E28865FB84BCA38 /* SessionLiveActivityWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5194BCD47B2F8D7EAA1E888C /* SessionLiveActivityWidget.swift */; };
+		7B3EAA072F50A001003EBA4A /* LiveKit in Frameworks */ = {isa = PBXBuildFile; productRef = 7B3EAA062F50A001003EBA4A /* LiveKit */; };
+		9A1B2C3D4E5F60718293A4B5 /* GoogleMaps in Frameworks */ = {isa = PBXBuildFile; productRef = 9A1B2C3D4E5F60718293A4B7 /* GoogleMaps */; };
 		B666D9B179DB98D0135C86D4 /* SessionLiveActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1F739542582267E77AA500C4 /* SessionLiveActivityAttributes.swift */; };
 		F4EA04B3F2333EC3DE50F0FB /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AA7395B8BD595392DE025A5C /* Assets.xcassets */; };
 		FF2316BFD5B89C25757FBD16 /* FLYRSessionActivityBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 91CCBD85356FC43A6E8767FE /* FLYRSessionActivityBundle.swift */; };
@@ -113,6 +116,8 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				30A113B02F9C567D00F50F88 /* GRDB in Frameworks */,
+				7B3EAA072F50A001003EBA4A /* LiveKit in Frameworks */,
 				30DC41E02F35A3A5003EBA4A /* GoogleSignInSwift in Frameworks */,
 				30A4A5E62EA70F3500FA72B1 /* PostgREST in Frameworks */,
 				30A4A5E42EA70F3500FA72B1 /* Functions in Frameworks */,
@@ -123,6 +128,7 @@
 				30A4A6182EA71CB500FA72B1 /* GoogleSignIn in Frameworks */,
 				30A4A5E82EA70F3500FA72B1 /* Realtime in Frameworks */,
 				30A4A6222EA71CC000FA72B1 /* Lottie in Frameworks */,
+				9A1B2C3D4E5F60718293A4B5 /* GoogleMaps in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -242,6 +248,9 @@
 				30A4A6192EA71CB500FA72B1 /* GoogleSignIn */,
 				30DC41DF2F35A3A5003EBA4A /* GoogleSignInSwift */,
 				30A4A6212EA71CC000FA72B1 /* Lottie */,
+				9A1B2C3D4E5F60718293A4B7 /* GoogleMaps */,
+				7B3EAA062F50A001003EBA4A /* LiveKit */,
+				A1B2C3D4E5F60718293A4B5C /* GRDB */,
 			);
 			productName = FLYR;
 			productReference = 30A4A57E2EA6CD9800FA72B1 /* FLYR.app */;
@@ -346,6 +355,9 @@
 				30A4A6142EA71CA500FA72B1 /* XCRemoteSwiftPackageReference "mapbox-maps-ios" */,
 				30A4A6172EA71CB500FA72B1 /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */,
 				30A4A6202EA71CC000FA72B1 /* XCRemoteSwiftPackageReference "lottie-ios" */,
+				9A1B2C3D4E5F60718293A4B6 /* XCRemoteSwiftPackageReference "ios-maps-sdk" */,
+				7B3EAA052F50A001003EBA4A /* XCRemoteSwiftPackageReference "client-sdk-swift" */,
+				A1B2C3D4E5F60718293A4B5B /* XCRemoteSwiftPackageReference "GRDB.swift" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 30A4A57F2EA6CD9800FA72B1 /* Products */;
@@ -621,8 +633,9 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = FLYR/FLYR.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 4;
 				DEVELOPMENT_TEAM = 2AR5T8ZYAS;
+				ENABLE_DEBUG_DYLIB = NO;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = FLYR/Info.plist;
@@ -659,7 +672,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = FLYR/FLYR.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 4;
 				DEVELOPMENT_TEAM = 2AR5T8ZYAS;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -695,7 +708,7 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 4;
 				DEVELOPMENT_TEAM = 2AR5T8ZYAS;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -717,7 +730,7 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 4;
 				DEVELOPMENT_TEAM = 2AR5T8ZYAS;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -738,7 +751,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 4;
 				DEVELOPMENT_TEAM = 2AR5T8ZYAS;
 				GENERATE_INFOPLIST_FILE = YES;
 				MARKETING_VERSION = 1.18;
@@ -758,7 +771,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 4;
 				DEVELOPMENT_TEAM = 2AR5T8ZYAS;
 				GENERATE_INFOPLIST_FILE = YES;
 				MARKETING_VERSION = 1.18;
@@ -780,8 +793,9 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CLANG_ENABLE_OBJC_WEAK = NO;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 4;
 				DEVELOPMENT_TEAM = 2AR5T8ZYAS;
+				ENABLE_DEBUG_DYLIB = NO;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = FLYRSessionActivityExtension/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -815,7 +829,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CLANG_ENABLE_OBJC_WEAK = NO;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 4;
 				DEVELOPMENT_TEAM = 2AR5T8ZYAS;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = FLYRSessionActivityExtension/Info.plist;
@@ -926,6 +940,30 @@
 				minimumVersion = 4.0.0;
 			};
 		};
+		7B3EAA052F50A001003EBA4A /* XCRemoteSwiftPackageReference "client-sdk-swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/livekit/client-sdk-swift.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.11.0;
+			};
+		};
+		9A1B2C3D4E5F60718293A4B6 /* XCRemoteSwiftPackageReference "ios-maps-sdk" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/googlemaps/ios-maps-sdk";
+			requirement = {
+				kind = exactVersion;
+				version = 10.12.0;
+			};
+		};
+		A1B2C3D4E5F60718293A4B5B /* XCRemoteSwiftPackageReference "GRDB.swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/groue/GRDB.swift.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 7.0.0;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -1008,6 +1046,21 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 30A4A6172EA71CB500FA72B1 /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */;
 			productName = GoogleSignInSwift;
+		};
+		7B3EAA062F50A001003EBA4A /* LiveKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 7B3EAA052F50A001003EBA4A /* XCRemoteSwiftPackageReference "client-sdk-swift" */;
+			productName = LiveKit;
+		};
+		9A1B2C3D4E5F60718293A4B7 /* GoogleMaps */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 9A1B2C3D4E5F60718293A4B6 /* XCRemoteSwiftPackageReference "ios-maps-sdk" */;
+			productName = GoogleMaps;
+		};
+		A1B2C3D4E5F60718293A4B5C /* GRDB */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A1B2C3D4E5F60718293A4B5B /* XCRemoteSwiftPackageReference "GRDB.swift" */;
+			productName = GRDB;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

@@ -5,6 +5,7 @@ struct SessionLiveActivityAttributes: ActivityAttributes {
     public struct ContentState: Codable, Hashable {
         var sessionLabel: String
         var goalLabel: String
+        var metricLabel: String
         var startedAt: Date
         var distanceMeters: Double
         var completedCount: Int

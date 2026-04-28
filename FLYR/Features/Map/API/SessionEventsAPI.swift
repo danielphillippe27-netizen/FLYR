@@ -39,15 +39,13 @@ final class SessionEventsAPI {
         lat: Double? = nil,
         lon: Double? = nil
     ) async throws {
-        let latVal = lat ?? 0.0
-        let lonVal = lon ?? 0.0
         // Use empty string for lifecycle events so PostgREST sends explicit TEXT (avoids uuid/text binding issues with null).
         let params: [String: AnyCodable] = [
             "p_session_id": AnyCodable(sessionId),
             "p_building_id": AnyCodable(""),
             "p_event_type": AnyCodable(eventType.rawValue),
-            "p_lat": AnyCodable(latVal),
-            "p_lon": AnyCodable(lonVal),
+            "p_lat": AnyCodable(lat as Any),
+            "p_lon": AnyCodable(lon as Any),
             "p_metadata": AnyCodable([String: AnyCodable]()),
         ]
         _ = try await client

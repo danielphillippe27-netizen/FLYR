@@ -7,16 +7,34 @@ actor FarmTouchService {
     private var client: SupabaseClient {
         SupabaseManager.shared.client
     }
+    private let farmService = FarmService.shared
     
     private init() {}
 
     private func isMissingExecutionColumnError(_ error: Error) -> Bool {
         let message = error.localizedDescription.lowercased()
-        return message.contains("phase_id")
+        return message.contains("cycle_number")
             || message.contains("session_id")
             || message.contains("completed_at")
             || message.contains("completed_by_user_id")
             || message.contains("execution_metrics")
+    }
+
+    private func resolvedCycleNumber(for touch: FarmTouch) async throws -> Int? {
+        if let cycleNumber = touch.cycleNumber {
+            return cycleNumber
+        }
+
+        guard let farm = try await farmService.fetchFarm(id: touch.farmId) else {
+            return nil
+        }
+
+        let existingTouches = try await fetchTouches(farmId: touch.farmId)
+        let siblingTouches = existingTouches.filter { $0.id != touch.id }
+        return FarmCycleResolver.nextCycleNumber(
+            existingTouches: siblingTouches,
+            touchesPerInterval: max(1, farm.touchesPerInterval ?? farm.frequency)
+        )
     }
     
     // MARK: - Fetch Touches
@@ -45,6 +63,45 @@ actor FarmTouchService {
         
         return response.first
     }
+
+    func ensureTouchForCycle(
+        farmId: UUID,
+        cycleNumber: Int,
+        campaignId: UUID,
+        touchType: FarmTouchType,
+        title: String,
+        date: Date
+    ) async throws -> FarmTouch {
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "yyyy-MM-dd"
+        dateFormatter.locale = Locale(identifier: "en_US_POSIX")
+
+        do {
+            let response = try await client
+                .rpc(
+                    "ensure_farm_touch_for_cycle",
+                    params: [
+                        "p_farm_id": AnyCodable(farmId),
+                        "p_cycle_number": AnyCodable(cycleNumber),
+                        "p_campaign_id": AnyCodable(campaignId),
+                        "p_touch_type": AnyCodable(touchType.rawValue),
+                        "p_touch_title": AnyCodable(title),
+                        "p_touch_date": AnyCodable(dateFormatter.string(from: date))
+                    ]
+                )
+                .execute()
+
+            return try JSONDecoder.supabaseDates.decode(FarmTouch.self, from: response.data)
+        } catch {
+            let existingTouches = try await fetchTouches(farmId: farmId)
+            if let exactMatch = existingTouches.first(where: {
+                $0.cycleNumber == cycleNumber && $0.campaignId == campaignId
+            }) {
+                return exactMatch
+            }
+            throw error
+        }
+    }
     
     // MARK: - Create Touch
     
@@ -65,8 +122,8 @@ actor FarmTouchService {
             insertData["notes"] = AnyCodable(notes)
         }
 
-        if let phaseId = touch.phaseId {
-            insertData["phase_id"] = AnyCodable(phaseId.uuidString)
+        if let cycleNumber = try await resolvedCycleNumber(for: touch) {
+            insertData["cycle_number"] = AnyCodable(cycleNumber)
         }
         
         if let orderIndex = touch.orderIndex {
@@ -114,6 +171,10 @@ actor FarmTouchService {
             if let notes = touch.notes {
                 data["notes"] = AnyCodable(notes)
             }
+
+            if let cycleNumber = touch.cycleNumber {
+                data["cycle_number"] = AnyCodable(cycleNumber)
+            }
             
             if let orderIndex = touch.orderIndex {
                 data["order_index"] = AnyCodable(orderIndex)
@@ -160,10 +221,10 @@ actor FarmTouchService {
             updateData["notes"] = AnyCodable(NSNull())
         }
 
-        if let phaseId = touch.phaseId {
-            updateData["phase_id"] = AnyCodable(phaseId.uuidString)
+        if let cycleNumber = touch.cycleNumber {
+            updateData["cycle_number"] = AnyCodable(cycleNumber)
         } else {
-            updateData["phase_id"] = AnyCodable(NSNull())
+            updateData["cycle_number"] = AnyCodable(NSNull())
         }
         
         if let orderIndex = touch.orderIndex {
@@ -265,7 +326,7 @@ actor FarmTouchService {
 
     func markExecuted(
         touchId: UUID,
-        phaseId: UUID?,
+        cycleNumber: Int?,
         sessionId: UUID,
         completedByUserId: UUID,
         completedAt: Date,
@@ -279,8 +340,8 @@ actor FarmTouchService {
             "completed_at": AnyCodable(executedAt),
             "execution_metrics": AnyCodable(metrics)
         ]
-        if let phaseId {
-            updateData["phase_id"] = AnyCodable(phaseId.uuidString)
+        if let cycleNumber {
+            updateData["cycle_number"] = AnyCodable(cycleNumber)
         }
 
         let response: [FarmTouch]
@@ -325,5 +386,3 @@ actor FarmTouchService {
             .execute()
     }
 }
-
-

@@ -63,6 +63,10 @@ type GeoJSONFeature = {
   properties?: Record<string, unknown>;
 };
 
+type HiddenBuildingRow = {
+  public_building_id: string;
+};
+
 function normalizedString(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
@@ -191,6 +195,29 @@ function dedupeFeatures(features: GeoJSONFeature[]): GeoJSONFeature[] {
   return deduped;
 }
 
+function buildingIdentifierCandidates(feature: GeoJSONFeature): string[] {
+  const identifiers = [
+    normalizedString(feature.properties?.gers_id),
+    normalizedString(feature.properties?.building_id),
+    normalizedString(feature.properties?.id),
+    normalizedString(feature.id),
+  ]
+    .filter((value): value is string => Boolean(value))
+    .map((value) => value.toLowerCase());
+
+  return Array.from(new Set(identifiers));
+}
+
+function filterHiddenBuildings(
+  features: GeoJSONFeature[],
+  hiddenBuildingIds: Set<string>
+): GeoJSONFeature[] {
+  if (hiddenBuildingIds.size == 0) return features;
+  return features.filter((feature) =>
+    !buildingIdentifierCandidates(feature).some((candidate) => hiddenBuildingIds.has(candidate))
+  );
+}
+
 /**
  * Fetch building GeoJSON from S3 using bucket + key from campaign_snapshots.
  * Returns null if the object cannot be fetched (caller falls back to empty).
@@ -266,6 +293,17 @@ export async function GET(request: Request, context: RouteContext): Promise<Resp
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
+    const { data: hiddenBuildings } = await supabase
+      .from("campaign_hidden_buildings")
+      .select("public_building_id")
+      .eq("campaign_id", campaignId);
+
+    const hiddenBuildingIds = new Set(
+      ((hiddenBuildings ?? []) as HiddenBuildingRow[])
+        .map((row) => row.public_building_id.trim().toLowerCase())
+        .filter((value) => value.length > 0)
+    );
+
     // -------------------------------------------------------------------------
     // Step 1: unified RPC (Gold → Silver → address_point)
     // -------------------------------------------------------------------------
@@ -282,8 +320,14 @@ export async function GET(request: Request, context: RouteContext): Promise<Resp
       const features = (fc?.features ?? []) as GeoJSONFeature[];
       const polygonFeatures = features.filter(isPolygonFeature);
 
-      rpcBasePolygonFeatures = polygonFeatures.filter((feature) => !isManualFeature(feature));
-      rpcManualPolygonFeatures = polygonFeatures.filter(isManualFeature);
+      rpcBasePolygonFeatures = filterHiddenBuildings(
+        polygonFeatures.filter((feature) => !isManualFeature(feature)),
+        hiddenBuildingIds
+      );
+      rpcManualPolygonFeatures = filterHiddenBuildings(
+        polygonFeatures.filter(isManualFeature),
+        hiddenBuildingIds
+      );
       rpcManualAddressProxyFeatures = features
         .map(buildManualAddressProxyFeature)
         .filter((feature): feature is GeoJSONFeature => feature !== null);
@@ -359,7 +403,7 @@ export async function GET(request: Request, context: RouteContext): Promise<Resp
             linkMap.set(publicBuildingId, bucket);
           }
 
-          const enriched = geojson.features.map((f) => {
+          const enriched = filterHiddenBuildings(geojson.features as GeoJSONFeature[], hiddenBuildingIds).map((f) => {
             const props = f.properties ?? {};
             // Match the same ID resolution used by StableLinkerService when it wrote the links
             const gersId =
@@ -396,8 +440,9 @@ export async function GET(request: Request, context: RouteContext): Promise<Resp
         }
 
         // No links yet — return raw S3 data as-is (e.g. campaign just created, links still writing)
-        const polygonFeatures = (geojson.features ?? []).filter((feature) =>
-          isPolygonFeature(feature as GeoJSONFeature)
+        const polygonFeatures = filterHiddenBuildings(
+          (geojson.features ?? []).filter((feature) => isPolygonFeature(feature as GeoJSONFeature)) as GeoJSONFeature[],
+          hiddenBuildingIds
         );
         const mergedFeatures = dedupeFeatures([
           ...(polygonFeatures as GeoJSONFeature[]),

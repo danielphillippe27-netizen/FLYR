@@ -17,32 +17,24 @@ export const TIMEFRAMES: { value: LeaderboardTimeframe; label: string }[] = [
 function parseSnapshot(raw: unknown): MetricSnapshot {
   if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
     const o = raw as Record<string, unknown>
-    const doorknocks =
-      typeof o.doorknocks === 'number'
-        ? o.doorknocks
-        : typeof o.flyers === 'number'
-          ? o.flyers
-          : 0
     return {
-      doorknocks,
-      flyers: typeof o.flyers === 'number' ? o.flyers : doorknocks,
+      doorknocks: typeof o.doorknocks === 'number' ? o.doorknocks : 0,
       leads: typeof o.leads === 'number' ? o.leads : 0,
       conversations: typeof o.conversations === 'number' ? o.conversations : 0,
       distance: typeof o.distance === 'number' ? o.distance : 0,
     }
   }
-  return { doorknocks: 0, flyers: 0, leads: 0, conversations: 0, distance: 0 }
+  return { doorknocks: 0, leads: 0, conversations: 0, distance: 0 }
 }
 
 function emptySnapshot(): MetricSnapshot {
-  return { doorknocks: 0, flyers: 0, leads: 0, conversations: 0, distance: 0 }
+  return { doorknocks: 0, leads: 0, conversations: 0, distance: 0 }
 }
 
 function parseSnapshotWithFallback(raw: unknown, fallback: MetricSnapshot): MetricSnapshot {
   const parsed = parseSnapshot(raw)
   const hasData =
     parsed.doorknocks > 0 ||
-    parsed.flyers > 0 ||
     parsed.leads > 0 ||
     parsed.conversations > 0 ||
     parsed.distance > 0
@@ -51,15 +43,9 @@ function parseSnapshotWithFallback(raw: unknown, fallback: MetricSnapshot): Metr
 }
 
 function mapRow(row: Record<string, unknown>): LeaderboardUser {
-  const doorknocks =
-    typeof row.doorknocks === 'number'
-      ? row.doorknocks
-      : typeof row.flyers === 'number'
-        ? row.flyers
-        : 0
+  const doorknocks = typeof row.doorknocks === 'number' ? row.doorknocks : 0
   const topLevelSnapshot: MetricSnapshot = {
     doorknocks,
-    flyers: typeof row.flyers === 'number' ? row.flyers : doorknocks,
     leads: typeof row.leads === 'number' ? row.leads : 0,
     conversations: typeof row.conversations === 'number' ? row.conversations : 0,
     distance: typeof row.distance === 'number' ? row.distance : 0,
@@ -71,7 +57,6 @@ function mapRow(row: Record<string, unknown>): LeaderboardUser {
     avatar_url: typeof row.avatar_url === 'string' ? row.avatar_url : null,
     rank: typeof row.rank === 'number' ? row.rank : 0,
     doorknocks,
-    flyers: topLevelSnapshot.flyers,
     leads: topLevelSnapshot.leads,
     conversations: topLevelSnapshot.conversations,
     distance: topLevelSnapshot.distance,
@@ -143,7 +128,7 @@ export function formatLeaderboardValue(value: number, metric: LeaderboardMetric)
   return value % 1 === 0 ? String(Math.round(value)) : value.toFixed(1)
 }
 
-/** Subtitle for row (e.g. "X flyers", "X convo's", "X.X km"). */
+/** Subtitle for row (e.g. "X doors", "X convo's", "X.X km"). */
 export function getSubtitle(
   user: LeaderboardUser,
   metric: LeaderboardMetric,

@@ -54,7 +54,7 @@ struct FarmListView: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .padding(.top, 60)
                     } else {
-                        FarmListEmptyView(onCreateTapped: onCreateFarmTapped)
+                        FarmListEmptyView()
                     }
                 } else {
                     List {
@@ -270,8 +270,6 @@ struct FarmListEmptyFilteredSection: View {
 // MARK: - Farm List Empty View (no farms at all)
 
 struct FarmListEmptyView: View {
-    var onCreateTapped: (() -> Void)?
-
     var body: some View {
         VStack(spacing: 24) {
             Spacer()
@@ -284,17 +282,11 @@ struct FarmListEmptyView: View {
                     .font(.flyrHeadline)
                     .foregroundColor(.primary)
                     .multilineTextAlignment(.center)
-                Text("Create your first farm to start planning touches")
+                Text("Create your first farm on the desktop dashboard to start planning and executing")
                     .font(.body)
                     .foregroundColor(.secondary)
                     .multilineTextAlignment(.center)
                     .lineLimit(3)
-            }
-            if let onCreateTapped = onCreateTapped {
-                Button(action: onCreateTapped) {
-                    Text("+ Create Farm")
-                }
-                .primaryButton()
             }
             Spacer()
         }

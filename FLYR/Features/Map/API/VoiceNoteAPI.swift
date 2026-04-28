@@ -30,17 +30,37 @@ struct VoiceNoteErrorResponse: Codable {
 enum VoiceNoteAPI {
     /// Save a voice note transcript to campaign_addresses (on-device flow; no Whisper/GPT).
     static func saveVoiceNoteToCampaign(transcript: String, addressId: UUID, campaignId: UUID) async throws {
-        let client = SupabaseManager.shared.client
-        let updateData: [String: AnyCodable] = [
-            "raw_transcript": AnyCodable(transcript),
-            "ai_summary": AnyCodable(transcript)
-        ]
-        _ = try await client
-            .from("campaign_addresses")
-            .update(updateData)
-            .eq("id", value: addressId.uuidString)
-            .eq("campaign_id", value: campaignId.uuidString)
-            .execute()
+        let normalizedTranscript = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedTranscript.isEmpty else { return }
+
+        await CampaignRepository.shared.upsertAddressCaptureMetadata(
+            campaignId: campaignId,
+            addressId: addressId,
+            rawTranscript: normalizedTranscript,
+            aiSummary: normalizedTranscript,
+            dirty: true
+        )
+        await OutboxRepository.shared.enqueue(
+            entityType: "address_capture_metadata",
+            entityId: addressId.uuidString,
+            operation: .upsertAddressCaptureMetadata,
+            payload: AddressCaptureMetadataOutboxPayload(
+                campaignId: campaignId.uuidString,
+                addressId: addressId.uuidString,
+                contactName: nil,
+                leadStatus: nil,
+                productInterest: nil,
+                followUpDate: nil,
+                rawTranscript: normalizedTranscript,
+                aiSummary: normalizedTranscript,
+                clearAll: false
+            )
+        )
+        if await MainActor.run(body: { NetworkMonitor.shared.isOnline }) {
+            await MainActor.run {
+                OfflineSyncCoordinator.shared.scheduleProcessOutbox()
+            }
+        }
     }
 
     static func processVoiceNote(

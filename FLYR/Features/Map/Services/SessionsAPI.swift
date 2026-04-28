@@ -38,6 +38,14 @@ final class SessionsAPI {
     static let shared = SessionsAPI()
     private let client = SupabaseManager.shared.client
 
+    private struct SessionCampaignWorkspaceRow: Decodable {
+        let workspaceId: UUID?
+
+        enum CodingKeys: String, CodingKey {
+            case workspaceId = "workspace_id"
+        }
+    }
+
     private init() {}
 
     private func isMissingRouteAssignmentColumn(_ error: Error) -> Bool {
@@ -61,7 +69,29 @@ final class SessionsAPI {
         let message = error.localizedDescription.lowercased()
         return message.contains("farm_id")
             || message.contains("farm_touch_id")
-            || message.contains("farm_phase_id")
+            || message.contains("cycle_number")
+    }
+
+    /// Prefer the campaign's workspace to avoid leaking the caller's current workspace into
+    /// cross-workspace collaboration sessions.
+    func resolveWorkspaceId(
+        forCampaignId campaignId: UUID?,
+        preferredWorkspaceId: UUID?
+    ) async -> UUID? {
+        guard let campaignId else { return preferredWorkspaceId }
+
+        do {
+            let response: PostgrestResponse<SessionCampaignWorkspaceRow> = try await client
+                .from("campaigns")
+                .select("workspace_id")
+                .eq("id", value: campaignId.uuidString)
+                .single()
+                .execute()
+            return response.value.workspaceId ?? preferredWorkspaceId
+        } catch {
+            print("⚠️ [SessionsAPI] Failed to resolve campaign workspace for session insert: \(error)")
+            return preferredWorkspaceId
+        }
     }
 
     /// Fetch user sessions ordered by start time (most recent first)
@@ -125,7 +155,7 @@ final class SessionsAPI {
     func createSession(
         id: UUID,
         userId: UUID,
-        campaignId: UUID,
+        campaignId: UUID?,
         targetBuildingIds: [String],
         autoCompleteEnabled: Bool,
         thresholdMeters: Double,
@@ -134,18 +164,34 @@ final class SessionsAPI {
         workspaceId: UUID? = nil,
         goalType: GoalType = .knocks,
         goalAmount: Int? = nil,
+        sessionMode: SessionMode = .doorKnocking,
         routeAssignmentId: UUID? = nil,
-        farmExecutionContext: FarmExecutionContext? = nil
+        farmExecutionContext: FarmExecutionContext? = nil,
+        startedAt: Date? = nil
     ) async throws {
         let emptyPath = "{\"type\":\"LineString\",\"coordinates\":[]}"
-        let boundedGoalAmount = min(max(1, goalAmount ?? targetBuildingIds.count), max(1, targetBuildingIds.count))
+        let resolvedWorkspaceId = await resolveWorkspaceId(
+            forCampaignId: campaignId,
+            preferredWorkspaceId: workspaceId
+        )
+        let boundedGoalAmount: Int = {
+            if let goalAmount, goalAmount <= 0 {
+                return 0
+            }
+            let resolvedGoalAmount = goalAmount ?? goalType.defaultAmount(for: sessionMode, targetCount: targetBuildingIds.count)
+            return goalType.normalizedAmount(
+                resolvedGoalAmount,
+                for: sessionMode,
+                targetCount: targetBuildingIds.count
+            )
+        }()
         var data: [String: AnyCodable] = [
             "id": AnyCodable(id.uuidString),
             "user_id": AnyCodable(userId.uuidString),
-            "campaign_id": AnyCodable(campaignId.uuidString),
-            "start_time": AnyCodable(ISO8601DateFormatter().string(from: Date())),
+            "start_time": AnyCodable(ISO8601DateFormatter().string(from: startedAt ?? Date())),
             "doors_hit": AnyCodable(0),
             "distance_meters": AnyCodable(0),
+            "session_mode": AnyCodable(sessionMode.rawValue),
             "goal_type": AnyCodable(goalType.rawValue),
             "goal_amount": AnyCodable(boundedGoalAmount),
             "path_geojson": AnyCodable(emptyPath),
@@ -158,7 +204,10 @@ final class SessionsAPI {
             "auto_complete_threshold_m": AnyCodable(thresholdMeters),
             "auto_complete_dwell_seconds": AnyCodable(dwellSeconds),
         ]
-        if let workspaceId = workspaceId {
+        if let campaignId {
+            data["campaign_id"] = AnyCodable(campaignId.uuidString)
+        }
+        if let workspaceId = resolvedWorkspaceId {
             data["workspace_id"] = AnyCodable(workspaceId.uuidString)
         }
         if let notes = notes, !notes.isEmpty {
@@ -170,9 +219,6 @@ final class SessionsAPI {
         if let farmExecutionContext {
             data["farm_id"] = AnyCodable(farmExecutionContext.farmId.uuidString)
             data["farm_touch_id"] = AnyCodable(farmExecutionContext.touchId.uuidString)
-            if let phaseId = farmExecutionContext.phaseId {
-                data["farm_phase_id"] = AnyCodable(phaseId.uuidString)
-            }
         }
 
         do {
@@ -199,7 +245,6 @@ final class SessionsAPI {
             print("⚠️ [SessionsAPI] farm execution columns missing on backend; retrying session insert without farm linkage")
             data.removeValue(forKey: "farm_id")
             data.removeValue(forKey: "farm_touch_id")
-            data.removeValue(forKey: "farm_phase_id")
             _ = try await client
                 .from("sessions")
                 .insert(data)
@@ -219,7 +264,9 @@ final class SessionsAPI {
         flyersDelivered: Int? = nil,
         conversations: Int? = nil,
         leadsCreated: Int? = nil,
+        appointmentsCount: Int? = nil,
         doorsHit: Int? = nil,
+        autoCompleteEnabled: Bool? = nil,
         isPaused: Bool? = nil,
         endTime: Date? = nil
     ) async throws {
@@ -251,8 +298,14 @@ final class SessionsAPI {
         if let leadsCreated = leadsCreated {
             data["leads_created"] = AnyCodable(leadsCreated)
         }
+        // `appointments_count` is derived in analytics/user-stats paths and is not
+        // part of the canonical `public.sessions` table contract.
+        _ = appointmentsCount
         if let doorsHit = doorsHit ?? flyersDelivered ?? completedCount {
             data["doors_hit"] = AnyCodable(doorsHit)
+        }
+        if let autoCompleteEnabled = autoCompleteEnabled {
+            data["auto_complete_enabled"] = AnyCodable(autoCompleteEnabled)
         }
         if let isPaused = isPaused {
             data["is_paused"] = AnyCodable(isPaused)

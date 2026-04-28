@@ -147,6 +147,14 @@ final class AppRouteState: ObservableObject {
             let memberInactive = reason.contains("member") && reason.contains("inactive")
             return .subscribe(memberInactive: memberInactive)
         }
+
+        // Offline field use should trust the last known local workspace context instead of
+        // bouncing a signed-in user back into onboarding just because access APIs are unreachable.
+        if WorkspaceContext.shared.workspaceId != nil {
+            let cachedReason = WorkspaceContext.shared.accessReason?.lowercased() ?? ""
+            let memberInactive = cachedReason.contains("member") && cachedReason.contains("inactive")
+            return memberInactive ? .subscribe(memberInactive: true) : .dashboard
+        }
         return .onboarding
     }
 
@@ -159,6 +167,10 @@ final class AppRouteState: ObservableObject {
         guard case .onboarding = route else { return route }
         let workspaceFromState = state?.workspaceId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard workspaceFromState.isEmpty else { return route }
+
+        if WorkspaceContext.shared.workspaceId != nil {
+            return fallbackRouteForSignedInUser(state: state)
+        }
 
         if let state, !state.hasAccess {
             if EntitlementsService.sharedInstance?.canUsePro == true {

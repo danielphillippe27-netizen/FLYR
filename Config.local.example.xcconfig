@@ -2,3 +2,5 @@
 // Config.local.xcconfig is gitignored and will override values from Config.xcconfig.
 
 MAPBOX_ACCESS_TOKEN = pk.your_actual_mapbox_public_token
+DIALER_ENABLED_WORKSPACE_IDS = 00000000-0000-0000-0000-000000000000
+DIALER_ENABLED_EMAILS = daniel.phillippe27@gmail.com

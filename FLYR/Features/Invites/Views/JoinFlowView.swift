@@ -12,7 +12,32 @@ struct JoinFlowView: View {
             token: token,
             viewModel: viewModel,
             onAcceptSuccess: { response in
-                Task { await routeState.completePendingJoinAndResolve(workspaceId: response.workspaceId) }
+                Task {
+                    let resolvedCampaignId = response.campaignId ?? viewModel.validated?.campaignId
+                    let resolvedCampaignTitle = viewModel.validated?.campaignTitle ?? viewModel.validated?.workspaceName
+                    // Prefer the accepted live session id, but keep the validated live session
+                    // as a fallback so "Join live" still routes into the session handoff when
+                    // older backend rows fail to echo session_id back consistently.
+                    let resolvedSessionId = response.sessionId ?? viewModel.validated?.sessionId
+
+                    if let campaignId = resolvedCampaignId.flatMap(UUID.init(uuidString:)) {
+                        if let sourceSessionId = resolvedSessionId.flatMap(UUID.init(uuidString:)) {
+                            uiState.beginLiveInviteHandoff(
+                                campaignId: campaignId,
+                                name: resolvedCampaignTitle,
+                                sourceSessionId: sourceSessionId
+                            )
+                        } else {
+                            uiState.selectedTabIndex = 1
+                            uiState.selectCampaign(id: campaignId, name: resolvedCampaignTitle)
+                        }
+                    }
+                    let workspaceToAdopt =
+                        response.accessScope == "workspace" && response.campaignId == nil
+                        ? response.workspaceId
+                        : nil
+                    await routeState.completePendingJoinAndResolve(workspaceId: workspaceToAdopt)
+                }
             },
             onDismiss: {
                 routeState.clearPendingJoinToken()

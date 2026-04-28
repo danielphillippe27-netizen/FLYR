@@ -1,5 +1,37 @@
 import Foundation
 
+enum CampaignMapMode: String, Codable, Equatable {
+    case smartBuildings = "smart_buildings"
+    case hybrid
+    case standardPins = "standard_pins"
+
+    var bannerTitle: String {
+        switch self {
+        case .standardPins:
+            return "Standard Canvassing Mode"
+        case .smartBuildings:
+            return "Smart Buildings"
+        case .hybrid:
+            return "Hybrid"
+        }
+    }
+
+    var settingsTitle: String {
+        switch self {
+        case .standardPins:
+            return "Standard Canvassing"
+        case .smartBuildings:
+            return "Smart Buildings"
+        case .hybrid:
+            return "Hybrid"
+        }
+    }
+
+    var usesStandardPins: Bool {
+        self == .standardPins
+    }
+}
+
 enum DataConfidenceLabel: String, Codable, Equatable {
     case low
     case medium
@@ -200,6 +232,9 @@ struct CampaignV2: Identifiable, Codable, Equatable {
     var status: CampaignStatus
     var seedQuery: String?    // Maps to DB region (e.g., "Main St, Toronto")
     var dataConfidence: CampaignDataConfidenceSummary?
+    var hasParcels: Bool?
+    var buildingLinkConfidence: Double?
+    var mapMode: CampaignMapMode?
     
     // Computed progress based on scans/total_flyers (0.0-1.0)
     var progress: Double {
@@ -224,6 +259,9 @@ struct CampaignV2: Identifiable, Codable, Equatable {
         status = try container.decodeIfPresent(CampaignStatus.self, forKey: .status) ?? .draft
         seedQuery = try container.decodeIfPresent(String.self, forKey: .seedQuery)
         dataConfidence = try container.decodeIfPresent(CampaignDataConfidenceSummary.self, forKey: .dataConfidence)
+        hasParcels = try container.decodeIfPresent(Bool.self, forKey: .hasParcels)
+        buildingLinkConfidence = try container.decodeIfPresent(Double.self, forKey: .buildingLinkConfidence)
+        mapMode = try container.decodeIfPresent(CampaignMapMode.self, forKey: .mapMode)
         
         // New fields with defaults for backward compatibility
         totalFlyers = try container.decodeIfPresent(Int.self, forKey: .totalFlyers) ?? 0
@@ -259,6 +297,7 @@ struct CampaignV2: Identifiable, Codable, Equatable {
     enum CodingKeys: String, CodingKey {
         case id, name, type, addressSource, addresses, createdAt, status
         case totalFlyers, scans, conversions, seedQuery, dataConfidence
+        case hasParcels, buildingLinkConfidence, mapMode
         case progress // For backward compatibility only
     }
     
@@ -277,6 +316,9 @@ struct CampaignV2: Identifiable, Codable, Equatable {
         try container.encode(status, forKey: .status)
         try container.encodeIfPresent(seedQuery, forKey: .seedQuery)
         try container.encodeIfPresent(dataConfidence, forKey: .dataConfidence)
+        try container.encodeIfPresent(hasParcels, forKey: .hasParcels)
+        try container.encodeIfPresent(buildingLinkConfidence, forKey: .buildingLinkConfidence)
+        try container.encodeIfPresent(mapMode, forKey: .mapMode)
     }
     
     init(
@@ -291,7 +333,10 @@ struct CampaignV2: Identifiable, Codable, Equatable {
         createdAt: Date = Date(),
         status: CampaignStatus = .draft,
         seedQuery: String? = nil,
-        dataConfidence: CampaignDataConfidenceSummary? = nil
+        dataConfidence: CampaignDataConfidenceSummary? = nil,
+        hasParcels: Bool? = nil,
+        buildingLinkConfidence: Double? = nil,
+        mapMode: CampaignMapMode? = nil
     ) {
         self.id = id
         self.name = name
@@ -305,6 +350,9 @@ struct CampaignV2: Identifiable, Codable, Equatable {
         self.status = status
         self.seedQuery = seedQuery
         self.dataConfidence = dataConfidence
+        self.hasParcels = hasParcels
+        self.buildingLinkConfidence = buildingLinkConfidence
+        self.mapMode = mapMode
     }
     
     static func == (lhs: CampaignV2, rhs: CampaignV2) -> Bool {

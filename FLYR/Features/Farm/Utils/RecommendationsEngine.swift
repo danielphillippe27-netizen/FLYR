@@ -6,7 +6,7 @@ enum RecommendationsEngine {
     static func generateRecommendations(
         farm: Farm,
         touches: [FarmTouch],
-        phases: [FarmPhase],
+        cycles: [FarmCycle],
         leads: [FarmLead]
     ) -> [FarmRecommendation] {
         var recommendations: [FarmRecommendation] = []
@@ -43,11 +43,11 @@ enum RecommendationsEngine {
             ))
         }
         
-        // Phase analysis
-        if phases.isEmpty && touches.count > 10 {
+        // Cycle analysis
+        if cycles.isEmpty && touches.count > 10 {
             recommendations.append(FarmRecommendation(
-                title: "Generate Cycles",
-                detail: "Cycles help track progress through your farm workflow. Generate cycles to get started."
+                title: "Build Cycle History",
+                detail: "Cycle groupings help track progress through your farm workflow. Keep touches flowing so the next cycle becomes visible."
             ))
         }
         
@@ -75,5 +75,4 @@ enum RecommendationsEngine {
         return recommendations
     }
 }
-
 

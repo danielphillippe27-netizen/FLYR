@@ -1,146 +1,135 @@
-import {
-  type GeoJSONFeatureCollection,
-  type GeoJSONFeature,
-  type SnapshotResult,
-  fetchGeoJSONFromUrl,
-} from "./TileLambdaService";
+/**
+ * BuildingAdapter - Normalizes buildings from any source to standard GeoJSON
+ * 
+ * This module implements the Adapter Pattern:
+ * - Gold: Database rows → Standard GeoJSON
+ * - Silver (Lambda): S3 GeoJSON → Standard GeoJSON (pass-through with validation)
+ */
 
 export interface GoldBuildingRow {
-  id:                    string;
-  source_id?:            string | null;
-  external_id?:          string | null;
-  area_sqm?:             number | null;
-  height_m?:             number | null;
-  floors?:               number | null;
-  year_built?:           number | null;
-  building_type?:        string | null;
-  subtype?:              string | null;
-  primary_address?:      string | null;
-  primary_street_number?:string | null;
-  primary_street_name?:  string | null;
-  // geometry as parsed GeoJSON (from get_gold_buildings_in_polygon_geojson)
-  geometry?:             { type: string; coordinates: unknown } | null;
+  id: string;
+  source_id?: string;
+  external_id?: string;
+  area_sqm?: number;
+  geom_geojson: string; // GeoJSON string from ST_AsGeoJSON
+  centroid_geojson?: string;
+  building_type?: string;
 }
 
-export interface NormalizedBuildingCollection extends GeoJSONFeatureCollection {
-  buildingSource: "gold" | "lambda";
-  count: number;
-}
-
-/**
- * Converts rows from get_gold_buildings_in_polygon_geojson (already a FeatureCollection)
- * into a normalized collection tagged with source: 'gold'.
- * The RPC already returns GeoJSON, so we just parse and re-tag if needed.
- */
-export function fromGoldFeatureCollection(
-  raw: GeoJSONFeatureCollection
-): NormalizedBuildingCollection {
-  const features = raw.features.map((f) => ({
-    ...f,
-    properties: {
-      ...f.properties,
-      source: "gold",
-      height: (f.properties?.height_m as number | null) ?? 10,
-      height_m: (f.properties?.height_m as number | null) ?? 10,
-      min_height: 0,
-    },
-  }));
-
-  return {
-    type: "FeatureCollection",
-    features,
-    buildingSource: "gold",
-    count: features.length,
+export interface StandardBuildingFeature {
+  type: 'Feature';
+  geometry: GeoJSON.Polygon | GeoJSON.MultiPolygon;
+  properties: {
+    gers_id: string;
+    external_id?: string;
+    area?: number;
+    height?: number | null;
+    layer: 'building';
+    [key: string]: any;
   };
 }
 
-/**
- * Converts rows (from GoldBuildingRow array, when using manual parsing).
- */
-export function fromGoldRows(rows: GoldBuildingRow[]): NormalizedBuildingCollection {
-  const features: GeoJSONFeature[] = rows.map((b) => ({
-    type: "Feature",
-    id: b.id,
-    geometry: b.geometry ?? { type: "Point", coordinates: [0, 0] },
-    properties: {
-      id:             b.id,
-      building_id:    b.id,
-      source:         "gold",
-      area_sqm:       b.area_sqm ?? 0,
-      height:         b.height_m ?? 10,
-      height_m:       b.height_m ?? 10,
-      min_height:     0,
-      building_type:  b.building_type ?? null,
-      primary_address:b.primary_address ?? null,
-    },
-  }));
-
-  return {
-    type: "FeatureCollection",
-    features,
-    buildingSource: "gold",
-    count: features.length,
-  };
+export interface StandardBuildingCollection {
+  type: 'FeatureCollection';
+  features: StandardBuildingFeature[];
 }
 
-/**
- * Normalizes Lambda building GeoJSON features, tagging them source: 'lambda'.
- */
-export function fromLambdaGeoJSON(
-  geojson: GeoJSONFeatureCollection
-): NormalizedBuildingCollection {
-  const features = geojson.features.map((f) => ({
-    ...f,
-    id: f.id?.toString() ?? (f.properties?.id as string | undefined),
-    properties: {
-      ...f.properties,
-      source:     "lambda",
-      building_id: f.id?.toString() ?? f.properties?.id ?? f.properties?.gers_id,
-      height:     (f.properties?.height as number | null) ??
-                  (f.properties?.height_m as number | null) ?? 10,
-      height_m:   (f.properties?.height_m as number | null) ??
-                  (f.properties?.height as number | null) ?? 10,
-      min_height: 0,
-    },
-  }));
-
-  return {
-    type: "FeatureCollection",
-    features,
-    buildingSource: "lambda",
-    count: features.length,
-  };
-}
-
-/**
- * Decides which building source to use and returns normalized collection.
- *
- * @param goldBuildings  Pre-fetched Gold FeatureCollection (from RPC), or null.
- * @param snapshot       Lambda snapshot result with presigned URLs, or null.
- * @param preFetchedLambda Already-downloaded Lambda building GeoJSON, or null.
- */
-export async function fetchAndNormalize(
-  goldBuildings:    GeoJSONFeatureCollection | null,
-  snapshot:         SnapshotResult | null,
-  preFetchedLambda: GeoJSONFeatureCollection | null = null
-): Promise<NormalizedBuildingCollection> {
-  if (goldBuildings && goldBuildings.features.length > 0) {
-    return fromGoldFeatureCollection(goldBuildings);
+export class BuildingAdapter {
+  /**
+   * Convert Gold database rows to standard GeoJSON
+   */
+  static fromGoldRows(rows: GoldBuildingRow[]): StandardBuildingCollection {
+    return {
+      type: 'FeatureCollection',
+      features: rows.map((row) => ({
+        type: 'Feature',
+        geometry: JSON.parse(row.geom_geojson),
+        properties: {
+          gers_id: row.id,
+          external_id: row.external_id || row.source_id,
+          area: row.area_sqm,
+          height: null,
+          layer: 'building',
+        },
+      })),
+    };
   }
 
-  if (preFetchedLambda) {
-    return fromLambdaGeoJSON(preFetchedLambda);
+  /**
+   * Validate and normalize Lambda/Silver GeoJSON
+   * Ensures consistent property names even if Lambda format changes
+   */
+  static fromLambdaGeoJSON(geojson: any): StandardBuildingCollection {
+    if (!geojson || !Array.isArray(geojson.features)) {
+      console.warn('[BuildingAdapter] Invalid Lambda GeoJSON, returning empty collection');
+      return { type: 'FeatureCollection', features: [] };
+    }
+
+    return {
+      type: 'FeatureCollection',
+      features: geojson.features.map((f: any) => ({
+        type: 'Feature',
+        geometry: f.geometry,
+        properties: {
+          gers_id: f.properties?.gers_id || f.properties?.id || f.properties?.external_id,
+          external_id: f.properties?.external_id || f.properties?.id,
+          area: f.properties?.area || f.properties?.area_sqm,
+          height: f.properties?.height || null,
+          layer: 'building',
+          ...f.properties, // Preserve any additional properties
+        },
+      })),
+    };
   }
 
-  if (snapshot?.urls.buildings) {
-    const lambdaGeo = await fetchGeoJSONFromUrl(snapshot.urls.buildings);
-    return fromLambdaGeoJSON(lambdaGeo);
-  }
+  /**
+   * Fetch and normalize from either source
+   * This is the main entry point for the adapter pattern.
+   * When preFetchedBuildingsGeo is provided (e.g. from parallel S3 fetch), skips building download.
+   */
+  static async fetchAndNormalize(
+    goldBuildings: GoldBuildingRow[] | null | undefined,
+    snapshot: { urls: { buildings: string }; metadata?: { overture_release?: string } } | null,
+    preFetchedBuildingsGeo?: unknown
+  ): Promise<{ buildings: StandardBuildingCollection; overtureRelease: string; source: 'gold' | 'lambda' }> {
+    // Gold path: Database rows
+    if (goldBuildings && goldBuildings.length > 0) {
+      console.log(`[BuildingAdapter] Normalizing ${goldBuildings.length} Gold buildings`);
+      return {
+        buildings: this.fromGoldRows(goldBuildings),
+        overtureRelease: '2026-01-21.0',
+        source: 'gold',
+      };
+    }
 
-  return {
-    type: "FeatureCollection",
-    features: [],
-    buildingSource: "lambda",
-    count: 0,
-  };
+    // Silver path: use pre-fetched GeoJSON or download from S3
+    if (snapshot) {
+      let geojson: any;
+      if (preFetchedBuildingsGeo != null) {
+        geojson = preFetchedBuildingsGeo;
+        console.log(`[BuildingAdapter] Using ${geojson?.features?.length ?? 0} pre-fetched Lambda buildings`);
+      } else {
+        console.log(`[BuildingAdapter] Fetching from Lambda: ${snapshot.urls.buildings}`);
+        const response = await fetch(snapshot.urls.buildings);
+        if (!response.ok) {
+          throw new Error(`Failed to fetch buildings: ${response.status}`);
+        }
+        geojson = await response.json();
+        console.log(`[BuildingAdapter] Downloaded ${geojson.features?.length || 0} Lambda buildings`);
+      }
+      return {
+        buildings: this.fromLambdaGeoJSON(geojson),
+        overtureRelease: snapshot.metadata?.overture_release || '2026-01-21.0',
+        source: 'lambda',
+      };
+    }
+
+    // No buildings available
+    console.warn('[BuildingAdapter] No buildings available from any source');
+    return {
+      buildings: { type: 'FeatureCollection', features: [] },
+      overtureRelease: '2026-01-21.0',
+      source: 'lambda',
+    };
+  }
 }

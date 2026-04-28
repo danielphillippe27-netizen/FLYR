@@ -1,4 +1,48 @@
 import Foundation
+import CoreLocation
+
+private struct StoredLiveSessionCode: Codable {
+    let code: String
+    let expiresAt: Date
+}
+
+struct StoredMapSelection: Codable {
+    let campaignId: UUID
+    let campaignName: String?
+    let boundaryCoordinates: [StoredCoordinate]
+
+    init(campaignId: UUID, campaignName: String?, boundaryCoordinates: [StoredCoordinate]) {
+        self.campaignId = campaignId
+        self.campaignName = campaignName
+        self.boundaryCoordinates = boundaryCoordinates
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        campaignId = try container.decode(UUID.self, forKey: .campaignId)
+        campaignName = try container.decodeIfPresent(String.self, forKey: .campaignName)
+        boundaryCoordinates = try container.decodeIfPresent([StoredCoordinate].self, forKey: .boundaryCoordinates) ?? []
+    }
+}
+
+struct StoredCoordinate: Codable {
+    let latitude: Double
+    let longitude: Double
+
+    init(latitude: Double, longitude: Double) {
+        self.latitude = latitude
+        self.longitude = longitude
+    }
+
+    init(_ coordinate: CLLocationCoordinate2D) {
+        self.latitude = coordinate.latitude
+        self.longitude = coordinate.longitude
+    }
+
+    var clLocationCoordinate: CLLocationCoordinate2D {
+        CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+    }
+}
 
 final class LocalStorage {
     static let shared = LocalStorage()
@@ -10,6 +54,8 @@ final class LocalStorage {
     private let beaconTokensKey = "flyr_session_beacon_tokens"
     private let beaconRecipientsKey = "flyr_beacon_recipients"
     private let beaconMessageKey = "flyr_beacon_message"
+    private let liveSessionCodesKey = "flyr_live_session_codes"
+    private let mapSelectionKey = "flyr_selected_map_campaign"
 
     private init() {}
 
@@ -57,6 +103,8 @@ final class LocalStorage {
         hasCompletedOnboarding = false
         isInPreviewMode = false
         hasSeenMapInfoSheet = false
+        UserDefaults.standard.removeObject(forKey: liveSessionCodesKey)
+        clearMapSelection()
     }
 
     // MARK: - Beacon tokens
@@ -79,6 +127,76 @@ final class LocalStorage {
 
     private var beaconTokens: [String: String] {
         UserDefaults.standard.dictionary(forKey: beaconTokensKey) as? [String: String] ?? [:]
+    }
+
+    // MARK: - Live session codes
+
+    func saveLiveSessionCode(_ code: String, expiresAt: Date, for sessionId: UUID) {
+        var storedCodes = liveSessionCodes
+        storedCodes[sessionId.uuidString] = StoredLiveSessionCode(code: code, expiresAt: expiresAt)
+        persistLiveSessionCodes(storedCodes)
+    }
+
+    func loadLiveSessionCode(for sessionId: UUID) -> (code: String, expiresAt: Date)? {
+        var storedCodes = liveSessionCodes
+        guard let stored = storedCodes[sessionId.uuidString] else {
+            return nil
+        }
+
+        if stored.expiresAt <= Date() {
+            storedCodes.removeValue(forKey: sessionId.uuidString)
+            persistLiveSessionCodes(storedCodes)
+            return nil
+        }
+
+        return (stored.code, stored.expiresAt)
+    }
+
+    func clearLiveSessionCode(for sessionId: UUID) {
+        var storedCodes = liveSessionCodes
+        storedCodes.removeValue(forKey: sessionId.uuidString)
+        persistLiveSessionCodes(storedCodes)
+    }
+
+    private var liveSessionCodes: [String: StoredLiveSessionCode] {
+        guard let data = UserDefaults.standard.data(forKey: liveSessionCodesKey),
+              let decoded = try? JSONDecoder().decode([String: StoredLiveSessionCode].self, from: data) else {
+            return [:]
+        }
+        return decoded
+    }
+
+    private func persistLiveSessionCodes(_ value: [String: StoredLiveSessionCode]) {
+        guard let encoded = try? JSONEncoder().encode(value) else { return }
+        UserDefaults.standard.set(encoded, forKey: liveSessionCodesKey)
+    }
+
+    // MARK: - Map selection
+
+    func saveMapSelection(
+        campaignId: UUID,
+        campaignName: String?,
+        boundaryCoordinates: [CLLocationCoordinate2D] = []
+    ) {
+        let value = StoredMapSelection(
+            campaignId: campaignId,
+            campaignName: campaignName,
+            boundaryCoordinates: boundaryCoordinates.map(StoredCoordinate.init)
+        )
+        guard let encoded = try? JSONEncoder().encode(value) else { return }
+        UserDefaults.standard.set(encoded, forKey: mapSelectionKey)
+    }
+
+    func loadMapSelection() -> StoredMapSelection? {
+        guard let data = UserDefaults.standard.data(forKey: mapSelectionKey),
+              let decoded = try? JSONDecoder().decode(StoredMapSelection.self, from: data) else {
+            return nil
+        }
+        return decoded
+    }
+
+    func clearMapSelection() {
+        UserDefaults.standard.removeObject(forKey: mapSelectionKey)
     }
 
     // MARK: - Beacon draft

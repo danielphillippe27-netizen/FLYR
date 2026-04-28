@@ -390,20 +390,16 @@ struct NewCampaignScreen: View {
                         let provisionResponse = try await CampaignsAPI.shared.provisionCampaign(campaignId: created.id)
                         if let confidence = provisionResponse?.dataConfidenceSummary {
                             createdCampaign.dataConfidence = confidence
-                            store.update(createdCampaign)
                         }
+                        createdCampaign.hasParcels = provisionResponse?.hasParcels
+                        createdCampaign.buildingLinkConfidence = provisionResponse?.buildingLinkConfidence
+                        createdCampaign.mapMode = provisionResponse?.mapMode
+                        store.update(createdCampaign)
                         let provisionState = try await CampaignsAPI.shared.waitForProvisionReady(campaignId: created.id)
                         if provisionState.provisionStatus != "ready" {
                             createHook.error = "Campaign created but provisioning did not complete (status: \(provisionState.provisionStatus ?? "unknown")). You can retry from campaign details."
                             shouldNavigateToDetails = false
                         } else {
-                            if source == .map {
-                                let roadsOK = await CampaignRoadService.shared.areRoadsReady(campaignId: created.id.uuidString)
-                                if !roadsOK {
-                                    createHook.error = "Provisioning completed but campaign roads are not ready. Wait a moment and open the campaign from the list, or retry provisioning from campaign details."
-                                    shouldNavigateToDetails = false
-                                }
-                            }
                             let dbAddressCount = (try? await CampaignsAPI.shared.fetchAddresses(campaignId: created.id).count) ?? 0
                             let addressesSaved = provisionResponse?.addressesSaved ?? dbAddressCount
                             let buildingsSaved = provisionResponse?.buildingsSaved ?? 0
@@ -419,7 +415,7 @@ struct NewCampaignScreen: View {
                         shouldNavigateToDetails = false
                     }
                     guard shouldNavigateToDetails else { return }
-                    await routeToCampaignMap(createdCampaign)
+                    await routeToCampaignMap(createdCampaign, boundaryCoordinates: polygon)
                 } else {
                     print("❌ [CAMPAIGN DEBUG] Campaign creation failed")
                 }
@@ -509,12 +505,22 @@ struct NewCampaignScreen: View {
     }
 
     /// After successful creation/provision, close create flow and open the new campaign in the Session tab.
-    private func routeToCampaignMap(_ campaign: CampaignV2) async {
+    private func routeToCampaignMap(
+        _ campaign: CampaignV2,
+        boundaryCoordinates: [CLLocationCoordinate2D] = []
+    ) async {
         dismiss()
         try? await Task.sleep(nanoseconds: 300_000_000)
         await MainActor.run {
-            uiState.selectCampaign(id: campaign.id, name: campaign.name)
+            uiState.selectCampaign(
+                id: campaign.id,
+                name: campaign.name,
+                boundaryCoordinates: boundaryCoordinates
+            )
             uiState.selectedTabIndex = 1
+        }
+        Task {
+            await CampaignDownloadService.shared.prefetchIfNeeded(campaignId: campaign.id.uuidString)
         }
     }
 }

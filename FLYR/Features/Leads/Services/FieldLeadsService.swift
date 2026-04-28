@@ -3,6 +3,7 @@ import Supabase
 
 actor FieldLeadsService {
     static let shared = FieldLeadsService()
+    private let contactRepository = ContactRepository.shared
 
     struct AddLeadOutcome {
         let lead: FieldLead
@@ -14,6 +15,13 @@ actor FieldLeadsService {
     }
 
     private init() {}
+
+    private func shouldUseWorkspaceScope(
+        workspaceId: UUID?,
+        campaignId: UUID?
+    ) -> Bool {
+        workspaceId != nil && campaignId == nil
+    }
 
     // MARK: - CRM sync status (field leads)
 
@@ -63,6 +71,13 @@ actor FieldLeadsService {
 
     /// `contacts` is the primary lead store. Fall back to legacy `field_leads` rows only when needed.
     func fetchLeads(userId: UUID, workspaceId: UUID? = nil, campaignId: UUID? = nil, sessionId: UUID? = nil) async throws -> [FieldLead] {
+        if await isOffline() {
+            let cached = await fetchCachedLeads(userId: userId, workspaceId: workspaceId, campaignId: campaignId)
+            if !cached.isEmpty {
+                return cached
+            }
+        }
+
         do {
             let contacts = try await fetchContactLeadRows(
                 userId: userId,
@@ -71,10 +86,15 @@ actor FieldLeadsService {
                 sessionId: sessionId
             )
             if !contacts.isEmpty {
+                await cacheLeadRows(contacts, userId: userId, workspaceId: workspaceId)
                 return Self.deduplicated(contacts.map(Self.makeFieldLead(from:)))
             }
         } catch {
             print("⚠️ [FieldLeadsService] Contacts fetch failed, falling back to field_leads: \(error.localizedDescription)")
+            let cached = await fetchCachedLeads(userId: userId, workspaceId: workspaceId, campaignId: campaignId)
+            if !cached.isEmpty {
+                return cached
+            }
         }
 
         return Self.deduplicated(try await fetchLegacyLeads(
@@ -179,15 +199,14 @@ actor FieldLeadsService {
     // MARK: - Update
 
     func updateLead(_ lead: FieldLead) async throws -> FieldLead {
-        do {
-            if let updated = try await updateContactLead(lead) {
-                return updated
-            }
-        } catch {
-            print("⚠️ [FieldLeadsService] Contact update failed, falling back to field_leads: \(error.localizedDescription)")
-        }
-
-        return try await updateLegacyLead(lead)
+        let workspaceId = await MainActor.run { WorkspaceContext.shared.workspaceId }
+        let savedContact = try await ContactsService.shared.updateContact(
+            Self.makeContact(from: lead),
+            userID: lead.userId,
+            workspaceId: workspaceId,
+            syncToCRM: true
+        )
+        return Self.mergeLead(lead, with: savedContact)
     }
 
     // MARK: - Delete
@@ -276,9 +295,10 @@ actor FieldLeadsService {
             .from("contacts")
             .select("id,user_id,full_name,phone,email,address,status,notes,qr_code,campaign_id,session_id,external_crm_id,last_synced_at,sync_status,created_at,updated_at")
 
-        if let workspaceId {
+        if shouldUseWorkspaceScope(workspaceId: workspaceId, campaignId: campaignId),
+           let workspaceId {
             query = query.eq("workspace_id", value: workspaceId)
-        } else {
+        } else if campaignId == nil {
             query = query.eq("user_id", value: userId)
         }
 
@@ -310,7 +330,9 @@ actor FieldLeadsService {
             "created_at": AnyCodable(lead.createdAt),
             "updated_at": AnyCodable(lead.updatedAt)
         ]
-        if let workspaceId { insertData["workspace_id"] = AnyCodable(workspaceId) }
+        if lead.campaignId == nil, let workspaceId {
+            insertData["workspace_id"] = AnyCodable(workspaceId)
+        }
         if let phone = lead.phone { insertData["phone"] = AnyCodable(phone) }
         if let email = lead.email { insertData["email"] = AnyCodable(email) }
         if let notes = lead.notes { insertData["notes"] = AnyCodable(notes) }
@@ -373,9 +395,10 @@ actor FieldLeadsService {
         var query = client
             .from("field_leads")
             .select()
-        if let workspaceId {
+        if shouldUseWorkspaceScope(workspaceId: workspaceId, campaignId: campaignId),
+           let workspaceId {
             query = query.eq("workspace_id", value: workspaceId)
-        } else {
+        } else if campaignId == nil {
             query = query.eq("user_id", value: userId)
         }
         if let campaignId {
@@ -418,7 +441,9 @@ actor FieldLeadsService {
             "created_at": AnyCodable(lead.createdAt),
             "updated_at": AnyCodable(lead.updatedAt)
         ]
-        if let workspaceId { insertData["workspace_id"] = AnyCodable(workspaceId) }
+        if lead.campaignId == nil, let workspaceId {
+            insertData["workspace_id"] = AnyCodable(workspaceId)
+        }
         if let name = lead.name { insertData["name"] = AnyCodable(name) }
         if let phone = lead.phone { insertData["phone"] = AnyCodable(phone) }
         if let email = lead.email { insertData["email"] = AnyCodable(email) }
@@ -460,11 +485,13 @@ actor FieldLeadsService {
         var query = client
             .from("field_leads")
             .select()
-            .eq("user_id", value: lead.userId)
             .eq("address", value: lead.address)
 
-        if let workspaceId {
+        if shouldUseWorkspaceScope(workspaceId: workspaceId, campaignId: lead.campaignId),
+           let workspaceId {
             query = query.eq("workspace_id", value: workspaceId)
+        } else if lead.campaignId == nil {
+            query = query.eq("user_id", value: lead.userId)
         }
         if let campaignId = lead.campaignId {
             query = query.eq("campaign_id", value: campaignId)
@@ -533,6 +560,61 @@ actor FieldLeadsService {
         )
     }
 
+    private static func makeFieldLead(from contact: Contact, userId: UUID) -> FieldLead {
+        FieldLead(
+            id: contact.id,
+            userId: userId,
+            address: contact.address,
+            name: normalizedDisplayName(contact.fullName),
+            phone: contact.phone,
+            email: contact.email,
+            status: fieldLeadStatus(from: contact.status.rawValue),
+            notes: contact.notes,
+            qrCode: nil,
+            campaignId: contact.campaignId,
+            sessionId: nil,
+            externalCrmId: nil,
+            lastSyncedAt: nil,
+            syncStatus: nil,
+            createdAt: contact.createdAt,
+            updatedAt: contact.updatedAt
+        )
+    }
+
+    private static func makeContact(from lead: FieldLead) -> Contact {
+        Contact(
+            id: lead.id,
+            fullName: contactFullName(from: lead.name),
+            phone: lead.phone,
+            email: lead.email,
+            address: lead.address,
+            campaignId: lead.campaignId,
+            farmId: nil,
+            gersId: nil,
+            addressId: nil,
+            tags: nil,
+            status: contactStatus(from: lead.status),
+            lastContacted: lead.lastSyncedAt,
+            notes: lead.notes,
+            reminderDate: nil,
+            createdAt: lead.createdAt,
+            updatedAt: lead.updatedAt
+        )
+    }
+
+    private static func mergeLead(_ lead: FieldLead, with contact: Contact) -> FieldLead {
+        var merged = lead
+        merged.address = contact.address
+        merged.name = normalizedDisplayName(contact.fullName)
+        merged.phone = contact.phone
+        merged.email = contact.email
+        merged.notes = contact.notes
+        merged.campaignId = contact.campaignId
+        merged.status = fieldLeadStatus(from: contact.status.rawValue)
+        merged.updatedAt = contact.updatedAt
+        return merged
+    }
+
     private static func fieldLeadStatus(from contactStatus: String) -> FieldLeadStatus {
         switch contactStatus.lowercased() {
         case FieldLeadStatus.interested.rawValue, "hot", "warm":
@@ -545,6 +627,17 @@ actor FieldLeadsService {
             return .notHome
         default:
             return .interested
+        }
+    }
+
+    private static func contactStatus(from leadStatus: FieldLeadStatus) -> ContactStatus {
+        switch leadStatus {
+        case .interested, .qrScanned:
+            return .hot
+        case .noAnswer:
+            return .cold
+        case .notHome:
+            return .new
         }
     }
 
@@ -609,6 +702,43 @@ actor FieldLeadsService {
             return value
         }
         return nil
+    }
+
+    private func cacheLeadRows(_ rows: [ContactLeadRow], userId: UUID, workspaceId: UUID?) async {
+        let contacts = rows.map { row in
+            Contact(
+                id: row.id,
+                fullName: row.fullName,
+                phone: row.phone,
+                email: row.email,
+                address: row.address,
+                campaignId: row.campaignId,
+                farmId: nil,
+                gersId: nil,
+                addressId: nil,
+                tags: nil,
+                status: Self.contactStatus(from: Self.fieldLeadStatus(from: row.status)),
+                lastContacted: row.lastSyncedAt,
+                notes: row.notes,
+                reminderDate: nil,
+                createdAt: row.createdAt,
+                updatedAt: row.updatedAt
+            )
+        }
+        await contactRepository.upsertContacts(contacts, userId: userId, workspaceId: workspaceId, dirty: false, syncedAt: Date())
+    }
+
+    private func fetchCachedLeads(userId: UUID, workspaceId: UUID?, campaignId: UUID?) async -> [FieldLead] {
+        let contacts = await contactRepository.fetchContacts(
+            userId: userId,
+            workspaceId: workspaceId,
+            filter: ContactFilter(campaignId: campaignId)
+        )
+        return Self.deduplicated(contacts.map { Self.makeFieldLead(from: $0, userId: userId) })
+    }
+
+    private func isOffline() async -> Bool {
+        await MainActor.run { !NetworkMonitor.shared.isOnline }
     }
 }
 

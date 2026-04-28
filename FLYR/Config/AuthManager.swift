@@ -54,6 +54,7 @@ final class AuthManager: ObservableObject {
         #if DEBUG
         if ProcessInfo.processInfo.environment["SIMULATOR_DEVICE_NAME"] != nil {
             user = nil
+            syncWorkspaceContext(for: nil)
             #if DEBUG
             print("🔍 DEBUG: Skipping Keychain session restore on Simulator")
             #endif
@@ -63,6 +64,7 @@ final class AuthManager: ObservableObject {
 
         guard let pair = KeychainAuthStorage.loadSession() else {
             user = nil
+            syncWorkspaceContext(for: nil)
             #if DEBUG
             print("🔍 No stored session in Keychain")
             #endif
@@ -73,6 +75,7 @@ final class AuthManager: ObservableObject {
         guard !pair.accessToken.isEmpty, !pair.refreshToken.isEmpty else {
             KeychainAuthStorage.clearAll()
             user = nil
+            syncWorkspaceContext(for: nil)
             #if DEBUG
             print("🔍 Stored session is incomplete; cleared local auth state")
             #endif
@@ -83,14 +86,26 @@ final class AuthManager: ObservableObject {
             let cachedUser = KeychainAuthStorage.loadAppUser()
             let restoredUser = restoredAppUser(from: session.user, cachedUser: cachedUser)
             user = restoredUser
+            syncWorkspaceContext(for: session.user.id)
             KeychainAuthStorage.saveAppUser(restoredUser)
             await refreshAppUserFromProfile(userId: session.user.id, fallback: restoredUser)
             #if DEBUG
             print("🔍 auth_session_restored user_id=\(session.user.id.uuidString) email=\(restoredUser.email)")
             #endif
         } catch {
+            let cachedUser = KeychainAuthStorage.loadAppUser()
+            if let cachedUser, !NetworkMonitor.shared.isOnline {
+                user = cachedUser
+                syncWorkspaceContext(for: cachedUser.id)
+                #if DEBUG
+                print("🔍 Session restore failed offline; keeping cached auth user_id=\(cachedUser.id.uuidString) error=\(error.localizedDescription)")
+                #endif
+                return
+            }
+
             KeychainAuthStorage.clearAll()
             user = nil
+            syncWorkspaceContext(for: nil)
             #if DEBUG
             print("🔍 Session restore failed: \(error.localizedDescription)")
             #endif
@@ -101,6 +116,7 @@ final class AuthManager: ObservableObject {
         KeychainAuthStorage.clearAll()
         do { try await client.auth.signOut() } catch {}
         WorkspaceContext.shared.clear()
+        syncWorkspaceContext(for: nil)
         user = nil
     }
 
@@ -153,6 +169,7 @@ final class AuthManager: ObservableObject {
         KeychainAuthStorage.saveAuthProvider(.google)
         KeychainAuthStorage.saveAppUser(appUser)
         user = appUser
+        syncWorkspaceContext(for: session.user.id)
     }
 
     // MARK: - Apple Sign-In
@@ -213,6 +230,7 @@ final class AuthManager: ObservableObject {
         KeychainAuthStorage.saveAppleIdToken(idToken)
         KeychainAuthStorage.saveAppUser(appUser)
         user = appUser
+        syncWorkspaceContext(for: session.user.id)
     }
     
     /// Handle Sign in with Apple authorization from SignInWithAppleButton
@@ -251,6 +269,7 @@ final class AuthManager: ObservableObject {
         KeychainAuthStorage.saveAppleIdToken(idToken)
         KeychainAuthStorage.saveAppUser(appUser)
         user = appUser
+        syncWorkspaceContext(for: session.user.id)
     }
 
     // MARK: - Email / Password Sign-In (e.g. App Store review account)
@@ -279,6 +298,7 @@ final class AuthManager: ObservableObject {
         KeychainAuthStorage.saveAuthProvider(.email)
         KeychainAuthStorage.saveAppUser(appUser)
         user = appUser
+        syncWorkspaceContext(for: session.user.id)
     }
 
     /// Sign up with email and password via Supabase Auth. Persists session to Keychain when returned (e.g. when email confirmation is disabled).
@@ -299,6 +319,7 @@ final class AuthManager: ObservableObject {
         KeychainAuthStorage.saveAuthProvider(.email)
         KeychainAuthStorage.saveAppUser(appUser)
         user = appUser
+        syncWorkspaceContext(for: session.user.id)
     }
 
     func sendPasswordResetEmail(email: String) async throws {
@@ -393,10 +414,12 @@ final class AuthManager: ObservableObject {
                 )
                 let restoredUser = restoredAppUser(from: session.user, cachedUser: passwordRecoveryRestoreUser)
                 user = restoredUser
+                syncWorkspaceContext(for: session.user.id)
                 KeychainAuthStorage.saveAppUser(restoredUser)
                 await refreshAppUserFromProfile(userId: session.user.id, fallback: restoredUser)
             } catch {
                 user = nil
+                syncWorkspaceContext(for: nil)
                 KeychainAuthStorage.clearAll()
                 #if DEBUG
                 print("⚠️ Failed to restore pre-recovery session: \(error.localizedDescription)")
@@ -404,6 +427,7 @@ final class AuthManager: ObservableObject {
             }
         } else {
             user = nil
+            syncWorkspaceContext(for: nil)
         }
 
         passwordRecoveryRestoreSession = nil
@@ -502,7 +526,12 @@ final class AuthManager: ObservableObject {
     private func applyPasswordRecoverySession(_ session: Session) {
         let recoveryUser = restoredAppUser(from: session.user, cachedUser: nil)
         user = recoveryUser
+        syncWorkspaceContext(for: session.user.id)
         isUsingPasswordRecoverySession = true
+    }
+
+    private func syncWorkspaceContext(for userId: UUID?) {
+        WorkspaceContext.shared.activate(userId: userId)
     }
 
     private func authCallbackValue(named name: String, in url: URL) -> String? {

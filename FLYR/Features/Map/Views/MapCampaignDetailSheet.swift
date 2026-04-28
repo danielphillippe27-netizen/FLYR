@@ -6,6 +6,7 @@ struct MapCampaignDetailSheet: View {
     let campaigns: [CampaignListItem]
     let onViewCampaigns: () -> Void
     let onStartSession: () -> Void
+    var onStartTeamSession: (() -> Void)?
 
     private var selectedCampaign: CampaignListItem? {
         guard let id = selectedCampaignId else { return nil }
@@ -46,14 +47,34 @@ struct MapCampaignDetailSheet: View {
                     .foregroundColor(.secondary)
             }
 
-            Button(action: onStartSession) {
-                Text("Start Session")
-                    .font(.system(size: 17, weight: .semibold))
-                    .frame(maxWidth: .infinity)
-                    .frame(minHeight: 56)
-                    .background(Color.red)
-                    .foregroundColor(.white)
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
+            HStack(spacing: 10) {
+                if let onStartTeamSession {
+                    Button(action: onStartTeamSession) {
+                        Text("Start Team Session")
+                            .font(.system(size: 16, weight: .semibold))
+                            .frame(maxWidth: .infinity)
+                            .frame(minHeight: 56)
+                            .background(Color.black)
+                            .foregroundColor(.white)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(Color.primary.opacity(0.14), lineWidth: 1)
+                            )
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                    }
+                    .buttonStyle(.plain)
+                    .contentShape(Rectangle())
+                }
+
+                Button(action: onStartSession) {
+                    Text("Start Session")
+                        .font(.system(size: 17, weight: .semibold))
+                        .frame(maxWidth: .infinity)
+                        .frame(minHeight: 56)
+                        .background(Color.red)
+                        .foregroundColor(.white)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                }
             }
             .buttonStyle(.plain)
             .contentShape(Rectangle())
@@ -94,7 +115,8 @@ struct MapCampaignDetailSheet: View {
         selectedCampaignId: nil,
         campaigns: [],
         onViewCampaigns: {},
-        onStartSession: {}
+        onStartSession: {},
+        onStartTeamSession: {}
     )
 }
 
@@ -106,6 +128,7 @@ struct MapCampaignDetailSheet: View {
             CampaignListItem(id: id, name: "Summer Flyer", addressCount: 51)
         ],
         onViewCampaigns: {},
-        onStartSession: {}
+        onStartSession: {},
+        onStartTeamSession: {}
     )
 }

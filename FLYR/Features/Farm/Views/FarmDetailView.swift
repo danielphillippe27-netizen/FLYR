@@ -1,13 +1,15 @@
 import SwiftUI
-import CoreLocation
-import MapboxMaps
 
 struct FarmDetailView: View {
     @EnvironmentObject private var uiState: AppUIState
     @StateObject private var viewModel: FarmDetailViewModel
     @State private var showAnalytics = false
-    @State private var showFarmMap = false
     @State private var showTouchPlanner = false
+    @State private var showCycleMap = false
+    @State private var isPreparingCycleMap = false
+    @State private var selectedCycleForMap: FarmCycle?
+    @State private var selectedCycleExecutionContext: FarmExecutionContext?
+    @State private var cycleMapPreparationError: String?
     
     let farmId: UUID
     
@@ -16,8 +18,39 @@ struct FarmDetailView: View {
         _viewModel = StateObject(wrappedValue: FarmDetailViewModel(farmId: farmId))
     }
 
+    private var sortedCycles: [FarmCycle] {
+        viewModel.cycles.sorted { lhs, rhs in
+            if lhs.startDate == rhs.startDate {
+                return lhs.cycleNumber < rhs.cycleNumber
+            }
+            return lhs.startDate < rhs.startDate
+        }
+    }
+
+    private var currentCycle: FarmCycle? {
+        let now = Date()
+        if let activeIndex = sortedCycles.lastIndex(where: { $0.startDate <= now }) {
+            return sortedCycles[activeIndex]
+        }
+        if let next = sortedCycles.first(where: { $0.startDate > now }) {
+            return next
+        }
+        return sortedCycles.last
+    }
+
+    private var futureCycles: [FarmCycle] {
+        let now = Date()
+        return sortedCycles.filter { cycle in
+            guard let currentCycle else {
+                return cycle.startDate > now
+            }
+            return cycle.id != currentCycle.id && cycle.startDate > now
+        }
+    }
+
     private var primaryCampaignIdForMap: UUID? {
-        let addressCounts = Dictionary(grouping: viewModel.addresses, by: \.campaignId)
+        let addressCampaignIds = viewModel.addresses.compactMap(\.campaignId)
+        let addressCounts = Dictionary(grouping: addressCampaignIds, by: { $0 })
             .mapValues(\.count)
 
         if let mostCommonAddressCampaignId = addressCounts.max(by: { lhs, rhs in
@@ -39,22 +72,78 @@ struct FarmDetailView: View {
             return lhs.value < rhs.value
         })?.key
     }
+
+    private func campaignId(for cycle: FarmCycle) -> UUID? {
+        viewModel.preferredCampaignId(for: cycle, fallback: primaryCampaignIdForMap)
+    }
+
+    private func openCycleMap(for cycle: FarmCycle) {
+        guard let campaignId = campaignId(for: cycle) else { return }
+        isPreparingCycleMap = true
+        cycleMapPreparationError = nil
+
+        Task {
+            let context = await viewModel.ensureExecutionContext(for: cycle, campaignId: campaignId)
+            await MainActor.run {
+                isPreparingCycleMap = false
+                guard let context else {
+                    cycleMapPreparationError = viewModel.errorMessage ?? "Couldn't prepare this cycle map."
+                    return
+                }
+                selectedCycleForMap = cycle
+                selectedCycleExecutionContext = context
+                showCycleMap = true
+            }
+        }
+    }
     
     var body: some View {
         ScrollView {
             LazyVStack(spacing: 20) {
                 if let farm = viewModel.farm {
-                    // Farm Summary Card
                     FarmSummaryCard(farm: farm)
                         .padding(.horizontal, 16)
-                    
-                    // Upcoming Touches
-                    if !viewModel.upcomingTouches.isEmpty {
-                        SectionHeader(title: "Upcoming Touches", icon: "calendar")
+
+                    SectionHeader(title: "Current Cycle", icon: "repeat")
+                        .padding(.horizontal, 16)
+
+                    if let currentCycle {
+                        CycleCard(
+                            cycle: currentCycle,
+                            canOpenMap: campaignId(for: currentCycle) != nil,
+                            onOpenMap: {
+                                openCycleMap(for: currentCycle)
+                            }
+                        )
                             .padding(.horizontal, 16)
-                        
-                        ForEach(viewModel.upcomingTouches.prefix(5)) { touch in
-                            TouchRowView(touch: touch)
+                    } else {
+                        EmptyCycleCard(
+                            title: "No cycle running",
+                            detail: futureCycles.isEmpty
+                                ? "Open the planner to build the next cycle."
+                                : "Your next cycle is queued below."
+                        )
+                        .padding(.horizontal, 16)
+                    }
+
+                    SectionHeader(title: "Future Cycles", icon: "calendar")
+                        .padding(.horizontal, 16)
+
+                    if futureCycles.isEmpty {
+                        EmptyCycleCard(
+                            title: "No future cycles yet",
+                            detail: "Use the planner to line up the next rounds."
+                        )
+                        .padding(.horizontal, 16)
+                    } else {
+                        ForEach(futureCycles) { cycle in
+                            CycleCard(
+                                cycle: cycle,
+                                canOpenMap: campaignId(for: cycle) != nil,
+                                onOpenMap: {
+                                    openCycleMap(for: cycle)
+                                }
+                            )
                                 .padding(.horizontal, 16)
                         }
                     }
@@ -68,83 +157,6 @@ struct FarmDetailView: View {
                         }
                     )
                     .padding(.horizontal, 16)
-                    
-                    // Map Preview
-                    if let polygon = farm.polygonCoordinates {
-                        SectionHeader(title: "Farm Map", icon: "map")
-                            .padding(.horizontal, 16)
-
-                        Button {
-                            if let campaignId = primaryCampaignIdForMap {
-                                uiState.selectCampaign(id: campaignId, name: farm.name)
-                                uiState.selectedTabIndex = 1
-                            } else {
-                                showFarmMap = true
-                            }
-                        } label: {
-                            FarmMapPreview(
-                                polygon: polygon,
-                                addresses: viewModel.addresses
-                            )
-                        }
-                        .buttonStyle(.plain)
-                        .padding(.horizontal, 16)
-
-                        FarmAddressesCard(
-                            addresses: viewModel.addresses,
-                            fallbackCount: farm.addressCount
-                        )
-                        .padding(.horizontal, 16)
-                    }
-                    
-                    // Cycles
-                    if !viewModel.cycles.isEmpty {
-                        SectionHeader(title: "Cycles", icon: "repeat")
-                            .padding(.horizontal, 16)
-
-                        ForEach(viewModel.cycles) { cycle in
-                            CycleCard(cycle: cycle)
-                                .padding(.horizontal, 16)
-                        }
-                    } else {
-                        Button {
-                            Task {
-                                await viewModel.generateCycles()
-                            }
-                        } label: {
-                            HStack {
-                                Image(systemName: "plus.circle")
-                                Text("Generate Cycles")
-                            }
-                            .frame(maxWidth: .infinity)
-                            .padding()
-                            .background(Color(.systemGray6))
-                            .cornerRadius(12)
-                        }
-                        .padding(.horizontal, 16)
-                    }
-                    
-                    // Leads
-                    if !viewModel.leads.isEmpty {
-                        SectionHeader(title: "Leads", icon: "person.2")
-                            .padding(.horizontal, 16)
-                        
-                        ForEach(viewModel.leads.prefix(5)) { lead in
-                            LeadRowView(lead: lead)
-                                .padding(.horizontal, 16)
-                        }
-                    }
-                    
-                    // Recommendations
-                    if !viewModel.recommendations.isEmpty {
-                        SectionHeader(title: "Recommendations", icon: "lightbulb")
-                            .padding(.horizontal, 16)
-                        
-                        ForEach(viewModel.recommendations) { rec in
-                            RecommendationCard(recommendation: rec)
-                                .padding(.horizontal, 16)
-                        }
-                    }
                 } else if viewModel.isLoading {
                     ProgressView()
                         .frame(maxWidth: .infinity)
@@ -170,22 +182,22 @@ struct FarmDetailView: View {
                 FarmAnalyticsView(farmId: farm.id)
             }
         }
-        .sheet(isPresented: $showFarmMap) {
-            if let farm = viewModel.farm {
+        .sheet(isPresented: $showCycleMap, onDismiss: {
+            selectedCycleForMap = nil
+            selectedCycleExecutionContext = nil
+        }) {
+            if let cycle = selectedCycleForMap,
+               let context = selectedCycleExecutionContext {
                 NavigationStack {
-                    if let campaignId = primaryCampaignIdForMap {
-                        CampaignMapView(
-                            campaignId: campaignId.uuidString,
-                            onDismissFromMap: {
-                                showFarmMap = false
-                            }
-                        )
-                    } else {
-                        FarmMapView(
-                            farm: farm,
-                            addresses: viewModel.addresses
-                        )
-                    }
+                    CampaignMapView(
+                        campaignId: context.campaignId.uuidString,
+                        farmCycleNumber: cycle.cycleNumber,
+                        farmCycleName: cycle.cycleName,
+                        farmExecutionContext: context,
+                        onDismissFromMap: {
+                            showCycleMap = false
+                        }
+                    )
                 }
             }
         }
@@ -210,6 +222,26 @@ struct FarmDetailView: View {
         }
         .refreshable {
             await viewModel.loadFarmData()
+        }
+        .overlay {
+            if isPreparingCycleMap {
+                ZStack {
+                    Color.black.opacity(0.18)
+                        .ignoresSafeArea()
+                    ProgressView("Opening cycle map...")
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 16)
+                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+                }
+            }
+        }
+        .alert("Couldn't Open Cycle Map", isPresented: .init(
+            get: { cycleMapPreparationError != nil },
+            set: { if !$0 { cycleMapPreparationError = nil } }
+        )) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(cycleMapPreparationError ?? "Couldn't prepare this cycle map.")
         }
     }
 }
@@ -283,6 +315,13 @@ struct PlanMetricPill: View {
 struct FarmSummaryCard: View {
     let farm: Farm
     
+    private var cadenceLabel: String {
+        let interval = (farm.touchesInterval?.lowercased() == "year") ? "year" : "month"
+        let sessionCount = max(1, farm.touchesPerInterval ?? farm.frequency)
+        let sessionLabel = sessionCount == 1 ? "session" : "sessions"
+        return "\(sessionCount) \(sessionLabel)/\(interval)"
+    }
+
     private var dateFormatter: DateFormatter {
         let formatter = DateFormatter()
         formatter.dateStyle = .medium
@@ -305,7 +344,7 @@ struct FarmSummaryCard: View {
                 .foregroundStyle(.secondary)
             
             HStack {
-                Label("\(farm.frequency) touches/month", systemImage: "calendar")
+                Label(cadenceLabel, systemImage: "calendar")
                 Spacer()
                 Label("\(Int(farm.progress * 100))% complete", systemImage: "chart.pie")
             }
@@ -392,19 +431,51 @@ struct TouchRowView: View {
     }
 }
 
-// MARK: - Phase Card
-
 struct CycleCard: View {
     let cycle: FarmCycle
+    let canOpenMap: Bool
+    let onOpenMap: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(cycle.cycleName)
-                .font(.flyrHeadline)
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(cycle.cycleName)
+                    .font(.flyrHeadline)
+
+                Spacer()
+
+                Text("\(cycle.executedSessionCount)/\(cycle.plannedSessionCount)")
+                    .font(.flyrCaption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
 
             Text("\(cycle.startDate, style: .date) - \(cycle.endDate, style: .date)")
                 .font(.flyrCaption)
                 .foregroundStyle(.secondary)
+
+            ProgressView(value: cycle.plannedSessionCount > 0 ? Double(cycle.executedSessionCount) / Double(cycle.plannedSessionCount) : 0)
+                .tint(.red)
+
+            HStack(spacing: 12) {
+                PlanMetricPill(title: "Sessions", value: "\(cycle.plannedSessionCount)")
+                PlanMetricPill(title: "Doors hit", value: "\(cycle.doorsHitCount)")
+            }
+
+            if canOpenMap {
+                Button(action: onOpenMap) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "map")
+                        Text("Open Cycle Map")
+                    }
+                    .font(.flyrCaption.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    .background(Color.red)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                }
+                .buttonStyle(.plain)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(16)
@@ -415,50 +486,16 @@ struct CycleCard: View {
     }
 }
 
-// MARK: - Lead Row View
+struct EmptyCycleCard: View {
+    let title: String
+    let detail: String
 
-struct LeadRowView: View {
-    let lead: FarmLead
-    
     var body: some View {
-        HStack {
-            Image(systemName: "person.circle")
-                .foregroundColor(.blue)
-            
-            VStack(alignment: .leading, spacing: 4) {
-                Text(lead.name ?? "Unknown")
-                    .font(.flyrSubheadline)
-                
-                Text(lead.leadSource.displayName)
-                    .font(.flyrCaption)
-                    .foregroundStyle(.secondary)
-            }
-            
-            Spacer()
-        }
-        .padding(12)
-        .background(
-            RoundedRectangle(cornerRadius: 12)
-                .fill(Color(.systemGray6))
-        )
-    }
-}
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.flyrHeadline)
 
-// MARK: - Recommendation Card
-
-struct RecommendationCard: View {
-    let recommendation: FarmRecommendation
-    
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Image(systemName: "lightbulb.fill")
-                    .foregroundColor(.yellow)
-                Text(recommendation.title)
-                    .font(.flyrHeadline)
-            }
-            
-            Text(recommendation.detail)
+            Text(detail)
                 .font(.flyrSubheadline)
                 .foregroundStyle(.secondary)
         }
@@ -466,261 +503,8 @@ struct RecommendationCard: View {
         .padding(16)
         .background(
             RoundedRectangle(cornerRadius: 16)
-                .fill(Color.yellow.opacity(0.1))
-        )
-    }
-}
-
-// MARK: - Farm Addresses Card
-
-struct FarmAddressesCard: View {
-    let addresses: [CampaignAddressViewRow]
-    let fallbackCount: Int?
-
-    private var displayedCount: Int? {
-        if !addresses.isEmpty {
-            return addresses.count
-        }
-        return fallbackCount
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Label {
-                    Text(addresses.isEmpty ? "Buildings / addresses" : "Buildings / addresses loaded")
-                } icon: {
-                    Image(systemName: "house")
-                }
-                .font(.flyrSubheadline)
-                .foregroundStyle(.primary)
-
-                Spacer()
-
-                if let count = displayedCount, count > 0 {
-                    Text("\(count) homes")
-                        .font(.flyrCaption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            if !addresses.isEmpty {
-                ForEach(addresses.prefix(4), id: \.id) { address in
-                    Text(address.formatted)
-                        .font(.flyrCaption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-            } else {
-                Text("Homes inside this farm will appear here when address data is available.")
-                    .font(.flyrCaption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(16)
-        .background(
-            RoundedRectangle(cornerRadius: 16)
                 .fill(Color(.systemGray6))
         )
-    }
-}
-
-// MARK: - Farm Map Preview
-
-struct FarmMapPreview: View {
-    let polygon: [CLLocationCoordinate2D]
-    let addresses: [CampaignAddressViewRow]
-    @Environment(\.colorScheme) private var colorScheme
-
-    var body: some View {
-        FarmMapPreviewRepresentable(
-            polygon: polygon,
-            addresses: addresses,
-            useDarkStyle: colorScheme == .dark
-        )
-        .frame(height: 260)
-        .clipShape(RoundedRectangle(cornerRadius: 16))
-        .overlay(alignment: .topLeading) {
-            Text(addresses.isEmpty ? "Farm boundary" : "\(addresses.count) homes")
-                .font(.flyrCaption)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(.ultraThinMaterial, in: Capsule())
-                .padding(12)
-        }
-        .overlay(alignment: .bottomTrailing) {
-            Label("Open map", systemImage: "arrow.up.right")
-                .font(.flyrCaption)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(.ultraThinMaterial, in: Capsule())
-                .padding(12)
-        }
-    }
-}
-
-private struct FarmMapPreviewRepresentable: UIViewRepresentable {
-    let polygon: [CLLocationCoordinate2D]
-    let addresses: [CampaignAddressViewRow]
-    let useDarkStyle: Bool
-
-    private static let lightStyleURI = StyleURI(rawValue: "mapbox://styles/mapbox/streets-v11")!
-    private static let darkStyleURI = StyleURI(rawValue: "mapbox://styles/mapbox/dark-v11")!
-
-    func makeUIView(context: Context) -> MapView {
-        let mapView = MapView(frame: CGRect(x: 0, y: 0, width: 320, height: 240))
-        mapView.ornaments.options.scaleBar.visibility = .hidden
-        mapView.ornaments.options.compass.visibility = .hidden
-        mapView.gestures.options.pitchEnabled = false
-        mapView.gestures.options.rotateEnabled = false
-        mapView.mapboxMap.loadStyle(useDarkStyle ? Self.darkStyleURI : Self.lightStyleURI)
-
-        let polygonManager = mapView.annotations.makePolygonAnnotationManager()
-        let circleManager = mapView.annotations.makeCircleAnnotationManager()
-        circleManager.circleRadius = 4
-        circleManager.circleColor = StyleColor(.systemRed)
-        circleManager.circleStrokeColor = StyleColor(.white)
-        circleManager.circleStrokeWidth = 1.5
-
-        context.coordinator.mapView = mapView
-        context.coordinator.polygonAnnotationManager = polygonManager
-        context.coordinator.addressAnnotationManager = circleManager
-        context.coordinator.loadedStyleRawValue = (useDarkStyle ? Self.darkStyleURI : Self.lightStyleURI).rawValue
-        context.coordinator.boundStyleLoadedObserver(to: mapView)
-        context.coordinator.sync(polygon: polygon, addresses: addresses)
-        return mapView
-    }
-
-    func updateUIView(_ mapView: MapView, context: Context) {
-        let fallbackSize = CGSize(width: 320, height: 240)
-        let parentSize = mapView.superview?.bounds.size ?? .zero
-        let resolvedSize: CGSize
-        if parentSize.width.isFinite, parentSize.height.isFinite, parentSize.width > 0, parentSize.height > 0 {
-            resolvedSize = parentSize
-        } else {
-            resolvedSize = fallbackSize
-        }
-        if mapView.bounds.size != resolvedSize {
-            mapView.bounds = CGRect(origin: .zero, size: resolvedSize)
-        }
-        let scale = mapView.window?.screen.scale ?? UIScreen.main.scale
-        if scale.isFinite, scale > 0, mapView.contentScaleFactor != scale {
-            mapView.contentScaleFactor = scale
-        }
-        context.coordinator.sync(polygon: polygon, addresses: addresses)
-        let desiredStyle = (useDarkStyle ? Self.darkStyleURI : Self.lightStyleURI).rawValue
-        if context.coordinator.loadedStyleRawValue != desiredStyle {
-            context.coordinator.loadedStyleRawValue = desiredStyle
-            mapView.mapboxMap.loadStyle(useDarkStyle ? Self.darkStyleURI : Self.lightStyleURI)
-        }
-        mapView.setNeedsLayout()
-    }
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator()
-    }
-
-    final class Coordinator {
-        weak var mapView: MapView?
-        var polygonAnnotationManager: PolygonAnnotationManager?
-        var addressAnnotationManager: CircleAnnotationManager?
-        var styleLoadedObserver: AnyCancelable?
-        var loadedStyleRawValue: String?
-        private var lastSignature: String?
-        private var pendingPolygon: [CLLocationCoordinate2D] = []
-        private var pendingAddresses: [CampaignAddressViewRow] = []
-
-        func boundStyleLoadedObserver(to mapView: MapView) {
-            guard styleLoadedObserver == nil else { return }
-            styleLoadedObserver = mapView.mapboxMap.onStyleLoaded.observeNext { [weak self] _ in
-                guard let self else { return }
-                self.renderCurrentState()
-            }
-        }
-
-        func sync(polygon: [CLLocationCoordinate2D], addresses: [CampaignAddressViewRow]) {
-            pendingPolygon = polygon
-            pendingAddresses = addresses
-            renderCurrentState()
-        }
-
-        private func renderCurrentState() {
-            guard let mapView else { return }
-
-            var ring = pendingPolygon.map {
-                LocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude)
-            }
-            if ring.first != ring.last, let first = ring.first {
-                ring.append(first)
-            }
-            if ring.count >= 4 {
-                let polygon = Polygon([ring])
-                let annotation = PolygonAnnotation(polygon: polygon)
-                polygonAnnotationManager?.fillColor = StyleColor(UIColor.systemRed.withAlphaComponent(0.15))
-                polygonAnnotationManager?.fillOutlineColor = StyleColor(.systemRed)
-                polygonAnnotationManager?.annotations = [annotation]
-            } else {
-                polygonAnnotationManager?.annotations = []
-            }
-
-            let addressAnnotations = pendingAddresses.map { address in
-                CircleAnnotation(
-                    centerCoordinate: LocationCoordinate2D(
-                        latitude: address.geom.coordinate.latitude,
-                        longitude: address.geom.coordinate.longitude
-                    )
-                )
-            }
-            addressAnnotationManager?.annotations = addressAnnotations
-
-            let signature = pendingPolygon
-                .map { "\($0.latitude),\($0.longitude)" }
-                .joined(separator: "|")
-                + "::"
-                + pendingAddresses.prefix(10).map { $0.id.uuidString }.joined(separator: "|")
-            guard signature != lastSignature else { return }
-            lastSignature = signature
-
-            let allCoords = pendingPolygon + pendingAddresses.map(\.geom.coordinate)
-            guard !allCoords.isEmpty else { return }
-            fitCamera(on: mapView, coordinates: allCoords)
-        }
-
-        private func fitCamera(on mapView: MapView, coordinates: [CLLocationCoordinate2D]) {
-            let lats = coordinates.map(\.latitude)
-            let lons = coordinates.map(\.longitude)
-            guard let minLat = lats.min(),
-                  let maxLat = lats.max(),
-                  let minLon = lons.min(),
-                  let maxLon = lons.max() else { return }
-
-            let center = CLLocationCoordinate2D(
-                latitude: (minLat + maxLat) / 2,
-                longitude: (minLon + maxLon) / 2
-            )
-            let span = max(maxLat - minLat, maxLon - minLon)
-            let zoom: CGFloat
-            switch span {
-            case ..<0.002: zoom = 16
-            case ..<0.005: zoom = 15
-            case ..<0.01: zoom = 14
-            case ..<0.02: zoom = 13
-            case ..<0.05: zoom = 12
-            default: zoom = 11
-            }
-
-            mapView.camera.ease(
-                to: CameraOptions(
-                    center: center,
-                    padding: UIEdgeInsets(top: 28, left: 28, bottom: 28, right: 28),
-                    zoom: zoom,
-                    bearing: 0,
-                    pitch: 0
-                ),
-                duration: 0.5
-            )
-        }
     }
 }
 

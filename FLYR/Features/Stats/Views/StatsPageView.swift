@@ -83,7 +83,6 @@ private enum StatsProgressMax {
     static let leads = 100.0
     static let appointments = 50.0
     static let distance = 20.0
-    static let qrScans = 50.0
 }
 
 // MARK: - You View Content (All Time only)
@@ -145,7 +144,7 @@ struct YouViewContent: View {
                                     .frame(height: 115)
                                     .padding(.top, 16)
 
-                                // 4 percentage blocks
+                                // Conversion summary
                                 fourPercentRow
                                     .frame(height: 64)
                                     .padding(.top, 16)
@@ -166,7 +165,7 @@ struct YouViewContent: View {
                                     )
                                     CompactStatRow(
                                         icon: "person.badge.plus",
-                                        label: "Leads",
+                                        label: "Lead",
                                         progress: progress(actual: Double(vm.stats?.leads_created ?? 0), max: StatsProgressMax.leads),
                                         value: "\(vm.stats?.leads_created ?? 0)"
                                     )
@@ -181,12 +180,6 @@ struct YouViewContent: View {
                                         label: "Distance",
                                         progress: progress(actual: vm.stats?.distance_walked ?? 0, max: StatsProgressMax.distance),
                                         value: String(format: "%.1f km", Double(vm.stats?.distance_walked ?? 0.0))
-                                    )
-                                    CompactStatRow(
-                                        icon: "qrcode",
-                                        label: "QR Scans",
-                                        progress: progress(actual: Double(vm.stats?.qr_codes_scanned ?? 0), max: StatsProgressMax.qrScans),
-                                        value: "\(vm.stats?.qr_codes_scanned ?? 0)"
                                     )
                                 }
                                 .padding(.top, 16)
@@ -249,19 +242,15 @@ struct YouViewContent: View {
         .frame(maxWidth: .infinity)
     }
 
-    // MARK: - 4 percentage blocks
+    // MARK: - Conversion summary
 
     private var fourPercentRow: some View {
         let doors = Double(consolidatedDoors)
         let conv = Double(vm.stats?.conversations ?? 0)
         let leads = Double(vm.stats?.leads_created ?? 0)
-        let appts = Double(vm.stats?.appointments ?? 0)
-        let qr = Double(vm.stats?.qr_codes_scanned ?? 0)
         return HStack(spacing: 0) {
-            miniColumn(label: "D→C %", value: formatPercent(safePercent(numerator: conv, denominator: doors)))
-            miniColumn(label: "C→L %", value: formatPercent(safePercent(numerator: leads, denominator: conv)))
-            miniColumn(label: "C→A %", value: formatPercent(safePercent(numerator: appts, denominator: conv)))
-            miniColumn(label: "D→Q %", value: formatPercent(safePercent(numerator: qr, denominator: doors)))
+            miniColumn(label: "Answer Rate", value: formatPercent(safePercent(numerator: conv, denominator: doors)))
+            miniColumn(label: "Conversion Rate", value: formatPercent(safePercent(numerator: leads, denominator: conv)))
         }
         .padding(.horizontal, 8)
     }
@@ -271,6 +260,8 @@ struct YouViewContent: View {
             Text(label)
                 .font(.system(size: 13))
                 .foregroundColor(.muted)
+                .multilineTextAlignment(.center)
+                .lineLimit(2)
             Text(value)
                 .font(.system(size: 22, weight: .bold))
                 .monospacedDigit()

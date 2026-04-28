@@ -1,6 +1,8 @@
 import Foundation
 import Supabase
 import Combine
+import CoreLocation
+import MapboxMaps
 
 /// Service for fetching and caching building data including address, residents, and QR status
 @MainActor
@@ -14,6 +16,7 @@ class BuildingDataService: ObservableObject {
     private let supabase: SupabaseClient
     private var cache: [String: CachedBuildingData] = [:]
     private let cacheTTL: TimeInterval = 300  // 5 minutes
+    private let localAddressCentroidBufferMeters: Double = 18
     
     // MARK: - Initialization
     
@@ -92,9 +95,43 @@ class BuildingDataService: ObservableObject {
             }
             return
         }
-        
-        // Set loading state
-        buildingData = .loading
+
+        let localData = await loadLocalBuildingData(
+            gersId: gersId,
+            campaignId: campaignId,
+            addressId: addressId,
+            preferredAddressId: preferredAddressId
+        )
+        if let localData {
+            buildingData = localData
+            cache[cacheKey] = CachedBuildingData(data: localData, timestamp: Date())
+        } else {
+            buildingData = .loading
+        }
+
+        if !NetworkMonitor.shared.isOnline {
+            if let localData {
+                buildingData = localData
+                cache[cacheKey] = CachedBuildingData(data: localData, timestamp: Date())
+            } else {
+                buildingData = BuildingData(
+                    isLoading: false,
+                    error: BuildingDataError.noAddressLinked,
+                    address: nil,
+                    addresses: [],
+                    residents: [],
+                    qrStatus: .empty,
+                    buildingExists: false,
+                    addressLinked: false,
+                    contactName: nil,
+                    leadStatus: nil,
+                    productInterest: nil,
+                    followUpDate: nil,
+                    aiSummary: nil
+                )
+            }
+            return
+        }
         
         let decoder = JSONDecoder.supabaseDates
         
@@ -265,7 +302,38 @@ class BuildingDataService: ObservableObject {
             if allAddressResponses.isEmpty, let single = resolvedAddress {
                 allAddressResponses = [single]
             }
+            if let localResolution = await resolveLocalAddressResolution(
+                gersId: gersId,
+                campaignId: campaignId,
+                addressId: addressId
+            ),
+               !allAddressResponses.isEmpty,
+               !localResolution.matchedAddressIDs.isEmpty {
+                let requestedIds = Set([addressId, preferredAddressId].compactMap { $0 })
+                let filtered = allAddressResponses.filter { response in
+                    localResolution.matchedAddressIDs.contains(response.id) || requestedIds.contains(response.id)
+                }
+                if !filtered.isEmpty, filtered.count < allAddressResponses.count {
+                    allAddressResponses = filtered
+                }
+            }
             allAddressResponses = Self.sortAddressesForDisplay(allAddressResponses)
+            if allAddressResponses.isEmpty,
+               let localData = await loadLocalBuildingData(
+                    gersId: gersId,
+                    campaignId: campaignId,
+                    addressId: addressId,
+                    preferredAddressId: preferredAddressId
+               ) {
+                buildingData = localData
+                cache[cacheKey] = CachedBuildingData(data: localData, timestamp: Date())
+                return
+            }
+            await CampaignRepository.shared.upsertAddressCaptureMetadata(
+                campaignId: campaignId,
+                responses: allAddressResponses,
+                dirty: false
+            )
             let resolvedAddresses = allAddressResponses.map { $0.toResolvedAddress(fallbackGersId: gersId) }
             let preferred = preferredAddressId ?? addressId
             let primaryAddress = preferred.flatMap { id in resolvedAddresses.first(where: { $0.id == id }) }
@@ -275,7 +343,7 @@ class BuildingDataService: ObservableObject {
             let displayAddress = primaryAddress ?? resolvedAddresses.first
             if let address = displayAddress {
                 let responseForPrimary = allAddressResponses.first(where: { $0.id == address.id }) ?? resolvedAddress
-                let qrStatus = responseForPrimary?.toQRStatus() ?? .empty
+                let qrStatus = responseForPrimary?.toQRStatus() ?? localData?.qrStatus ?? .empty
                 let residents = try await fetchContactsForAddress(addressId: address.id)
                 let data = BuildingData(
                     isLoading: false,
@@ -315,21 +383,31 @@ class BuildingDataService: ObservableObject {
                 cache[cacheKey] = CachedBuildingData(data: data, timestamp: Date())
             }
         } catch {
-            buildingData = BuildingData(
-                isLoading: false,
-                error: error,
-                address: nil,
-                addresses: [],
-                residents: [],
-                qrStatus: .empty,
-                buildingExists: false,
-                addressLinked: false,
-                contactName: nil,
-                leadStatus: nil,
-                productInterest: nil,
-                followUpDate: nil,
-                aiSummary: nil
-            )
+            if let localData = await loadLocalBuildingData(
+                gersId: gersId,
+                campaignId: campaignId,
+                addressId: addressId,
+                preferredAddressId: preferredAddressId
+            ) {
+                buildingData = localData
+                cache[cacheKey] = CachedBuildingData(data: localData, timestamp: Date())
+            } else {
+                buildingData = BuildingData(
+                    isLoading: false,
+                    error: error,
+                    address: nil,
+                    addresses: [],
+                    residents: [],
+                    qrStatus: .empty,
+                    buildingExists: false,
+                    addressLinked: false,
+                    contactName: nil,
+                    leadStatus: nil,
+                    productInterest: nil,
+                    followUpDate: nil,
+                    aiSummary: nil
+                )
+            }
         }
     }
     
@@ -384,15 +462,29 @@ class BuildingDataService: ObservableObject {
     /// - Parameter addressId: The address ID to fetch contacts for
     /// - Returns: Array of contacts
     private func fetchContactsForAddress(addressId: UUID) async throws -> [Contact] {
-        let contactsQuery = supabase
-            .from("contacts")
-            .select("*")
-            .eq("address_id", value: addressId.uuidString)
-            .order("created_at", ascending: false)
-        
-        let contactsResponse = try await contactsQuery.execute()
-        let decoder = JSONDecoder.supabaseDates
-        return try decoder.decode([Contact].self, from: contactsResponse.data)
+        let cached = await ContactRepository.shared.fetchContactsForAddress(addressId: addressId)
+        guard NetworkMonitor.shared.isOnline else {
+            return cached
+        }
+
+        do {
+            let contactsQuery = supabase
+                .from("contacts")
+                .select("*")
+                .eq("address_id", value: addressId.uuidString)
+                .order("created_at", ascending: false)
+
+            let contactsResponse = try await contactsQuery.execute()
+            let decoder = JSONDecoder.supabaseDates
+            let remote = try decoder.decode([Contact].self, from: contactsResponse.data)
+            await ContactRepository.shared.upsertContacts(remote, userId: nil, workspaceId: nil, dirty: false, syncedAt: Date())
+            return remote
+        } catch {
+            if !cached.isEmpty {
+                return cached
+            }
+            throw error
+        }
     }
 
     private static func normalizedStreetName(for address: CampaignAddressResponse) -> String {
@@ -430,6 +522,348 @@ class BuildingDataService: ObservableObject {
         let number = Int(normalized[range])
         let suffix = normalized[range.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
         return (number, suffix, normalized)
+    }
+
+    private struct LocalAddressResolution {
+        let buildingFeature: BuildingFeature?
+        let resolvedAddresses: [ResolvedAddress]
+        let matchedAddressIDs: Set<UUID>
+    }
+
+    private func resolveLocalAddressResolution(
+        gersId: String,
+        campaignId: UUID,
+        addressId: UUID?
+    ) async -> LocalAddressResolution? {
+        guard let bundle = await CampaignRepository.shared.getCampaignMapBundle(campaignId: campaignId.uuidString) else {
+            return nil
+        }
+
+        let normalizedGersId = gersId.lowercased()
+        let buildingFeature = bundle.buildings.features.first { feature in
+            if feature.id?.lowercased() == normalizedGersId {
+                return true
+            }
+            return feature.properties.buildingIdentifierCandidates.contains(where: { $0.lowercased() == normalizedGersId })
+        }
+
+        var buildingCandidates = Set([normalizedGersId])
+        if let buildingFeature {
+            buildingCandidates.formUnion(buildingFeature.properties.buildingIdentifierCandidates.map { $0.lowercased() })
+        }
+
+        var explicitAddressIds = Set<String>()
+        for candidate in buildingCandidates {
+            explicitAddressIds.formUnion(bundle.silverBuildingLinks[candidate]?.map { $0.lowercased() } ?? [])
+        }
+        if let directAddressId = buildingFeature?.properties.addressId?.lowercased() {
+            explicitAddressIds.insert(directAddressId)
+        }
+        if let requestedAddressId = addressId?.uuidString.lowercased() {
+            explicitAddressIds.insert(requestedAddressId)
+        }
+
+        let explicitMatches = bundle.addresses.features.filter { feature in
+            let featureAddressId = (feature.properties.id ?? feature.id)?.lowercased()
+            if let featureAddressId, explicitAddressIds.contains(featureAddressId) {
+                return true
+            }
+            if let buildingGersId = feature.properties.buildingGersId?.lowercased(), buildingCandidates.contains(buildingGersId) {
+                return true
+            }
+            return false
+        }
+
+        let matchedFeatures: [AddressFeature]
+        if !explicitMatches.isEmpty {
+            matchedFeatures = explicitMatches
+        } else if let buildingFeature {
+            matchedFeatures = inferSpatialAddressFeatures(
+                for: buildingFeature,
+                in: bundle.addresses.features
+            )
+        } else {
+            matchedFeatures = []
+        }
+
+        var seen = Set<UUID>()
+        var resolvedAddresses: [ResolvedAddress] = []
+        for feature in matchedFeatures {
+            guard let resolved = resolvedAddress(from: feature, fallbackGersId: gersId),
+                  seen.insert(resolved.id).inserted else {
+                continue
+            }
+            resolvedAddresses.append(resolved)
+        }
+        resolvedAddresses.sort { lhs, rhs in
+            lhs.displayStreet.localizedStandardCompare(rhs.displayStreet) == .orderedAscending
+        }
+
+        return LocalAddressResolution(
+            buildingFeature: buildingFeature,
+            resolvedAddresses: resolvedAddresses,
+            matchedAddressIDs: Set(resolvedAddresses.map { $0.id })
+        )
+    }
+
+    private func inferSpatialAddressFeatures(
+        for buildingFeature: BuildingFeature,
+        in addressFeatures: [AddressFeature]
+    ) -> [AddressFeature] {
+        let polygons = polygons(from: buildingFeature.geometry)
+        guard !polygons.isEmpty else { return [] }
+
+        let buildingStreet = normalizedStreetHint(for: buildingFeature.properties)
+        let buildingHouse = normalizedHouseHint(for: buildingFeature.properties)
+        let polygonRadius = max(polygons.compactMap(approximatePolygonRadiusMeters).max() ?? 0, 10)
+
+        struct Candidate {
+            let feature: AddressFeature
+            let score: Int
+            let distanceMeters: Double
+        }
+
+        let candidates = addressFeatures.compactMap { feature -> Candidate? in
+            guard coordinate(from: feature.geometry) != nil else { return nil }
+            let point = coordinate(from: feature.geometry)!
+            let inside = polygons.contains { BuildingGeometryHelpers.pointInPolygon(point, polygon: $0) }
+            let centroidDistance = polygons.compactMap {
+                BuildingGeometryHelpers.distanceToPolygonCentroid(point, polygon: $0)
+            }.min() ?? .greatestFiniteMagnitude
+
+            let featureStreet = normalizedStreetHint(for: feature.properties)
+            let featureHouse = normalizedHouseHint(for: feature.properties)
+            let sameStreet = !buildingStreet.isEmpty && !featureStreet.isEmpty && buildingStreet == featureStreet
+            let sameHouse = !buildingHouse.isEmpty && !featureHouse.isEmpty && buildingHouse == featureHouse
+            let nearBuilding = centroidDistance <= polygonRadius + (sameStreet ? localAddressCentroidBufferMeters : 8)
+
+            let isPlausibleMatch =
+                inside ||
+                (sameStreet && sameHouse) ||
+                (sameStreet && nearBuilding) ||
+                (buildingStreet.isEmpty && centroidDistance <= min(polygonRadius + 8, 20))
+
+            guard isPlausibleMatch else { return nil }
+
+            let score =
+                (inside ? 1000 : 0) +
+                (sameStreet ? 120 : 0) +
+                (sameHouse ? 40 : 0) -
+                Int(min(centroidDistance.rounded(), 300))
+
+            return Candidate(feature: feature, score: score, distanceMeters: centroidDistance)
+        }
+
+        return candidates
+            .sorted {
+                if $0.score != $1.score { return $0.score > $1.score }
+                return $0.distanceMeters < $1.distanceMeters
+            }
+            .map(\.feature)
+    }
+
+    private func polygons(from geometry: MapFeatureGeoJSONGeometry) -> [Polygon] {
+        if let rawPolygon = geometry.asPolygon {
+            let ring = rawPolygon.first?.compactMap(makeCoordinate(from:)) ?? []
+            if ring.count >= 3 {
+                return [Polygon([ring])]
+            }
+        }
+
+        if let rawMultiPolygon = geometry.asMultiPolygon {
+            return rawMultiPolygon.compactMap { polygon in
+                let ring = polygon.first?.compactMap(makeCoordinate(from:)) ?? []
+                guard ring.count >= 3 else { return nil }
+                return Polygon([ring])
+            }
+        }
+
+        return []
+    }
+
+    private func coordinate(from geometry: MapFeatureGeoJSONGeometry) -> CLLocationCoordinate2D? {
+        guard let point = geometry.asPoint, point.count >= 2 else { return nil }
+        return CLLocationCoordinate2D(latitude: point[1], longitude: point[0])
+    }
+
+    private func makeCoordinate(from raw: [Double]) -> CLLocationCoordinate2D? {
+        guard raw.count >= 2 else { return nil }
+        return CLLocationCoordinate2D(latitude: raw[1], longitude: raw[0])
+    }
+
+    private func approximatePolygonRadiusMeters(_ polygon: Polygon) -> Double? {
+        guard let centroid = BuildingGeometryHelpers.polygonCentroid(polygon),
+              let ring = polygon.coordinates.first,
+              !ring.isEmpty else {
+            return nil
+        }
+
+        let centroidLocation = CLLocation(latitude: centroid.latitude, longitude: centroid.longitude)
+        let maxDistance = ring.reduce(0.0) { partial, coordinate in
+            let point = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
+            return max(partial, centroidLocation.distance(from: point))
+        }
+        return maxDistance
+    }
+
+    private func normalizedStreetHint(for properties: BuildingProperties) -> String {
+        if let streetName = normalizedStreetText(properties.streetName) {
+            return streetName
+        }
+        return normalizedStreetText(properties.addressText) ?? ""
+    }
+
+    private func normalizedStreetHint(for properties: AddressProperties) -> String {
+        if let streetName = normalizedStreetText(properties.streetName) {
+            return streetName
+        }
+        return normalizedStreetText(properties.formatted) ?? ""
+    }
+
+    private func normalizedHouseHint(for properties: BuildingProperties) -> String {
+        if let normalized = normalizedHouseText(properties.houseNumber) {
+            return normalized
+        }
+        return normalizedHouseText(properties.addressText) ?? ""
+    }
+
+    private func normalizedHouseHint(for properties: AddressProperties) -> String {
+        normalizedHouseText(properties.houseNumber) ?? normalizedHouseText(properties.formatted) ?? ""
+    }
+
+    private func normalizedStreetText(_ value: String?) -> String? {
+        let raw = (value ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty else { return nil }
+
+        let streetOnly = raw
+            .split(separator: ",", maxSplits: 1, omittingEmptySubsequences: true)
+            .first
+            .map(String.init) ?? raw
+
+        let withoutHouseNumber = streetOnly.replacingOccurrences(
+            of: #"^\s*\d+[A-Za-z\-]*\s+"#,
+            with: "",
+            options: .regularExpression
+        )
+
+        let normalized = withoutHouseNumber
+            .lowercased()
+            .replacingOccurrences(of: #"[^a-z0-9]+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        return normalized.isEmpty ? nil : normalized
+    }
+
+    private func normalizedHouseText(_ value: String?) -> String? {
+        let raw = (value ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty else { return nil }
+
+        let candidate = raw
+            .split(separator: ",", maxSplits: 1, omittingEmptySubsequences: true)
+            .first
+            .map(String.init) ?? raw
+
+        guard let match = candidate.range(of: #"^\s*\d+[A-Za-z\-]*"#, options: .regularExpression) else {
+            return nil
+        }
+
+        let normalized = candidate[match]
+            .lowercased()
+            .replacingOccurrences(of: #"[^a-z0-9]+"#, with: "", options: .regularExpression)
+
+        return normalized.isEmpty ? nil : normalized
+    }
+
+    private func loadLocalBuildingData(
+        gersId: String,
+        campaignId: UUID,
+        addressId: UUID?,
+        preferredAddressId: UUID?
+    ) async -> BuildingData? {
+        guard let localResolution = await resolveLocalAddressResolution(
+            gersId: gersId,
+            campaignId: campaignId,
+            addressId: addressId
+        ) else {
+            return nil
+        }
+        let requestedAddressId = addressId?.uuidString.lowercased()
+        let preferredAddressId = preferredAddressId?.uuidString.lowercased()
+        let resolvedAddresses = localResolution.resolvedAddresses
+        let primaryAddress = preferredAddressId.flatMap { preferred in
+            resolvedAddresses.first(where: { $0.id.uuidString.lowercased() == preferred })
+        } ?? requestedAddressId.flatMap { requested in
+            resolvedAddresses.first(where: { $0.id.uuidString.lowercased() == requested })
+        } ?? resolvedAddresses.first
+
+        let residents: [Contact]
+        let metadata: AddressCaptureMetadata?
+        if let primaryAddress {
+            residents = await ContactRepository.shared.fetchContactsForAddress(addressId: primaryAddress.id)
+            metadata = await CampaignRepository.shared.getAddressCaptureMetadata(
+                campaignId: campaignId,
+                addressId: primaryAddress.id
+            )
+        } else {
+            residents = []
+            metadata = nil
+        }
+
+        let qrStatus: QRStatus
+        if let buildingFeature = localResolution.buildingFeature {
+            qrStatus = QRStatus(
+                hasFlyer: buildingFeature.properties.scansTotal > 0 || (buildingFeature.properties.qrScanned ?? false),
+                totalScans: buildingFeature.properties.scansTotal,
+                lastScannedAt: nil
+            )
+        } else {
+            qrStatus = .empty
+        }
+
+        let primaryResident = residents.first
+        return BuildingData(
+            isLoading: false,
+            error: nil,
+            address: primaryAddress,
+            addresses: resolvedAddresses,
+            residents: residents,
+            qrStatus: qrStatus,
+            buildingExists: localResolution.buildingFeature != nil || !resolvedAddresses.isEmpty,
+            addressLinked: !resolvedAddresses.isEmpty,
+            contactName: metadata?.contactName ?? primaryResident?.fullName,
+            leadStatus: metadata?.leadStatus ?? primaryResident?.status.rawValue,
+            productInterest: metadata?.productInterest,
+            followUpDate: metadata?.followUpDate ?? primaryResident?.reminderDate,
+            aiSummary: metadata?.aiSummary ?? metadata?.rawTranscript ?? primaryResident?.notes
+        )
+    }
+
+    private func resolvedAddress(from feature: AddressFeature, fallbackGersId: String) -> ResolvedAddress? {
+        let rawId = feature.properties.id ?? feature.id
+        guard let rawId, let addressId = UUID(uuidString: rawId) else {
+            return nil
+        }
+
+        let houseNumber = (feature.properties.houseNumber ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let streetName = (feature.properties.streetName ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let formatted = (feature.properties.formatted ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let street = [houseNumber, streetName]
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let fallbackFormatted = !formatted.isEmpty ? formatted : street
+
+        return ResolvedAddress(
+            id: addressId,
+            street: !street.isEmpty ? street : fallbackFormatted,
+            formatted: fallbackFormatted,
+            locality: feature.properties.locality ?? "",
+            region: "",
+            postalCode: feature.properties.postalCode ?? "",
+            houseNumber: houseNumber,
+            streetName: streetName,
+            gersId: feature.properties.gersId ?? feature.properties.buildingGersId ?? fallbackGersId
+        )
     }
     
     /// Clears the cache

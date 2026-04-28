@@ -38,14 +38,11 @@ private enum SessionMapArrowImage {
 struct SessionMapboxViewRepresentable: UIViewRepresentable {
     let coordinates: [CLLocationCoordinate2D]
     let currentLocation: CLLocation?
-    let currentHeading: CLLocationDirection
-    /// Road segments (Mapbox centerlines) for the campaign — drawn so the walking trail aligns with the road network.
-    var roadCorridors: [StreetCorridor] = []
+    let headingPresentationState: MapHeadingPresentationState
 
     private let sessionLineSourceId = "session-line-source"
     private let sessionLineLayerId = "session-line-layer"
-    private let sessionRoadsSourceId = "session-roads-source"
-    private let sessionRoadsLayerId = "session-roads-layer"
+    private let headingConeSourceId = "session-heading-cone-source"
     private let userLocationSourceId = "session-user-location-source"
     private let userLocationLayerId = "session-user-location-layer"
     
@@ -80,19 +77,15 @@ struct SessionMapboxViewRepresentable: UIViewRepresentable {
             mapView.contentScaleFactor = scale
         }
         context.coordinator.updatePath(coordinates: coordinates)
-        context.coordinator.updateRoads(roadCorridors: roadCorridors)
-        context.coordinator.updateUserLocation(currentLocation, heading: currentHeading)
-        context.coordinator.updateCamera(location: currentLocation, heading: currentHeading)
-        mapView.setNeedsLayout()
-        mapView.layoutIfNeeded()
+        context.coordinator.updateUserLocation(currentLocation, headingState: headingPresentationState)
+        context.coordinator.updateCamera(location: currentLocation, headingState: headingPresentationState)
     }
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
             sessionLineSourceId: sessionLineSourceId,
             sessionLineLayerId: sessionLineLayerId,
-            sessionRoadsSourceId: sessionRoadsSourceId,
-            sessionRoadsLayerId: sessionRoadsLayerId,
+            headingConeSourceId: headingConeSourceId,
             userLocationSourceId: userLocationSourceId,
             userLocationLayerId: userLocationLayerId
         )
@@ -102,25 +95,25 @@ struct SessionMapboxViewRepresentable: UIViewRepresentable {
     class Coordinator {
         let sessionLineSourceId: String
         let sessionLineLayerId: String
-        let sessionRoadsSourceId: String
-        let sessionRoadsLayerId: String
+        let headingConeSourceId: String
         let userLocationSourceId: String
         let userLocationLayerId: String
         weak var mapView: MapView?
         private var isSetup = false
+        private var lastPathSignature: Int?
+        private var lastUserLocationSnapshot: SessionUserLocationSnapshot?
+        private var lastCameraSnapshot: SessionCameraSnapshot?
 
         init(
             sessionLineSourceId: String,
             sessionLineLayerId: String,
-            sessionRoadsSourceId: String,
-            sessionRoadsLayerId: String,
+            headingConeSourceId: String,
             userLocationSourceId: String,
             userLocationLayerId: String
         ) {
             self.sessionLineSourceId = sessionLineSourceId
             self.sessionLineLayerId = sessionLineLayerId
-            self.sessionRoadsSourceId = sessionRoadsSourceId
-            self.sessionRoadsLayerId = sessionRoadsLayerId
+            self.headingConeSourceId = headingConeSourceId
             self.userLocationSourceId = userLocationSourceId
             self.userLocationLayerId = userLocationLayerId
         }
@@ -155,40 +148,41 @@ struct SessionMapboxViewRepresentable: UIViewRepresentable {
             
             // No Mapbox 3D buildings — app shows only "my" (campaign) buildings elsewhere; session map is flat + path only
             
-            // Campaign road segments (Mapbox centerlines) — drawn first so the walking trail appears on top
-            do {
-                var roadsSource = GeoJSONSource(id: sessionRoadsSourceId)
-                roadsSource.data = .featureCollection(FeatureCollection(features: []))
-                try map.addSource(roadsSource)
-                var roadsLayer = LineLayer(id: sessionRoadsLayerId, source: sessionRoadsSourceId)
-                roadsLayer.lineColor = .constant(StyleColor(UIColor.gray.withAlphaComponent(0.6)))
-                roadsLayer.lineWidth = .constant(3.0)
-                roadsLayer.lineOpacity = .constant(0.9)
-                roadsLayer.lineJoin = .constant(.round)
-                roadsLayer.lineCap = .constant(.round)
-                try map.addLayer(roadsLayer)
-                print("✅ [SessionMap] Added session roads (walking trail) layer")
-            } catch {
-                print("❌ [SessionMap] Failed to add session roads layer: \(error)")
-            }
-            
-            // Session path: smooth line (round join/cap), red, slight transparency
+            // Session path source is retained, but the breadcrumb line is intentionally hidden.
             do {
                 var source = GeoJSONSource(id: sessionLineSourceId)
                 source.data = .featureCollection(FeatureCollection(features: []))
                 try map.addSource(source)
-
-                var lineLayer = LineLayer(id: sessionLineLayerId, source: sessionLineSourceId)
-                lineLayer.lineColor = .constant(StyleColor(.red))
-                lineLayer.lineWidth = .constant(5.0)
-                lineLayer.lineOpacity = .constant(0.8)
-                lineLayer.lineJoin = .constant(.round)
-                lineLayer.lineCap = .constant(.round)
-
-                try map.addLayer(lineLayer)
-                print("✅ [SessionMap] Added session path line layer")
+                print("✅ [SessionMap] Added hidden session path source")
             } catch {
-                print("❌ [SessionMap] Failed to add session line: \(error)")
+                print("❌ [SessionMap] Failed to add session path source: \(error)")
+            }
+
+            do {
+                var source = GeoJSONSource(id: headingConeSourceId)
+                source.data = .featureCollection(FeatureCollection(features: []))
+                try map.addSource(source)
+
+                for band in UserHeadingConeBand.allCases {
+                    var layer = FillLayer(
+                        id: Self.headingLayerId(for: band),
+                        source: headingConeSourceId
+                    )
+                    layer.filter = Exp(.eq) {
+                        Exp(.get) { "band" }
+                        band.rawValue
+                    }
+                    layer.fillColor = .constant(UserHeadingIndicatorRenderer.styleColor(for: band))
+                    layer.fillOpacity = .expression(
+                        Exp(.coalesce) {
+                            Exp(.get) { "opacity" }
+                            1.0
+                        }
+                    )
+                    try map.addLayer(layer)
+                }
+            } catch {
+                print("❌ [SessionMap] Failed to add heading cone layer: \(error)")
             }
 
             // User location: puck (outer glow + inner circle) then arrow that rotates with heading
@@ -215,6 +209,12 @@ struct SessionMapboxViewRepresentable: UIViewRepresentable {
                 var symbolLayer = SymbolLayer(id: userLocationLayerId, source: userLocationSourceId)
                 symbolLayer.iconImage = .constant(.name(SessionMapArrowImage.id))
                 symbolLayer.iconRotate = .expression(Exp(.get) { "heading" })
+                symbolLayer.iconOpacity = .expression(
+                    Exp(.coalesce) {
+                        Exp(.get) { "headingOpacity" }
+                        0.0
+                    }
+                )
                 symbolLayer.iconSize = .constant(1.0)
                 symbolLayer.iconAllowOverlap = .constant(true)
                 symbolLayer.iconIgnorePlacement = .constant(true)
@@ -225,51 +225,80 @@ struct SessionMapboxViewRepresentable: UIViewRepresentable {
             } catch {
                 print("❌ [SessionMap] Failed to add user location layer: \(error)")
             }
+
+            let sessionManager = SessionManager.shared
+            updatePath(coordinates: sessionManager.pathCoordinates)
+            updateUserLocation(
+                sessionManager.currentLocation,
+                headingState: sessionManager.headingPresentationState
+            )
+            updateCamera(
+                location: sessionManager.currentLocation,
+                headingState: sessionManager.headingPresentationState
+            )
         }
 
-        /// Updates the session polyline from normalized (centerline) or raw segments. Display only — do NOT use this path for visit scoring.
+        /// Keeps the session path source empty so the breadcrumb line is not rendered.
         func updatePath(coordinates: [CLLocationCoordinate2D]) {
             guard let map = mapView?.mapboxMap else { return }
-            let segments = SessionManager.shared.renderPathSegments()
-            let features = segments
-                .filter { $0.count >= 2 }
-                .map { segment -> Feature in
-                    let lineCoords = segment.map { LocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
-                    return Feature(geometry: .lineString(LineString(lineCoords)))
-                }
-            let collection = FeatureCollection(features: features)
-            map.updateGeoJSONSource(withId: sessionLineSourceId, geoJSON: .featureCollection(collection))
-        }
-        
-        func updateRoads(roadCorridors: [StreetCorridor]) {
-            guard let map = mapView?.mapboxMap else { return }
-            guard map.sourceExists(withId: sessionRoadsSourceId) else { return }
-            let features = roadCorridors
-                .filter { $0.polyline.count >= 2 }
-                .map { corridor -> Feature in
-                    let lineCoords = corridor.polyline.map { LocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
-                    return Feature(geometry: .lineString(LineString(lineCoords)))
-                }
-            let collection = FeatureCollection(features: features)
-            map.updateGeoJSONSource(withId: sessionRoadsSourceId, geoJSON: .featureCollection(collection))
+            guard map.sourceExists(withId: sessionLineSourceId) else { return }
+            let signature = Self.coordinateSignature(for: coordinates)
+            guard lastPathSignature != signature else { return }
+            lastPathSignature = signature
+            map.updateGeoJSONSource(
+                withId: sessionLineSourceId,
+                geoJSON: .featureCollection(FeatureCollection(features: []))
+            )
         }
 
-        func updateUserLocation(_ location: CLLocation?, heading: CLLocationDirection) {
+        func updateUserLocation(_ location: CLLocation?, headingState: MapHeadingPresentationState) {
             guard let mapView = mapView,
                   let map = mapView.mapboxMap else { return }
+
+            let emptyCollection = FeatureCollection(features: [])
             guard let loc = location else {
-                // No location yet; keep previous or empty (don’t show marker at 0,0)
+                map.updateGeoJSONSource(withId: userLocationSourceId, geoJSON: .featureCollection(emptyCollection))
+                if map.sourceExists(withId: headingConeSourceId) {
+                    map.updateGeoJSONSource(withId: headingConeSourceId, geoJSON: .featureCollection(emptyCollection))
+                }
                 return
             }
+            guard map.sourceExists(withId: userLocationSourceId) else { return }
+            let snapshot = SessionUserLocationSnapshot(location: loc.coordinate, headingState: headingState)
+            guard lastUserLocationSnapshot != snapshot else { return }
+            lastUserLocationSnapshot = snapshot
+
             var feature = Feature(geometry: .point(Point(loc.coordinate)))
-            feature.properties = ["heading": .number(Double(heading))]
+            feature.properties = [
+                "heading": .number(Double(headingState.heading ?? 0)),
+                "headingOpacity": .number(headingState.heading != nil ? 1.0 : 0.0)
+            ]
             map.updateGeoJSONSource(withId: userLocationSourceId, geoJSON: .feature(feature))
+
+            if map.sourceExists(withId: headingConeSourceId) {
+                let collection = UserHeadingIndicatorRenderer.featureCollection(
+                    center: loc.coordinate,
+                    presentationState: headingState
+                )
+                map.updateGeoJSONSource(withId: headingConeSourceId, geoJSON: .featureCollection(collection))
+            }
         }
 
-        func updateCamera(location: CLLocation?, heading: CLLocationDirection) {
+        func updateCamera(location: CLLocation?, headingState: MapHeadingPresentationState) {
             guard let mapView = mapView,
                   let location = location else { return }
-            
+            let heading = headingState.heading ?? lastCameraSnapshot?.heading ?? 0
+
+            let snapshot = SessionCameraSnapshot(location: location.coordinate, heading: heading)
+            if let lastCameraSnapshot {
+                let movedDistance = GeospatialUtilities.distanceMeters(lastCameraSnapshot.location, snapshot.location)
+                let headingDelta = abs(CLLocationDirection.shortestCompassDelta(from: lastCameraSnapshot.heading, to: snapshot.heading))
+                guard movedDistance >= 1.5 || headingDelta >= 3 else { return }
+            }
+
+            let shouldAnimate = lastCameraSnapshot != nil
+            lastCameraSnapshot = snapshot
+
             // Set camera to follow user with 3D tilt
             let cameraOptions = CameraOptions(
                 center: location.coordinate,
@@ -277,12 +306,63 @@ struct SessionMapboxViewRepresentable: UIViewRepresentable {
                 bearing: heading,
                 pitch: 60.0
             )
-            
-            // Use ease for smooth camera transitions
-            mapView.camera.ease(
-                to: cameraOptions,
-                duration: 0.8
-            )
+
+            if shouldAnimate {
+                mapView.camera.ease(
+                    to: cameraOptions,
+                    duration: 0.8
+                )
+            } else {
+                mapView.mapboxMap?.setCamera(to: cameraOptions)
+            }
+        }
+
+        private static func coordinateSignature(for coordinates: [CLLocationCoordinate2D]) -> Int {
+            var hasher = Hasher()
+            hasher.combine(coordinates.count)
+            if let first = coordinates.first {
+                hasher.combine(Self.quantizedCoordinate(first))
+            }
+            if coordinates.count > 2 {
+                hasher.combine(Self.quantizedCoordinate(coordinates[coordinates.count / 2]))
+            }
+            if let last = coordinates.last {
+                hasher.combine(Self.quantizedCoordinate(last))
+            }
+            return hasher.finalize()
+        }
+
+        private static func quantizedCoordinate(_ coordinate: CLLocationCoordinate2D) -> QuantizedCoordinate {
+            QuantizedCoordinate(coordinate: coordinate)
+        }
+
+        private static func headingLayerId(for band: UserHeadingConeBand) -> String {
+            "session-user-heading-\(band.rawValue)"
         }
     }
+}
+
+private struct QuantizedCoordinate: Hashable {
+    let latitudeE6: Int
+    let longitudeE6: Int
+
+    init(coordinate: CLLocationCoordinate2D) {
+        latitudeE6 = Int((coordinate.latitude * 1_000_000).rounded())
+        longitudeE6 = Int((coordinate.longitude * 1_000_000).rounded())
+    }
+}
+
+private struct SessionUserLocationSnapshot: Equatable {
+    let location: QuantizedCoordinate
+    let headingState: MapHeadingPresentationState
+
+    init(location: CLLocationCoordinate2D, headingState: MapHeadingPresentationState) {
+        self.location = QuantizedCoordinate(coordinate: location)
+        self.headingState = headingState
+    }
+}
+
+private struct SessionCameraSnapshot {
+    let location: CLLocationCoordinate2D
+    let heading: CLLocationDirection
 }

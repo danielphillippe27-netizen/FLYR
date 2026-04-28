@@ -23,8 +23,10 @@ struct EndSessionSummaryView: View {
     @State private var homesCardVectorOverlay: Bool = true
 
     private var summaryPageCount: Int {
-        data.includesHomesRouteShareCard ? 3 : 2
+        if data.isNetworkingSession { return NetworkingShareCardVariant.allCases.count }
+        return data.includesHomesRouteShareCard ? 3 : 2
     }
+
 
     private var homesMapTheme: ShareCardGenerator.HomesMapTheme {
         colorScheme == .dark ? .dark : .light
@@ -63,35 +65,53 @@ struct EndSessionSummaryView: View {
                 // Swipeable cards: map + route first (when available), then the two metric variants (matches Share Activity order).
                 VStack(spacing: 10) {
                     TabView(selection: $summaryCardPage) {
-                        if data.includesHomesRouteShareCard {
-                            SessionHomesShareCardView(
-                                data: data,
-                                darkCard: true,
-                                backgroundSnapshot: homesMapSnapshot,
-                                showVectorOverlay: homesCardVectorOverlay
-                            )
+                        if data.isNetworkingSession {
+                            ForEach(NetworkingShareCardVariant.allCases, id: \.rawValue) { variant in
+                                NetworkingShareCardView(
+                                    data: data,
+                                    forExport: false,
+                                    darkCard: true,
+                                    variant: variant
+                                )
+                                    .frame(maxWidth: 360)
+                                    .aspectRatio(9.0 / 16.0, contentMode: .fit)
+                                    .clipShape(RoundedRectangle(cornerRadius: 20))
+                                    .overlay(RoundedRectangle(cornerRadius: 20).stroke(Color.white.opacity(0.15), lineWidth: 1))
+                                    .shadow(color: .black.opacity(0.5), radius: 24, x: 0, y: 12)
+                                    .padding(.horizontal, 24)
+                                    .tag(variant.rawValue)
+                            }
+                        } else {
+                            if data.includesHomesRouteShareCard {
+                                SessionHomesShareCardView(
+                                    data: data,
+                                    darkCard: true,
+                                    backgroundSnapshot: homesMapSnapshot,
+                                    showVectorOverlay: homesCardVectorOverlay
+                                )
+                                    .frame(maxWidth: 360)
+                                    .aspectRatio(9.0 / 16.0, contentMode: .fit)
+                                    .clipShape(RoundedRectangle(cornerRadius: 20))
+                                    .overlay(RoundedRectangle(cornerRadius: 20).stroke(Color.white.opacity(0.15), lineWidth: 1))
+                                    .shadow(color: .black.opacity(0.5), radius: 24, x: 0, y: 12)
+                                    .padding(.horizontal, 24)
+                                    .tag(0)
+                            }
+                            SessionShareCardView(data: data, forExport: false, darkCard: true, metrics: .doorsDistanceTime)
                                 .frame(maxWidth: 360)
-                                .aspectRatio(9.0 / 16.0, contentMode: .fit)
                                 .clipShape(RoundedRectangle(cornerRadius: 20))
                                 .overlay(RoundedRectangle(cornerRadius: 20).stroke(Color.white.opacity(0.15), lineWidth: 1))
                                 .shadow(color: .black.opacity(0.5), radius: 24, x: 0, y: 12)
                                 .padding(.horizontal, 24)
-                                .tag(0)
+                                .tag(data.includesHomesRouteShareCard ? 1 : 0)
+                            SessionShareCardView(data: data, forExport: false, darkCard: true, metrics: .doorsConvoTime)
+                                .frame(maxWidth: 360)
+                                .clipShape(RoundedRectangle(cornerRadius: 20))
+                                .overlay(RoundedRectangle(cornerRadius: 20).stroke(Color.white.opacity(0.15), lineWidth: 1))
+                                .shadow(color: .black.opacity(0.5), radius: 24, x: 0, y: 12)
+                                .padding(.horizontal, 24)
+                                .tag(data.includesHomesRouteShareCard ? 2 : 1)
                         }
-                        SessionShareCardView(data: data, forExport: false, darkCard: true, metrics: .doorsDistanceTime)
-                            .frame(maxWidth: 360)
-                            .clipShape(RoundedRectangle(cornerRadius: 20))
-                            .overlay(RoundedRectangle(cornerRadius: 20).stroke(Color.white.opacity(0.15), lineWidth: 1))
-                            .shadow(color: .black.opacity(0.5), radius: 24, x: 0, y: 12)
-                            .padding(.horizontal, 24)
-                            .tag(data.includesHomesRouteShareCard ? 1 : 0)
-                        SessionShareCardView(data: data, forExport: false, darkCard: true, metrics: .doorsConvoTime)
-                            .frame(maxWidth: 360)
-                            .clipShape(RoundedRectangle(cornerRadius: 20))
-                            .overlay(RoundedRectangle(cornerRadius: 20).stroke(Color.white.opacity(0.15), lineWidth: 1))
-                            .shadow(color: .black.opacity(0.5), radius: 24, x: 0, y: 12)
-                            .padding(.horizontal, 24)
-                            .tag(data.includesHomesRouteShareCard ? 2 : 1)
                     }
                     .tabViewStyle(.page(indexDisplayMode: .never))
                     .frame(maxHeight: .infinity)
@@ -109,7 +129,7 @@ struct EndSessionSummaryView: View {
                 .padding(.top, 4)
 
                 // Bottom row: Copy, Save, Export, Help
-                HStack(spacing: 20) {
+                HStack(spacing: 14) {
                     ShareActionButton(icon: "doc.on.doc", label: "Copy to Clipboard") {
                         Task {
                             if let img = await primaryShareImageForStory() {
@@ -156,6 +176,9 @@ struct EndSessionSummaryView: View {
                             }
                             ShareCardGenerator.shareImages(items, from: vc)
                         }
+                    }
+                    ShareActionButton(icon: "camera", label: "Instagram") {
+                        Task { await sharePrimaryImageToInstagram() }
                     }
                     ShareActionButton(icon: "questionmark.circle", label: "How to share") {
                         showShareHelp = true
@@ -239,6 +262,20 @@ struct EndSessionSummaryView: View {
             campaignMapSnapshot: campaignMapSnapshot ?? SessionManager.lastEndedSummaryMapSnapshot
         )
         return images.first
+    }
+
+    @MainActor
+    private func sharePrimaryImageToInstagram() async {
+        guard let image = await primaryShareImageForStory() else {
+            showToast("Could not prepare Instagram Story")
+            return
+        }
+
+        let didOpenInstagram = ShareCardGenerator.imageHasTransparency(image)
+            ? ShareCardGenerator.shareToInstagramStories(image)
+            : ShareCardGenerator.shareToInstagramStoriesAsBackground(image)
+
+        showToast(didOpenInstagram ? "Instagram Story opened" : "Instagram Stories isn't available right now")
     }
 }
 
@@ -348,6 +385,9 @@ private struct ShareActivitySheet: View {
                         }
                         ShareCardGenerator.shareImages(images, from: vc)
                     })
+                    ShareActionButton(icon: "camera", label: "Instagram", action: {
+                        shareCurrentImageToInstagram()
+                    })
                     ShareActionButton(icon: "questionmark.circle", label: "Help", action: {
                         showShareHelp = true
                     })
@@ -381,6 +421,22 @@ private struct ShareActivitySheet: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
             saveToast = nil
         }
+    }
+
+    @MainActor
+    private func shareCurrentImageToInstagram() {
+        guard let image = currentImage else {
+            saveToast = "Could not prepare Instagram Story"
+            clearToastAfterDelay()
+            return
+        }
+
+        let didOpenInstagram = ShareCardGenerator.imageHasTransparency(image)
+            ? ShareCardGenerator.shareToInstagramStories(image)
+            : ShareCardGenerator.shareToInstagramStoriesAsBackground(image)
+
+        saveToast = didOpenInstagram ? "Instagram Story opened" : "Instagram Stories isn't available right now"
+        clearToastAfterDelay()
     }
 }
 
@@ -419,9 +475,11 @@ struct ShareActivityGateView: View {
             homesMapTheme: homesMapTheme,
             campaignMapSnapshot: campaignMapSnapshot ?? SessionManager.lastEndedSummaryMapSnapshot
         )
-        if let userID = AuthManager.shared.user?.id, let sessionID {
+        if NetworkMonitor.shared.isOnline,
+           let userID = AuthManager.shared.user?.id,
+           let sessionID {
             if let remoteImage = try? await ChallengeService.shared.fetchShareCardImage(userID: userID, sessionID: sessionID) {
-                images = [remoteImage] + localImages
+                images = localImages.isEmpty ? [remoteImage] : localImages + [remoteImage]
                 return
             }
         }

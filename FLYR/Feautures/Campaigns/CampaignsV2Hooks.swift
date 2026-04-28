@@ -99,18 +99,27 @@ final class UseCampaignV2: ObservableObject {
         print("🎣 [HOOK DEBUG] Loading campaign with ID: \(id)")
         isLoading = true
         error = nil
+        let isOnline = await MainActor.run { NetworkMonitor.shared.isOnline }
         
         // First check if campaign exists in the store with addresses loaded
         if let store = store, var campaign = store.campaign(id: id) {
             print("🎣 [HOOK DEBUG] Campaign found in store: '\(campaign.name)'")
 
-            let needsRefresh = campaign.addresses.isEmpty || campaign.dataConfidence == nil
+            let needsRefresh =
+                campaign.addresses.isEmpty ||
+                campaign.dataConfidence == nil ||
+                campaign.mapMode == nil ||
+                campaign.buildingLinkConfidence == nil ||
+                campaign.hasParcels == nil
 
             // Refresh from API if key derived data has not landed in memory yet.
-            if needsRefresh {
+            if needsRefresh && isOnline {
                 let missingReasons = [
                     campaign.addresses.isEmpty ? "addresses" : nil,
-                    campaign.dataConfidence == nil ? "data confidence" : nil
+                    campaign.dataConfidence == nil ? "data confidence" : nil,
+                    campaign.mapMode == nil ? "map mode" : nil,
+                    campaign.buildingLinkConfidence == nil ? "building link confidence" : nil,
+                    campaign.hasParcels == nil ? "parcel availability" : nil
                 ]
                 .compactMap { $0 }
                 .joined(separator: " + ")
@@ -127,6 +136,9 @@ final class UseCampaignV2: ObservableObject {
                     campaign.seedQuery = fullCampaign.seedQuery
                     campaign.scans = fullCampaign.scans
                     campaign.conversions = fullCampaign.conversions
+                    campaign.hasParcels = fullCampaign.hasParcels
+                    campaign.buildingLinkConfidence = fullCampaign.buildingLinkConfidence
+                    campaign.mapMode = fullCampaign.mapMode
 
                     // Update store with the refreshed campaign data
                     store.update(campaign)
@@ -138,9 +150,19 @@ final class UseCampaignV2: ObservableObject {
                     item = campaign
                 }
             } else {
+                if needsRefresh && !isOnline {
+                    print("📴 [HOOK DEBUG] Offline - using store campaign without refresh")
+                }
                 item = campaign
             }
             
+            isLoading = false
+            return
+        }
+
+        if !isOnline {
+            print("📴 [HOOK DEBUG] Offline with no cached campaign in store")
+            error = "Campaign details are unavailable offline until this campaign has been opened online."
             isLoading = false
             return
         }

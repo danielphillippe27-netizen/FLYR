@@ -107,6 +107,7 @@ final class SessionSafetyBeaconService: ObservableObject {
     private var lastPromptAt: Date?
     private var graceDeadline: Date?
     private var outstandingMissedCheckInLogged = false
+    private var shareLinkRefreshTask: Task<Void, Never>?
 
     private init() {
         UIDevice.current.isBatteryMonitoringEnabled = true
@@ -222,6 +223,22 @@ final class SessionSafetyBeaconService: ObservableObject {
     }
 
     func createOrRefreshShareLink(viewerLabel: String? = nil) async {
+        if let shareLinkRefreshTask {
+            await shareLinkRefreshTask.value
+            return
+        }
+
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.performCreateOrRefreshShareLink(viewerLabel: viewerLabel)
+        }
+        shareLinkRefreshTask = task
+        await task.value
+        shareLinkRefreshTask = nil
+    }
+
+    /// Serializes share creation so "toggle on" and "send link" can reuse the same in-flight work.
+    private func performCreateOrRefreshShareLink(viewerLabel: String? = nil) async {
         guard let sessionId = activeSessionId else {
             errorMessage = "Start a session before turning on Beacon."
             return
@@ -416,6 +433,11 @@ final class SessionSafetyBeaconService: ObservableObject {
         }
 
         let movementState = resolvedMovementState(for: location, isPaused: isPaused)
+        let deviceStatus: [String: AnyCodable] = [
+            "horizontal_accuracy": AnyCodable(location.horizontalAccuracy),
+            "speed": AnyCodable(location.speed),
+            "timestamp": AnyCodable(location.timestamp),
+        ]
         let payload: [String: AnyCodable] = [
             "session_id": AnyCodable(sessionId.uuidString),
             "share_id": AnyCodable(currentShare?.id.uuidString as Any),
@@ -423,11 +445,7 @@ final class SessionSafetyBeaconService: ObservableObject {
             "lon": AnyCodable(location.coordinate.longitude),
             "battery_level": AnyCodable(batteryLevel as Any),
             "movement_state": AnyCodable(movementState),
-            "device_status": AnyCodable([
-                "horizontal_accuracy": location.horizontalAccuracy,
-                "speed": location.speed,
-                "timestamp": ISO8601DateFormatter().string(from: location.timestamp),
-            ])
+            "device_status": AnyCodable(deviceStatus)
         ]
 
         do {

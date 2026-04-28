@@ -1,20 +1,23 @@
 import SwiftUI
 import CoreLocation
-import MessageUI
 
 struct BeaconControlSheet: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject var beaconService: SessionSafetyBeaconService
     let sessionLocation: CLLocation?
+    let isSessionPaused: Bool
 
     @State private var selectedInterval: SafetyCheckInInterval = .off
     @State private var selectedRecipients: [BeaconContactRecipient] = []
     @State private var messageText = SessionSafetyBeaconService.defaultShareMessage
     @State private var isBeaconEnabled = false
     @State private var showingContactPicker = false
-    @State private var messageComposerDraft: BeaconMessageDraft?
     @State private var localErrorMessage: String?
     @State private var hasLoadedState = false
+    @State private var isPreparingSend = false
+    @State private var messageComposeRequest: BeaconMessageComposeRequest?
+    @State private var shareSheetItems: [Any] = []
+    @State private var showingShareSheet = false
 
     private var isPreSessionSetup: Bool {
         !beaconService.isSessionAttached
@@ -77,8 +80,15 @@ struct BeaconControlSheet: View {
                     selectedRecipients = recipients
                 }
             }
-            .sheet(item: $messageComposerDraft) { draft in
-                BeaconMessageComposer(recipients: draft.recipients, body: draft.body) { _ in }
+            .sheet(item: $messageComposeRequest) { request in
+                BeaconMessageComposeSheet(request: request) { _ in
+                    messageComposeRequest = nil
+                }
+            }
+            .sheet(isPresented: $showingShareSheet, onDismiss: {
+                shareSheetItems = []
+            }) {
+                BeaconActivityShareSheet(activityItems: shareSheetItems)
             }
             .onAppear {
                 syncFromService()
@@ -112,6 +122,7 @@ struct BeaconControlSheet: View {
                 }
             }
             .tint(.flyrPrimary)
+            .disabled(beaconService.isBusy || isPreparingSend)
 
             if let url = beaconService.shareURL {
                 Divider()
@@ -206,6 +217,9 @@ struct BeaconControlSheet: View {
                 if beaconService.isBusy {
                     ProgressView()
                         .tint(.white)
+                } else if isPreparingSend {
+                    ProgressView()
+                        .tint(.white)
                 } else {
                     Text("Send Beacon Link")
                         .font(.flyrHeadline)
@@ -218,7 +232,13 @@ struct BeaconControlSheet: View {
             .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         }
         .buttonStyle(.plain)
-        .disabled(selectedRecipients.isEmpty)
+        .disabled(
+            selectedRecipients.isEmpty ||
+            beaconService.isBusy ||
+            isPreparingSend ||
+            messageComposeRequest != nil ||
+            showingShareSheet
+        )
     }
 
     private var checkInsCard: some View {
@@ -326,6 +346,7 @@ struct BeaconControlSheet: View {
 
         if isEnabled {
             await beaconService.createOrRefreshShareLink()
+            await publishCurrentLocationIfPossible()
         } else {
             try? await beaconService.revokeActiveShare()
         }
@@ -344,34 +365,51 @@ struct BeaconControlSheet: View {
             return
         }
 
-        Task {
-            if beaconService.shareURL == nil {
-                await beaconService.createOrRefreshShareLink()
-            }
-
-            guard let url = beaconService.shareURL else {
-                await MainActor.run {
-                    localErrorMessage = beaconService.errorMessage ?? "Couldn't create the Beacon link."
-                }
-                return
-            }
-
-            let body = beaconService.composedShareMessage(for: url)
-            let recipients = selectedRecipients.map(\.phoneNumber)
-
-            if MFMessageComposeViewController.canSendText() {
-                await MainActor.run {
-                    messageComposerDraft = BeaconMessageDraft(recipients: recipients, body: body)
-                }
-            } else {
-                let didPresent = await MainActor.run {
-                    ShareCardGenerator.presentActivityShare(activityItems: [body])
-                }
-                guard !didPresent else { return }
-                await MainActor.run {
-                    localErrorMessage = ShareCardGenerator.shareSheetUnavailableUserMessage
-                }
-            }
+        guard !isPreparingSend, messageComposeRequest == nil, !showingShareSheet else {
+            return
         }
+
+        Task {
+            await prepareBeaconLinkForSending()
+        }
+    }
+
+    @MainActor
+    private func prepareBeaconLinkForSending() async {
+        guard !isPreparingSend else { return }
+        isPreparingSend = true
+        defer { isPreparingSend = false }
+
+        if beaconService.shareURL == nil {
+            await beaconService.createOrRefreshShareLink()
+        }
+
+        await publishCurrentLocationIfPossible()
+
+        guard let url = beaconService.shareURL else {
+            localErrorMessage = beaconService.errorMessage ?? "Couldn't create the Beacon link."
+            return
+        }
+
+        let body = beaconService.composedShareMessage(for: url)
+        let recipients = selectedRecipients.map(\.phoneNumber)
+
+        if BeaconMessageComposer.canSendText {
+            messageComposeRequest = BeaconMessageComposeRequest(recipients: recipients, body: body)
+            return
+        }
+
+        guard !body.isEmpty else {
+            localErrorMessage = ShareCardGenerator.shareSheetUnavailableUserMessage
+            return
+        }
+
+        shareSheetItems = [body]
+        showingShareSheet = true
+    }
+
+    private func publishCurrentLocationIfPossible() async {
+        guard let sessionLocation else { return }
+        await beaconService.recordHeartbeat(location: sessionLocation, isPaused: isSessionPaused)
     }
 }

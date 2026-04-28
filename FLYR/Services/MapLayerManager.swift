@@ -11,6 +11,7 @@ enum MapStatusColor {
     static let conversations = UIColor(hex: "#3b82f6")!   // Blue
     static let pendingVisited = UIColor(hex: "#f59e0b")!   // Amber
     static let touched = UIColor(hex: "#22c55e")!         // Green
+    static let teammateTouched = UIColor(hex: "#166534")! // Dark green
     static let doNotKnock = UIColor(hex: "#9ca3af")!      // Gray (do not knock)
     static let untouched = UIColor(hex: "#ef4444")!       // Red
     static let orphan = UIColor(hex: "#9ca3af")!          // Gray
@@ -41,16 +42,22 @@ final class MapLayerManager {
     static let addressNumbersLayerId = "campaign-address-numbers-layer"
     static let manualAddressPreviewSourceId = "manual-address-preview-source"
     static let manualAddressPreviewLayerId = "manual-address-preview-extrusion"
+    static let teammatePresenceSourceId = "campaign-teammate-presence-source"
+    static let teammatePresenceCircleLayerId = "campaign-teammate-presence-circles"
+    static let teammatePresenceLabelLayerId = "campaign-teammate-presence-labels"
     
     static let roadsSourceId = "roads-source"
     static let roadsLayerId = "roads-line"
     
     // MARK: - Address markers zoom (3D circles + house number labels)
     
-    /// Shared layer min zoom — labels and circle extrusions stay off until zoomed in past typical block overview.
+    /// Shared layer min zoom for 3D address circles.
     private static let addressMarkersLayerMinZoom: Double = 15.0
     
-    /// Opacity vs camera zoom; used for both house number symbols and address circle extrusions so they appear together.
+    /// Delay house number labels slightly so they appear once the user has zoomed a bit further in.
+    private static let addressNumbersLayerMinZoom: Double = 15.55
+    
+    /// Opacity vs camera zoom for 3D address circles.
     private static var addressMarkersZoomOpacityExpression: Exp {
         Exp(.interpolate) {
             Exp(.linear)
@@ -64,6 +71,24 @@ final class MapLayerManager {
             16.4
             0.9
             17.0
+            1.0
+        }
+    }
+    
+    /// Opacity vs camera zoom for house number labels; shifted later than the address circles.
+    private static var addressNumbersZoomOpacityExpression: Exp {
+        Exp(.interpolate) {
+            Exp(.linear)
+            Exp(.zoom)
+            15.55
+            0.0
+            15.9
+            0.28
+            16.25
+            0.62
+            16.7
+            0.9
+            17.2
             1.0
         }
     }
@@ -97,6 +122,7 @@ final class MapLayerManager {
     private var cachedAddressPolygonData: Data?
     private var lastAddressNumbersSourceSignature: Int?
     private var lastAddressNumbersVisible: Bool?
+    private var lastTeammatePresenceSignature: Int?
     
     // MARK: - Init
     
@@ -116,6 +142,7 @@ final class MapLayerManager {
         setupAddressesLayer()
         setupAddressNumbersLayer()
         setupManualAddressPreviewLayer()
+        setupTeammatePresenceLayer()
         setupLighting()
     }
     
@@ -200,7 +227,18 @@ final class MapLayerManager {
                     }
                     "visited"
                 }
-                MapStatusColor.touched
+                Exp(.switchCase) {
+                    Exp(.eq) {
+                        Exp(.coalesce) {
+                            Exp(.featureState) { "visit_owner" }
+                            Exp(.get) { "visit_owner" }
+                            ""
+                        }
+                        "teammate"
+                    }
+                    MapStatusColor.teammateTouched
+                    MapStatusColor.touched
+                }
                 
                 // Default: Untouched (red)
                 MapStatusColor.untouched
@@ -280,7 +318,14 @@ final class MapLayerManager {
                     Exp(.get) { "segment_status" }
                     "visited"
                 }
-                MapStatusColor.touched
+                Exp(.switchCase) {
+                    Exp(.eq) {
+                        Exp(.get) { "visit_owner" }
+                        "teammate"
+                    }
+                    MapStatusColor.teammateTouched
+                    MapStatusColor.touched
+                }
 
                 MapStatusColor.untouched
             }
@@ -485,7 +530,18 @@ final class MapLayerManager {
                     }
                     "visited"
                 }
-                MapStatusColor.touched
+                Exp(.switchCase) {
+                    Exp(.eq) {
+                        Exp(.coalesce) {
+                            Exp(.featureState) { "visit_owner" }
+                            Exp(.get) { "visit_owner" }
+                            ""
+                        }
+                        "teammate"
+                    }
+                    MapStatusColor.teammateTouched
+                    MapStatusColor.touched
+                }
                 Exp(.eq) {
                     Exp(.coalesce) {
                         Exp(.featureState) { "status" }
@@ -494,7 +550,18 @@ final class MapLayerManager {
                     }
                     "no_answer"
                 }
-                MapStatusColor.touched
+                Exp(.switchCase) {
+                    Exp(.eq) {
+                        Exp(.coalesce) {
+                            Exp(.featureState) { "visit_owner" }
+                            Exp(.get) { "visit_owner" }
+                            ""
+                        }
+                        "teammate"
+                    }
+                    MapStatusColor.teammateTouched
+                    MapStatusColor.touched
+                }
                 Exp(.eq) {
                     Exp(.coalesce) {
                         Exp(.featureState) { "status" }
@@ -503,7 +570,18 @@ final class MapLayerManager {
                     }
                     "delivered"
                 }
-                MapStatusColor.touched
+                Exp(.switchCase) {
+                    Exp(.eq) {
+                        Exp(.coalesce) {
+                            Exp(.featureState) { "visit_owner" }
+                            Exp(.get) { "visit_owner" }
+                            ""
+                        }
+                        "teammate"
+                    }
+                    MapStatusColor.teammateTouched
+                    MapStatusColor.touched
+                }
                 Exp(.eq) {
                     Exp(.coalesce) {
                         Exp(.featureState) { "status" }
@@ -512,7 +590,18 @@ final class MapLayerManager {
                     }
                     "future_seller"
                 }
-                MapStatusColor.touched
+                Exp(.switchCase) {
+                    Exp(.eq) {
+                        Exp(.coalesce) {
+                            Exp(.featureState) { "visit_owner" }
+                            Exp(.get) { "visit_owner" }
+                            ""
+                        }
+                        "teammate"
+                    }
+                    MapStatusColor.teammateTouched
+                    MapStatusColor.touched
+                }
                 MapStatusColor.untouched
             }
         )
@@ -594,8 +683,8 @@ final class MapLayerManager {
         layer.textAllowOverlap = .constant(false)
         layer.textIgnorePlacement = .constant(false)
         layer.textOptional = .constant(false)
-        layer.textOpacity = .expression(Self.addressMarkersZoomOpacityExpression)
-        layer.minZoom = Self.addressMarkersLayerMinZoom
+        layer.textOpacity = .expression(Self.addressNumbersZoomOpacityExpression)
+        layer.minZoom = Self.addressNumbersLayerMinZoom
         layer.visibility = .constant(.none)
         layer.filter = Exp(.all) {
             Exp(.eq) {
@@ -671,6 +760,83 @@ final class MapLayerManager {
             }
         } catch {
             print("❌ [MapLayer] Error adding manual address preview layer: \(error)")
+        }
+    }
+
+    func setupTeammatePresenceLayer() {
+        guard let mapView = mapView else { return }
+
+        var source = GeoJSONSource(id: Self.teammatePresenceSourceId)
+        source.data = .featureCollection(FeatureCollection(features: []))
+
+        do {
+            try mapView.mapboxMap.addSource(source)
+        } catch {
+            print("❌ [MapLayer] Error adding teammate presence source: \(error)")
+            return
+        }
+
+        var circles = CircleLayer(id: Self.teammatePresenceCircleLayerId, source: Self.teammatePresenceSourceId)
+        circles.circleColor = .expression(
+            Exp(.switchCase) {
+                Exp(.eq) {
+                    Exp(.get) { "presence_status" }
+                    "paused"
+                }
+                UIColor(hex: "#f59e0b") ?? .systemOrange
+
+                Exp(.eq) {
+                    Exp(.get) { "freshness" }
+                    "stale"
+                }
+                UIColor(hex: "#6b7280") ?? .systemGray
+
+                UIColor(hex: "#14b8a6") ?? .systemTeal
+            }
+        )
+        circles.circleOpacity = .expression(
+            Exp(.coalesce) {
+                Exp(.get) { "opacity" }
+                1.0
+            }
+        )
+        circles.circleStrokeColor = .constant(StyleColor(.white))
+        circles.circleStrokeOpacity = .expression(
+            Exp(.coalesce) {
+                Exp(.get) { "opacity" }
+                1.0
+            }
+        )
+        circles.circleStrokeWidth = .constant(1.5)
+        circles.circleRadius = .expression(
+            Exp(.switchCase) {
+                Exp(.eq) {
+                    Exp(.get) { "freshness" }
+                    "stale"
+                }
+                11
+                13
+            }
+        )
+
+        var labels = SymbolLayer(id: Self.teammatePresenceLabelLayerId, source: Self.teammatePresenceSourceId)
+        labels.textField = .expression(Exp(.get) { "initials" })
+        labels.textColor = .constant(StyleColor(.white))
+        labels.textSize = .constant(11)
+        labels.textAllowOverlap = .constant(true)
+        labels.textIgnorePlacement = .constant(true)
+        labels.textOpacity = .expression(
+            Exp(.coalesce) {
+                Exp(.get) { "opacity" }
+                1.0
+            }
+        )
+
+        do {
+            try mapView.mapboxMap.addLayer(circles)
+            try mapView.mapboxMap.addLayer(labels)
+        } catch {
+            print("❌ [MapLayer] Error adding teammate presence layers: \(error)")
         }
     }
     
@@ -754,7 +920,9 @@ final class MapLayerManager {
         buildings: [BuildingFeature],
         addresses: [AddressFeature],
         orderedAddressIdsByBuilding: [String: [UUID]],
-        addressStatuses: [UUID: AddressStatus]
+        addressStatuses: [UUID: AddressStatus],
+        addressStatusRows: [UUID: AddressStatusRow] = [:],
+        currentUserId: UUID? = nil
     ) {
         guard let mapView = mapView else { return }
 
@@ -762,7 +930,9 @@ final class MapLayerManager {
             buildings: buildings,
             addresses: addresses,
             orderedAddressIdsByBuilding: orderedAddressIdsByBuilding,
-            addressStatuses: addressStatuses
+            addressStatuses: addressStatuses,
+            addressStatusRows: addressStatusRows,
+            currentUserId: currentUserId
         ) ?? Self.encodedEmptyTownhomeOverlay()
         let signature = Self.sourceSignature(for: data)
         guard lastTownhomeOverlaySignature != signature else { return }
@@ -792,7 +962,9 @@ final class MapLayerManager {
         buildings: [BuildingFeature],
         addresses: [AddressFeature],
         orderedAddressIdsByBuilding: [String: [UUID]],
-        addressStatuses: [UUID: AddressStatus]
+        addressStatuses: [UUID: AddressStatus],
+        addressStatusRows: [UUID: AddressStatusRow] = [:],
+        currentUserId: UUID? = nil
     ) -> Data? {
         let addressContextsById = Dictionary(
             uniqueKeysWithValues: addresses.compactMap { feature -> (UUID, OverlayAddressContext)? in
@@ -830,9 +1002,11 @@ final class MapLayerManager {
             }
 
             let orderedStatuses = linkedAddresses.map { overlaySegmentStatus(for: addressStatuses[$0.id]) }
-            guard Set(orderedStatuses).count > 1 else { continue }
-
-            let statusRuns = collapseStatusRuns(orderedStatuses)
+            let orderedOwners = linkedAddresses.map {
+                overlayVisitOwner(for: addressStatusRows[$0.id], currentUserId: currentUserId)
+            }
+            let statusRuns = collapseStatusRuns(statuses: orderedStatuses, owners: orderedOwners)
+            guard statusRuns.count > 1 else { continue }
             let polygons = polygonRings(from: building.geometry)
             guard !polygons.isEmpty else { continue }
 
@@ -854,6 +1028,7 @@ final class MapLayerManager {
                 let properties: [String: Any] = [
                     "gers_id": gersId,
                     "segment_status": run.status,
+                    "visit_owner": run.visitOwner,
                     "height": height,
                     "overlay_height": height + 0.15,
                     "overlay_base": 0.15
@@ -982,6 +1157,43 @@ final class MapLayerManager {
 
     func clearManualAddressPreview() {
         updateManualAddressPreview(coordinate: nil)
+    }
+
+    func updateTeammatePresence(_ teammates: [SharedCanvassingTeammate]) {
+        guard let mapView = mapView else { return }
+        guard mapView.mapboxMap.sourceExists(withId: Self.teammatePresenceSourceId) else { return }
+
+        let collection: [String: Any] = [
+            "type": "FeatureCollection",
+            "features": teammates.map { teammate in
+                [
+                    "type": "Feature",
+                    "id": teammate.userId.uuidString.lowercased(),
+                    "geometry": [
+                        "type": "Point",
+                        "coordinates": [teammate.longitude, teammate.latitude]
+                    ],
+                    "properties": [
+                        "initials": teammate.initials,
+                        "freshness": teammate.freshness == .stale ? "stale" : "live",
+                        "presence_status": teammate.presenceStatus.rawValue,
+                        "opacity": teammate.opacity
+                    ]
+                ]
+            }
+        ]
+
+        guard let data = try? JSONSerialization.data(withJSONObject: collection) else { return }
+        let signature = Self.sourceSignature(for: data)
+        guard lastTeammatePresenceSignature != signature else { return }
+
+        do {
+            let geoJSON = try JSONDecoder().decode(GeoJSONObject.self, from: data)
+            mapView.mapboxMap.updateGeoJSONSource(withId: Self.teammatePresenceSourceId, geoJSON: geoJSON)
+            lastTeammatePresenceSignature = signature
+        } catch {
+            print("❌ [MapLayer] Error updating teammate presence: \(error)")
+        }
     }
 
     func updateAddressNumberLabelVisibility(isVisible: Bool) {
@@ -1257,6 +1469,7 @@ final class MapLayerManager {
     private struct LabelBuildingContext {
         let identifiers: [String]
         let centroid: CLLocationCoordinate2D
+        let polygons: [[[Double]]]
         let orderedAddressIds: [UUID]
         let addressCount: Int
         let height: Double
@@ -1275,6 +1488,7 @@ final class MapLayerManager {
 
         return buildings.compactMap { building in
             guard let centroid = CampaignTargetResolver.coordinate(for: building.geometry) else { return nil }
+            let polygons = polygonRings(from: building.geometry)
 
             let identifiers = building.properties.buildingIdentifierCandidates
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
@@ -1303,6 +1517,7 @@ final class MapLayerManager {
             return LabelBuildingContext(
                 identifiers: identifiers,
                 centroid: centroid,
+                polygons: polygons,
                 orderedAddressIds: orderedAddressIds,
                 addressCount: max(
                     orderedAddressIds.count,
@@ -1351,12 +1566,24 @@ final class MapLayerManager {
         addressIndex: Int,
         totalAddresses: Int
     ) -> CLLocationCoordinate2D {
-        // Keep the house number pinned to the actual address point so the symbol sits directly
-        // on the matching address extrusion instead of being spread around the linked building roof.
-        _ = building
-        _ = addressIndex
-        _ = totalAddresses
-        return baseCoordinate
+        guard totalAddresses > 1 else {
+            return baseCoordinate
+        }
+
+        let clampedIndex = max(0, min(addressIndex, totalAddresses - 1))
+        let startFraction = Double(clampedIndex) / Double(totalAddresses)
+        let endFraction = Double(clampedIndex + 1) / Double(totalAddresses)
+
+        if let slicePolygons = slicedPolygons(
+            polygons: building.polygons,
+            startFraction: startFraction,
+            endFraction: endFraction
+        ),
+           let sliceCentroid = centroidCoordinate(for: slicePolygons) {
+            return sliceCentroid
+        }
+
+        return building.centroid
     }
 
     private static func labelPriorityValue(
@@ -1498,14 +1725,15 @@ final class MapLayerManager {
     
     /// Update a building's feature state for instant color change (no re-render).
     /// Uses lowercase featureId so it matches promoteId values in the source (buildings use lowercase gers_id).
-    func updateBuildingState(gersId: String, status: String, scansTotal: Int) {
+    func updateBuildingState(gersId: String, status: String, scansTotal: Int, visitOwner: String? = nil) {
         guard let mapView = mapView else { return }
         let featureId = gersId.lowercased()
 
         let state: [String: Any] = [
             "status": status,
             "scans_total": scansTotal,
-            "qr_scanned": scansTotal > 0
+            "qr_scanned": scansTotal > 0,
+            "visit_owner": visitOwner ?? ""
         ]
 
         mapView.mapboxMap.setFeatureState(
@@ -1525,14 +1753,15 @@ final class MapLayerManager {
 
     /// Update an address circle's feature state (for 3D address pillars). Use addressId (UUID string) as featureId.
     /// Normalizes addressId to lowercase so it matches Postgres JSON (UUIDs are lowercase there).
-    func updateAddressState(addressId: String, status: String, scansTotal: Int) {
+    func updateAddressState(addressId: String, status: String, scansTotal: Int, visitOwner: String? = nil) {
         guard let mapView = mapView else { return }
         let normalizedId = addressId.lowercased()
 
         let state: [String: Any] = [
             "status": status,
             "scans_total": scansTotal,
-            "qr_scanned": scansTotal > 0
+            "qr_scanned": scansTotal > 0,
+            "visit_owner": visitOwner ?? ""
         ]
 
         mapView.mapboxMap.setFeatureState(
@@ -1670,6 +1899,7 @@ final class MapLayerManager {
 
     private struct OverlayStatusRun {
         let status: String
+        let visitOwner: String
         let count: Int
     }
 
@@ -1807,23 +2037,44 @@ final class MapLayerManager {
         }
     }
 
-    private static func collapseStatusRuns(_ statuses: [String]) -> [OverlayStatusRun] {
-        guard let first = statuses.first else { return [] }
+    private static func collapseStatusRuns(statuses: [String], owners: [String]) -> [OverlayStatusRun] {
+        guard let firstStatus = statuses.first else { return [] }
         var runs: [OverlayStatusRun] = []
-        var current = first
+        var currentStatus = firstStatus
+        var currentOwner = owners.first ?? ""
         var count = 1
 
-        for status in statuses.dropFirst() {
-            if status == current {
+        for index in statuses.indices.dropFirst() {
+            let status = statuses[index]
+            let owner = owners.indices.contains(index) ? owners[index] : ""
+            if status == currentStatus && owner == currentOwner {
                 count += 1
             } else {
-                runs.append(OverlayStatusRun(status: current, count: count))
-                current = status
+                runs.append(OverlayStatusRun(status: currentStatus, visitOwner: currentOwner, count: count))
+                currentStatus = status
+                currentOwner = owner
                 count = 1
             }
         }
-        runs.append(OverlayStatusRun(status: current, count: count))
+        runs.append(OverlayStatusRun(status: currentStatus, visitOwner: currentOwner, count: count))
         return runs
+    }
+
+    private static func overlayVisitOwner(
+        for row: AddressStatusRow?,
+        currentUserId: UUID?
+    ) -> String {
+        guard let row else { return "" }
+        switch row.status {
+        case .delivered, .noAnswer, .futureSeller:
+            guard let actorUserId = row.lastActionBy else { return "" }
+            if let currentUserId, actorUserId != currentUserId {
+                return "teammate"
+            }
+            return "self"
+        default:
+            return ""
+        }
     }
 
     private static func polygonRings(from geometry: MapFeatureGeoJSONGeometry) -> [[[Double]]] {
@@ -1905,6 +2156,60 @@ final class MapLayerManager {
         }
 
         return clippedPolygons.isEmpty ? nil : clippedPolygons
+    }
+
+    private static func centroidCoordinate(for polygons: [[[Double]]]) -> CLLocationCoordinate2D? {
+        var weightedLongitude = 0.0
+        var weightedLatitude = 0.0
+        var totalWeight = 0.0
+        var fallbackPoints: [[Double]] = []
+
+        for polygon in polygons {
+            let openRing = polygon.first == polygon.last ? Array(polygon.dropLast()) : polygon
+            guard openRing.count >= 3 else { continue }
+
+            fallbackPoints.append(contentsOf: openRing)
+
+            var signedDoubleArea = 0.0
+            var centroidLongitudeTimesSixArea = 0.0
+            var centroidLatitudeTimesSixArea = 0.0
+
+            for index in openRing.indices {
+                let current = openRing[index]
+                let next = openRing[(index + 1) % openRing.count]
+                guard current.count >= 2, next.count >= 2 else { continue }
+
+                let cross = (current[0] * next[1]) - (next[0] * current[1])
+                signedDoubleArea += cross
+                centroidLongitudeTimesSixArea += (current[0] + next[0]) * cross
+                centroidLatitudeTimesSixArea += (current[1] + next[1]) * cross
+            }
+
+            let signedArea = signedDoubleArea / 2.0
+            guard abs(signedArea) > 0.000000001 else { continue }
+
+            let centroidLongitude = centroidLongitudeTimesSixArea / (6.0 * signedArea)
+            let centroidLatitude = centroidLatitudeTimesSixArea / (6.0 * signedArea)
+            let weight = abs(signedArea)
+
+            guard centroidLongitude.isFinite, centroidLatitude.isFinite else { continue }
+            weightedLongitude += centroidLongitude * weight
+            weightedLatitude += centroidLatitude * weight
+            totalWeight += weight
+        }
+
+        if totalWeight > 0 {
+            return CLLocationCoordinate2D(
+                latitude: weightedLatitude / totalWeight,
+                longitude: weightedLongitude / totalWeight
+            )
+        }
+
+        guard !fallbackPoints.isEmpty else { return nil }
+        let averageLongitude = fallbackPoints.map { $0[0] }.reduce(0, +) / Double(fallbackPoints.count)
+        let averageLatitude = fallbackPoints.map { $0[1] }.reduce(0, +) / Double(fallbackPoints.count)
+        guard averageLongitude.isFinite, averageLatitude.isFinite else { return nil }
+        return CLLocationCoordinate2D(latitude: averageLatitude, longitude: averageLongitude)
     }
 
     private static func projectedCenter(for polygons: [[[Double]]]) -> (lon: Double, lat: Double) {
@@ -2124,6 +2429,23 @@ final class MapLayerManager {
         }
     }
 
+    /// Samples a small grid of points across the visible viewport to see whether any building extrusions have painted.
+    func hasRenderedBuildings(completion: @escaping (Bool) -> Void) {
+        guard let mapView = mapView else {
+            DispatchQueue.main.async { completion(false) }
+            return
+        }
+
+        let size = mapView.bounds.size
+        guard size.width > 0, size.height > 0 else {
+            DispatchQueue.main.async { completion(false) }
+            return
+        }
+
+        let points = Self.buildingRenderProbePoints(for: size)
+        queryRenderedBuildings(at: points, index: 0, completion: completion)
+    }
+
     /// Get building at tap location (async via completion)
     func getBuildingAt(point: CGPoint, completion: @escaping (BuildingProperties?) -> Void) {
         guard let mapView = mapView else { completion(nil); return }
@@ -2165,6 +2487,53 @@ final class MapLayerManager {
             case .failure(let error):
                 print("❌ [MapLayer] Error querying features: \(error)")
                 DispatchQueue.main.async { completion(nil) }
+            }
+        }
+    }
+
+    private func queryRenderedBuildings(
+        at points: [CGPoint],
+        index: Int,
+        completion: @escaping (Bool) -> Void
+    ) {
+        guard let mapView = mapView else {
+            DispatchQueue.main.async { completion(false) }
+            return
+        }
+
+        guard index < points.count else {
+            DispatchQueue.main.async { completion(false) }
+            return
+        }
+
+        let options = RenderedQueryOptions(
+            layerIds: [Self.buildingsLayerId, Self.townhomeOverlayLayerId],
+            filter: nil
+        )
+
+        mapView.mapboxMap.queryRenderedFeatures(with: points[index], options: options) { [weak self] result in
+            switch result {
+            case .success(let features):
+                if !features.isEmpty {
+                    DispatchQueue.main.async { completion(true) }
+                } else {
+                    self?.queryRenderedBuildings(at: points, index: index + 1, completion: completion)
+                        ?? DispatchQueue.main.async { completion(false) }
+                }
+            case .failure:
+                self?.queryRenderedBuildings(at: points, index: index + 1, completion: completion)
+                    ?? DispatchQueue.main.async { completion(false) }
+            }
+        }
+    }
+
+    private static func buildingRenderProbePoints(for size: CGSize) -> [CGPoint] {
+        let horizontalFractions: [CGFloat] = [0.18, 0.35, 0.5, 0.65, 0.82]
+        let verticalFractions: [CGFloat] = [0.2, 0.38, 0.56, 0.74]
+
+        return verticalFractions.flatMap { yFraction in
+            horizontalFractions.map { xFraction in
+                CGPoint(x: size.width * xFraction, y: size.height * yFraction)
             }
         }
     }

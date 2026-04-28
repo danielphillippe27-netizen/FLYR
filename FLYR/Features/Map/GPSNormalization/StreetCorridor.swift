@@ -92,6 +92,49 @@ struct StreetCorridor: Sendable {
         }
         return deduped
     }
+
+    static func ensuringUniqueIds(_ corridors: [StreetCorridor]) -> [StreetCorridor] {
+        let baseIds = corridors.enumerated().map { index, corridor in
+            normalizedBaseId(for: corridor, fallbackIndex: index)
+        }
+        let reservedIds = Set(baseIds)
+        var usedIds = Set<String>()
+        var nextSuffixByBaseId: [String: Int] = [:]
+
+        return corridors.enumerated().map { index, corridor in
+            let baseId = baseIds[index]
+            var resolvedId = baseId
+
+            if usedIds.contains(resolvedId) {
+                var suffix = nextSuffixByBaseId[baseId] ?? 1
+                repeat {
+                    resolvedId = "\(baseId)-\(suffix)"
+                    suffix += 1
+                } while usedIds.contains(resolvedId) || reservedIds.contains(resolvedId)
+                nextSuffixByBaseId[baseId] = suffix
+            } else {
+                nextSuffixByBaseId[baseId] = 1
+            }
+
+            usedIds.insert(resolvedId)
+
+            guard corridor.id != resolvedId else { return corridor }
+            return StreetCorridor(
+                id: resolvedId,
+                polyline: corridor.polyline,
+                roadName: corridor.roadName,
+                roadClass: corridor.roadClass
+            )
+        }
+    }
+
+    private static func normalizedBaseId(for corridor: StreetCorridor, fallbackIndex: Int) -> String {
+        let trimmedId = corridor.id?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let trimmedId, !trimmedId.isEmpty {
+            return trimmedId
+        }
+        return "generated-road-\(fallbackIndex)"
+    }
 }
 
 /// Result of projecting a point onto a corridor.
@@ -127,6 +170,6 @@ extension StreetCorridor {
                 }
             }
         }
-        return corridors
+        return ensuringUniqueIds(corridors)
     }
 }

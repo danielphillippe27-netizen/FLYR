@@ -395,17 +395,15 @@ struct QRExportOptionsSheet: View {
             applicationActivities: nil
         )
         
-        if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-           let rootViewController = windowScene.windows.first?.rootViewController {
+        if let presenter = ShareCardGenerator.rootViewController() {
             
             if let popover = activityVC.popoverPresentationController {
-                popover.sourceView = rootViewController.view
-                popover.sourceRect = CGRect(x: rootViewController.view.bounds.midX, y: rootViewController.view.bounds.midY, width: 0, height: 0)
+                popover.sourceView = presenter.view
+                popover.sourceRect = CGRect(x: presenter.view.bounds.midX, y: presenter.view.bounds.midY, width: 0, height: 0)
                 popover.permittedArrowDirections = []
             }
             
-            rootViewController.present(activityVC, animated: true)
+            presenter.present(activityVC, animated: true)
         }
     }
 }
-

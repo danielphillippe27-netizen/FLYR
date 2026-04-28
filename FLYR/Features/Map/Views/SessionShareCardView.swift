@@ -7,9 +7,11 @@ enum ShareCardMetrics {
     case doorsDistanceTime
     /// DOORS, CONVERSATIONS, TIME
     case doorsConvoTime
+    /// CONVERSATIONS, LEADS, TIME
+    case convoLeadsTime
 }
 
-/// Full-screen Strava-style share card: transparent, checkered, or dark card background; three metrics (variant), route squiggle, brand.
+/// Full-screen Strava-style share card: transparent, checkered, or dark card background; three metrics (variant) and brand.
 /// Use forExport: true when rendering to PNG (transparent). Use darkCard: true when showing on black (summary screen).
 struct SessionShareCardView: View {
     let data: SessionSummaryData
@@ -49,8 +51,14 @@ struct SessionShareCardView: View {
                     Spacer().frame(height: topSpacer)
                 }
 
-                // Row 1: Doors
-                StravaMetricRow(label: "Doors", value: "\(data.doorsCount)", labelFont: labelFont, valueFont: valueFont, spacing: forExport ? 16 : 6)
+                // Row 1
+                StravaMetricRow(
+                    label: metrics == .convoLeadsTime ? "Conversations" : "Doors",
+                    value: metrics == .convoLeadsTime ? "\(data.conversations)" : "\(data.doorsCount)",
+                    labelFont: labelFont,
+                    valueFont: valueFont,
+                    spacing: forExport ? 16 : 6
+                )
                     .padding(.horizontal)
                     .frame(maxWidth: .infinity)
 
@@ -64,6 +72,10 @@ struct SessionShareCardView: View {
                         .frame(maxWidth: .infinity)
                 case .doorsConvoTime:
                     StravaMetricRow(label: "Conversations", value: "\(data.conversations)", labelFont: labelFont, valueFont: valueFont, spacing: forExport ? 16 : 6)
+                        .padding(.horizontal)
+                        .frame(maxWidth: .infinity)
+                case .convoLeadsTime:
+                    StravaMetricRow(label: "Leads", value: "\(data.leadsCreated)", labelFont: labelFont, valueFont: valueFont, spacing: forExport ? 16 : 6)
                         .padding(.horizontal)
                         .frame(maxWidth: .infinity)
                 }
@@ -80,18 +92,17 @@ struct SessionShareCardView: View {
                     StravaMetricRow(label: "Time", value: data.formattedTimeStrava, labelFont: labelFont, valueFont: valueFont, spacing: forExport ? 16 : 6)
                         .padding(.horizontal)
                         .frame(maxWidth: .infinity)
+                case .convoLeadsTime:
+                    StravaMetricRow(label: "Time", value: data.formattedTimeStrava, labelFont: labelFont, valueFont: valueFont, spacing: forExport ? 16 : 6)
+                        .padding(.horizontal)
+                        .frame(maxWidth: .infinity)
                 }
 
                 Spacer().frame(height: metricSpacing)
 
-                // Route squiggle (hidden for demo sessions — map artwork comes from the full-bleed card only when enabled)
-                Group {
-                    if data.isDemoSession {
-                        Color.clear.frame(height: routeBoxSize)
-                    } else {
-                        RouteMiniMapView(segments: data.displayRouteSegments, boxSize: routeBoxSize)
-                    }
-                }
+                // Preserve the card proportions without drawing the session path artwork.
+                Color.clear
+                    .frame(height: routeBoxSize)
                 .padding(.top, forExport ? 8 : 4)
                 .padding(.bottom, forExport ? 2 : 4)
 
@@ -184,6 +195,7 @@ private struct StravaMetricRow: View {
             ]],
             completedCount: 12,
             conversationsCount: 5,
+            leadsCreatedCount: 2,
             startTime: Date()
         )
     )

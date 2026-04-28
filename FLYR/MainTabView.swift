@@ -64,8 +64,7 @@ struct MainTabView: View {
             }
             // Clear campaign selection only when starting a session (so Record stays on map when ending; we clear on summary dismiss)
             if newId != nil {
-                uiState.selectedMapCampaignId = nil
-                uiState.selectedMapCampaignName = nil
+                uiState.clearMapSelection()
             }
         }
         .onAppear {
@@ -106,11 +105,13 @@ struct MainTabView: View {
                         await MainActor.run {
                             let preservedSegments = endSessionSummaryItem?.data.renderedPathSegments
                             let preservedHomeCoordinates = endSessionSummaryItem?.data.completedHomeCoordinates ?? []
+                            let preservedNetworking = endSessionSummaryItem?.data.isNetworkingSession ?? false
                             let preservedDemo = endSessionSummaryItem?.data.isDemoSession ?? false
                             let preservedCampaignSnapshot = endSessionSummaryItem?.campaignMapSnapshot
                             let summary = persisted.toSummaryData()
                                 .withRenderedPathSegments(preservedSegments)
                                 .withCompletedHomeCoordinates(preservedHomeCoordinates)
+                                .withIsNetworkingSession(preservedNetworking)
                                 .withIsDemoSession(preservedDemo)
                             endSessionSummaryItem = EndSessionSummaryItem(
                                 data: summary,
@@ -137,11 +138,13 @@ struct MainTabView: View {
                             await MainActor.run {
                                 let preservedSegments = endSessionSummaryItem?.data.renderedPathSegments
                                 let preservedHomeCoordinates = endSessionSummaryItem?.data.completedHomeCoordinates ?? []
+                                let preservedNetworking = endSessionSummaryItem?.data.isNetworkingSession ?? false
                                 let preservedDemo = endSessionSummaryItem?.data.isDemoSession ?? false
                                 let preservedCampaignSnapshot = endSessionSummaryItem?.campaignMapSnapshot
                                 let summary = persisted.toSummaryData()
                                     .withRenderedPathSegments(preservedSegments)
                                     .withCompletedHomeCoordinates(preservedHomeCoordinates)
+                                    .withIsNetworkingSession(preservedNetworking)
                                     .withIsDemoSession(preservedDemo)
                                 endSessionSummaryItem = EndSessionSummaryItem(
                                     data: summary,

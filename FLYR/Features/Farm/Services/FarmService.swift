@@ -78,6 +78,113 @@ actor FarmService {
         
         return dbRow.toFarm()
     }
+
+    func fetchAddresses(farmId: UUID) async throws -> [FarmAddressViewRow] {
+        let fullSelect = """
+            id,
+            campaign_address_id,
+            farm_id,
+            gers_id,
+            formatted,
+            postal_code,
+            source,
+            house_number,
+            street_name,
+            locality,
+            region,
+            latitude,
+            longitude,
+            visited_count,
+            last_visited_at,
+            last_outcome_status,
+            created_at
+        """
+        let fallbackSelect = """
+            id,
+            farm_id,
+            gers_id,
+            formatted,
+            postal_code,
+            source,
+            house_number,
+            street_name,
+            locality,
+            region,
+            latitude,
+            longitude,
+            visited_count,
+            last_visited_at,
+            created_at
+        """
+
+        let responseData: Data
+        do {
+            responseData = try await client
+                .from("farm_addresses")
+                .select(fullSelect)
+                .eq("farm_id", value: farmId.uuidString)
+                .order("street_name", ascending: true)
+                .order("house_number", ascending: true)
+                .order("created_at", ascending: true)
+                .execute()
+                .data
+        } catch {
+            guard isMissingColumnError(error, column: "campaign_address_id")
+                || isMissingColumnError(error, column: "last_outcome_status") else {
+                throw error
+            }
+
+            responseData = try await client
+                .from("farm_addresses")
+                .select(fallbackSelect)
+                .eq("farm_id", value: farmId.uuidString)
+                .order("street_name", ascending: true)
+                .order("house_number", ascending: true)
+                .order("created_at", ascending: true)
+                .execute()
+                .data
+        }
+
+        let decoder = await MainActor.run { JSONDecoder.supabaseDates }
+        let rows = try decoder.decode([FarmAddressDBRow].self, from: responseData)
+        let linkedCampaignId = await fetchLinkedCampaignId(farmId: farmId)
+        return rows.compactMap { $0.toViewRow(campaignId: linkedCampaignId) }
+    }
+
+    func fetchCycleAddressStatuses(
+        farmId: UUID,
+        cycleNumber: Int
+    ) async throws -> [UUID: AddressStatus] {
+        let select = """
+            farm_address_id,
+            campaign_address_id,
+            status,
+            occurred_at,
+            updated_at,
+            farm_touches!inner(cycle_number)
+        """
+
+        let response = try await client
+            .from("farm_touch_addresses")
+            .select(select)
+            .eq("farm_id", value: farmId.uuidString)
+            .eq("farm_touches.cycle_number", value: cycleNumber)
+            .neq("status", value: AddressStatus.none.rawValue)
+            .order("occurred_at", ascending: false)
+            .order("updated_at", ascending: false)
+            .execute()
+
+        let decoder = await MainActor.run { JSONDecoder.supabaseDates }
+        let rows = try decoder.decode([FarmTouchAddressStatusDBRow].self, from: response.data)
+
+        var statuses: [UUID: AddressStatus] = [:]
+        for row in rows {
+            guard statuses[row.mapAddressId] == nil else { continue }
+            statuses[row.mapAddressId] = row.resolvedStatus
+        }
+
+        return statuses
+    }
     
     // MARK: - Create Farm
     
@@ -129,7 +236,7 @@ actor FarmService {
             "name": AnyCodable(name),
             "start_date": AnyCodable(dateFormatter.string(from: startDate)),
             "end_date": AnyCodable(dateFormatter.string(from: endDate)),
-            "frequency": AnyCodable(frequency)
+            "frequency": AnyCodable(1)
         ]
         
         if let areaLabel = areaLabel {
@@ -138,9 +245,9 @@ actor FarmService {
         if let workspaceId = await MainActor.run(body: { WorkspaceContext.shared.workspaceId }) {
             insertData["workspace_id"] = AnyCodable(workspaceId.uuidString)
         }
-        insertData["touches_per_interval"] = AnyCodable(frequency)
+        insertData["touches_per_interval"] = AnyCodable(1)
         insertData["touches_interval"] = AnyCodable("month")
-        insertData["goal_type"] = AnyCodable("touches_per_cycle")
+        insertData["goal_type"] = AnyCodable("homes_per_cycle")
         insertData["goal_target"] = AnyCodable(frequency)
         insertData["home_limit"] = AnyCodable(5000)
         insertData["address_count"] = AnyCodable(0)
@@ -188,10 +295,10 @@ actor FarmService {
             "polygon": polygonGeoJSON,
             "start_date": dateFormatter.string(from: startDate),
             "end_date": dateFormatter.string(from: endDate),
-            "frequency": frequency,
-            "touches_per_interval": frequency,
+            "frequency": 1,
+            "touches_per_interval": 1,
             "touches_interval": "month",
-            "goal_type": "touches_per_cycle",
+            "goal_type": "homes_per_cycle",
             "goal_target": frequency,
             "home_limit": 5000
         ]
@@ -269,6 +376,34 @@ actor FarmService {
         // Call RPC function to update polygon
         // Note: This function needs to be created in the database
         _ = try await client.rpc("update_farm_polygon", params: params).execute()
+    }
+
+    private func fetchLinkedCampaignId(farmId: UUID) async -> UUID? {
+        struct LinkedCampaignRow: Decodable {
+            let linkedCampaignId: UUID?
+
+            enum CodingKeys: String, CodingKey {
+                case linkedCampaignId = "linked_campaign_id"
+            }
+        }
+
+        do {
+            let response = try await client
+                .from("farms")
+                .select("linked_campaign_id")
+                .eq("id", value: farmId.uuidString)
+                .single()
+                .execute()
+
+            let row = try JSONDecoder().decode(LinkedCampaignRow.self, from: response.data)
+            return row.linkedCampaignId
+        } catch {
+            guard !isMissingColumnError(error, column: "linked_campaign_id") else {
+                return nil
+            }
+            print("⚠️ [FarmService] Failed to load linked campaign for farm \(farmId.uuidString): \(error)")
+            return nil
+        }
     }
     
     // MARK: - Delete Farm

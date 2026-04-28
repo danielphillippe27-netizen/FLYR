@@ -8,8 +8,8 @@ struct FarmExecutionContext: Equatable, Sendable {
     let touchDate: Date
     let touchType: FarmTouchType
     let campaignId: UUID
-    let phaseId: UUID?
-    let phaseName: String?
+    let cycleNumber: Int?
+    let cycleName: String?
 
     var sessionMode: SessionMode {
         switch touchType {

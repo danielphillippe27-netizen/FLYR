@@ -11,6 +11,7 @@ struct SessionRecord: Codable {
     let doors_hit: Int?
     let distance_meters: Double?
     let conversations: Int?
+    let session_mode: String?
     let goal_type: String?
     let goal_amount: Int?
     let path_geojson: String?
@@ -21,7 +22,6 @@ struct SessionRecord: Codable {
     let campaign_id: UUID?
     let farm_id: UUID?
     let farm_touch_id: UUID?
-    let farm_phase_id: UUID?
     /// Present when the session was started from a route assignment (Record tab / route scope).
     let route_assignment_id: UUID?
     let target_building_ids: [String]?
@@ -114,19 +114,35 @@ struct SessionRecord: Codable {
         return Double(leadsCreated) / Double(conversationCount)
     }
 
+    var goalTypeValue: GoalType {
+        GoalType(rawValue: goal_type ?? GoalType.knocks.rawValue) ?? .knocks
+    }
+
+    var sessionModeValue: SessionMode {
+        if let session_mode, let mode = SessionMode(rawValue: session_mode) {
+            return mode
+        }
+        return goalTypeValue == .flyers ? .flyer : .doorKnocking
+    }
+
+    var isNetworkingSession: Bool {
+        campaign_id == nil && (target_building_ids?.isEmpty ?? true) && goalTypeValue == .time
+    }
+
     /// Build summary data for share card / end-session UI.
     func toSummaryData() -> SessionSummaryData {
-        let goal = GoalType(rawValue: goal_type ?? GoalType.flyers.rawValue) ?? .flyers
         return SessionSummaryData(
             distance: distance_meters ?? 0,
             time: durationSeconds,
-            goalType: goal,
+            goalType: goalTypeValue,
             goalAmount: goal_amount ?? 0,
             pathCoordinates: decodedPathCoordinates(),
             renderedPathSegments: nil,
             completedCount: doorsCount,
             conversationsCount: conversations,
+            leadsCreatedCount: leadsCreated,
             startTime: start_time,
+            isNetworkingSession: isNetworkingSession,
             isDemoSession: false
         )
     }
@@ -164,6 +180,7 @@ struct SessionRecord: Codable {
         case doors_hit
         case distance_meters
         case conversations
+        case session_mode
         case goal_type
         case goal_amount
         case path_geojson
@@ -174,7 +191,6 @@ struct SessionRecord: Codable {
         case campaign_id
         case farm_id
         case farm_touch_id
-        case farm_phase_id
         case route_assignment_id
         case target_building_ids
         case completed_count
@@ -211,7 +227,10 @@ struct SessionSummaryData: Equatable {
     let completedCount: Int?
     /// Conversations had this session (from SessionManager.conversationsHad).
     let conversationsCount: Int?
+    /// Leads created this session.
+    let leadsCreatedCount: Int?
     let startTime: Date?
+    let isNetworkingSession: Bool
     /// When true (demo session), share-card map omits route/home vector overlays.
     let isDemoSession: Bool
 
@@ -225,7 +244,9 @@ struct SessionSummaryData: Equatable {
         completedHomeCoordinates: [CLLocationCoordinate2D] = [],
         completedCount: Int?,
         conversationsCount: Int?,
+        leadsCreatedCount: Int? = nil,
         startTime: Date?,
+        isNetworkingSession: Bool = false,
         isDemoSession: Bool = false
     ) {
         self.distance = distance
@@ -237,7 +258,9 @@ struct SessionSummaryData: Equatable {
         self.completedHomeCoordinates = completedHomeCoordinates
         self.completedCount = completedCount
         self.conversationsCount = conversationsCount
+        self.leadsCreatedCount = leadsCreatedCount
         self.startTime = startTime
+        self.isNetworkingSession = isNetworkingSession
         self.isDemoSession = isDemoSession
     }
 
@@ -248,6 +271,8 @@ struct SessionSummaryData: Equatable {
 
     /// Conversations count for share card.
     var conversations: Int { conversationsCount ?? 0 }
+
+    var leadsCreated: Int { leadsCreatedCount ?? 0 }
 
     var displayRouteSegments: [[CLLocationCoordinate2D]] {
         let rendered = (renderedPathSegments ?? []).filter { $0.count >= 2 }
@@ -290,7 +315,9 @@ struct SessionSummaryData: Equatable {
             completedHomeCoordinates: completedHomeCoordinates,
             completedCount: completedCount,
             conversationsCount: conversationsCount,
+            leadsCreatedCount: leadsCreatedCount,
             startTime: startTime,
+            isNetworkingSession: isNetworkingSession,
             isDemoSession: isDemoSession
         )
     }
@@ -306,7 +333,27 @@ struct SessionSummaryData: Equatable {
             completedHomeCoordinates: coordinates,
             completedCount: completedCount,
             conversationsCount: conversationsCount,
+            leadsCreatedCount: leadsCreatedCount,
             startTime: startTime,
+            isNetworkingSession: isNetworkingSession,
+            isDemoSession: isDemoSession
+        )
+    }
+
+    func withIsNetworkingSession(_ value: Bool) -> SessionSummaryData {
+        SessionSummaryData(
+            distance: distance,
+            time: time,
+            goalType: goalType,
+            goalAmount: goalAmount,
+            pathCoordinates: pathCoordinates,
+            renderedPathSegments: renderedPathSegments,
+            completedHomeCoordinates: completedHomeCoordinates,
+            completedCount: completedCount,
+            conversationsCount: conversationsCount,
+            leadsCreatedCount: leadsCreatedCount,
+            startTime: startTime,
+            isNetworkingSession: value,
             isDemoSession: isDemoSession
         )
     }
@@ -322,7 +369,9 @@ struct SessionSummaryData: Equatable {
             completedHomeCoordinates: completedHomeCoordinates,
             completedCount: completedCount,
             conversationsCount: conversationsCount,
+            leadsCreatedCount: leadsCreatedCount,
             startTime: startTime,
+            isNetworkingSession: isNetworkingSession,
             isDemoSession: value
         )
     }

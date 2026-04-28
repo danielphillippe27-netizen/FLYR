@@ -50,29 +50,29 @@ enum FarmAnalyticsCalculator {
         return effectiveness
     }
     
-    /// Compare phases
-    static func comparePhases(
-        phases: [FarmPhase],
+    /// Compare cycles
+    static func compareCycles(
+        cycles: [FarmCycle],
         touches: [FarmTouch],
         leads: [FarmLead]
     ) -> [PhaseComparison] {
         var comparisons: [PhaseComparison] = []
         
-        for phase in phases {
-            let phaseTouches = touches.filter { touch in
-                touch.date >= phase.startDate && touch.date <= phase.endDate
+        for cycle in cycles {
+            let cycleTouches = touches.filter { touch in
+                touch.date >= cycle.startDate && touch.date <= cycle.endDate
             }
             
-            let phaseLeads = leads.filter { lead in
+            let cycleLeads = leads.filter { lead in
                 if let touchId = lead.touchId,
                    let touch = touches.first(where: { $0.id == touchId }) {
-                    return touch.date >= phase.startDate && touch.date <= phase.endDate
+                    return touch.date >= cycle.startDate && touch.date <= cycle.endDate
                 }
                 return false
             }
             
-            let flyers = phaseTouches.filter { $0.type == .flyer }.count
-            let knocks = phaseTouches.filter { $0.type == .doorKnock }.count
+            let flyers = cycleTouches.filter { $0.type == .flyer }.count
+            let knocks = cycleTouches.filter { $0.type == .doorKnock }.count
             let scans = 0 // TODO: Integrate with QR scans
             let conversions = 0 // TODO: Integrate with conversions
             
@@ -81,14 +81,14 @@ enum FarmAnalyticsCalculator {
             let roi = 0.0
             
             comparisons.append(PhaseComparison(
-                cycleName: phase.phaseName,
-                startDate: phase.startDate,
-                endDate: phase.endDate,
-                touches: phaseTouches.count,
+                cycleName: cycle.cycleName,
+                startDate: cycle.startDate,
+                endDate: cycle.endDate,
+                touches: cycleTouches.count,
                 flyers: flyers,
                 knocks: knocks,
                 scans: scans,
-                leads: phaseLeads.count,
+                leads: cycleLeads.count,
                 conversions: conversions,
                 spend: estimatedSpend,
                 roi: roi
@@ -97,5 +97,27 @@ enum FarmAnalyticsCalculator {
         
         return comparisons
     }
-}
 
+    static func comparePhases(
+        phases: [FarmPhase],
+        touches: [FarmTouch],
+        leads: [FarmLead]
+    ) -> [PhaseComparison] {
+        let cycles = phases.enumerated().map { index, phase in
+            let phaseTouches = touches.filter { touch in
+                touch.date >= phase.startDate && touch.date <= phase.endDate
+            }
+            return FarmCycle(
+                farmId: phase.farmId,
+                cycleNumber: index + 1,
+                startDate: phase.startDate,
+                endDate: phase.endDate,
+                touchCount: phaseTouches.count,
+                completedTouchCount: phaseTouches.filter(\.completed).count,
+                results: phase.results
+            )
+        }
+
+        return compareCycles(cycles: cycles, touches: touches, leads: leads)
+    }
+}

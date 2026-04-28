@@ -14,7 +14,8 @@ struct FarmRowView: View {
         if let area = farm.areaLabel, !area.isEmpty {
             return area
         }
-        return "\(farm.frequency) touches/month"
+        let interval = (farm.touchesInterval?.lowercased() == "year") ? "year" : "month"
+        return "1 cycle/\(interval)"
     }
 
     private var statusText: String? {
@@ -72,12 +73,12 @@ struct FarmRowView: View {
             polygon: nil,
             startDate: Date(),
             endDate: Date().addingTimeInterval(86400 * 30),
-            frequency: 2,
+            frequency: 1,
             createdAt: Date(),
             updatedAt: nil,
             areaLabel: "Downtown",
             isActiveFlag: true,
-            touchesPerInterval: 2,
+            touchesPerInterval: 1,
             touchesInterval: "month",
             goalType: nil,
             goalTarget: nil,

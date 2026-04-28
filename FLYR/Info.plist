@@ -41,14 +41,22 @@
 	<string>1629419134987825</string>
 	<key>FLYR_PRO_API_URL</key>
 	<string>https://flyrpro.app</string>
+	<key>FLYR_INVITES_API_URL</key>
+	<string>https://backend-api-routes.vercel.app</string>
 	<key>FLYR_PASSWORD_RECOVERY_DEV_CALLBACK_URL</key>
 	<string>$(FLYR_PASSWORD_RECOVERY_DEV_CALLBACK_URL)</string>
 	<key>FLYR_PASSWORD_RECOVERY_PRODUCTION_URL</key>
 	<string>$(FLYR_PASSWORD_RECOVERY_PRODUCTION_URL)</string>
 	<key>FLYR_PASSWORD_RECOVERY_REDIRECT_URL</key>
 	<string>$(FLYR_PASSWORD_RECOVERY_REDIRECT_URL)</string>
+	<key>DIALER_ENABLED_WORKSPACE_IDS</key>
+	<string>$(DIALER_ENABLED_WORKSPACE_IDS)</string>
+	<key>DIALER_ENABLED_EMAILS</key>
+	<string>$(DIALER_ENABLED_EMAILS)</string>
 	<key>GOOGLE_CLIENT_ID</key>
 	<string>309925212737-5ivglrus1o0ocmtr57ca7ikt5btjqkch.apps.googleusercontent.com</string>
+	<key>GOOGLE_MAPS_API_KEY</key>
+	<string>$(GOOGLE_MAPS_API_KEY)</string>
 	<key>LSApplicationQueriesSchemes</key>
 	<array>
 		<string>instagram-stories</string>
@@ -75,7 +83,7 @@
 	<key>NSLocationAlwaysUsageDescription</key>
 	<string>We use your location in the background during an active canvassing or delivery session so route tracking can continue while the app is locked or in the background.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>The microphone is used to record optional voice notes for campaign logs.</string>
+	<string>The microphone is used for optional push-to-talk session voice and voice notes.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>The camera is used to take an optional photo for your challenge cover.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>

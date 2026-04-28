@@ -45,5 +45,14 @@ actor StatsService {
             .eq("user_id", value: userID)
             .execute()
     }
-}
 
+    func refreshUserStatsFromSessions(userID: UUID) async throws {
+        struct RefreshStatsParams: Encodable {
+            let p_user_id: UUID
+        }
+
+        _ = try await client
+            .rpc("refresh_user_stats_from_sessions", params: RefreshStatsParams(p_user_id: userID))
+            .execute()
+    }
+}

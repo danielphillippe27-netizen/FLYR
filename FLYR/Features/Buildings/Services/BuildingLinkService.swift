@@ -8,6 +8,8 @@ final class BuildingLinkService {
     
     private let supabaseClient: SupabaseClient
     private let baseURL: String
+    private let campaignRepository = CampaignRepository.shared
+    private let outboxRepository = OutboxRepository.shared
     
     private init() {
         self.supabaseClient = SupabaseManager.shared.client
@@ -215,6 +217,52 @@ final class BuildingLinkService {
         let (data, response) = try await authorizedDataRequest(url: url, method: "DELETE")
         try ensureSuccessfulResponse(response, data: data)
     }
+
+    func deleteBuildingAndAddresses(campaignId: String, buildingId: String) async throws {
+        let normalizedBuildingId = buildingId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedBuildingId.isEmpty else {
+            throw BuildingLinkError.fetchFailed
+        }
+
+        if !NetworkMonitor.shared.isOnline {
+            _ = await campaignRepository.deleteBuildingLocally(
+                campaignId: campaignId,
+                buildingId: normalizedBuildingId
+            )
+            await outboxRepository.enqueue(
+                entityType: "building",
+                entityId: "\(campaignId.lowercased()):\(normalizedBuildingId.lowercased())",
+                operation: .deleteBuilding,
+                payload: DeleteBuildingOutboxPayload(
+                    campaignId: campaignId,
+                    buildingId: normalizedBuildingId
+                )
+            )
+            await OfflineSyncCoordinator.shared.refreshPendingCount()
+            return
+        }
+
+        guard let url = URL(string: "\(baseURL)/api/campaigns/\(campaignId)/buildings/\(buildingId)") else {
+            throw BuildingLinkError.invalidURL
+        }
+        let (data, response) = try await authorizedDataRequest(url: url, method: "DELETE")
+        do {
+            try ensureSuccessfulResponse(response, data: data)
+        } catch {
+            guard let httpResponse = response as? HTTPURLResponse,
+                  httpResponse.statusCode == 404 || Self.responseBodyLooksLikeHTML(String(data: data, encoding: .utf8) ?? "") else {
+                throw error
+            }
+
+            print("⚠️ [BuildingLinkService] Building delete API unavailable, falling back to direct Supabase cleanup")
+            try await deleteBuildingAndAddressesFallback(campaignId: campaignId, buildingId: buildingId)
+        }
+
+        _ = await campaignRepository.deleteBuildingLocally(
+            campaignId: campaignId,
+            buildingId: normalizedBuildingId
+        )
+    }
     
     // MARK: - Fetch Addresses
     
@@ -410,6 +458,113 @@ final class BuildingLinkService {
         }
     }
 
+    private func deleteBuildingAndAddressesFallback(campaignId: String, buildingId: String) async throws {
+        guard (try? await supabaseClient.auth.session) != nil else {
+            throw BuildingLinkError.notAuthenticated
+        }
+
+        let resolvedBuilding = try await resolveBuildingIdentity(buildingId: buildingId)
+        let publicBuildingId = (resolvedBuilding?.gersId?.isEmpty == false ? resolvedBuilding?.gersId : resolvedBuilding?.id) ?? buildingId
+
+        var linkedAddressIds: [String] = []
+
+        if let rowId = resolvedBuilding?.id {
+            let links: [RawBuildingAddressLink] = try await supabaseClient
+                .from("building_address_links")
+                .select("*")
+                .eq("campaign_id", value: campaignId)
+                .eq("building_id", value: rowId)
+                .execute()
+                .value
+
+            linkedAddressIds.append(contentsOf: links.map(\.addressId))
+        }
+
+        let buildingAddresses: [FallbackAddressRow] = try await supabaseClient
+            .from("campaign_addresses")
+            .select("id")
+            .eq("campaign_id", value: campaignId)
+            .eq("building_gers_id", value: publicBuildingId)
+            .execute()
+            .value
+
+        linkedAddressIds.append(contentsOf: buildingAddresses.map(\.id))
+        linkedAddressIds = Array(Set(linkedAddressIds))
+
+        do {
+            try await supabaseClient
+                .from("campaign_hidden_buildings")
+                .upsert(
+                    [
+                        [
+                            "campaign_id": campaignId,
+                            "public_building_id": publicBuildingId
+                        ]
+                    ]
+                )
+                .execute()
+        } catch {
+            print("⚠️ [BuildingLinkService] Hidden building fallback skipped: \(error.localizedDescription)")
+        }
+
+        if !linkedAddressIds.isEmpty {
+            try await supabaseClient
+                .from("campaign_addresses")
+                .delete()
+                .eq("campaign_id", value: campaignId)
+                .in("id", values: linkedAddressIds)
+                .execute()
+        }
+
+        if let rowId = resolvedBuilding?.id {
+            _ = try? await supabaseClient
+                .from("building_address_links")
+                .delete()
+                .eq("campaign_id", value: campaignId)
+                .eq("building_id", value: rowId)
+                .execute()
+        }
+
+        _ = try? await supabaseClient
+            .from("building_stats")
+            .delete()
+            .eq("campaign_id", value: campaignId)
+            .eq("gers_id", value: publicBuildingId)
+            .execute()
+
+        _ = try? await supabaseClient
+            .from("building_units")
+            .delete()
+            .eq("campaign_id", value: campaignId)
+            .eq("parent_building_id", value: publicBuildingId)
+            .execute()
+
+        if let resolvedBuilding,
+           resolvedBuilding.campaignId == campaignId {
+            _ = try? await supabaseClient
+                .from("buildings")
+                .delete()
+                .eq("id", value: resolvedBuilding.id)
+                .execute()
+        }
+    }
+
+    private func resolveBuildingIdentity(buildingId: String) async throws -> FallbackBuildingRow? {
+        let normalized = buildingId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return nil }
+
+        let allBuildings: [FallbackBuildingRow] = try await supabaseClient
+            .from("buildings")
+            .select("id, gers_id, campaign_id")
+            .execute()
+            .value
+
+        return allBuildings.first { row in
+            row.id.caseInsensitiveCompare(normalized) == .orderedSame ||
+            row.gersId?.caseInsensitiveCompare(normalized) == .orderedSame
+        }
+    }
+
     /// True when the body is almost certainly HTML (e.g. Next.js error/404 page) rather than an API JSON error.
     private static func responseBodyLooksLikeHTML(_ text: String) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -448,6 +603,22 @@ private struct BuildingIdentityRow: Codable {
         case id
         case gersId = "gers_id"
     }
+}
+
+private struct FallbackBuildingRow: Codable {
+    let id: String
+    let gersId: String?
+    let campaignId: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case gersId = "gers_id"
+        case campaignId = "campaign_id"
+    }
+}
+
+private struct FallbackAddressRow: Codable {
+    let id: String
 }
 
 struct ManualAddressCreateInput {

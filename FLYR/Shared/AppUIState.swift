@@ -1,6 +1,14 @@
 import Foundation
 import Combine
 import SwiftUI
+import CoreLocation
+
+struct PendingLiveInviteHandoff: Identifiable, Equatable {
+    let id = UUID()
+    let campaignId: UUID
+    let campaignName: String?
+    let sourceSessionId: UUID?
+}
 
 @MainActor
 final class AppUIState: ObservableObject {
@@ -11,10 +19,21 @@ final class AppUIState: ObservableObject {
     /// Campaign selected for the Session tab; the tab can show a filled icon and open this campaign.
     @Published var selectedMapCampaignId: UUID?
     @Published var selectedMapCampaignName: String?
+    @Published var selectedMapCampaignBoundaryCoordinates: [CLLocationCoordinate2D] = []
     @Published var selectedRouteWorkContext: RouteWorkContext?
     @Published var plannedFarmExecution: FarmExecutionContext?
+    @Published var pendingLiveInviteHandoff: PendingLiveInviteHandoff?
     
     private let settingsService = SettingsService.shared
+    private let localStorage = LocalStorage.shared
+
+    init() {
+        if let persistedSelection = localStorage.loadMapSelection() {
+            selectedMapCampaignId = persistedSelection.campaignId
+            selectedMapCampaignName = persistedSelection.campaignName
+            selectedMapCampaignBoundaryCoordinates = persistedSelection.boundaryCoordinates.map(\.clLocationCoordinate)
+        }
+    }
     
     /// Load user's appearance preference from settings
     func loadAppearancePreference(userID: UUID) async {
@@ -59,32 +78,101 @@ final class AppUIState: ObservableObject {
         }
     }
 
-    func selectCampaign(id: UUID?, name: String?) {
+    func selectCampaign(
+        id: UUID?,
+        name: String?,
+        boundaryCoordinates: [CLLocationCoordinate2D] = [],
+        preservePendingLiveInviteHandoff: Bool = false
+    ) {
+        let previousCampaignId = selectedMapCampaignId
+        let validBoundaryCoordinates = boundaryCoordinates.filter(CLLocationCoordinate2DIsValid)
         selectedMapCampaignId = id
         selectedMapCampaignName = name
+        if id == nil {
+            selectedMapCampaignBoundaryCoordinates = []
+        } else if !validBoundaryCoordinates.isEmpty {
+            selectedMapCampaignBoundaryCoordinates = validBoundaryCoordinates
+        } else if previousCampaignId != id {
+            selectedMapCampaignBoundaryCoordinates = []
+        }
         selectedRouteWorkContext = nil
+        persistMapSelection()
+        if preservePendingLiveInviteHandoff,
+           pendingLiveInviteHandoff?.campaignId == id {
+            return
+        }
+        pendingLiveInviteHandoff = nil
     }
 
     func selectRoute(_ context: RouteWorkContext) {
         selectedMapCampaignId = context.campaignId
         selectedMapCampaignName = context.routeName
+        selectedMapCampaignBoundaryCoordinates = []
         selectedRouteWorkContext = context
+        persistMapSelection()
+        pendingLiveInviteHandoff = nil
     }
 
     func clearMapSelection() {
         selectedMapCampaignId = nil
         selectedMapCampaignName = nil
+        selectedMapCampaignBoundaryCoordinates = []
         selectedRouteWorkContext = nil
+        localStorage.clearMapSelection()
+        pendingLiveInviteHandoff = nil
     }
 
     func beginPlannedFarmExecution(_ context: FarmExecutionContext) {
         plannedFarmExecution = context
         selectedMapCampaignId = context.campaignId
         selectedMapCampaignName = context.touchTitle
+        selectedMapCampaignBoundaryCoordinates = []
         selectedRouteWorkContext = nil
+        persistMapSelection()
+        pendingLiveInviteHandoff = nil
     }
 
     func clearPlannedFarmExecution() {
         plannedFarmExecution = nil
+    }
+
+    func beginLiveInviteHandoff(campaignId: UUID, name: String?, sourceSessionId: UUID?) {
+        selectedTabIndex = 1
+        selectedMapCampaignId = campaignId
+        selectedMapCampaignName = name
+        selectedMapCampaignBoundaryCoordinates = []
+        selectedRouteWorkContext = nil
+        persistMapSelection()
+        pendingLiveInviteHandoff = PendingLiveInviteHandoff(
+            campaignId: campaignId,
+            campaignName: name,
+            sourceSessionId: sourceSessionId
+        )
+    }
+
+    func clearPendingLiveInviteHandoff(campaignId: UUID? = nil) {
+        guard let pendingLiveInviteHandoff else { return }
+        guard campaignId == nil || pendingLiveInviteHandoff.campaignId == campaignId else { return }
+        self.pendingLiveInviteHandoff = nil
+    }
+
+    func updateSelectedCampaignBoundary(campaignId: UUID, coordinates: [CLLocationCoordinate2D]) {
+        guard selectedMapCampaignId == campaignId else { return }
+        let validCoordinates = coordinates.filter(CLLocationCoordinate2DIsValid)
+        guard !validCoordinates.isEmpty else { return }
+        selectedMapCampaignBoundaryCoordinates = validCoordinates
+        persistMapSelection()
+    }
+
+    private func persistMapSelection() {
+        guard let selectedMapCampaignId else {
+            localStorage.clearMapSelection()
+            return
+        }
+        localStorage.saveMapSelection(
+            campaignId: selectedMapCampaignId,
+            campaignName: selectedMapCampaignName,
+            boundaryCoordinates: selectedMapCampaignBoundaryCoordinates
+        )
     }
 }

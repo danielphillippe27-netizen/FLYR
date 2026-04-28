@@ -41,7 +41,7 @@ struct StatsCardView: View {
             }
 
             // Progress bar (how close to hitting target homes)
-            Text("Progress toward target")
+            Text(sessionManager.goalProgressText)
                 .font(.flyrCaption)
                 .foregroundColor(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -51,7 +51,7 @@ struct StatsCardView: View {
                         .fill(Color.gray.opacity(0.2))
                     RoundedRectangle(cornerRadius: 4)
                         .fill(Color.green)
-                        .frame(width: max(0, geometry.size.width * sessionManager.progressPercentage))
+                        .frame(width: max(0, geometry.size.width * sessionManager.goalProgressPercentage))
                 }
             }
             .frame(height: 8)

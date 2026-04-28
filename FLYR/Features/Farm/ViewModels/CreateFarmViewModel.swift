@@ -6,7 +6,7 @@ import CoreLocation
 final class CreateFarmViewModel: ObservableObject {
     @Published var name: String = ""
     @Published var timeframe: Timeframe = .sixMonths
-    @Published var frequency: Int = 2 // touches per month
+    @Published var frequency: Int = 500 // target homes per cycle
     @Published var polygon: [CLLocationCoordinate2D]? = nil
     @Published var areaLabel: String = ""
     
@@ -154,4 +154,3 @@ final class CreateFarmViewModel: ObservableObject {
         !name.isEmpty && polygon != nil && !polygon!.isEmpty
     }
 }
-

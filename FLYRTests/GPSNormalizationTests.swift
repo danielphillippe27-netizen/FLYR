@@ -517,6 +517,31 @@ struct StreetCorridorTests {
         // Should use feature.id when properties.id is nil
         #expect(corridors[0].id == "feature-456")
     }
+
+    @Test func ensuringUniqueIdsRenamesDuplicatesWithoutCollidingWithExistingSuffixes() {
+        let corridors = [
+            StreetCorridor(id: "13869", polyline: [
+                CLLocationCoordinate2D(latitude: 43.6500, longitude: -79.3800),
+                CLLocationCoordinate2D(latitude: 43.6510, longitude: -79.3800)
+            ]),
+            StreetCorridor(id: "13869", polyline: [
+                CLLocationCoordinate2D(latitude: 43.6510, longitude: -79.3800),
+                CLLocationCoordinate2D(latitude: 43.6520, longitude: -79.3800)
+            ]),
+            StreetCorridor(id: "13869-1", polyline: [
+                CLLocationCoordinate2D(latitude: 43.6520, longitude: -79.3800),
+                CLLocationCoordinate2D(latitude: 43.6530, longitude: -79.3800)
+            ]),
+            StreetCorridor(id: "13869", polyline: [
+                CLLocationCoordinate2D(latitude: 43.6530, longitude: -79.3800),
+                CLLocationCoordinate2D(latitude: 43.6540, longitude: -79.3800)
+            ])
+        ]
+
+        let normalized = StreetCorridor.ensuringUniqueIds(corridors)
+
+        #expect(normalized.compactMap(\.id) == ["13869", "13869-2", "13869-1", "13869-3"])
+    }
     
     // Helper to create LineString geometry
     private func createLineStringGeometry(coordinates: [[Double]]) -> MapFeatureGeoJSONGeometry {

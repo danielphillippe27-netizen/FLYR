@@ -4,7 +4,6 @@ import MapboxMaps
 import Combine
 import CoreLocation
 import EventKit
-import Lottie
 
 // MARK: - Display Mode
 /// Controls what's visible on the campaign map (cubes only or pins only — never both)
@@ -131,14 +130,14 @@ struct SessionProgressPill: View {
     }
 }
 
-// MARK: - Minimal Progress Dropdown (time / distance / doors + progress bar only)
+// MARK: - Minimal Progress Dropdown (time / distance / doors, plus conversations in door-knocking)
 struct SessionProgressDropdown: View {
     @ObservedObject var sessionManager: SessionManager
     @Binding var isExpanded: Bool
     
     var body: some View {
         VStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 12) {
                 HStack(spacing: 16) {
                     Text(sessionManager.formattedElapsedTime)
                         .font(.system(size: 14, weight: .medium))
@@ -146,22 +145,30 @@ struct SessionProgressDropdown: View {
                     Text(sessionManager.formattedDistance)
                         .font(.system(size: 14, weight: .medium))
                         .foregroundColor(.primary)
+                    if sessionManager.sessionMode == .doorKnocking {
+                        Text("\(sessionManager.conversationsHad) convos")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundColor(.primary)
+                    }
                     Text("\(sessionManager.completedCount)/\(sessionManager.targetCount) doors")
                         .font(.system(size: 14, weight: .medium))
                         .foregroundColor(.primary)
                 }
+                Text(sessionManager.goalProgressText)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(.secondary)
                 GeometryReader { geometry in
                     ZStack(alignment: .leading) {
                         RoundedRectangle(cornerRadius: 4)
                             .fill(Color.gray.opacity(0.25))
                         RoundedRectangle(cornerRadius: 4)
                             .fill(Color.green)
-                            .frame(width: max(0, geometry.size.width * sessionManager.progressPercentage))
+                            .frame(width: max(0, geometry.size.width * sessionManager.goalProgressPercentage))
                     }
                 }
                 .frame(height: 6)
             }
-            .padding(14)
+            .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: 12)
@@ -255,49 +262,6 @@ private struct BackgroundGPSMapPill: View {
     }
 }
 
-private struct BeaconMapPill: View {
-    private let buttonSize: CGFloat = 36
-
-    var isPrepared: Bool
-    var onTap: () -> Void
-
-    private var tint: Color {
-        isPrepared ? .green : .white
-    }
-
-    var body: some View {
-        Button {
-            HapticManager.light()
-            onTap()
-        } label: {
-            ZStack {
-                Image(systemName: "person.fill")
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundColor(tint)
-                    .offset(x: -4, y: 2)
-
-                Image(systemName: "dot.radiowaves.right")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundColor(tint)
-                    .offset(x: 5, y: -1)
-            }
-            .frame(width: buttonSize, height: buttonSize)
-            .background(
-                Circle()
-                    .fill(Color.black.opacity(0.88))
-            )
-            .overlay(
-                Circle()
-                    .stroke(tint.opacity(isPrepared ? 0.28 : 0.18), lineWidth: 1)
-            )
-            .shadow(color: .black.opacity(0.24), radius: 6, x: 0, y: 2)
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(isPrepared ? "Beacon ready for session start" : "Beacon setup")
-        .accessibilityHint("Configure your safety beacon and session share link")
-    }
-}
-
 /// Same chrome as `SessionProgressPill` (black rounded rect, red label) so the session top bar reads as one control family.
 private struct SessionActiveInfoMapButton: View {
     var onTap: () -> Void
@@ -321,6 +285,104 @@ private struct SessionActiveInfoMapButton: View {
         .buttonStyle(.plain)
         .accessibilityLabel("Session map information")
         .accessibilityHint("Homes, location access, and map gestures")
+    }
+}
+
+private enum SessionConnectivityIndicatorState {
+    case preparing(progress: Double)
+    case syncing(pendingCount: Int)
+    case offline(pendingCount: Int)
+    case live
+
+    var title: String {
+        switch self {
+        case .preparing:
+            return "Preparing Area"
+        case .syncing:
+            return "Syncing"
+        case .offline:
+            return "Offline"
+        case .live:
+            return "Live"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .preparing:
+            return "Caching homes, roads, and map tiles."
+        case .syncing(let pendingCount):
+            if pendingCount > 0 {
+                return "\(pendingCount) update\(pendingCount == 1 ? "" : "s") syncing in background."
+            }
+            return "All activity saves locally first."
+        case .offline(let pendingCount):
+            if pendingCount > 0 {
+                return "\(pendingCount) update\(pendingCount == 1 ? "" : "s") waiting. Saving locally."
+            }
+            return "Saving locally until connection returns."
+        case .live:
+            return "All activity saves locally first."
+        }
+    }
+
+    var tint: Color {
+        switch self {
+        case .preparing:
+            return .info
+        case .syncing:
+            return .warning
+        case .offline:
+            return .error
+        case .live:
+            return .success
+        }
+    }
+
+    var progressLabel: String? {
+        guard case .preparing(let progress) = self else { return nil }
+        return "\(Int((progress * 100).rounded()))%"
+    }
+}
+
+private struct SessionConnectivityBanner: View {
+    let state: SessionConnectivityIndicatorState
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 10) {
+            Circle()
+                .fill(state.tint)
+                .frame(width: 9, height: 9)
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(state.title)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(.white)
+                    if let progressLabel = state.progressLabel {
+                        Text(progressLabel)
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundColor(state.tint)
+                    }
+                }
+
+                Text(state.subtitle)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(.white.opacity(0.72))
+                    .lineLimit(2)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(Color.black.opacity(0.84))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(state.tint.opacity(0.28), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.18), radius: 10, x: 0, y: 4)
     }
 }
 
@@ -423,7 +485,7 @@ enum LocationCardToolsAction {
     case addHouse
     case addVisit
     case resetHome
-    case deleteManualShape
+    case deleteBuilding
 }
 
 fileprivate struct ManualShapeContext {
@@ -446,21 +508,167 @@ fileprivate struct PendingManualAddressConfirmation {
     let coordinate: CLLocationCoordinate2D
 }
 
+private struct AttachedMenuPointer: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: rect.midX, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.minY))
+        path.closeSubpath()
+        return path
+    }
+}
+
+private struct LiveSessionShareCodePresentation: Identifiable {
+    let id = UUID()
+    let sessionId: UUID
+    let code: String
+    let expiresAt: Date?
+    let campaignTitle: String?
+}
+
+private struct LiveSessionShareCodeSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    let details: LiveSessionShareCodePresentation
+
+    @State private var feedbackMessage: String?
+
+    private var shareMessage: String {
+        var lines: [String] = []
+
+        if let campaignTitle = details.campaignTitle, !campaignTitle.isEmpty {
+            lines.append("Join my live FLYR session in \(campaignTitle).")
+        } else {
+            lines.append("Join my live FLYR session.")
+        }
+
+        lines.append("Team code:\n\(details.code)")
+
+        if let expiresAt = details.expiresAt {
+            lines.append("Code expires at \(expiresAt.formatted(date: .omitted, time: .shortened)).")
+        }
+
+        return lines.joined(separator: "\n\n")
+    }
+
+    var body: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 20) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Label("Share this team code", systemImage: "person.2.fill")
+                        .font(.flyrHeadline)
+                        .foregroundStyle(.primary)
+
+                    Text("Anyone with this code can join your live session without joining your workspace.")
+                        .font(.flyrSubheadline)
+                        .foregroundStyle(.secondary)
+                }
+
+                VStack(spacing: 12) {
+                    Text(details.code)
+                        .font(.system(size: 34, weight: .bold, design: .rounded))
+                        .tracking(8)
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 24)
+                        .background(
+                            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                .fill(Color.success)
+                        )
+
+                    if let expiresAt = details.expiresAt {
+                        Text("Expires at \(expiresAt.formatted(date: .omitted, time: .shortened))")
+                            .font(.flyrCaption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                if let feedbackMessage, !feedbackMessage.isEmpty {
+                    Text(feedbackMessage)
+                        .font(.flyrCaption)
+                        .foregroundStyle(Color.success)
+                }
+
+                HStack(spacing: 12) {
+                    Button {
+                        let didPresent = ShareCardGenerator.presentActivityShare(activityItems: [shareMessage])
+                        if !didPresent {
+                            UIPasteboard.general.string = shareMessage
+                            feedbackMessage = "Share wasn’t available, so the code was copied."
+                        } else {
+                            feedbackMessage = nil
+                        }
+                    } label: {
+                        Label("Share Code", systemImage: "square.and.arrow.up")
+                            .font(.flyrHeadline)
+                            .foregroundStyle(.white)
+                            .frame(maxWidth: .infinity, minHeight: 54)
+                            .background(
+                                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                    .fill(Color.bgSecondary)
+                            )
+                    }
+                    .buttonStyle(.plain)
+
+                    Button {
+                        UIPasteboard.general.string = details.code
+                        feedbackMessage = "Code copied."
+                    } label: {
+                        Label("Copy Code", systemImage: "doc.on.doc")
+                            .font(.flyrHeadline)
+                            .foregroundStyle(.white)
+                            .frame(maxWidth: .infinity, minHeight: 54)
+                            .background(
+                                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                    .fill(Color.flyrPrimary)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                Spacer()
+            }
+            .padding(20)
+            .navigationTitle("Session Code")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") {
+                        dismiss()
+                    }
+                }
+            }
+        }
+        .presentationDetents([.medium])
+        .presentationDragIndicator(.visible)
+    }
+}
+
 /// Campaign Map View with 3D buildings, roads, and addresses
 /// Mirrors FLYR-PRO's CampaignDetailMapView.tsx functionality
 struct CampaignMapView: View {
     private static let manualAddressConfirmationRetryCount = 5
     private static let manualAddressConfirmationRetryDelayNs: UInt64 = 750_000_000
+    private static let summarySnapshotPitch: Double = 60.25
+    private static let summarySnapshotMaxZoom: Double = 16.35
+    private static let summarySnapshotCoordinatesPadding = UIEdgeInsets(top: 24, left: 24, bottom: 24, right: 24)
 
     private struct PendingFlyerStart {
         let campaignId: UUID
         let mode: SessionMode
+        let goalType: GoalType
         let goalAmount: Int
         let farmExecutionContext: FarmExecutionContext?
+        let enableSharedLiveCanvassing: Bool
+        let sharedLiveSourceSessionId: UUID?
     }
 
     let campaignId: String
     let routeWorkContext: RouteWorkContext?
+    let farmCycleNumber: Int?
+    let farmCycleName: String?
+    let farmExecutionContext: FarmExecutionContext?
     let quickStartEnabled: Bool
     let showPreSessionStartButton: Bool
     let demoLaunchConfiguration: DemoSessionLaunchConfiguration?
@@ -514,6 +722,8 @@ struct CampaignMapView: View {
     @State private var keyboardHeight: CGFloat = 0
     /// Per-address visit statuses (populated from VisitsAPI and updated live via onStatusUpdated)
     @State private var addressStatuses: [UUID: AddressStatus] = [:]
+    @State private var addressStatusRows: [UUID: AddressStatusRow] = [:]
+    @State private var campaignBoundaryCoordinates: [CLLocationCoordinate2D] = []
     @State private var statusRefreshTask: Task<Void, Never>?
     @State private var lastStatusRefreshKey: String?
     /// Coalesces rapid `updateMapData` churn; any `scheduleLoadedStatusesRefresh(forceRefresh: true)` in the window wins.
@@ -523,9 +733,20 @@ struct CampaignMapView: View {
     @State private var buildingAddressMap: [String: [UUID]] = [:]
     @StateObject private var flyerModeManager = FlyerModeManager()
     @StateObject private var beaconService = SessionSafetyBeaconService.shared
+    @StateObject private var sharedLiveCanvassingService = SharedLiveCanvassingService.shared
+    @StateObject private var liveSessionVoiceService = LiveSessionVoiceService.shared
+    @StateObject private var networkMonitor = NetworkMonitor.shared
+    @StateObject private var offlineSyncCoordinator = OfflineSyncCoordinator.shared
+    @StateObject private var campaignDownloadService = CampaignDownloadService.shared
     @State private var quickStartStartingMode: SessionMode?
+    @State private var quickStartStartingSharedLive = false
     @State private var preSessionSelectedMode: SessionMode = .doorKnocking
-    @State private var preSessionGoalAmount: Int?
+    @AppStorage("pre_session_gps_proximity_enabled") private var preSessionGPSProximityEnabled = true
+    @State private var pendingGPSDisclaimerStart: PendingFlyerStart?
+    @State private var preSessionDoorGoalType: GoalType = .knocks
+    @State private var preSessionDoorGoalAmount: Int?
+    @State private var preSessionFlyerTimeGoalMinutes: Int = 60
+    @State private var preSessionTrayExpanded = false
     @State private var showSessionStartGateAlert = false
     @State private var sessionStartGateMessage = ""
     @State private var showLocationPermissionAlert = false
@@ -534,6 +755,9 @@ struct CampaignMapView: View {
     @State private var showBeaconSheet = false
     @State private var showGoalSheet = false
     @State private var showActiveSessionInfoSheet = false
+    @State private var liveSessionShareCode: LiveSessionShareCodePresentation?
+    @State private var liveSessionCodeErrorMessage: String?
+    @State private var pendingLiveInvitePrompt: PendingLiveInviteHandoff?
     @State private var lastLoadedDataKey: String?
     @State private var subscribedRealtimeCampaignId: UUID?
     @State private var activeMapEditTool: MapEditToolMode?
@@ -543,10 +767,26 @@ struct CampaignMapView: View {
     @State private var pendingManualAddressConfirmation: PendingManualAddressConfirmation?
     @State private var manualAddressConfirmationTask: Task<Void, Never>?
     @State private var manualShapeMessage: String?
+    @State private var hasRenderedVisibleBuildings = false
+    @State private var showBuildingRenderPendingOverlay = false
+    @State private var buildingRenderCheckTask: Task<Void, Never>?
+    @State private var buildingRenderMonitoringStartedAt: Date?
+    @State private var campaignMapMode: CampaignMapMode?
+    @State private var campaignHasParcels: Bool?
+    @State private var campaignBuildingLinkConfidence: Double?
+    @State private var showStandardCanvassingNotice = false
+    @State private var showStandardCanvassingLearnMore = false
+    @State private var hasPresentedStandardCanvassingNotice = false
+
+    private let buildingRenderPendingOverlayTimeout: TimeInterval = 6
+    private let sessionBottomOverlayReservedHeight: CGFloat = 104
 
     init(
         campaignId: String,
         routeWorkContext: RouteWorkContext? = nil,
+        farmCycleNumber: Int? = nil,
+        farmCycleName: String? = nil,
+        farmExecutionContext: FarmExecutionContext? = nil,
         quickStartEnabled: Bool = false,
         showPreSessionStartButton: Bool = true,
         demoLaunchConfiguration: DemoSessionLaunchConfiguration? = nil,
@@ -554,6 +794,9 @@ struct CampaignMapView: View {
     ) {
         self.campaignId = campaignId
         self.routeWorkContext = routeWorkContext
+        self.farmCycleNumber = farmCycleNumber
+        self.farmCycleName = farmCycleName
+        self.farmExecutionContext = farmExecutionContext
         self.quickStartEnabled = quickStartEnabled
         self.showPreSessionStartButton = showPreSessionStartButton
         self.demoLaunchConfiguration = demoLaunchConfiguration
@@ -575,11 +818,83 @@ struct CampaignMapView: View {
     }
 
     private var matchingPlannedFarmExecution: FarmExecutionContext? {
+        if let farmExecutionContext,
+           farmExecutionContext.campaignId.uuidString.caseInsensitiveCompare(campaignId) == .orderedSame {
+            return farmExecutionContext
+        }
         guard let planned = uiState.plannedFarmExecution else { return nil }
         guard planned.campaignId.uuidString.caseInsensitiveCompare(campaignId) == .orderedSame else {
             return nil
         }
         return planned
+    }
+
+    private var matchingActiveFarmExecution: FarmExecutionContext? {
+        guard let active = sessionManager.currentFarmExecutionContext else { return nil }
+        guard active.campaignId.uuidString.caseInsensitiveCompare(campaignId) == .orderedSame else {
+            return nil
+        }
+        return active
+    }
+
+    private var activeFarmCycleContext: (number: Int, name: String?)? {
+        if let farmCycleNumber {
+            let resolvedName = farmCycleName
+                ?? matchingActiveFarmExecution?.cycleName
+                ?? matchingPlannedFarmExecution?.cycleName
+            return (farmCycleNumber, resolvedName)
+        }
+
+        if let active = matchingActiveFarmExecution,
+           let cycleNumber = active.cycleNumber {
+            return (cycleNumber, active.cycleName)
+        }
+
+        if let planned = matchingPlannedFarmExecution,
+           let cycleNumber = planned.cycleNumber {
+            return (cycleNumber, planned.cycleName)
+        }
+
+        return nil
+    }
+
+    private var activeFarmCycleNumber: Int? {
+        activeFarmCycleContext?.number
+    }
+
+    private var effectivePreSessionMode: SessionMode {
+        matchingPlannedFarmExecution?.sessionMode ?? preSessionSelectedMode
+    }
+
+    private var effectiveCampaignMapMode: CampaignMapMode {
+        campaignMapMode ?? .smartBuildings
+    }
+
+    private var isStandardPinsMode: Bool {
+        effectiveCampaignMapMode.usesStandardPins
+    }
+
+    private var gpsProximityAvailableForCampaign: Bool {
+        !isStandardPinsMode
+    }
+
+    private var effectiveGPSProximityEnabled: Bool {
+        gpsProximityAvailableForCampaign && preSessionGPSProximityEnabled
+    }
+
+    private var gpsProximityToggleBinding: Binding<Bool> {
+        Binding(
+            get: { effectiveGPSProximityEnabled },
+            set: { preSessionGPSProximityEnabled = $0 }
+        )
+    }
+
+    private var campaignMapDefaultPitch: Double {
+        isStandardPinsMode ? 0 : 60
+    }
+
+    private var suppressCampaignScanHighlights: Bool {
+        activeFarmCycleNumber != nil
     }
 
     private var currentMapLoadKey: String {
@@ -664,6 +979,43 @@ struct CampaignMapView: View {
         )
     }
 
+    private var preferredLiveInviteStartMode: SessionMode? {
+        if !preferredSessionTargets.isEmpty {
+            return .doorKnocking
+        }
+        if !flyerSessionTargets.isEmpty {
+            return .flyer
+        }
+        return nil
+    }
+
+    private var standardPinsMarkers: [StandardCampaignMapMarker] {
+        visibleAddressFeatures.compactMap { feature in
+            guard let address = addressTapResult(from: feature),
+                  let point = feature.geometry.asPoint,
+                  point.count >= 2 else {
+                return nil
+            }
+
+            return StandardCampaignMapMarker(
+                addressId: address.addressId,
+                coordinate: CLLocationCoordinate2D(latitude: point[1], longitude: point[0]),
+                title: address.formatted,
+                address: address,
+                status: addressStatuses[address.addressId] ?? .untouched
+            )
+        }
+    }
+
+    private var standardPinsMapInsets: UIEdgeInsets {
+        UIEdgeInsets(
+            top: sessionManager.sessionId != nil ? 148 : 136,
+            left: 24,
+            bottom: sessionManager.sessionId != nil ? 156 : 176,
+            right: 24
+        )
+    }
+
     private var campaignMapContent: some View {
         campaignMapWithAlertsAndObservers
             .sheet(isPresented: $showTargetsSheet) { nextTargetsSheetContent }
@@ -680,18 +1032,24 @@ struct CampaignMapView: View {
             .sheet(isPresented: $showBeaconSheet) {
                 BeaconControlSheet(
                     beaconService: beaconService,
-                    sessionLocation: sessionManager.currentLocation
+                    sessionLocation: sessionManager.currentLocation,
+                    isSessionPaused: sessionManager.isPaused
                 )
             }
             .sheet(isPresented: $showGoalSheet) {
                 PreSessionGoalSheet(
+                    mode: preSessionSelectedMode,
+                    goalType: Binding(
+                        get: { effectivePreSessionGoalType },
+                        set: { updatePreSessionGoalType($0) }
+                    ),
                     goalAmount: Binding(
                         get: { effectivePreSessionGoalAmount },
-                        set: { preSessionGoalAmount = min(max(1, $0), preSessionGoalCap) }
+                        set: { updatePreSessionGoalAmount($0) }
                     ),
-                    maxGoal: preSessionGoalCap
+                    maxCountGoal: preSessionCountGoalCap
                 )
-                .presentationDetents([.height(320)])
+                .presentationDetents([.height(420)])
                 .presentationDragIndicator(.visible)
             }
             .sheet(isPresented: $showActiveSessionInfoSheet) {
@@ -700,6 +1058,31 @@ struct CampaignMapView: View {
                     primaryActionTitle: backgroundGPSSheetActionTitle,
                     onPrimaryAction: backgroundGPSSheetActionTitle == nil ? nil : { handleBackgroundGPSSheetPrimaryAction() }
                 )
+            }
+            .sheet(isPresented: $showStandardCanvassingLearnMore) {
+                standardCanvassingLearnMoreSheet
+            }
+            .sheet(item: $liveSessionShareCode) { details in
+                LiveSessionShareCodeSheet(details: details)
+            }
+            .alert(
+                "GPS auto-hit can drift",
+                isPresented: Binding(
+                    get: { pendingGPSDisclaimerStart != nil },
+                    set: { if !$0 { pendingGPSDisclaimerStart = nil } }
+                )
+            ) {
+                Button("Start with GPS On") {
+                    continuePendingGPSDisclaimerStart(useGPSProximity: true)
+                }
+                Button("Start with GPS Off") {
+                    continuePendingGPSDisclaimerStart(useGPSProximity: false)
+                }
+                Button("Cancel", role: .cancel) {
+                    pendingGPSDisclaimerStart = nil
+                }
+            } message: {
+                Text("GPS sometimes drifts and can hit a nearby home. You can keep auto-hit on, turn it off for this session, and double-check when homes are close together.")
             }
             .sheet(item: $pendingManualAddressDraft, onDismiss: {
                 activeMapEditTool = nil
@@ -732,11 +1115,25 @@ struct CampaignMapView: View {
             }
     }
 
+    private var sessionConnectivityState: SessionConnectivityIndicatorState {
+        if let state = campaignDownloadService.state(for: campaignId),
+           state.status == "downloading" {
+            return .preparing(progress: state.progress)
+        }
+        if !networkMonitor.isOnline {
+            return .offline(pendingCount: offlineSyncCoordinator.pendingCount)
+        }
+        if offlineSyncCoordinator.isSyncing || offlineSyncCoordinator.pendingCount > 0 {
+            return .syncing(pendingCount: offlineSyncCoordinator.pendingCount)
+        }
+        return .live
+    }
+
     private var shouldShowBackgroundGPSPill: Bool {
         if sessionManager.sessionId != nil { return true }
         return showPreSessionStartButton
             && sessionManager.sessionId == nil
-            && !preferredSessionTargets.isEmpty
+            && !sessionTargets(for: effectivePreSessionMode).isEmpty
             && UUID(uuidString: campaignId) != nil
     }
 
@@ -810,6 +1207,14 @@ struct CampaignMapView: View {
             } message: {
                 Text("FLYR uses location only during an active session. Continue if you want route tracking and session progress to keep running while the app is locked or in the background.")
             }
+            .alert("Standard Canvassing Mode", isPresented: $showStandardCanvassingNotice) {
+                Button("Learn More") {
+                    showStandardCanvassingLearnMore = true
+                }
+                Button("Continue", role: .cancel) {}
+            } message: {
+                Text("Building-level mapping is limited in this area, so FLYR is using address pins for the most reliable canvassing experience. Proximity auto-complete is disabled for this campaign.")
+            }
             .alert("Session still running", isPresented: $sessionManager.showLongSessionPrompt) {
                 Button("Keep Running", role: .cancel) {}
                 Button("End Session", role: .destructive) {
@@ -818,56 +1223,135 @@ struct CampaignMapView: View {
             } message: {
                 Text("This session has been running for a long time. End it now to save progress and prevent accidental all-day tracking.")
             }
+            .alert(
+                "Join live with your team?",
+                isPresented: .init(
+                    get: { pendingLiveInvitePrompt != nil },
+                    set: { if !$0 { dismissPendingLiveInvitePrompt() } }
+                )
+            ) {
+                Button("Join Live") {
+                    startPendingLiveInviteHandoff()
+                }
+                Button("Not Now", role: .cancel) {
+                    dismissPendingLiveInvitePrompt()
+                }
+            } message: {
+                Text(pendingLiveInvitePromptMessage)
+            }
             .onAppear {
                 loadCampaignData(force: false)
+                loadCampaignPresentationConfiguration(forceRemoteRefresh: false)
+                loadCampaignBoundaryFallback()
                 setupRealTimeSubscription()
+                refreshSharedLiveInviteAvailabilityIfNeeded(force: false)
+                maybePresentPendingLiveInviteHandoff()
+                ensureCampaignVoiceScope()
+                prepareCampaignForFieldUse()
             }
             .onChange(of: campaignId) { _, _ in
                 hasFlownToCampaign = false
                 lastLoadedDataKey = nil
                 subscribedRealtimeCampaignId = nil
                 pendingFlyerStart = nil
+                addressStatuses = [:]
+                addressStatusRows = [:]
+                campaignBoundaryCoordinates = []
                 lastStatusRefreshKey = nil
                 pendingStatusRefreshWantsForce = false
                 statusRefreshTask?.cancel()
+                LiveCampaignMapSnapshotStore.shared.setPreferredSummaryCamera(nil)
+                pendingLiveInvitePrompt = nil
+                campaignMapMode = nil
+                campaignHasParcels = nil
+                campaignBuildingLinkConfidence = nil
+                showStandardCanvassingNotice = false
+                showStandardCanvassingLearnMore = false
+                hasPresentedStandardCanvassingNotice = false
                 loadCampaignData(force: true)
+                loadCampaignPresentationConfiguration(forceRemoteRefresh: true)
+                loadCampaignBoundaryFallback(forceRemoteRefresh: true)
                 setupRealTimeSubscription()
+                refreshSharedLiveInviteAvailabilityIfNeeded(force: true)
+                ensureCampaignVoiceScope()
+                prepareCampaignForFieldUse()
             }
             .onChange(of: activeRouteWorkContext?.assignmentId) { _, _ in
                 hasFlownToCampaign = false
                 lastLoadedDataKey = nil
                 lastStatusRefreshKey = nil
                 statusRefreshTask?.cancel()
+                LiveCampaignMapSnapshotStore.shared.setPreferredSummaryCamera(nil)
                 loadCampaignData(force: true)
+            }
+            .onChange(of: preSessionTrayExpanded) { _, isExpanded in
+                guard isExpanded, sessionManager.sessionId == nil else { return }
+                refreshSharedLiveInviteAvailabilityIfNeeded(force: false)
+            }
+            .onChange(of: uiState.pendingLiveInviteHandoff) { _, _ in
+                maybePresentPendingLiveInviteHandoff()
             }
             .onDisappear {
                 statusRefreshTask?.cancel()
+                buildingRenderCheckTask?.cancel()
                 Task { await statsSubscriber?.unsubscribe() }
                 subscribedRealtimeCampaignId = nil
+                LiveCampaignMapSnapshotStore.shared.setPreferredSummaryCamera(nil)
+                Task { await liveSessionVoiceService.endPushToTalk() }
             }
         return applyFeatureAndSessionObservers(to: baseView)
     }
 
     private func applyFeatureAndSessionObservers<V: View>(to view: V) -> some View {
+        let featureObserved = applyFeatureObservers(to: view)
+        let sessionObserved = applySessionObservers(to: featureObserved)
+        return applyRealtimeObservers(to: sessionObserved)
+    }
+
+    private func applyFeatureObservers<V: View>(to view: V) -> some View {
         view
             .onChange(of: featuresService.isLoading) { _, isLoading in
+                refreshVisibleBuildingRenderMonitoring(reset: isLoading)
                 if !isLoading {
                     updateMapData()
                     rehydrateSessionVisitInferenceIfNeeded()
                     maybeStartDemoSession()
+                    maybePresentPendingLiveInviteHandoff()
                 }
             }
             .onChange(of: buildingsRenderSignature) { _, _ in
+                refreshVisibleBuildingRenderMonitoring(reset: true)
                 updateMapData()
                 rehydrateSessionVisitInferenceIfNeeded()
                 maybeStartDemoSession()
+                maybePresentPendingLiveInviteHandoff()
             }
-            .onChange(of: featuresService.addresses?.features.count ?? 0) { _, _ in updateMapData() }
+            .onChange(of: featuresService.addresses?.features.count ?? 0) { _, _ in
+                updateMapData()
+                maybePresentPendingLiveInviteHandoff()
+            }
+            .onChange(of: campaignBoundaryCoordinatesSignature) { _, _ in
+                updateMapData()
+            }
+            .onChange(of: displayMode) { _, _ in
+                if isStandardPinsMode, displayMode != .addresses {
+                    displayMode = .addresses
+                }
+                refreshVisibleBuildingRenderMonitoring(reset: false)
+            }
+    }
+
+    private func applySessionObservers<V: View>(to view: V) -> some View {
+        view
             .onChange(of: sessionManager.locationAuthorizationStatus) { _, newStatus in
                 handleLocationAuthorizationChange(newStatus)
             }
-            .onChange(of: sessionManager.pathCoordinates.count) { _, _ in updateSessionPathOnMap() }
-            .onChange(of: sessionManager.isDemoSession) { _, _ in updateSessionPathOnMap() }
+            .onChange(of: sessionManager.pathCoordinates.count) { _, _ in
+                updateSessionPathOnMap()
+            }
+            .onChange(of: sessionManager.isDemoSession) { _, _ in
+                updateSessionPathOnMap()
+            }
             .onChange(of: sessionManager.sessionId) { _, new in
                 updateSessionPathOnMap()
                 if new == nil {
@@ -878,22 +1362,33 @@ struct CampaignMapView: View {
                     selectedBuilding = nil
                     flyerModeManager.reset()
                     quickStartStartingMode = nil
+                    quickStartStartingSharedLive = false
                     pendingFlyerStart = nil
                     showLocationPermissionAlert = false
                     showBackgroundGPSSheet = false
                     demoSessionSimulator.stop(notify: false)
                     updateDemoTargetPulseOnMap()
-                } else if sessionManager.sessionMode == .flyer {
-                    flyerModeManager.startObservingLocation()
-                } else {
-                    flyerModeManager.stopObservingLocation()
-                }
-                if new == nil {
                     activeMapEditTool = nil
                     manualAddressPlacement = nil
                     cancelPendingManualAddressConfirmation(clearPreview: true)
                     layerManager?.clearManualAddressPreview()
+                    refreshSharedLiveInviteAvailabilityIfNeeded(force: false)
+                    maybePresentPendingLiveInviteHandoff()
+                    ensureCampaignVoiceScope()
+                    return
                 }
+
+                if let campaignUUID = UUID(uuidString: campaignId) {
+                    uiState.clearPendingLiveInviteHandoff(campaignId: campaignUUID)
+                }
+                pendingLiveInvitePrompt = nil
+
+                if sessionManager.sessionMode == .flyer {
+                    flyerModeManager.startObservingLocation()
+                } else {
+                    flyerModeManager.stopObservingLocation()
+                }
+                ensureCampaignVoiceScope()
             }
             .onChange(of: sessionManager.sessionMode) { _, mode in
                 guard sessionManager.sessionId != nil else { return }
@@ -910,6 +1405,10 @@ struct CampaignMapView: View {
             .onChange(of: sessionManager.visitOverlayRevision) { _, _ in
                 applySessionVisitOverlayStates()
             }
+            .onChange(of: activeFarmCycleNumber) { _, _ in
+                lastStatusRefreshKey = nil
+                scheduleLoadedStatusesRefresh(forceRefresh: true)
+            }
             .onChange(of: demoSessionSimulator.currentTarget?.id) { _, _ in
                 focusDemoTargetIfNeeded()
                 updateDemoTargetPulseOnMap()
@@ -919,6 +1418,58 @@ struct CampaignMapView: View {
                 demoPulseTick += 1
                 updateDemoTargetPulseOnMap()
             }
+    }
+
+    private func applyRealtimeObservers<V: View>(to view: V) -> some View {
+        view
+            .onReceive(sharedLiveCanvassingService.$teammates) { teammates in
+                layerManager?.updateTeammatePresence(teammates)
+                ensureCampaignVoiceScope()
+            }
+            .onReceive(sharedLiveCanvassingService.$homeStatesByAddressId) { rows in
+                if activeFarmCycleNumber != nil {
+                    guard !rows.isEmpty else { return }
+                    scheduleLoadedStatusesRefresh(forceRefresh: true)
+                } else {
+                    applyRemoteHomeStateRows(rows)
+                }
+            }
+    }
+
+    private func ensureCampaignVoiceScope() {
+        Task {
+            guard shouldShowTeamVoiceBar,
+                  let currentCampaignId = campaignVoiceCampaignId,
+                  let currentSessionId = campaignVoiceSessionId else {
+                if liveSessionVoiceService.shouldShowOverlay {
+                    await liveSessionVoiceService.disconnect()
+                }
+                return
+            }
+
+            if let activeCampaignId = liveSessionVoiceService.activeCampaignId,
+               activeCampaignId != currentCampaignId {
+                await liveSessionVoiceService.disconnect()
+                return
+            }
+
+            if let activeSessionId = liveSessionVoiceService.activeSessionId,
+               activeSessionId != currentSessionId {
+                await liveSessionVoiceService.disconnect()
+            }
+        }
+    }
+
+    private var campaignVoiceCampaignId: UUID? {
+        UUID(uuidString: campaignId)
+    }
+
+    private var campaignVoiceSessionId: UUID? {
+        sessionManager.activeSharedLiveSessionId ?? sessionManager.sessionId
+    }
+
+    private var shouldShowTeamVoiceBar: Bool {
+        sessionManager.sessionId != nil && !sharedLiveCanvassingService.teammates.isEmpty
     }
 
     private var buildingsRenderSignature: String {
@@ -933,12 +1484,29 @@ struct CampaignMapView: View {
         return "\(features.count)-\(polygonCount)"
     }
 
+    private var shouldMonitorVisibleBuildingRendering: Bool {
+        displayMode == .buildings
+            && !featuresService.isLoading
+            && !visibleBuildingFeatures.isEmpty
+    }
+
     private var campaignMapWithAlertsAndObservers: some View {
         campaignMapWithObservers
             .alert("Cannot start session", isPresented: $showSessionStartGateAlert) {
                 Button("OK", role: .cancel) {}
             } message: {
                 Text(sessionStartGateMessage)
+            }
+            .alert(
+                "Couldn't create join code",
+                isPresented: Binding(
+                    get: { liveSessionCodeErrorMessage != nil },
+                    set: { if !$0 { liveSessionCodeErrorMessage = nil } }
+                )
+            ) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(liveSessionCodeErrorMessage ?? "Something went wrong.")
             }
             .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { notification in
                 guard let frame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
@@ -954,7 +1522,7 @@ struct CampaignMapView: View {
             campaignMapStack(geometry: geometry)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .ignoresSafeArea(sessionManager.sessionId != nil ? .all : [])
+        .ignoresSafeArea((sessionManager.sessionId != nil || sessionManager.isActive) ? .all : [])
         .ignoresSafeArea(.keyboard)
         .navigationBarBackButtonHidden(sessionManager.sessionId != nil)
     }
@@ -1011,7 +1579,7 @@ struct CampaignMapView: View {
                     let completionTargetId = resolvedAddressId.flatMap(sessionTargetIdForAddress)
                     if let addressId = resolvedAddressId {
                         let addressStatus = mapFieldLeadStatusToAddressStatus(leadOutcome.lead.status)
-                        try? await VisitsAPI.shared.updateStatus(
+                        if let row = try? await VisitsAPI.shared.updateStatus(
                             addressId: addressId,
                             campaignId: campId,
                             status: addressStatus,
@@ -1020,7 +1588,12 @@ struct CampaignMapView: View {
                             sessionTargetId: completionTargetId,
                             sessionEventType: completionTargetId == nil ? nil : SessionEventType.recordedVisitEventType(for: addressStatus),
                             location: completionTargetId == nil ? nil : sessionManager.currentLocation
-                        )
+                        ) {
+                            await MainActor.run {
+                                applyHomeStateRow(row)
+                                refreshTownhomeStatusOverlay()
+                            }
+                        }
                         await MainActor.run {
                             lastStatusRefreshKey = nil
                         }
@@ -1061,21 +1634,26 @@ struct CampaignMapView: View {
             locationCardOverlay(bottomInset: keyboardInset)
             loadingOverlay
                 .animation(.easeInOut(duration: 0.28), value: featuresService.isLoading)
+            buildingRenderPendingOverlay
+                .animation(.easeInOut(duration: 0.24), value: showBuildingRenderPendingOverlay)
         }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
+        .overlay(alignment: .bottom) {
             if sessionManager.sessionId != nil {
                 BottomActionBar(
                     sessionManager: sessionManager,
                     showingTargets: $showTargetsSheet,
                     statsExpanded: $statsExpanded
                 )
+                .padding(.bottom, 8)
             }
         }
     }
 
     private func locationCardBottomInset(for geometry: GeometryProxy) -> CGFloat {
         let keyboardOverlap = max(0, keyboardHeight - geometry.safeAreaInsets.bottom)
-        let baseBottomPadding: CGFloat = sessionManager.sessionId != nil ? 14 : 18
+        let baseBottomPadding: CGFloat = sessionManager.sessionId != nil
+            ? sessionBottomOverlayReservedHeight
+            : 18
         // Lift the building card fully above the keyboard when editing notes/contact fields
         // (a small fraction was not enough — the keyboard covered Save and voice controls).
         guard showLocationCard, keyboardOverlap > 0 else { return baseBottomPadding }
@@ -1090,27 +1668,58 @@ struct CampaignMapView: View {
         let size = Self.sanitizedMapContainerSize(raw)
         let hasValidSize = size.width > 0 && size.height > 0
         if hasValidSize {
-            CampaignMapboxMapViewRepresentable(
-                preferredSize: size,
-                useDarkStyle: colorScheme == .dark,
-                sessionLocation: sessionManager.sessionId != nil ? sessionManager.currentLocation : nil,
-                sessionHeadingState: sessionManager.sessionId != nil ? sessionManager.headingState : .unavailable,
-                showSessionPuck: sessionManager.sessionId != nil && !sessionManager.isDemoSession,
-                onMapReady: { map in
-                    self.mapView = map
-                    LiveCampaignMapSnapshotStore.shared.setMapView(map)
-                    setupMap(map)
-                    syncManualAddressPreview()
-                },
-                onTap: { point in
-                    handleTap(at: point)
-                },
-                onLongPress: { point in
-                    handleMapLongPress(at: point)
-                }
-            )
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .ignoresSafeArea()
+            if isStandardPinsMode {
+                StandardCampaignGoogleMapView(
+                    campaignId: campaignId,
+                    markers: standardPinsMarkers,
+                    pathCoordinates: sessionManager.pathCoordinates,
+                    showUserLocation: sessionManager.sessionId != nil && !sessionManager.isDemoSession,
+                    contentInsets: standardPinsMapInsets,
+                    onReady: {
+                        mapView = nil
+                        layerManager = nil
+                        LiveCampaignMapSnapshotStore.shared.setMapView(nil)
+                    },
+                    onMarkerTap: { address in
+                        presentAddressSelection(address)
+                    },
+                    onMapTap: {
+                        if showLocationCard {
+                            withAnimation {
+                                showLocationCard = false
+                            }
+                            selectedBuilding = nil
+                            selectedAddress = nil
+                            selectedAddressIdForCard = nil
+                        }
+                    }
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .ignoresSafeArea()
+            } else {
+                CampaignMapboxMapViewRepresentable(
+                    preferredSize: size,
+                    useDarkStyle: colorScheme == .dark,
+                    sessionLocation: sessionManager.sessionId != nil ? sessionManager.currentLocation : nil,
+                    sessionHeadingState: sessionManager.sessionId != nil ? sessionManager.headingPresentationState : .unavailable,
+                    showSessionPuck: sessionManager.sessionId != nil && !sessionManager.isDemoSession,
+                    onMapReady: { map in
+                        self.mapView = map
+                        LiveCampaignMapSnapshotStore.shared.setMapView(map)
+                        setupMap(map)
+                        enforceCampaignMapPresentationMode()
+                        syncManualAddressPreview()
+                    },
+                    onTap: { point in
+                        handleTap(at: point)
+                    },
+                    onLongPress: { point in
+                        handleMapLongPress(at: point)
+                    }
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .ignoresSafeArea()
+            }
         }
     }
 
@@ -1135,14 +1744,20 @@ struct CampaignMapView: View {
         layerManager?.updateAddressState(
             addressId: addressId.uuidString,
             status: featureStateStatus(for: status),
-            scansTotal: 0
+            scansTotal: 0,
+            visitOwner: status.mapLayerStatus == "visited" ? "self" : nil
         )
         if let gersId = gersIdForAddress(addressId: addressId) {
             let addrIds = addressIdsForBuilding(gersId: gersId)
             let buildingStatus = addrIds.isEmpty
                 ? buildingFeatureStateStatus(for: status)
                 : computeBuildingLayerStatus(gersId: gersId, addressIds: addrIds)
-            layerManager?.updateBuildingState(gersId: gersId, status: buildingStatus, scansTotal: 0)
+            layerManager?.updateBuildingState(
+                gersId: gersId,
+                status: buildingStatus,
+                scansTotal: 0,
+                visitOwner: buildingStatus == "visited" ? "self" : nil
+            )
         }
         refreshTownhomeStatusOverlay()
         if let targetId = sessionTargetIdForAddress(addressId: addressId) {
@@ -1150,9 +1765,7 @@ struct CampaignMapView: View {
                 await sessionManager.markCompletionLocallyAfterPersistedOutcome(targetId)
             }
         }
-        if status == .delivered {
-            SessionManager.shared.recordAddressDelivered()
-        }
+        sessionManager.reconcileVisitedAddressMetric(addressId: addressId, status: status)
         HapticManager.success()
     }
 
@@ -1169,7 +1782,7 @@ struct CampaignMapView: View {
                 .overlay(alignment: .topTrailing) {
                     VStack(alignment: .trailing, spacing: 0) {
                         SessionProgressDropdown(sessionManager: sessionManager, isExpanded: $statsExpanded)
-                            .frame(maxWidth: 320, alignment: .trailing)
+                            .frame(maxWidth: 348, alignment: .trailing)
                         Spacer()
                     }
                     .padding(.top, 56 + 44)
@@ -1224,8 +1837,12 @@ struct CampaignMapView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 8))
                     }
                     HStack(alignment: .top, spacing: 12) {
-                        BuildingCircleToggle(mode: $displayMode) { _ in
-                            updateMapData()
+                        if isStandardPinsMode {
+                            standardCanvassingModePill
+                        } else {
+                            BuildingCircleToggle(mode: $displayMode) { _ in
+                                updateMapData()
+                            }
                         }
                         Spacer(minLength: 8)
                         SessionProgressPill(sessionManager: sessionManager, isExpanded: $statsExpanded)
@@ -1257,8 +1874,12 @@ struct CampaignMapView: View {
             } else {
                 // Pre-session: toggle top-left; GPS (+ optional map dismiss) top-right
                 HStack(alignment: .top, spacing: 0) {
-                    BuildingCircleToggle(mode: $displayMode) { _ in
-                        updateMapData()
+                    if isStandardPinsMode {
+                        standardCanvassingModePill
+                    } else {
+                        BuildingCircleToggle(mode: $displayMode) { _ in
+                            updateMapData()
+                        }
                     }
                     Spacer(minLength: 8)
                     HStack(spacing: 8) {
@@ -1268,11 +1889,6 @@ struct CampaignMapView: View {
                                 hasPersistentBackgroundLocationAccess: sessionManager.hasPersistentBackgroundLocationAccess,
                                 onTap: { showBackgroundGPSSheet = true }
                             )
-                        }
-                        if showPreSessionStartButton {
-                            BeaconMapPill(isPrepared: beaconService.hasPreparedSetup) {
-                                showBeaconSheet = true
-                            }
                         }
                         if let onDismissFromMap {
                             Button {
@@ -1296,6 +1912,41 @@ struct CampaignMapView: View {
                 .safeAreaPadding(.leading, 4)
                 .safeAreaPadding(.trailing, 4)
             }
+            if shouldShowTeamVoiceBar, campaignVoiceCampaignId != nil, campaignVoiceSessionId != nil, !statsExpanded {
+                TeamVoiceBar(
+                    participants: teamVoiceBarParticipants,
+                    isVoiceConnected: liveSessionVoiceService.connectionState == .connected
+                        || liveSessionVoiceService.connectionState == .connecting
+                        || liveSessionVoiceService.connectionState == .reconnecting,
+                    onConnectionToggle: {
+                        if liveSessionVoiceService.connectionState == .connected
+                            || liveSessionVoiceService.connectionState == .connecting
+                            || liveSessionVoiceService.connectionState == .reconnecting {
+                            Task { await liveSessionVoiceService.disconnect() }
+                        } else if let campaignVoiceCampaignId, let campaignVoiceSessionId {
+                            Task {
+                                await liveSessionVoiceService.connectIfNeeded(
+                                    campaignId: campaignVoiceCampaignId,
+                                    sessionId: campaignVoiceSessionId
+                                )
+                            }
+                        }
+                    },
+                    onPTTStart: {
+                        Task {
+                            await liveSessionVoiceService.beginPushToTalk(
+                                campaignId: campaignVoiceCampaignId,
+                                sessionId: campaignVoiceSessionId
+                            )
+                        }
+                    },
+                    onPTTEnd: {
+                        Task { await liveSessionVoiceService.endPushToTalk() }
+                    }
+                )
+                .padding(.horizontal, 12)
+                .padding(.top, 8)
+            }
 
             if let activeRouteWorkContext, sessionManager.sessionId == nil, !sessionManager.isActive {
                 routeScopeBanner(activeRouteWorkContext)
@@ -1310,12 +1961,19 @@ struct CampaignMapView: View {
                     .padding(.horizontal, 12)
                     .padding(.top, 8)
             }
+
+            if matchingPlannedFarmExecution == nil,
+               let activeFarmCycleContext {
+                farmCycleScopeBanner(activeFarmCycleContext.name)
+                    .padding(.horizontal, 12)
+                    .padding(.top, 8)
+            }
             
             Spacer()
             
             if showPreSessionStartButton,
                sessionManager.sessionId == nil,
-               !preferredSessionTargets.isEmpty,
+               !sessionTargets(for: effectivePreSessionMode).isEmpty,
                let campId = UUID(uuidString: campaignId) {
                 VStack(spacing: 10) {
                     preSessionStartButtons(campaignId: campId)
@@ -1326,6 +1984,74 @@ struct CampaignMapView: View {
 
     private var campIdFromString: UUID? {
         UUID(uuidString: campaignId)
+    }
+
+    private var teamVoiceBarParticipants: [VoiceParticipant] {
+        var merged: [String: VoiceParticipant] = [:]
+
+        for participant in liveSessionVoiceService.participants {
+            merged[participant.id] = participant
+        }
+
+        for teammate in sharedLiveCanvassingService.teammates {
+            let id = teammate.userId.uuidString.lowercased()
+
+            if merged[id] == nil {
+                merged[id] = VoiceParticipant(
+                    id: id,
+                    initials: teammate.initials,
+                    isConnected: false,
+                    isVoiceEnabled: false,
+                    isSpeaking: false,
+                    isLocalUser: false
+                )
+            }
+        }
+
+        if let currentUserId = AuthManager.shared.user?.id.uuidString.lowercased(),
+           merged[currentUserId] == nil {
+            merged[currentUserId] = VoiceParticipant(
+                id: currentUserId,
+                initials: VoiceParticipantFormatter.initials(from: AuthManager.shared.user?.email ?? "Me"),
+                isConnected: false,
+                isVoiceEnabled: false,
+                isSpeaking: false,
+                isLocalUser: true
+            )
+        }
+
+        return merged.values.sorted { lhs, rhs in
+            if lhs.isLocalUser != rhs.isLocalUser {
+                return lhs.isLocalUser && !rhs.isLocalUser
+            }
+            if lhs.isSpeaking != rhs.isSpeaking {
+                return lhs.isSpeaking && !rhs.isSpeaking
+            }
+            if lhs.isVoiceEnabled != rhs.isVoiceEnabled {
+                return lhs.isVoiceEnabled && !rhs.isVoiceEnabled
+            }
+            if lhs.isConnected != rhs.isConnected {
+                return lhs.isConnected && !rhs.isConnected
+            }
+            return lhs.id < rhs.id
+        }
+    }
+
+    private func matchingVisibleBuildingFeature(for gersId: String) -> BuildingFeature? {
+        visibleBuildingFeatures.first { feature in
+            feature.properties.buildingIdentifierCandidates.contains { candidate in
+                candidate.caseInsensitiveCompare(gersId) == .orderedSame
+            } || (feature.id?.caseInsensitiveCompare(gersId) == .orderedSame)
+        }
+    }
+
+    private func effectiveScansTotal(for gersId: String) -> Int {
+        guard !suppressCampaignScanHighlights else { return 0 }
+        return matchingVisibleBuildingFeature(for: gersId)?.properties.scansTotal ?? 0
+    }
+
+    private func effectiveScansTotal(for building: BuildingFeature) -> Int {
+        suppressCampaignScanHighlights ? 0 : building.properties.scansTotal
     }
 
     private func routeScopeBanner(_ scope: RouteWorkContext) -> some View {
@@ -1374,7 +2100,7 @@ struct CampaignMapView: View {
         .clipShape(RoundedRectangle(cornerRadius: 14))
     }
 
-    private func plannedFarmExecutionBanner(_ context: FarmExecutionContext, campaignId: UUID?) -> some View {
+    private func plannedFarmExecutionBanner(_ context: FarmExecutionContext, campaignId _: UUID?) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top, spacing: 12) {
                 Image(systemName: context.sessionMode == .flyer ? "paperplane.fill" : "door.left.hand.closed")
@@ -1389,8 +2115,8 @@ struct CampaignMapView: View {
                         .font(.system(size: 15, weight: .semibold))
                         .foregroundColor(.white)
                         .lineLimit(2)
-                    if let phaseName = context.phaseName {
-                        Text(phaseName)
+                    if let cycleName = context.cycleName {
+                        Text(cycleName)
                             .font(.system(size: 12))
                             .foregroundColor(.white.opacity(0.76))
                     }
@@ -1398,31 +2124,34 @@ struct CampaignMapView: View {
 
                 Spacer(minLength: 8)
             }
-
-            if let campaignId {
-                Button {
-                    startPlannedFarmSession(campaignId: campaignId, context: context)
-                } label: {
-                    HStack {
-                        Text(context.sessionMode == .flyer ? "Start Planned Flyer Session" : "Start Planned Door Knock Session")
-                            .font(.system(size: 14, weight: .semibold))
-                        Spacer()
-                        Image(systemName: "play.fill")
-                            .font(.system(size: 12, weight: .bold))
-                    }
-                    .foregroundColor(.black)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
-                    .background(Color.white)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                }
-                .buttonStyle(.plain)
-                .disabled(quickStartStartingMode != nil || pendingFlyerStart != nil)
-            }
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
         .background(Color.black.opacity(0.82))
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+    }
+
+    private func farmCycleScopeBanner(_ cycleName: String?) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: "repeat")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundColor(.white)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Cycle Map")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(.white.opacity(0.72))
+                Text(cycleName ?? "Session hits in this cycle")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(.white)
+                    .lineLimit(2)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(Color.black.opacity(0.78))
         .clipShape(RoundedRectangle(cornerRadius: 14))
     }
 
@@ -1481,65 +2210,287 @@ struct CampaignMapView: View {
 
     @ViewBuilder
     private func preSessionStartButtons(campaignId: UUID) -> some View {
+        let plannedStartContext = matchingPlannedFarmExecution
         let isStartingDoor = quickStartStartingMode == .doorKnocking
         let isStartingFlyers = quickStartStartingMode == .flyer
         let isBusy = quickStartStartingMode != nil || pendingFlyerStart != nil
-        let selectedMode = preSessionSelectedMode
+        let selectedMode = plannedStartContext?.sessionMode ?? preSessionSelectedMode
+        let selectedGoalType = effectivePreSessionGoalType
         let hasTargets = !sessionTargets(for: selectedMode).isEmpty
         let isStartingSelected = quickStartStartingMode == selectedMode
-
-        HStack(spacing: 12) {
-            preSessionModeButton(isBusy: isBusy, isStartingDoor: isStartingDoor, isStartingFlyers: isStartingFlyers)
-
-            Button {
-                guard !isBusy, hasTargets else { return }
-                HapticManager.light()
-                startFromPreSessionBar(
-                    campaignId: campaignId,
-                    mode: selectedMode,
-                    goalAmount: effectivePreSessionGoalAmount
-                )
-            } label: {
-                HStack(spacing: 8) {
-                    if isStartingSelected {
-                        ProgressView()
-                            .progressViewStyle(.circular)
-                            .tint(.white)
-                    } else {
-                        Image(systemName: "play.fill")
-                            .font(.system(size: 13, weight: .bold))
-                    }
-                    Text("Start")
-                        .font(.system(size: 18, weight: .semibold))
-                }
-                .foregroundColor(.white)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 17)
-                .background(hasTargets ? Color.flyrPrimary : Color.red.opacity(0.45))
-                .clipShape(Capsule())
+        let isStartingSolo = isStartingSelected && !quickStartStartingSharedLive
+        let isStartingTeam = isStartingSelected && quickStartStartingSharedLive
+        let beaconReady = beaconService.hasPreparedSetup || beaconService.hasActiveShare
+        let liveInviteAvailability = sharedLiveCanvassingService.inviteAvailability(for: campaignId)
+        let liveInviteUnavailable = liveInviteAvailability == .unavailable
+        let liveInviteSubtitle: String = {
+            if !hasTargets {
+                return "Add homes to this route before you invite teammates in."
             }
-            .buttonStyle(.plain)
-            .disabled(isBusy || !hasTargets)
+            if liveInviteUnavailable {
+                return "Live teammate presence is not enabled for this workspace yet. Start solo or use Beacon instead."
+            }
+            return "Start in shared live mode so teammates can join you on the map."
+        }()
 
-            preSessionGoalButton(isBusy: isBusy)
+        VStack(spacing: 0) {
+            Capsule()
+                .fill(Color.white.opacity(0.22))
+                .frame(width: 36, height: 5)
+                .padding(.top, 8)
+                .padding(.bottom, preSessionTrayExpanded ? 16 : 10)
+                .onTapGesture {
+                    togglePreSessionTray()
+                }
+
+            HStack(spacing: 12) {
+                if let plannedStartContext {
+                    plannedSessionModePill(context: plannedStartContext, isBusy: isBusy)
+                } else {
+                    preSessionModeButton(isBusy: isBusy, isStartingDoor: isStartingDoor, isStartingFlyers: isStartingFlyers)
+                }
+
+                Button {
+                    guard !isBusy, hasTargets else { return }
+                    HapticManager.light()
+                    if let plannedStartContext {
+                        startPlannedFarmSession(campaignId: campaignId, context: plannedStartContext)
+                    } else {
+                        startFromPreSessionBar(
+                            campaignId: campaignId,
+                            mode: selectedMode,
+                            goalType: selectedGoalType,
+                            goalAmount: effectivePreSessionGoalAmount,
+                            enableSharedLiveCanvassing: false
+                        )
+                    }
+                } label: {
+                    HStack(spacing: 8) {
+                        if isStartingSolo {
+                            ProgressView()
+                                .progressViewStyle(.circular)
+                                .tint(.white)
+                        } else {
+                            Image(systemName: "play.fill")
+                                .font(.system(size: 13, weight: .bold))
+                        }
+                        Text("Start")
+                            .font(.system(size: 13, weight: .semibold))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.84)
+                    }
+                    .foregroundColor(.white)
+                    .frame(minWidth: 120)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 17)
+                    .background(hasTargets ? Color.red : Color.red.opacity(0.45))
+                    .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .disabled(isBusy || !hasTargets)
+
+                if plannedStartContext == nil {
+                    preSessionGoalButton(isBusy: isBusy)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.bottom, preSessionTrayExpanded ? 8 : 10)
+
+            if preSessionTrayExpanded {
+                VStack(spacing: 0) {
+                    Divider()
+                        .overlay(Color.white.opacity(0.08))
+                        .padding(.horizontal, 10)
+                        .padding(.bottom, 4)
+
+                    preSessionActionRow(
+                        title: "Invite Users to Live Session",
+                        subtitle: liveInviteSubtitle,
+                        systemImage: "person.badge.plus",
+                        tint: liveInviteUnavailable ? .orange : .white,
+                        trailingText: liveInviteUnavailable ? "Unavailable" : (isStartingTeam ? "Starting" : "Invite"),
+                        isDisabled: isBusy || !hasTargets || liveInviteUnavailable
+                    ) {
+                        HapticManager.light()
+                        startFromPreSessionBar(
+                            campaignId: campaignId,
+                            mode: selectedMode,
+                            goalType: selectedGoalType,
+                            goalAmount: effectivePreSessionGoalAmount,
+                            enableSharedLiveCanvassing: true
+                        )
+                    }
+
+                    Divider()
+                        .overlay(Color.white.opacity(0.08))
+                        .padding(.horizontal, 10)
+
+                    preSessionToggleRow(
+                        title: "GPS Proximity",
+                        subtitle: gpsProximitySubtitle,
+                        systemImage: "location.circle.fill",
+                        tint: .white,
+                        isOn: gpsProximityToggleBinding,
+                        isDisabled: isBusy || !gpsProximityAvailableForCampaign
+                    )
+
+                    Divider()
+                        .overlay(Color.white.opacity(0.08))
+                        .padding(.horizontal, 10)
+
+                    preSessionActionRow(
+                        title: "Beacon",
+                        subtitle: beaconReady
+                            ? "Beacon is ready to send when you want to share your live location."
+                            : "Set up your Beacon message and safety contacts before you start.",
+                        systemImage: beaconReady ? "dot.radiowaves.right" : "message.fill",
+                        tint: beaconReady ? .green : .white,
+                        trailingText: beaconReady ? "Ready" : nil
+                    ) {
+                        HapticManager.light()
+                        showBeaconSheet = true
+                    }
+
+                    Divider()
+                        .overlay(Color.white.opacity(0.08))
+                        .padding(.horizontal, 10)
+
+                    preSessionActionRow(
+                        title: "Info",
+                        subtitle: "Map tips, gestures, and session details",
+                        systemImage: "info.circle",
+                        tint: .white,
+                        trailingText: nil
+                    ) {
+                        HapticManager.light()
+                        showActiveSessionInfoSheet = true
+                    }
+                }
+                .padding(.bottom, 6)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 10)
         .background(
             RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .fill(Color(hex: "1A1A1A").opacity(0.96))
                 .shadow(color: .black.opacity(0.28), radius: 18, x: 0, y: 8)
         )
+        .gesture(
+            DragGesture(minimumDistance: 10)
+                .onEnded { value in
+                    if value.translation.height < -24 {
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.86)) {
+                            preSessionTrayExpanded = true
+                        }
+                    } else if value.translation.height > 24 {
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.86)) {
+                            preSessionTrayExpanded = false
+                        }
+                    }
+                }
+        )
         .padding(.horizontal, quickStartEnabled ? 12 : 8)
         .padding(.bottom, quickStartEnabled ? 20 : 78)
     }
 
-    private var preSessionGoalCap: Int {
-        max(
-            visibleAddressFeatures.count,
-            sessionTargets(for: .flyer).count,
-            sessionTargets(for: .doorKnocking).count
+    private var preSessionCountGoalCap: Int {
+        max(1, sessionTargets(for: effectivePreSessionMode).count)
+    }
+
+    private var gpsProximitySubtitle: String {
+        if isStandardPinsMode {
+            return "Proximity auto-complete is disabled for this campaign in Standard Canvassing Mode."
+        }
+        switch effectivePreSessionMode {
+        case .doorKnocking:
+            return "Auto-hit nearby houses with GPS. Double-check if the blue dot drifts."
+        case .flyer:
+            return "Auto-hit nearby homes with GPS. Double-check if the blue dot drifts."
+        }
+    }
+
+    private var standardCanvassingModePill: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "mappin.and.ellipse")
+                .font(.system(size: 14, weight: .semibold))
+            Text("Standard Canvassing")
+                .font(.system(size: 13, weight: .semibold))
+                .lineLimit(1)
+        }
+        .foregroundColor(.white)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color.black)
+                .shadow(color: .black.opacity(0.2), radius: 6, x: 0, y: 2)
         )
+        .fixedSize(horizontal: true, vertical: true)
+    }
+
+    private var standardCanvassingLearnMoreSheet: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Building-level mapping is limited in this area, so FLYR is using address pins for the most reliable canvassing experience. Proximity auto-complete is disabled for this campaign.")
+                    .font(.flyrBody)
+                    .foregroundColor(.primary)
+
+                Text("Every address is still trackable. You can still mark visits, conversations, follow-ups, and outcomes manually.")
+                    .font(.flyrSubheadline)
+                    .foregroundColor(.secondary)
+
+                Spacer()
+            }
+            .padding(20)
+            .navigationTitle("Standard Canvassing Mode")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") {
+                        showStandardCanvassingLearnMore = false
+                    }
+                }
+            }
+        }
+        .presentationDetents([.medium])
+        .presentationDragIndicator(.visible)
+    }
+
+    private var effectivePreSessionGoalType: GoalType {
+        switch effectivePreSessionMode {
+        case .doorKnocking:
+            let allowed = GoalType.goalPickerCases(for: .doorKnocking)
+            return allowed.contains(preSessionDoorGoalType) ? preSessionDoorGoalType : .knocks
+        case .flyer:
+            return .time
+        }
+    }
+
+    private func plannedSessionModePill(context: FarmExecutionContext, isBusy: Bool) -> some View {
+        HStack(spacing: 6) {
+            if isBusy && quickStartStartingMode == context.sessionMode {
+                ProgressView()
+                    .progressViewStyle(.circular)
+                    .tint(.white)
+                    .scaleEffect(0.8)
+            } else {
+                Image(systemName: context.sessionMode == .flyer ? "newspaper.fill" : "hand.raised.fill")
+                    .font(.system(size: 13, weight: .semibold))
+            }
+            Text(context.sessionMode == .flyer ? "Flyers" : "Doorknock")
+                .font(.system(size: 13, weight: .semibold))
+                .lineLimit(1)
+            Text("Planned")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(.white.opacity(0.68))
+                .lineLimit(1)
+        }
+        .foregroundColor(.white)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 17)
+        .background(Color.black.opacity(0.35))
+        .clipShape(Capsule())
     }
 
     private func preSessionModeButton(isBusy: Bool, isStartingDoor: Bool, isStartingFlyers: Bool) -> some View {
@@ -1580,14 +2531,14 @@ struct CampaignMapView: View {
 
     private func preSessionGoalButton(isBusy: Bool) -> some View {
         return Button {
-            guard !isBusy, preSessionGoalCap > 0 else { return }
+            guard !isBusy, !sessionTargets(for: effectivePreSessionMode).isEmpty else { return }
             HapticManager.light()
             showGoalSheet = true
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: "target")
                     .font(.system(size: 13, weight: .semibold))
-                Text("Goal \(effectivePreSessionGoalAmount)")
+                Text("\(effectivePreSessionGoalType.pillLabel) \(preSessionGoalPillValue)")
                     .font(.system(size: 13, weight: .semibold))
                     .lineLimit(1)
                     .minimumScaleFactor(0.82)
@@ -1599,59 +2550,334 @@ struct CampaignMapView: View {
             .clipShape(Capsule())
         }
         .buttonStyle(.plain)
-        .disabled(isBusy || preSessionGoalCap == 0)
+        .disabled(isBusy || sessionTargets(for: effectivePreSessionMode).isEmpty)
+    }
+
+    private func preSessionActionRow(
+        title: String,
+        subtitle: String,
+        systemImage: String,
+        tint: Color,
+        trailingText: String?,
+        isDisabled: Bool = false,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button {
+            guard !isDisabled else { return }
+            action()
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(tint)
+                    .frame(width: 26)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title)
+                        .font(.flyrSubheadline)
+                        .foregroundStyle(.white)
+                    Text(subtitle)
+                        .font(.flyrCaption)
+                        .foregroundStyle(Color.white.opacity(0.68))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 12)
+
+                if let trailingText {
+                    Text(trailingText)
+                        .font(.flyrCaption)
+                        .foregroundStyle(tint)
+                }
+
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.white.opacity(0.38))
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 15)
+            .opacity(isDisabled ? 0.54 : 1)
+        }
+        .buttonStyle(.plain)
+        .disabled(isDisabled)
+    }
+
+    private func preSessionToggleRow(
+        title: String,
+        subtitle: String,
+        systemImage: String,
+        tint: Color,
+        isOn: Binding<Bool>,
+        isDisabled: Bool = false
+    ) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: systemImage)
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(tint)
+                .frame(width: 26)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.flyrSubheadline)
+                    .foregroundStyle(.white)
+                Text(subtitle)
+                    .font(.flyrCaption)
+                    .foregroundStyle(Color.white.opacity(0.68))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 12)
+
+            Toggle("", isOn: isOn)
+                .labelsHidden()
+                .tint(.flyrPrimary)
+                .disabled(isDisabled)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 15)
+        .opacity(isDisabled ? 0.54 : 1)
+    }
+
+    private func togglePreSessionTray() {
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.86)) {
+            preSessionTrayExpanded.toggle()
+        }
+    }
+
+    private func refreshSharedLiveInviteAvailabilityIfNeeded(force: Bool) {
+        guard let campaignUUID = UUID(uuidString: campaignId) else { return }
+        guard NetworkMonitor.shared.isOnline else { return }
+        Task {
+            await sharedLiveCanvassingService.refreshInviteAvailability(
+                campaignId: campaignUUID,
+                force: force
+            )
+        }
+    }
+
+    private var preSessionGoalPillValue: String {
+        switch effectivePreSessionGoalType {
+        case .appointments:
+            return "1"
+        case .time:
+            return "\(effectivePreSessionGoalAmount)m"
+        default:
+            return "\(effectivePreSessionGoalAmount)"
+        }
     }
 
     private var effectivePreSessionGoalAmount: Int {
-        let cap = preSessionGoalCap
-        guard cap > 0 else { return 0 }
-        return min(max(1, preSessionGoalAmount ?? cap), cap)
+        let goalType = effectivePreSessionGoalType
+        let targetCount = preSessionCountGoalCap
+        switch effectivePreSessionMode {
+        case .doorKnocking:
+            let draftAmount = preSessionDoorGoalAmount
+                ?? goalType.defaultAmount(for: .doorKnocking, targetCount: targetCount)
+            return goalType.normalizedAmount(draftAmount, for: .doorKnocking, targetCount: targetCount)
+        case .flyer:
+            return GoalType.time.normalizedAmount(
+                preSessionFlyerTimeGoalMinutes,
+                for: .flyer,
+                targetCount: targetCount
+            )
+        }
     }
 
-    private func startFromPreSessionBar(campaignId: UUID, mode: SessionMode, goalAmount: Int) {
+    private func updatePreSessionGoalType(_ goalType: GoalType) {
+        switch preSessionSelectedMode {
+        case .doorKnocking:
+            let allowed = GoalType.goalPickerCases(for: .doorKnocking)
+            guard allowed.contains(goalType) else { return }
+            preSessionDoorGoalType = goalType
+            preSessionDoorGoalAmount = goalType.normalizedAmount(
+                preSessionDoorGoalAmount ?? goalType.defaultAmount(for: .doorKnocking, targetCount: preSessionCountGoalCap),
+                for: .doorKnocking,
+                targetCount: preSessionCountGoalCap
+            )
+        case .flyer:
+            preSessionFlyerTimeGoalMinutes = GoalType.time.normalizedAmount(
+                preSessionFlyerTimeGoalMinutes,
+                for: .flyer,
+                targetCount: preSessionCountGoalCap
+            )
+        }
+    }
+
+    private func updatePreSessionGoalAmount(_ amount: Int) {
+        switch preSessionSelectedMode {
+        case .doorKnocking:
+            let goalType = effectivePreSessionGoalType
+            preSessionDoorGoalAmount = goalType.normalizedAmount(
+                amount,
+                for: .doorKnocking,
+                targetCount: preSessionCountGoalCap
+            )
+        case .flyer:
+            preSessionFlyerTimeGoalMinutes = GoalType.time.normalizedAmount(
+                amount,
+                for: .flyer,
+                targetCount: preSessionCountGoalCap
+            )
+        }
+    }
+
+    private func startFromPreSessionBar(
+        campaignId: UUID,
+        mode: SessionMode,
+        goalType: GoalType,
+        goalAmount: Int,
+        enableSharedLiveCanvassing: Bool,
+        sharedLiveSourceSessionId: UUID? = nil
+    ) {
         guard quickStartStartingMode == nil else { return }
         guard !sessionTargets(for: mode).isEmpty else { return }
 
+        if enableSharedLiveCanvassing {
+            Task { @MainActor in
+                let availability = await ensureSharedLiveInviteAvailability(campaignId: campaignId)
+                guard availability != .unavailable else {
+                    sessionStartGateMessage = "Live teammate presence is not enabled for this workspace yet. Start a solo session or use Beacon to share your live location."
+                    showSessionStartGateAlert = true
+                    return
+                }
+                beginSessionStart(
+                    campaignId: campaignId,
+                    mode: mode,
+                    goalType: goalType,
+                    goalAmount: goalAmount,
+                    enableSharedLiveCanvassing: true,
+                    sharedLiveSourceSessionId: sharedLiveSourceSessionId
+                )
+            }
+            return
+        }
+
+        beginSessionStart(
+            campaignId: campaignId,
+            mode: mode,
+            goalType: goalType,
+            goalAmount: goalAmount,
+            enableSharedLiveCanvassing: false,
+            sharedLiveSourceSessionId: nil
+        )
+    }
+
+    private func beginSessionStart(
+        campaignId: UUID,
+        mode: SessionMode,
+        goalType: GoalType,
+        goalAmount: Int,
+        enableSharedLiveCanvassing: Bool,
+        sharedLiveSourceSessionId: UUID? = nil,
+        farmExecutionContext: FarmExecutionContext? = nil
+    ) {
+        let request = PendingFlyerStart(
+            campaignId: campaignId,
+            mode: mode,
+            goalType: goalType,
+            goalAmount: goalAmount,
+            farmExecutionContext: farmExecutionContext,
+            enableSharedLiveCanvassing: enableSharedLiveCanvassing,
+            sharedLiveSourceSessionId: sharedLiveSourceSessionId
+        )
+
+        guard gpsProximityAvailableForCampaign && preSessionGPSProximityEnabled else {
+            continueSessionStart(request)
+            return
+        }
+
+        pendingGPSDisclaimerStart = request
+    }
+
+    private func continuePendingGPSDisclaimerStart(useGPSProximity: Bool) {
+        guard let request = pendingGPSDisclaimerStart else { return }
+        pendingGPSDisclaimerStart = nil
+        preSessionGPSProximityEnabled = useGPSProximity
+        continueSessionStart(request)
+    }
+
+    @MainActor
+    private func ensureSharedLiveInviteAvailability(campaignId: UUID) async -> SharedLiveCanvassingAvailability {
+        guard NetworkMonitor.shared.isOnline else {
+            return .unavailable
+        }
+        if sharedLiveCanvassingService.inviteAvailability(for: campaignId) == .unknown {
+            await sharedLiveCanvassingService.refreshInviteAvailability(campaignId: campaignId, force: true)
+        }
+        return sharedLiveCanvassingService.inviteAvailability(for: campaignId)
+    }
+
+    @MainActor
+    private func continueSessionStart(_ request: PendingFlyerStart) {
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.86)) {
+            preSessionTrayExpanded = false
+        }
+
         switch sessionManager.locationAuthorizationStatus {
         case .notDetermined:
-            pendingFlyerStart = PendingFlyerStart(
-                campaignId: campaignId,
-                mode: mode,
-                goalAmount: goalAmount,
-                farmExecutionContext: nil
-            )
+            pendingFlyerStart = request
             sessionManager.requestForegroundLocationAuthorization()
         case .authorizedWhenInUse, .authorizedAlways:
-            startPreSessionWorkflow(campaignId: campaignId, mode: mode, goalAmount: goalAmount)
+            if let farmExecutionContext = request.farmExecutionContext {
+                startPlannedFarmSession(
+                    campaignId: request.campaignId,
+                    context: farmExecutionContext,
+                    skipGPSDisclaimer: true
+                )
+            } else {
+                startPreSessionWorkflow(
+                    campaignId: request.campaignId,
+                    mode: request.mode,
+                    goalType: request.goalType,
+                    goalAmount: request.goalAmount,
+                    enableSharedLiveCanvassing: request.enableSharedLiveCanvassing,
+                    sharedLiveSourceSessionId: request.sharedLiveSourceSessionId
+                )
+            }
         case .denied, .restricted:
-            locationPermissionAlertMessage = locationPermissionMessage(for: mode)
+            locationPermissionAlertMessage = locationPermissionMessage(for: request.mode)
             showLocationPermissionAlert = true
         @unknown default:
-            locationPermissionAlertMessage = locationPermissionMessage(for: mode)
+            locationPermissionAlertMessage = locationPermissionMessage(for: request.mode)
             showLocationPermissionAlert = true
         }
     }
 
-    private func startPreSessionWorkflow(campaignId: UUID, mode: SessionMode, goalAmount: Int) {
+    private func startPreSessionWorkflow(
+        campaignId: UUID,
+        mode: SessionMode,
+        goalType: GoalType,
+        goalAmount: Int,
+        enableSharedLiveCanvassing: Bool = false,
+        sharedLiveSourceSessionId: UUID? = nil
+    ) {
         guard quickStartStartingMode == nil else { return }
         let targets = sessionTargets(for: mode)
         guard !targets.isEmpty else { return }
+        prepareCampaignForFieldUse(campaignId: campaignId.uuidString)
         HapticManager.medium()
         quickStartStartingMode = mode
+        quickStartStartingSharedLive = enableSharedLiveCanvassing
 
-        switch mode {
-        case .doorKnocking:
-            displayMode = buildingSessionTargets.isEmpty ? .addresses : .buildings
-            scheduleLayerVisibilityReassert()
-        case .flyer:
+        if isStandardPinsMode {
             displayMode = .addresses
             scheduleLayerVisibilityReassert()
+        } else {
+            switch mode {
+            case .doorKnocking:
+                displayMode = buildingSessionTargets.isEmpty ? .addresses : .buildings
+                scheduleLayerVisibilityReassert()
+            case .flyer:
+                displayMode = .addresses
+                scheduleLayerVisibilityReassert()
+            }
         }
 
         Task {
             if let reason = await CampaignsAPI.shared.sessionStartBlockReason(campaignId: campaignId) {
                 await MainActor.run {
                     quickStartStartingMode = nil
+                    quickStartStartingSharedLive = false
                     sessionStartGateMessage = reason
                     showSessionStartGateAlert = true
                 }
@@ -1660,34 +2886,64 @@ struct CampaignMapView: View {
                 startBuildingSession(
                     campaignId: campaignId,
                     targets: targets,
+                    gpsProximityEnabled: effectiveGPSProximityEnabled,
                     mode: mode,
+                    goalType: goalType,
+                    enableSharedLiveCanvassing: enableSharedLiveCanvassing,
+                    sharedLiveSessionIdOverride: sharedLiveSourceSessionId,
                     goalAmount: goalAmount,
                     routeAssignmentId: activeRouteWorkContext?.assignmentId,
                     farmExecutionContext: nil,
-                    onFinished: { quickStartStartingMode = nil }
+                    onFinished: {
+                        quickStartStartingMode = nil
+                        quickStartStartingSharedLive = false
+                    }
             )
         }
     }
 
-    private func startPlannedFarmSession(campaignId: UUID, context: FarmExecutionContext) {
+    private func startPlannedFarmSession(
+        campaignId: UUID,
+        context: FarmExecutionContext,
+        skipGPSDisclaimer: Bool = false
+    ) {
         guard quickStartStartingMode == nil else { return }
         let mode = context.sessionMode
         let targets = sessionTargets(for: mode)
+        let goalType = mode.defaultGoalType
+        let goalAmount = 0
         guard !targets.isEmpty else { return }
+        prepareCampaignForFieldUse(campaignId: campaignId.uuidString)
+
+        if !skipGPSDisclaimer, gpsProximityAvailableForCampaign && preSessionGPSProximityEnabled {
+            beginSessionStart(
+                campaignId: campaignId,
+                mode: mode,
+                goalType: goalType,
+                goalAmount: goalAmount,
+                enableSharedLiveCanvassing: false,
+                farmExecutionContext: context
+            )
+            return
+        }
 
         switch sessionManager.locationAuthorizationStatus {
         case .notDetermined:
             pendingFlyerStart = PendingFlyerStart(
                 campaignId: campaignId,
                 mode: mode,
-                goalAmount: targets.count,
-                farmExecutionContext: context
+                goalType: goalType,
+                goalAmount: goalAmount,
+                farmExecutionContext: context,
+                enableSharedLiveCanvassing: false,
+                sharedLiveSourceSessionId: nil
             )
             sessionManager.requestForegroundLocationAuthorization()
         case .authorizedWhenInUse, .authorizedAlways:
             HapticManager.medium()
             quickStartStartingMode = mode
-            if mode == .flyer {
+            quickStartStartingSharedLive = false
+            if isStandardPinsMode || mode == .flyer {
                 displayMode = .addresses
             } else {
                 displayMode = buildingSessionTargets.isEmpty ? .addresses : .buildings
@@ -1698,6 +2954,7 @@ struct CampaignMapView: View {
                 if let reason = await CampaignsAPI.shared.sessionStartBlockReason(campaignId: campaignId) {
                     await MainActor.run {
                         quickStartStartingMode = nil
+                        quickStartStartingSharedLive = false
                         sessionStartGateMessage = reason
                         showSessionStartGateAlert = true
                     }
@@ -1707,12 +2964,15 @@ struct CampaignMapView: View {
                 startBuildingSession(
                     campaignId: campaignId,
                     targets: targets,
+                    gpsProximityEnabled: effectiveGPSProximityEnabled,
                     mode: mode,
-                    goalAmount: targets.count,
+                    goalType: goalType,
+                    goalAmount: goalAmount,
                     routeAssignmentId: activeRouteWorkContext?.assignmentId,
                     farmExecutionContext: context,
                     onFinished: {
                         quickStartStartingMode = nil
+                        quickStartStartingSharedLive = false
                     }
                 )
             }
@@ -1725,21 +2985,20 @@ struct CampaignMapView: View {
         }
     }
 
+    private func prepareCampaignForFieldUse(campaignId: String? = nil) {
+        let resolvedCampaignId = campaignId ?? self.campaignId
+        Task { @MainActor in
+            await campaignDownloadService.prefetchIfNeeded(campaignId: resolvedCampaignId)
+        }
+    }
+
     private func handleLocationAuthorizationChange(_ status: CLAuthorizationStatus) {
         guard let pendingFlyerStart else { return }
 
         switch status {
         case .authorizedWhenInUse, .authorizedAlways:
             self.pendingFlyerStart = nil
-            if let farmExecutionContext = pendingFlyerStart.farmExecutionContext {
-                startPlannedFarmSession(campaignId: pendingFlyerStart.campaignId, context: farmExecutionContext)
-            } else {
-                startPreSessionWorkflow(
-                    campaignId: pendingFlyerStart.campaignId,
-                    mode: pendingFlyerStart.mode,
-                    goalAmount: pendingFlyerStart.goalAmount
-                )
-            }
+            continueSessionStart(pendingFlyerStart)
         case .denied, .restricted:
             self.pendingFlyerStart = nil
             locationPermissionAlertMessage = locationPermissionMessage(for: pendingFlyerStart.mode)
@@ -1758,6 +3017,70 @@ struct CampaignMapView: View {
         }
     }
 
+    private var pendingLiveInvitePromptMessage: String {
+        let trimmedName = pendingLiveInvitePrompt?.campaignName?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if let trimmedName, !trimmedName.isEmpty {
+            return "Start a shared live session in \(trimmedName) so everyone shows up together on the map."
+        }
+        return "Start a shared live session so everyone shows up together on the map."
+    }
+
+    @MainActor
+    private func maybePresentPendingLiveInviteHandoff() {
+        guard sessionManager.sessionId == nil,
+              quickStartStartingMode == nil,
+              pendingFlyerStart == nil,
+              let pendingHandoff = uiState.pendingLiveInviteHandoff,
+              pendingHandoff.campaignId.uuidString.caseInsensitiveCompare(campaignId) == .orderedSame,
+              !featuresService.isLoading,
+              let preferredMode = preferredLiveInviteStartMode,
+              !sessionTargets(for: preferredMode).isEmpty else {
+            return
+        }
+
+        guard pendingLiveInvitePrompt?.id != pendingHandoff.id else { return }
+
+        preSessionSelectedMode = preferredMode
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.86)) {
+            preSessionTrayExpanded = true
+        }
+        pendingLiveInvitePrompt = pendingHandoff
+    }
+
+    @MainActor
+    private func dismissPendingLiveInvitePrompt(clearPendingState: Bool = true) {
+        if clearPendingState, let campaignUUID = UUID(uuidString: campaignId) {
+            uiState.clearPendingLiveInviteHandoff(campaignId: campaignUUID)
+        }
+        pendingLiveInvitePrompt = nil
+    }
+
+    @MainActor
+    private func startPendingLiveInviteHandoff() {
+        guard let campaignUUID = UUID(uuidString: campaignId),
+              let preferredMode = preferredLiveInviteStartMode,
+              !sessionTargets(for: preferredMode).isEmpty else {
+            dismissPendingLiveInvitePrompt()
+            return
+        }
+
+        preSessionSelectedMode = preferredMode
+        let goalType = effectivePreSessionGoalType
+        let goalAmount = effectivePreSessionGoalAmount
+        let sharedLiveSourceSessionId = pendingLiveInvitePrompt?.sourceSessionId
+        uiState.clearPendingLiveInviteHandoff(campaignId: campaignUUID)
+        pendingLiveInvitePrompt = nil
+        startFromPreSessionBar(
+            campaignId: campaignUUID,
+            mode: preferredMode,
+            goalType: goalType,
+            goalAmount: goalAmount,
+            enableSharedLiveCanvassing: true,
+            sharedLiveSourceSessionId: sharedLiveSourceSessionId
+        )
+    }
+
     private func handleBackgroundGPSSheetPrimaryAction() {
         switch sessionManager.locationAuthorizationStatus {
         case .authorizedWhenInUse:
@@ -1772,6 +3095,57 @@ struct CampaignMapView: View {
     private func openLocationSettings() {
         guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
         UIApplication.shared.open(url)
+    }
+
+    private func presentLiveSessionShareCodeIfNeeded(
+        sessionId: UUID?,
+        enableSharedLiveCanvassing: Bool,
+        sharedLiveSessionIdOverride: UUID?,
+        activeSharedLiveSessionId: UUID?
+    ) async {
+        guard enableSharedLiveCanvassing,
+              sharedLiveSessionIdOverride == nil,
+              let sessionId,
+              activeSharedLiveSessionId == sessionId else {
+            return
+        }
+
+        if let cachedCode = LocalStorage.shared.loadLiveSessionCode(for: sessionId) {
+            await MainActor.run {
+                liveSessionShareCode = LiveSessionShareCodePresentation(
+                    sessionId: sessionId,
+                    code: cachedCode.code,
+                    expiresAt: cachedCode.expiresAt,
+                    campaignTitle: nil
+                )
+            }
+            return
+        }
+
+        do {
+            let createdCode = try await InviteService.shared.createLiveSessionCode(sessionId: sessionId)
+            if let expiresAt = createdCode.expiresAt {
+                LocalStorage.shared.saveLiveSessionCode(
+                    createdCode.code,
+                    expiresAt: expiresAt,
+                    for: sessionId
+                )
+            }
+
+            await MainActor.run {
+                liveSessionShareCode = LiveSessionShareCodePresentation(
+                    sessionId: sessionId,
+                    code: createdCode.code,
+                    expiresAt: createdCode.expiresAt,
+                    campaignTitle: createdCode.campaignTitle
+                )
+            }
+        } catch {
+            print("⚠️ [CampaignMap] Failed to create live session code: \(error)")
+            await MainActor.run {
+                liveSessionCodeErrorMessage = error.localizedDescription
+            }
+        }
     }
     
     /// Half the square side length (meters) for synthetic manual-home extrusions in cube mode (3× prior 2.3 m half-side).
@@ -1801,6 +3175,7 @@ struct CampaignMapView: View {
     private func updateLayerVisibility(for mode: DisplayMode) {
         guard let manager = layerManager else { return }
         guard let map = mapView?.mapboxMap else { return }
+        let effectiveMode: DisplayMode = isStandardPinsMode ? .addresses : mode
         
         let hasBuildingsLayer = map.allLayerIdentifiers.contains(where: { $0.id == MapLayerManager.buildingsLayerId })
         let hasTownhomeOverlayLayer = map.allLayerIdentifiers.contains(where: { $0.id == MapLayerManager.townhomeOverlayLayerId })
@@ -1812,19 +3187,19 @@ struct CampaignMapView: View {
         let shouldShowBuildings = cubeModeShouldShowBuildingExtrusions()
         let shouldShowAddressNumbers = shouldShowAddressNumberLabels()
         let visibilitySignature = [
-            mode.rawValue,
+            effectiveMode.rawValue,
             hasBuildingsLayer ? "b1" : "b0",
             hasTownhomeOverlayLayer ? "t1" : "t0",
             hasAddressesLayer ? "a1" : "a0",
             hasAddressNumbersLayer ? "n1" : "n0",
             shouldShowBuildings ? "buildings-visible" : "buildings-hidden",
             visibleBuildingFeatures.isEmpty ? "townhomes-hidden" : "townhomes-visible",
-            displayMode == .addresses ? "addresses-visible" : "addresses-hidden",
+            effectiveMode == .addresses ? "addresses-visible" : "addresses-hidden",
             shouldShowAddressNumbers ? "numbers-visible" : "numbers-hidden"
         ].joined(separator: "|")
         guard lastLayerVisibilitySignature != visibilitySignature else { return }
         
-        switch mode {
+        switch effectiveMode {
         case .buildings:
             manager.includeBuildingsLayer = true
             manager.includeAddressesLayer = false
@@ -1864,7 +3239,7 @@ struct CampaignMapView: View {
         }
         
         lastLayerVisibilitySignature = visibilitySignature
-        print("🗺️ [CampaignMap] Display mode changed to: \(mode)")
+        print("🗺️ [CampaignMap] Display mode changed to: \(effectiveMode)")
     }
 
     /// House numbers on building tops (buildings mode) and on 3D address circles (addresses mode); hidden when map is pitched past oblique threshold.
@@ -1895,12 +3270,15 @@ struct CampaignMapView: View {
                     gersId: gersIdString,
                     campaignId: campId,
                     sessionId: sessionManager.sessionId,
+                    farmExecutionContext: matchingActiveFarmExecution ?? matchingPlannedFarmExecution,
                     addressId: resolvedAddrId,
                     addressText: resolvedAddrText,
                     preferredAddressId: selectedAddressIdForCard,
                     buildingSource: building.source,
                     addressSource: selectedAddress?.source,
                     addressStatuses: addressStatuses,
+                    addressStatusRows: addressStatusRows,
+                    campaignMembersByUserId: sharedLiveCanvassingService.memberDirectory,
                     sessionTargetIdForAddress: sessionTargetIdForAddress,
                     onSelectAddress: { setSelectedAddressForCard($0) },
                     onAddressesResolved: { ids in
@@ -1914,9 +3292,7 @@ struct CampaignMapView: View {
                         selectedAddressIdForCard = nil
                     },
                     onStatusUpdated: { addressId, status in
-                        if status == .delivered {
-                            SessionManager.shared.recordAddressDelivered()
-                        }
+                        sessionManager.reconcileVisitedAddressMetric(addressId: addressId, status: status)
                         if status == .talked || status == .appointment || status == .hotLead {
                             SessionManager.shared.recordConversation(addressId: addressId)
                         }
@@ -1934,18 +3310,34 @@ struct CampaignMapView: View {
                                 }
                             }
                         }
-                        let scansTotal = visibleBuildingFeatures.first(where: { feature in
-                            feature.properties.buildingIdentifierCandidates.contains { candidate in
-                                candidate.caseInsensitiveCompare(gersIdString) == .orderedSame
-                            } || (feature.id?.caseInsensitiveCompare(gersIdString) == .orderedSame)
-                        })?.properties.scansTotal ?? 0
+                        let scansTotal = effectiveScansTotal(for: gersIdString)
                         let layerStatus = featureStateStatus(for: status)
-                        layerManager?.updateAddressState(addressId: addressId.uuidString, status: layerStatus, scansTotal: scansTotal)
+                        layerManager?.updateAddressState(
+                            addressId: addressId.uuidString,
+                            status: layerStatus,
+                            scansTotal: scansTotal,
+                            visitOwner: effectiveVisitOwnerState(addressId: addressId, baseStatus: status)
+                        )
                         // Building: green only when ALL addresses are visited
                         let addrIds = addressIdsForBuilding(gersId: gersIdString)
                         let buildingStatus = addrIds.isEmpty ? buildingFeatureStateStatus(for: status) : computeBuildingLayerStatus(gersId: gersIdString, addressIds: addrIds)
-                        layerManager?.updateBuildingState(gersId: gersIdString, status: buildingStatus, scansTotal: scansTotal)
+                        layerManager?.updateBuildingState(
+                            gersId: gersIdString,
+                            status: buildingStatus,
+                            scansTotal: scansTotal,
+                            visitOwner: effectiveBuildingVisitOwnerState(
+                                gersId: gersIdString,
+                                addressIds: addrIds,
+                                fallbackStatus: status
+                            )
+                        )
                         refreshTownhomeStatusOverlay()
+                        scheduleLoadedStatusesRefresh(forceRefresh: true)
+                    },
+                    onHomeStateUpdated: { row in
+                        applyHomeStateRow(row)
+                        refreshTownhomeStatusOverlay()
+                        scheduleLoadedStatusesRefresh(forceRefresh: true)
                     },
                     onToolsAction: { action in
                         let currentAddress = selectedAddress
@@ -1955,8 +3347,8 @@ struct CampaignMapView: View {
                             startAddHouseFlow(with: context)
                         case .addVisit, .resetHome:
                             break
-                        case .deleteManualShape:
-                            handleDeleteManualShape(building: building, address: currentAddress)
+                        case .deleteBuilding:
+                            handleDeleteBuilding(building: building, address: currentAddress)
                         }
                     }
                 )
@@ -1976,6 +3368,7 @@ struct CampaignMapView: View {
                     gersId: gersIdString,
                     campaignId: campId,
                     sessionId: sessionManager.sessionId,
+                    farmExecutionContext: matchingActiveFarmExecution ?? matchingPlannedFarmExecution,
                     addressId: address.addressId,
                     addressText: nonEmptyAddressText(
                         formatted: address.formatted,
@@ -1986,6 +3379,8 @@ struct CampaignMapView: View {
                     buildingSource: selectedBuilding?.source,
                     addressSource: address.source,
                     addressStatuses: addressStatuses,
+                    addressStatusRows: addressStatusRows,
+                    campaignMembersByUserId: sharedLiveCanvassingService.memberDirectory,
                     sessionTargetIdForAddress: sessionTargetIdForAddress,
                     onSelectAddress: { setSelectedAddressForCard($0) },
                     onAddressesResolved: { ids in
@@ -2001,9 +3396,7 @@ struct CampaignMapView: View {
                         selectedAddressIdForCard = nil
                     },
                     onStatusUpdated: { addressId, status in
-                        if status == .delivered {
-                            SessionManager.shared.recordAddressDelivered()
-                        }
+                        sessionManager.reconcileVisitedAddressMetric(addressId: addressId, status: status)
                         if status == .talked || status == .appointment || status == .hotLead {
                             SessionManager.shared.recordConversation(addressId: addressId)
                         }
@@ -2021,18 +3414,34 @@ struct CampaignMapView: View {
                                 }
                             }
                         }
-                        let scansTotal = visibleBuildingFeatures.first(where: { feature in
-                            feature.properties.buildingIdentifierCandidates.contains { candidate in
-                                candidate.caseInsensitiveCompare(gersIdString) == .orderedSame
-                            } || (feature.id?.caseInsensitiveCompare(gersIdString) == .orderedSame)
-                        })?.properties.scansTotal ?? 0
+                        let scansTotal = effectiveScansTotal(for: gersIdString)
                         let layerStatus = featureStateStatus(for: status)
-                        layerManager?.updateAddressState(addressId: addressId.uuidString, status: layerStatus, scansTotal: scansTotal)
+                        layerManager?.updateAddressState(
+                            addressId: addressId.uuidString,
+                            status: layerStatus,
+                            scansTotal: scansTotal,
+                            visitOwner: effectiveVisitOwnerState(addressId: addressId, baseStatus: status)
+                        )
                         // Building: green only when ALL addresses are visited
                         let addrIds = addressIdsForBuilding(gersId: gersIdString)
                         let buildingStatus = addrIds.isEmpty ? buildingFeatureStateStatus(for: status) : computeBuildingLayerStatus(gersId: gersIdString, addressIds: addrIds)
-                        layerManager?.updateBuildingState(gersId: gersIdString, status: buildingStatus, scansTotal: scansTotal)
+                        layerManager?.updateBuildingState(
+                            gersId: gersIdString,
+                            status: buildingStatus,
+                            scansTotal: scansTotal,
+                            visitOwner: effectiveBuildingVisitOwnerState(
+                                gersId: gersIdString,
+                                addressIds: addrIds,
+                                fallbackStatus: status
+                            )
+                        )
                         refreshTownhomeStatusOverlay()
+                        scheduleLoadedStatusesRefresh(forceRefresh: true)
+                    },
+                    onHomeStateUpdated: { row in
+                        applyHomeStateRow(row)
+                        refreshTownhomeStatusOverlay()
+                        scheduleLoadedStatusesRefresh(forceRefresh: true)
                     },
                     onToolsAction: { action in
                         let currentBuilding = selectedBuilding
@@ -2042,8 +3451,8 @@ struct CampaignMapView: View {
                             startAddHouseFlow(with: context)
                         case .addVisit, .resetHome:
                             break
-                        case .deleteManualShape:
-                            handleDeleteManualShape(building: currentBuilding, address: address)
+                        case .deleteBuilding:
+                            handleDeleteBuilding(building: currentBuilding, address: address)
                         }
                     }
                 )
@@ -2064,7 +3473,7 @@ struct CampaignMapView: View {
                     .ignoresSafeArea()
 
                 VStack(spacing: 24) {
-                    CampaignMapLoadingLottieView(name: "splash")
+                    MapLoadingLottieView(name: "splash")
                         .frame(width: 340, height: 227)
                         .clipped()
                         .accessibilityHidden(true)
@@ -2085,9 +3494,22 @@ struct CampaignMapView: View {
         }
     }
 
+    @ViewBuilder
+    private var buildingRenderPendingOverlay: some View {
+        if shouldMonitorVisibleBuildingRendering && showBuildingRenderPendingOverlay {
+            MapLoadingOverlayCard(
+                title: nil,
+                message: "This could take a minute.",
+                usesCardBackground: false
+            )
+            .allowsHitTesting(false)
+        }
+    }
+
     // MARK: - Setup
     
     private func setupMap(_ map: MapView) {
+        hasFlownToCampaign = false
         let manager = MapLayerManager(mapView: map)
         manager.includeBuildingsLayer = true
         manager.includeAddressesLayer = true  // Add both layers; visibility controlled by toggle (buildings vs circle extrusions)
@@ -2111,22 +3533,29 @@ struct CampaignMapView: View {
                 padding: nil,
                 zoom: 16,
                 bearing: nil,
-                pitch: 60
+                pitch: campaignMapDefaultPitch
             ), duration: 0.5)
 
             // Load data if we have it
             updateMapData()
             syncManualAddressPreview()
             flyToCampaignCenterIfNeeded(map: map)
+            updateSummarySnapshotCamera()
             updateSessionPathOnMap()
             updateDemoTargetPulseOnMap()
+            manager.updateTeammatePresence(sharedLiveCanvassingService.teammates)
             // Apply current display mode so buildings vs circle extrusions match toggle
             lastLayerVisibilitySignature = nil
             scheduleLayerVisibilityReassert()
+            enforceCampaignMapPresentationMode()
+            refreshVisibleBuildingRenderMonitoring(reset: false)
         }.store(in: &cancellables)
 
         map.mapboxMap.onCameraChanged.observe { _ in
             updateLayerVisibility(for: displayMode)
+            if !hasRenderedVisibleBuildings {
+                scheduleVisibleBuildingRenderCheck(after: 250, showPendingOnFailure: true)
+            }
         }.store(in: &cancellables)
     }
     
@@ -2146,6 +3575,90 @@ struct CampaignMapView: View {
                 await featuresService.fetchAllCampaignFeatures(campaignId: campaignId)
             }
         }
+    }
+
+    private func loadCampaignPresentationConfiguration(forceRemoteRefresh: Bool) {
+        guard let campaignUUID = UUID(uuidString: campaignId) else { return }
+        let requestedCampaignId = campaignId
+
+        Task {
+            let cachedCampaign = await MainActor.run {
+                CampaignV2Store.shared.campaign(id: campaignUUID)
+            }
+
+            var resolvedMapMode = cachedCampaign?.mapMode
+            var resolvedHasParcels = cachedCampaign?.hasParcels
+            var resolvedBuildingLinkConfidence = cachedCampaign?.buildingLinkConfidence
+
+            let shouldRefreshFromRemote =
+                forceRemoteRefresh
+                || resolvedMapMode == nil
+                || resolvedHasParcels == nil
+                || resolvedBuildingLinkConfidence == nil
+
+            if shouldRefreshFromRemote, await MainActor.run(body: { networkMonitor.isOnline }) {
+                do {
+                    let row = try await CampaignsAPI.shared.fetchCampaignDBRow(id: campaignUUID)
+                    resolvedMapMode = row.mapMode ?? resolvedMapMode
+                    resolvedHasParcels = row.hasParcels ?? resolvedHasParcels
+                    resolvedBuildingLinkConfidence = row.buildingLinkConfidence ?? resolvedBuildingLinkConfidence
+                } catch {
+                    print("⚠️ [CampaignMap] Failed to refresh campaign map presentation config: \(error)")
+                }
+            }
+
+            await MainActor.run {
+                guard self.campaignId.caseInsensitiveCompare(requestedCampaignId) == .orderedSame else { return }
+                applyCampaignPresentationConfiguration(
+                    mapMode: resolvedMapMode,
+                    hasParcels: resolvedHasParcels,
+                    buildingLinkConfidence: resolvedBuildingLinkConfidence
+                )
+            }
+        }
+    }
+
+    private func applyCampaignPresentationConfiguration(
+        mapMode: CampaignMapMode?,
+        hasParcels: Bool?,
+        buildingLinkConfidence: Double?
+    ) {
+        campaignMapMode = mapMode
+        campaignHasParcels = hasParcels
+        campaignBuildingLinkConfidence = buildingLinkConfidence
+
+        if isStandardPinsMode {
+            displayMode = .addresses
+            scheduleLayerVisibilityReassert()
+            if !hasPresentedStandardCanvassingNotice {
+                hasPresentedStandardCanvassingNotice = true
+                showStandardCanvassingNotice = true
+            }
+        }
+
+        enforceCampaignMapPresentationMode()
+    }
+
+    private func enforceCampaignMapPresentationMode() {
+        guard let mapView else { return }
+
+        mapView.gestures.options.pitchEnabled = !isStandardPinsMode
+
+        guard isStandardPinsMode else { return }
+
+        let cameraState = mapView.mapboxMap.cameraState
+        guard abs(cameraState.pitch) > 0.1 else { return }
+
+        mapView.camera.ease(
+            to: CameraOptions(
+                center: cameraState.center,
+                padding: nil,
+                zoom: cameraState.zoom,
+                bearing: cameraState.bearing,
+                pitch: 0
+            ),
+            duration: 0.25
+        )
     }
     
     private func updateMapData() {
@@ -2173,10 +3686,11 @@ struct CampaignMapView: View {
         
         // Apply current display mode visibility (reassert if layers were not ready yet)
         scheduleLayerVisibilityReassert()
-        
+
         if let map = mapView {
             flyToCampaignCenterIfNeeded(map: map)
         }
+        updateSummarySnapshotCamera()
         
         // Re-apply loaded campaign statuses after source update (Mapbox clears feature state when GeoJSON source is updated)
         scheduleLoadedStatusesRefresh()
@@ -2188,6 +3702,157 @@ struct CampaignMapView: View {
         }
 
         reconcilePendingManualAddressConfirmation()
+        refreshVisibleBuildingRenderMonitoring(reset: false)
+    }
+
+    private var campaignBoundaryCoordinatesSignature: String {
+        guard !campaignBoundaryCoordinates.isEmpty else { return "none" }
+        return campaignBoundaryCoordinates
+            .map { "\($0.latitude),\($0.longitude)" }
+            .joined(separator: "|")
+    }
+
+    private func seedCampaignBoundaryFromSelectionIfAvailable() {
+        guard let selectedCampaignId = uiState.selectedMapCampaignId,
+              selectedCampaignId.uuidString.caseInsensitiveCompare(campaignId) == .orderedSame else {
+            return
+        }
+
+        let seededCoordinates = uiState.selectedMapCampaignBoundaryCoordinates
+            .filter(CLLocationCoordinate2DIsValid)
+        guard !seededCoordinates.isEmpty else { return }
+        campaignBoundaryCoordinates = seededCoordinates
+    }
+
+    private func loadCampaignBoundaryFallback(forceRemoteRefresh: Bool = false) {
+        let currentCampaignId = campaignId
+        Task {
+            await MainActor.run {
+                seedCampaignBoundaryFromSelectionIfAvailable()
+            }
+            if !forceRemoteRefresh {
+                let seededCoordinates = await MainActor.run { campaignBoundaryCoordinates }
+                if !seededCoordinates.isEmpty {
+                    return
+                }
+            }
+
+            if let cachedBoundary = await CampaignRepository.shared.getCampaignBoundaryCoordinates(campaignId: currentCampaignId),
+               !cachedBoundary.isEmpty {
+                await MainActor.run {
+                    campaignBoundaryCoordinates = cachedBoundary
+                    if let campaignUUID = UUID(uuidString: currentCampaignId) {
+                        uiState.updateSelectedCampaignBoundary(campaignId: campaignUUID, coordinates: cachedBoundary)
+                    }
+                }
+                if !forceRemoteRefresh {
+                    return
+                }
+            }
+
+            guard let campaignUUID = UUID(uuidString: currentCampaignId),
+                  let remoteBoundary = await CampaignsAPI.shared.fetchTerritoryBoundary(campaignId: campaignUUID),
+                  !remoteBoundary.isEmpty else {
+                return
+            }
+
+            await MainActor.run {
+                campaignBoundaryCoordinates = remoteBoundary
+                if let campaignUUID = UUID(uuidString: currentCampaignId) {
+                    uiState.updateSelectedCampaignBoundary(campaignId: campaignUUID, coordinates: remoteBoundary)
+                }
+            }
+        }
+    }
+
+    private func refreshVisibleBuildingRenderMonitoring(reset: Bool) {
+        if reset {
+            hasRenderedVisibleBuildings = false
+            showBuildingRenderPendingOverlay = false
+            buildingRenderMonitoringStartedAt = nil
+        }
+
+        buildingRenderCheckTask?.cancel()
+
+        guard displayMode == .buildings else {
+            showBuildingRenderPendingOverlay = false
+            buildingRenderMonitoringStartedAt = nil
+            return
+        }
+
+        guard !featuresService.isLoading else {
+            showBuildingRenderPendingOverlay = false
+            return
+        }
+
+        guard !hasRenderedVisibleBuildings, !visibleBuildingFeatures.isEmpty else {
+            showBuildingRenderPendingOverlay = false
+            buildingRenderMonitoringStartedAt = nil
+            return
+        }
+
+        if buildingRenderMonitoringStartedAt == nil {
+            buildingRenderMonitoringStartedAt = Date()
+        }
+
+        scheduleVisibleBuildingRenderCheck(after: 250, showPendingOnFailure: true)
+    }
+
+    private func scheduleVisibleBuildingRenderCheck(after milliseconds: UInt64, showPendingOnFailure: Bool) {
+        buildingRenderCheckTask?.cancel()
+
+        guard shouldMonitorVisibleBuildingRendering else {
+            showBuildingRenderPendingOverlay = false
+            return
+        }
+
+        buildingRenderCheckTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: milliseconds * 1_000_000)
+            guard !Task.isCancelled else { return }
+            checkVisibleBuildingsRendered(showPendingOnFailure: showPendingOnFailure)
+        }
+    }
+
+    private func checkVisibleBuildingsRendered(showPendingOnFailure: Bool) {
+        guard shouldMonitorVisibleBuildingRendering else {
+            showBuildingRenderPendingOverlay = false
+            buildingRenderMonitoringStartedAt = nil
+            return
+        }
+
+        if let startedAt = buildingRenderMonitoringStartedAt,
+           Date().timeIntervalSince(startedAt) >= buildingRenderPendingOverlayTimeout {
+            hasRenderedVisibleBuildings = true
+            showBuildingRenderPendingOverlay = false
+            buildingRenderMonitoringStartedAt = nil
+            return
+        }
+
+        guard let layerManager else {
+            if showPendingOnFailure {
+                showBuildingRenderPendingOverlay = true
+            }
+            scheduleVisibleBuildingRenderCheck(after: 500, showPendingOnFailure: true)
+            return
+        }
+
+        layerManager.hasRenderedBuildings { hasRendered in
+            guard displayMode == .buildings else {
+                showBuildingRenderPendingOverlay = false
+                return
+            }
+
+            if hasRendered {
+                hasRenderedVisibleBuildings = true
+                showBuildingRenderPendingOverlay = false
+                buildingRenderMonitoringStartedAt = nil
+            } else {
+                if showPendingOnFailure {
+                    showBuildingRenderPendingOverlay = true
+                }
+                scheduleVisibleBuildingRenderCheck(after: 500, showPendingOnFailure: true)
+            }
+        }
     }
 
     private func scheduleLoadedStatusesRefresh(forceRefresh: Bool = false) {
@@ -2229,6 +3894,7 @@ struct CampaignMapView: View {
         return [
             campaignId.lowercased(),
             activeRouteWorkContext?.assignmentId.uuidString.lowercased() ?? "full-campaign",
+            activeFarmCycleNumber.map(String.init) ?? "all-cycles",
             displayMode.rawValue.lowercased(),
             "b\(visibleBuildingFeatures.count)",
             "a\(visibleAddressFeatures.count)",
@@ -2515,6 +4181,59 @@ struct CampaignMapView: View {
 
         return nil
     }
+
+    private func resetPhaseScopedMapStates() {
+        guard let manager = layerManager else { return }
+
+        addressStatuses = [:]
+        addressStatusRows = [:]
+
+        for feature in visibleAddressFeatures {
+            guard let idString = feature.properties.id ?? feature.id,
+                  let addressId = UUID(uuidString: idString) else {
+                continue
+            }
+
+            manager.updateAddressState(
+                addressId: addressId.uuidString,
+                status: effectiveAddressLayerStatus(addressId: addressId, baseStatus: .untouched),
+                scansTotal: 0,
+                visitOwner: effectiveVisitOwnerState(addressId: addressId, baseStatus: .untouched)
+            )
+        }
+
+        for building in visibleBuildingFeatures {
+            guard let gersId = building.properties.canonicalBuildingIdentifier ?? building.id else { continue }
+
+            let addressIds = addressIdsForBuilding(gersId: gersId)
+            let fallbackStatus: AddressStatus?
+            if let addressIdString = building.properties.addressId,
+               let addressId = UUID(uuidString: addressIdString) {
+                fallbackStatus = addressStatuses[addressId]
+            } else {
+                fallbackStatus = nil
+            }
+
+            manager.updateBuildingState(
+                gersId: gersId,
+                status: effectiveBuildingLayerStatus(
+                    gersId: gersId,
+                    addressIds: addressIds,
+                    fallbackStatus: fallbackStatus
+                ),
+                scansTotal: 0,
+                visitOwner: effectiveBuildingVisitOwnerState(
+                    gersId: gersId,
+                    addressIds: addressIds,
+                    fallbackStatus: fallbackStatus
+                )
+            )
+        }
+
+        refreshTownhomeStatusOverlay()
+        updateFilters()
+        applySessionVisitOverlayStates()
+    }
     
     /// Fetch campaign address statuses and apply them to the map so buildings/addresses show correct colors (delivered = green, etc.).
     /// Call after every source update since Mapbox clears feature state when GeoJSON is replaced.
@@ -2524,36 +4243,38 @@ struct CampaignMapView: View {
               let campaignUUID = UUID(uuidString: campaignId) else { return }
         do {
             print("🧭 [session_start.load_visit_statuses] begin campaign=\(campaignUUID.uuidString)")
-            let statuses = try await VisitsAPI.shared.fetchStatuses(campaignId: campaignUUID, forceRefresh: forceRefresh)
-            guard !statuses.isEmpty else { return }
+            let scopedFarmCycleNumber = activeFarmCycleNumber
+            let statuses = try await VisitsAPI.shared.fetchStatuses(
+                campaignId: campaignUUID,
+                farmCycleNumber: scopedFarmCycleNumber,
+                forceRefresh: forceRefresh
+            )
             await MainActor.run {
-                // Populate local status cache
-                for (addressId, row) in statuses {
-                    let displayStatus = AddressStatus.preferredForDisplay(
-                        current: addressStatuses[addressId],
-                        incoming: row.status
-                    )
-                    addressStatuses[addressId] = displayStatus
-                    manager.updateAddressState(
-                        addressId: addressId.uuidString,
-                        status: effectiveAddressLayerStatus(addressId: addressId, baseStatus: displayStatus),
-                        scansTotal: 0
-                    )
+                if scopedFarmCycleNumber != nil {
+                    resetPhaseScopedMapStates()
+                }
+                guard !statuses.isEmpty else { return }
+                for row in statuses.values {
+                    applyHomeStateRow(row)
                 }
                 if !visibleBuildingFeatures.isEmpty {
                     for building in visibleBuildingFeatures {
                         guard let gersId = building.properties.canonicalBuildingIdentifier ?? building.id else { continue }
-                        let scansTotal = building.properties.scansTotal
+                        let scansTotal = effectiveScansTotal(for: building)
 
                         // Single-address building: use that address's status directly
                         if let addrIdStr = building.properties.addressId,
                            let addrId = UUID(uuidString: addrIdStr),
                            let row = statuses[addrId] {
-                            let displayStatus = addressStatuses[addrId] ?? row.status
                             manager.updateBuildingState(
                                 gersId: gersId,
-                                status: effectiveBuildingLayerStatus(gersId: gersId, addressIds: [addrId], fallbackStatus: displayStatus),
-                                scansTotal: scansTotal
+                                status: effectiveBuildingLayerStatus(gersId: gersId, addressIds: [addrId], fallbackStatus: row.status),
+                                scansTotal: scansTotal,
+                                visitOwner: effectiveBuildingVisitOwnerState(
+                                    gersId: gersId,
+                                    addressIds: [addrId],
+                                    fallbackStatus: row.status
+                                )
                             )
                             continue
                         }
@@ -2562,7 +4283,15 @@ struct CampaignMapView: View {
                         let addrIds = addressIdsForBuilding(gersId: gersId)
                         if !addrIds.isEmpty {
                             let buildingStatus = effectiveBuildingLayerStatus(gersId: gersId, addressIds: addrIds)
-                            manager.updateBuildingState(gersId: gersId, status: buildingStatus, scansTotal: scansTotal)
+                            manager.updateBuildingState(
+                                gersId: gersId,
+                                status: buildingStatus,
+                                scansTotal: scansTotal,
+                                visitOwner: effectiveBuildingVisitOwnerState(
+                                    gersId: gersId,
+                                    addressIds: addrIds
+                                )
+                            )
                         }
                     }
                 }
@@ -2582,8 +4311,55 @@ struct CampaignMapView: View {
             buildings: visibleBuildingFeatures,
             addresses: visibleAddressFeatures,
             orderedAddressIdsByBuilding: buildingAddressMap,
-            addressStatuses: addressStatuses
+            addressStatuses: addressStatuses,
+            addressStatusRows: addressStatusRows,
+            currentUserId: AuthManager.shared.user?.id
         )
+    }
+
+    private func applyRemoteHomeStateRows(_ rows: [UUID: AddressStatusRow]) {
+        guard !rows.isEmpty else { return }
+        for row in rows.values {
+            applyHomeStateRow(row)
+        }
+        refreshTownhomeStatusOverlay()
+        applySessionVisitOverlayStates()
+    }
+
+    private func applyHomeStateRow(_ row: AddressStatusRow) {
+        if let current = addressStatusRows[row.addressId], current.updatedAt > row.updatedAt {
+            return
+        }
+
+        addressStatusRows[row.addressId] = row
+        addressStatuses[row.addressId] = row.status
+
+        layerManager?.updateAddressState(
+            addressId: row.addressId.uuidString,
+            status: effectiveAddressLayerStatus(addressId: row.addressId, baseStatus: row.status),
+            scansTotal: 0,
+            visitOwner: effectiveVisitOwnerState(addressId: row.addressId, baseStatus: row.status)
+        )
+
+        if let gersId = gersIdForAddress(addressId: row.addressId) {
+            let scansTotal = effectiveScansTotal(for: gersId)
+            let addressIds = addressIdsForBuilding(gersId: gersId)
+            let buildingStatus = effectiveBuildingLayerStatus(
+                gersId: gersId,
+                addressIds: addressIds.isEmpty ? [row.addressId] : addressIds,
+                fallbackStatus: row.status
+            )
+            layerManager?.updateBuildingState(
+                gersId: gersId,
+                status: buildingStatus,
+                scansTotal: scansTotal,
+                visitOwner: effectiveBuildingVisitOwnerState(
+                    gersId: gersId,
+                    addressIds: addressIds.isEmpty ? [row.addressId] : addressIds,
+                    fallbackStatus: row.status
+                )
+            )
+        }
     }
 
     /// Returns ordered address UUIDs for a building by scanning loaded address features for matching building_gers_id.
@@ -2715,6 +4491,15 @@ struct CampaignMapView: View {
         return featureStateStatus(for: baseStatus)
     }
 
+    private func effectiveVisitOwnerState(addressId: UUID, baseStatus: AddressStatus) -> String? {
+        guard baseStatus.mapLayerStatus == "visited" else { return nil }
+        guard let actorUserId = addressStatusRows[addressId]?.lastActionBy else {
+            return AuthManager.shared.user?.id == nil ? nil : "self"
+        }
+        guard let currentUserId = AuthManager.shared.user?.id else { return nil }
+        return actorUserId == currentUserId ? "self" : "teammate"
+    }
+
     private func effectiveBuildingLayerStatus(
         gersId: String,
         addressIds: [UUID],
@@ -2740,6 +4525,35 @@ struct CampaignMapView: View {
         return baseStatus
     }
 
+    private func effectiveBuildingVisitOwnerState(
+        gersId: String,
+        addressIds: [UUID],
+        fallbackStatus: AddressStatus? = nil
+    ) -> String? {
+        let effectiveStatus = effectiveBuildingLayerStatus(
+            gersId: gersId,
+            addressIds: addressIds,
+            fallbackStatus: fallbackStatus
+        )
+        guard effectiveStatus == "visited" else { return nil }
+
+        let candidateRows = addressIds.compactMap { addressStatusRows[$0] }
+            .filter { $0.status.mapLayerStatus == "visited" }
+            .sorted { $0.updatedAt > $1.updatedAt }
+
+        if let row = candidateRows.first,
+           let actorUserId = row.lastActionBy,
+           let currentUserId = AuthManager.shared.user?.id {
+            return actorUserId == currentUserId ? "self" : "teammate"
+        }
+
+        if let fallbackStatus, fallbackStatus.mapLayerStatus == "visited", AuthManager.shared.user?.id != nil {
+            return "self"
+        }
+
+        return nil
+    }
+
     private func applySessionVisitOverlayStates() {
         guard let manager = layerManager else { return }
 
@@ -2752,13 +4566,14 @@ struct CampaignMapView: View {
             manager.updateAddressState(
                 addressId: addressId.uuidString,
                 status: effectiveAddressLayerStatus(addressId: addressId, baseStatus: status),
-                scansTotal: 0
+                scansTotal: 0,
+                visitOwner: effectiveVisitOwnerState(addressId: addressId, baseStatus: status)
             )
         }
 
         for building in visibleBuildingFeatures {
             guard let gersId = building.properties.canonicalBuildingIdentifier ?? building.id else { continue }
-            let scansTotal = building.properties.scansTotal
+            let scansTotal = effectiveScansTotal(for: building)
             let addressIds = addressIdsForBuilding(gersId: gersId)
             let fallbackStatus: AddressStatus?
             if let addressIdString = building.properties.addressId,
@@ -2774,7 +4589,12 @@ struct CampaignMapView: View {
                     addressIds: addressIds,
                     fallbackStatus: fallbackStatus
                 ),
-                scansTotal: scansTotal
+                scansTotal: scansTotal,
+                visitOwner: effectiveBuildingVisitOwnerState(
+                    gersId: gersId,
+                    addressIds: addressIds,
+                    fallbackStatus: fallbackStatus
+                )
             )
         }
     }
@@ -2792,10 +4612,12 @@ struct CampaignMapView: View {
                     ? AddressStatus.automaticDeliveredStatus(preserving: addressStatuses[addressId])
                     : status
                 addressStatuses[addressId] = effectiveStatus
+                sessionManager.reconcileVisitedAddressMetric(addressId: addressId, status: effectiveStatus)
                 layerManager?.updateAddressState(
                     addressId: addressId.uuidString,
                     status: effectiveAddressLayerStatus(addressId: addressId, baseStatus: effectiveStatus),
-                    scansTotal: 0
+                    scansTotal: 0,
+                    visitOwner: effectiveStatus.mapLayerStatus == "visited" ? "self" : nil
                 )
             }
             refreshTownhomeStatusOverlay()
@@ -2815,7 +4637,12 @@ struct CampaignMapView: View {
                 addressIds: effectiveAddressIds,
                 fallbackStatus: .delivered
             )
-            layerManager?.updateBuildingState(gersId: buildingId, status: buildingStatus, scansTotal: 0)
+            layerManager?.updateBuildingState(
+                gersId: buildingId,
+                status: buildingStatus,
+                scansTotal: 0,
+                visitOwner: buildingStatus == "visited" ? "self" : nil
+            )
             refreshTownhomeStatusOverlay()
         }
     }
@@ -2866,7 +4693,10 @@ struct CampaignMapView: View {
     }
 
     private func sessionTargetIdForAddress(addressId: UUID) -> String? {
-        if let addressTargetId = matchingSessionTargetId(addressId.uuidString.lowercased()) {
+        if let addressTargetId = sessionManager.resolvedSessionTargetId(
+            forAddressId: addressId,
+            buildingId: gersIdForAddress(addressId: addressId)
+        ) {
             return addressTargetId
         }
 
@@ -2963,20 +4793,14 @@ struct CampaignMapView: View {
         }
     }
 
-    /// Add session path source and line layer (breadcrumb trail) + session puck layers.
+    /// Add session path source plus session puck layers.
+    /// The breadcrumb line itself is intentionally not rendered on the live campaign map.
     private func addSessionPathLayersIfNeeded(map: MapView) {
         guard let mapboxMap = map.mapboxMap else { return }
         do {
             var source = GeoJSONSource(id: CampaignSessionMapLayerIds.lineSource)
             source.data = .featureCollection(FeatureCollection(features: []))
             try mapboxMap.addSource(source)
-            var lineLayer = LineLayer(id: CampaignSessionMapLayerIds.lineLayer, source: CampaignSessionMapLayerIds.lineSource)
-            lineLayer.lineColor = .constant(StyleColor(.red))
-            lineLayer.lineWidth = .constant(5.0)
-            lineLayer.lineOpacity = .constant(0.8)
-            lineLayer.lineJoin = .constant(.round)
-            lineLayer.lineCap = .constant(.round)
-            try mapboxMap.addLayer(lineLayer)
 
             var headingSource = GeoJSONSource(id: CampaignSessionMapLayerIds.headingConeSource)
             headingSource.data = .featureCollection(FeatureCollection(features: []))
@@ -2989,7 +4813,12 @@ struct CampaignMapView: View {
                     band.rawValue
                 }
                 layer.fillColor = .constant(UserHeadingIndicatorRenderer.styleColor(for: band))
-                layer.fillOpacity = .constant(1.0)
+                layer.fillOpacity = .expression(
+                    Exp(.coalesce) {
+                        Exp(.get) { "opacity" }
+                        1.0
+                    }
+                )
                 try mapboxMap.addLayer(layer)
             }
 
@@ -3010,7 +4839,7 @@ struct CampaignMapView: View {
             puckInner.circleStrokeWidth = .constant(0)
             try mapboxMap.addLayer(puckInner)
         } catch {
-            print("⚠️ [CampaignMap] Failed to add session path/puck layers: \(error)")
+            print("⚠️ [CampaignMap] Failed to add session map sources/puck layers: \(error)")
         }
     }
 
@@ -3085,13 +4914,14 @@ struct CampaignMapView: View {
             padding: nil,
             zoom: 17,
             bearing: nil,
-            pitch: 60
+            pitch: campaignMapDefaultPitch
         ), duration: 0.45)
     }
 
-    /// Update the session path line from current path (normalized when Pro Mode on, else simplified raw).
+    /// Keep the session path source empty so the live session map stays clean while canvassing.
     private func updateSessionPathOnMap() {
         guard let map = mapView?.mapboxMap else { return }
+        guard map.sourceExists(withId: CampaignSessionMapLayerIds.lineSource) else { return }
         let mapCampaignId = UUID(uuidString: campaignId)
         let isCurrentCampaignSession =
             sessionManager.sessionId != nil &&
@@ -3106,29 +4936,10 @@ struct CampaignMapView: View {
             return
         }
 
-        // Demo: hide the live session breadcrumb (red line); map + buildings carry the UX.
-        if sessionManager.isDemoSession {
-            map.updateGeoJSONSource(
-                withId: CampaignSessionMapLayerIds.lineSource,
-                geoJSON: .featureCollection(FeatureCollection(features: []))
-            )
-            return
-        }
-
-        let segments = sessionManager.renderPathSegments()
-        if segments.contains(where: { $0.count >= 2 }) {
-            let features = segments
-                .filter { $0.count >= 2 }
-                .map { segment -> Feature in
-                    let lineCoords = segment.map { LocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
-                    return Feature(geometry: .lineString(LineString(lineCoords)))
-                }
-            let collection = FeatureCollection(features: features)
-            map.updateGeoJSONSource(withId: CampaignSessionMapLayerIds.lineSource, geoJSON: .featureCollection(collection))
-        } else {
-            map.updateGeoJSONSource(withId: CampaignSessionMapLayerIds.lineSource,
-                                    geoJSON: .featureCollection(FeatureCollection(features: [])))
-        }
+        map.updateGeoJSONSource(
+            withId: CampaignSessionMapLayerIds.lineSource,
+            geoJSON: .featureCollection(FeatureCollection(features: []))
+        )
     }
     
     /// Remove 3D building layers from the base map style so campaign map stays flat.
@@ -3142,17 +4953,174 @@ struct CampaignMapView: View {
         }
     }
 
-    /// Fly camera to campaign area center when we have features (once per load)
+    /// Fly camera to the full campaign coverage when we have features (once per load).
+    /// This fits the visible campaign area instead of jumping to a single point at a fixed zoom.
     private func flyToCampaignCenterIfNeeded(map: MapView) {
-        guard !hasFlownToCampaign, let center = currentMapCenterCoordinate() else { return }
+        guard !hasFlownToCampaign else { return }
+        guard featuresService.isScopedToCampaign(campaignId) else { return }
+        guard let camera = campaignOverviewCameraOptions(for: map) else { return }
         hasFlownToCampaign = true
-        map.camera.fly(to: CameraOptions(
+        map.camera.fly(to: camera, duration: 0.8)
+    }
+
+    private func campaignOverviewCameraOptions(for map: MapView) -> CameraOptions? {
+        let fallbackCenter = currentMapCenterCoordinate() ?? Self.defaultCenter
+        let fallback = CameraOptions(
+            center: fallbackCenter,
+            padding: UIEdgeInsets(top: 80, left: 40, bottom: 120, right: 40),
+            zoom: 16,
+            bearing: 0,
+            pitch: campaignMapDefaultPitch
+        )
+
+        let coverageCoordinates = campaignOverviewCoverageCoordinates()
+        guard coverageCoordinates.count >= 2 else {
+            return currentMapCenterCoordinate() == nil ? nil : fallback
+        }
+
+        do {
+            return try map.mapboxMap.camera(
+                for: coverageCoordinates,
+                camera: fallback,
+                coordinatesPadding: UIEdgeInsets(top: 80, left: 40, bottom: 120, right: 40),
+                maxZoom: 16,
+                offset: nil
+            )
+        } catch {
+            print("⚠️ [CampaignMap] Failed to fit campaign overview camera: \(error)")
+            return fallback
+        }
+    }
+
+    private func campaignOverviewCoverageCoordinates() -> [CLLocationCoordinate2D] {
+        if let activeRouteWorkContext {
+            let routeCoordinates = activeRouteWorkContext.stops.compactMap { stop -> CLLocationCoordinate2D? in
+                guard let lat = stop.latitude, let lon = stop.longitude else { return nil }
+                let coordinate = CLLocationCoordinate2D(latitude: lat, longitude: lon)
+                return CLLocationCoordinate2DIsValid(coordinate) ? coordinate : nil
+            }
+            if routeCoordinates.count >= 2 {
+                return routeCoordinates
+            }
+        }
+
+        let featureCoverage = summarySnapshotCoverageCoordinates()
+        if !featureCoverage.isEmpty {
+            return featureCoverage
+        }
+
+        return campaignBoundaryCoordinates
+    }
+
+    private func updateSummarySnapshotCamera() {
+        LiveCampaignMapSnapshotStore.shared.setPreferredSummaryCamera(summarySnapshotCameraOptions())
+    }
+
+    private func summarySnapshotCameraOptions() -> CameraOptions? {
+        guard let center = currentMapCenterCoordinate() else { return nil }
+
+        let fallback = CameraOptions(
             center: center,
             padding: nil,
-            zoom: 16,
-            bearing: nil,
-            pitch: 60
-        ), duration: 0.8)
+            zoom: Self.summarySnapshotMaxZoom,
+            bearing: 0,
+            pitch: Self.summarySnapshotPitch
+        )
+
+        guard let map = mapView?.mapboxMap else { return fallback }
+
+        let coverageCoordinates = summarySnapshotCoverageCoordinates()
+        guard coverageCoordinates.count >= 2 else { return fallback }
+
+        do {
+            return try map.camera(
+                for: coverageCoordinates,
+                camera: fallback,
+                coordinatesPadding: Self.summarySnapshotCoordinatesPadding,
+                maxZoom: Self.summarySnapshotMaxZoom,
+                offset: nil
+            )
+        } catch {
+            print("⚠️ [CampaignMap] Failed to fit summary snapshot camera: \(error)")
+            return fallback
+        }
+    }
+
+    private func summarySnapshotCoverageCoordinates() -> [CLLocationCoordinate2D] {
+        let buildingCoordinates = visibleBuildingFeatures.flatMap { feature in
+            coordinates(for: feature.geometry)
+        }
+        let addressCoordinates = visibleAddressFeatures.compactMap { feature in
+            coordinate(for: feature.geometry)
+        }
+        let allCoordinates = (buildingCoordinates + addressCoordinates)
+            .filter { CLLocationCoordinate2DIsValid($0) }
+
+        guard !allCoordinates.isEmpty else { return [] }
+        guard allCoordinates.count > 1 else { return allCoordinates }
+
+        let latitudes = allCoordinates.map(\.latitude)
+        let longitudes = allCoordinates.map(\.longitude)
+
+        guard let minLatitude = latitudes.min(),
+              let maxLatitude = latitudes.max(),
+              let minLongitude = longitudes.min(),
+              let maxLongitude = longitudes.max() else {
+            return allCoordinates
+        }
+
+        let southwest = CLLocationCoordinate2D(latitude: minLatitude, longitude: minLongitude)
+        let southeast = CLLocationCoordinate2D(latitude: minLatitude, longitude: maxLongitude)
+        let northeast = CLLocationCoordinate2D(latitude: maxLatitude, longitude: maxLongitude)
+        let northwest = CLLocationCoordinate2D(latitude: maxLatitude, longitude: minLongitude)
+        return [southwest, southeast, northeast, northwest]
+    }
+
+    private func coordinates(for geometry: MapFeatureGeoJSONGeometry) -> [CLLocationCoordinate2D] {
+        if let polygon = geometry.asPolygon {
+            return polygon.flatMap { ring in
+                ring.compactMap(Self.coordinate(from:))
+            }
+        }
+
+        if let multiPolygon = geometry.asMultiPolygon {
+            return multiPolygon.flatMap { polygon in
+                polygon.flatMap { ring in
+                    ring.compactMap(Self.coordinate(from:))
+                }
+            }
+        }
+
+        if let lineString = geometry.asLineString {
+            return lineString.compactMap(Self.coordinate(from:))
+        }
+
+        if let multiLineString = geometry.asMultiLineString {
+            return multiLineString.flatMap { line in
+                line.compactMap(Self.coordinate(from:))
+            }
+        }
+
+        if let point = geometry.asPoint,
+           let coordinate = Self.coordinate(from: point) {
+            return [coordinate]
+        }
+
+        return []
+    }
+
+    private func coordinate(for geometry: MapFeatureGeoJSONGeometry) -> CLLocationCoordinate2D? {
+        if let point = geometry.asPoint {
+            return Self.coordinate(from: point)
+        }
+
+        return coordinates(for: geometry).first
+    }
+
+    nonisolated private static func coordinate(from rawCoordinate: [Double]) -> CLLocationCoordinate2D? {
+        guard rawCoordinate.count >= 2 else { return nil }
+        let coordinate = CLLocationCoordinate2D(latitude: rawCoordinate[1], longitude: rawCoordinate[0])
+        return CLLocationCoordinate2DIsValid(coordinate) ? coordinate : nil
     }
 
     private func currentMapCenterCoordinate() -> CLLocationCoordinate2D? {
@@ -3167,7 +5135,11 @@ struct CampaignMapView: View {
             }
         }
 
-        return featuresService.campaignCenterCoordinate()
+        if let center = featuresService.campaignCenterCoordinate() {
+            return center
+        }
+
+        return averageCoordinate(campaignBoundaryCoordinates)
     }
 
     private func averageCoordinate(_ coordinates: [CLLocationCoordinate2D]) -> CLLocationCoordinate2D? {
@@ -3215,8 +5187,9 @@ struct CampaignMapView: View {
         }
 
         guard let manager = layerManager else { return }
+        let effectiveMode: DisplayMode = isStandardPinsMode ? .addresses : displayMode
 
-        switch displayMode {
+        switch effectiveMode {
         case .buildings:
             manager.getBuildingAt(point: point) { building in
                 if let building {
@@ -3404,6 +5377,15 @@ struct CampaignMapView: View {
         building.canonicalBuildingIdentifier
     }
 
+    private func sanitizedBuildingIdentifier(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private func normalizedBuildingIdentifier(_ value: String?) -> String? {
+        sanitizedBuildingIdentifier(value)?.lowercased()
+    }
+
     private func normalizedBuildingIdentifiers(for building: BuildingProperties) -> [String] {
         var seen = Set<String>()
         return building.buildingIdentifierCandidates
@@ -3485,26 +5467,21 @@ struct CampaignMapView: View {
         return CampaignTargetResolver.coordinate(for: buildingFeature.geometry)
     }
 
-    private func handleDeleteManualShape(
+    private func handleDeleteBuilding(
         building: BuildingProperties?,
         address: MapLayerManager.AddressTapResult?
     ) {
+        let deleteWhileOffline = !NetworkMonitor.shared.isOnline
         Task {
             do {
-                if address?.source?.lowercased() == "manual", let addressId = address?.addressId {
-                    try await BuildingLinkService.shared.deleteManualAddress(
-                        campaignId: campaignId,
-                        addressId: addressId
-                    )
-                } else if let building, building.source?.lowercased() == "manual",
-                          let buildingId = publicBuildingIdentifier(for: building) {
-                    try await BuildingLinkService.shared.deleteManualBuilding(
+                if let buildingId = building.flatMap(publicBuildingIdentifier(for:)) ?? sanitizedBuildingIdentifier(address?.buildingGersId ?? address?.gersId) {
+                    try await BuildingLinkService.shared.deleteBuildingAndAddresses(
                         campaignId: campaignId,
                         buildingId: buildingId
                     )
                 } else {
                     await MainActor.run {
-                        manualShapeMessage = "Only manual buildings or manual houses can be deleted from tools."
+                        manualShapeMessage = "Couldn't resolve the selected building."
                     }
                     return
                 }
@@ -3515,6 +5492,9 @@ struct CampaignMapView: View {
                     selectedAddress = nil
                     selectedAddressIdForCard = nil
                     loadCampaignData(force: true)
+                    if deleteWhileOffline {
+                        manualShapeMessage = "Building deleted offline. It will sync when you're back online."
+                    }
                 }
             } catch {
                 await MainActor.run {
@@ -3700,6 +5680,13 @@ struct CampaignMapView: View {
     }
 
     private func sessionTargets(for mode: SessionMode) -> [ResolvedCampaignTarget] {
+        if isStandardPinsMode {
+            let addressTargets = CampaignTargetResolver.addressTargets(from: visibleAddressFeatures)
+            if !addressTargets.isEmpty {
+                return addressTargets
+            }
+        }
+
         switch mode {
         case .doorKnocking:
             return preferredSessionTargets
@@ -3733,7 +5720,11 @@ struct CampaignMapView: View {
     private func startBuildingSession(
         campaignId: UUID,
         targets: [ResolvedCampaignTarget],
+        gpsProximityEnabled: Bool = true,
         mode: SessionMode = .doorKnocking,
+        goalType: GoalType? = nil,
+        enableSharedLiveCanvassing: Bool = false,
+        sharedLiveSessionIdOverride: UUID? = nil,
         goalAmount: Int? = nil,
         routeAssignmentId: UUID? = nil,
         farmExecutionContext: FarmExecutionContext? = nil,
@@ -3750,19 +5741,29 @@ struct CampaignMapView: View {
                 try await sessionManager.startBuildingSession(
                     campaignId: campaignId,
                     targetBuildings: targetIds,
-                    autoCompleteEnabled: mode == .flyer,
+                    autoCompleteEnabled: gpsProximityEnabled,
                     centroids: centroids,
                     mode: mode,
+                    goalType: goalType,
+                    enableSharedLiveCanvassing: enableSharedLiveCanvassing,
+                    sharedLiveSessionIdOverride: sharedLiveSessionIdOverride,
                     goalAmountOverride: goalAmount,
                     routeAssignmentId: routeAssignmentId,
                     farmExecutionContext: farmExecutionContext
                 )
-                await MainActor.run {
+                let liveShareContext = await MainActor.run { () -> (UUID?, UUID?) in
                     if farmExecutionContext != nil {
                         uiState.clearPlannedFarmExecution()
                     }
                     refreshSessionTargetMappings(for: targets)
+                    return (sessionManager.sessionId, sessionManager.activeSharedLiveSessionId)
                 }
+                await presentLiveSessionShareCodeIfNeeded(
+                    sessionId: liveShareContext.0,
+                    enableSharedLiveCanvassing: enableSharedLiveCanvassing,
+                    sharedLiveSessionIdOverride: sharedLiveSessionIdOverride,
+                    activeSharedLiveSessionId: liveShareContext.1
+                )
             } catch {
                 print("⚠️ [CampaignMap] Failed to start session: \(error.localizedDescription)")
                 let msg = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
@@ -3790,7 +5791,7 @@ struct CampaignMapView: View {
         guard !targets.isEmpty else { return }
 
         hasStartedDemoLaunch = true
-        displayMode = .buildings
+        displayMode = isStandardPinsMode ? .addresses : .buildings
         scheduleLayerVisibilityReassert()
 
         let centroids = Dictionary(uniqueKeysWithValues: targets.map { ($0.id, $0.coordinate) })
@@ -3879,7 +5880,14 @@ struct CampaignMapView: View {
         } else {
             effectiveStatus = status
         }
-        manager.updateBuildingState(gersId: gersId, status: effectiveStatus, scansTotal: scansTotal)
+        manager.updateBuildingState(
+            gersId: gersId,
+            status: effectiveStatus,
+            scansTotal: scansTotal,
+            visitOwner: effectiveStatus == "visited"
+                ? effectiveBuildingVisitOwnerState(gersId: gersId, addressIds: addressIdsForBuilding(gersId: gersId))
+                : nil
+        )
     }
     
     @State private var cancellables = Set<AnyCancellable>()
@@ -3957,7 +5965,7 @@ struct CampaignMapboxMapViewRepresentable: UIViewRepresentable {
     var preferredSize: CGSize = CGSize(width: 320, height: 260)
     var useDarkStyle: Bool = false
     var sessionLocation: CLLocation?
-    var sessionHeadingState: MapHeadingState = .unavailable
+    var sessionHeadingState: MapHeadingPresentationState = .unavailable
     var showSessionPuck: Bool = false
     let onMapReady: (MapView) -> Void
     let onTap: (CGPoint) -> Void
@@ -4013,17 +6021,6 @@ struct CampaignMapboxMapViewRepresentable: UIViewRepresentable {
     func updateUIView(_ uiView: MapView, context: Context) {
         context.coordinator.onTap = onTap
         context.coordinator.onLongPress = onLongPress
-        let width = preferredSize.width
-        let height = preferredSize.height
-        let resolvedSize: CGSize
-        if width.isFinite, height.isFinite, width > 0, height > 0 {
-            resolvedSize = CGSize(width: max(320, width), height: max(260, height))
-        } else {
-            resolvedSize = CGSize(width: 320, height: 260)
-        }
-        if uiView.bounds.size != resolvedSize {
-            uiView.bounds = CGRect(origin: .zero, size: resolvedSize)
-        }
         context.coordinator.updateSessionPuck(
             location: sessionLocation,
             headingState: sessionHeadingState,
@@ -4033,7 +6030,6 @@ struct CampaignMapboxMapViewRepresentable: UIViewRepresentable {
         if scale.isFinite, scale > 0, uiView.contentScaleFactor != scale {
             uiView.contentScaleFactor = scale
         }
-        uiView.setNeedsLayout()
     }
     
     func makeCoordinator() -> Coordinator {
@@ -4051,7 +6047,7 @@ struct CampaignMapboxMapViewRepresentable: UIViewRepresentable {
             self.onLongPress = onLongPress
         }
 
-        func updateSessionPuck(location: CLLocation?, headingState: MapHeadingState, show: Bool) {
+        func updateSessionPuck(location: CLLocation?, headingState: MapHeadingPresentationState, show: Bool) {
             guard let map = mapView?.mapboxMap else { return }
             guard map.sourceExists(withId: CampaignSessionMapLayerIds.puckSource) else { return }
             let snapshot = PuckSnapshot(location: location?.coordinate, headingState: headingState, show: show)
@@ -4064,9 +6060,11 @@ struct CampaignMapboxMapViewRepresentable: UIViewRepresentable {
                 map.updateGeoJSONSource(withId: CampaignSessionMapLayerIds.puckSource, geoJSON: .feature(feature))
 
                 if map.sourceExists(withId: CampaignSessionMapLayerIds.headingConeSource),
-                   headingState.isRenderable,
-                   let heading = headingState.heading {
-                    let collection = UserHeadingIndicatorRenderer.featureCollection(center: loc.coordinate, heading: heading)
+                   headingState.isRenderable {
+                    let collection = UserHeadingIndicatorRenderer.featureCollection(
+                        center: loc.coordinate,
+                        presentationState: headingState
+                    )
                     map.updateGeoJSONSource(withId: CampaignSessionMapLayerIds.headingConeSource, geoJSON: .featureCollection(collection))
                 } else if map.sourceExists(withId: CampaignSessionMapLayerIds.headingConeSource) {
                     map.updateGeoJSONSource(withId: CampaignSessionMapLayerIds.headingConeSource, geoJSON: .featureCollection(emptyCollection))
@@ -4095,10 +6093,10 @@ struct CampaignMapboxMapViewRepresentable: UIViewRepresentable {
 private struct PuckSnapshot: Equatable {
     let latitude: Double?
     let longitude: Double?
-    let headingState: MapHeadingState
+    let headingState: MapHeadingPresentationState
     let show: Bool
 
-    init(location: CLLocationCoordinate2D?, headingState: MapHeadingState, show: Bool) {
+    init(location: CLLocationCoordinate2D?, headingState: MapHeadingPresentationState, show: Bool) {
         latitude = location?.latitude
         longitude = location?.longitude
         self.headingState = headingState
@@ -4635,6 +6633,7 @@ struct LocationCardView: View {
     let gersId: String
     let campaignId: UUID
     let sessionId: UUID?
+    let farmExecutionContext: FarmExecutionContext?
     /// Campaign address ID from tapped building (used for direct lookup so card shows linked state)
     let addressId: UUID?
     /// Address from tapped building (shown immediately)
@@ -4645,6 +6644,8 @@ struct LocationCardView: View {
     var addressSource: String?
     /// Per-address statuses for pill coloring in the multi-address list
     var addressStatuses: [UUID: AddressStatus] = [:]
+    var addressStatusRows: [UUID: AddressStatusRow] = [:]
+    var campaignMembersByUserId: [UUID: SharedCanvassingMember] = [:]
     /// Resolves the session target that should receive completion credit for a specific address.
     var sessionTargetIdForAddress: ((UUID) -> String?)?
     /// Called when user selects an address from the list (id) or taps "Back to list" (nil)
@@ -4654,6 +6655,7 @@ struct LocationCardView: View {
     let onClose: () -> Void
     /// Called after status is saved to Supabase so the map can update building color immediately
     var onStatusUpdated: ((UUID, AddressStatus) -> Void)?
+    var onHomeStateUpdated: ((AddressStatusRow) -> Void)?
     var onToolsAction: ((LocationCardToolsAction) -> Void)?
     
     @EnvironmentObject private var entitlementsService: EntitlementsService
@@ -4683,7 +6685,7 @@ struct LocationCardView: View {
     @State private var showContactBlock = false
     @State private var showNotesBlock = false
     @State private var showDoNotKnockConfirmation = false
-    @State private var showDeleteManualShapeConfirmation = false
+    @State private var showDeleteBuildingConfirmation = false
     @State private var showToolsSheet = false
     @State private var toolMessage: String?
     @State private var showFollowUpDetails = false
@@ -4725,21 +6727,25 @@ struct LocationCardView: View {
     private let contactTalkPersistDebounceSeconds: TimeInterval = 2
     private let locationCardDraftStoragePrefix = "flyr.location_card_draft"
 
-    init(gersId: String, campaignId: UUID, sessionId: UUID? = nil, addressId: UUID? = nil, addressText: String? = nil, preferredAddressId: UUID? = nil, buildingSource: String? = nil, addressSource: String? = nil, addressStatuses: [UUID: AddressStatus] = [:], sessionTargetIdForAddress: ((UUID) -> String?)? = nil, onSelectAddress: ((UUID?) -> Void)? = nil, onAddressesResolved: (([UUID]) -> Void)? = nil, onClose: @escaping () -> Void, onStatusUpdated: ((UUID, AddressStatus) -> Void)? = nil, onToolsAction: ((LocationCardToolsAction) -> Void)? = nil) {
+    init(gersId: String, campaignId: UUID, sessionId: UUID? = nil, farmExecutionContext: FarmExecutionContext? = nil, addressId: UUID? = nil, addressText: String? = nil, preferredAddressId: UUID? = nil, buildingSource: String? = nil, addressSource: String? = nil, addressStatuses: [UUID: AddressStatus] = [:], addressStatusRows: [UUID: AddressStatusRow] = [:], campaignMembersByUserId: [UUID: SharedCanvassingMember] = [:], sessionTargetIdForAddress: ((UUID) -> String?)? = nil, onSelectAddress: ((UUID?) -> Void)? = nil, onAddressesResolved: (([UUID]) -> Void)? = nil, onClose: @escaping () -> Void, onStatusUpdated: ((UUID, AddressStatus) -> Void)? = nil, onHomeStateUpdated: ((AddressStatusRow) -> Void)? = nil, onToolsAction: ((LocationCardToolsAction) -> Void)? = nil) {
         self.gersId = gersId
         self.campaignId = campaignId
         self.sessionId = sessionId
+        self.farmExecutionContext = farmExecutionContext
         self.addressId = addressId
         self.addressText = addressText
         self.preferredAddressId = preferredAddressId
         self.buildingSource = buildingSource
         self.addressSource = addressSource
         self.addressStatuses = addressStatuses
+        self.addressStatusRows = addressStatusRows
+        self.campaignMembersByUserId = campaignMembersByUserId
         self.sessionTargetIdForAddress = sessionTargetIdForAddress
         self.onSelectAddress = onSelectAddress
         self.onAddressesResolved = onAddressesResolved
         self.onClose = onClose
         self.onStatusUpdated = onStatusUpdated
+        self.onHomeStateUpdated = onHomeStateUpdated
         self.onToolsAction = onToolsAction
         _dataService = StateObject(wrappedValue: BuildingDataService(supabase: SupabaseManager.shared.client))
     }
@@ -4750,6 +6756,10 @@ struct LocationCardView: View {
     private var saveButtonDisabled: Bool { isSavingForm }
     private var isManualShape: Bool {
         buildingSource?.lowercased() == "manual" || addressSource?.lowercased() == "manual"
+    }
+
+    private var canDeleteBuilding: Bool {
+        !gersId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private func dismissKeyboard() {
@@ -4833,6 +6843,52 @@ struct LocationCardView: View {
         dataService.buildingData.address ?? fallbackResolvedAddress
     }
 
+    private var currentHomeStateRow: AddressStatusRow? {
+        if let editableAddress {
+            return addressStatusRows[editableAddress.id]
+        }
+        if let addressId {
+            return addressStatusRows[addressId]
+        }
+        return nil
+    }
+
+    private var currentHomeUpdatedByLabel: String? {
+        guard let userId = currentHomeStateRow?.lastActionBy else { return nil }
+        return campaignMembersByUserId[userId]?.displayName
+    }
+
+    private var currentHomeUpdatedAt: Date? {
+        currentHomeStateRow?.updatedAt ?? currentHomeStateRow?.lastVisitedAt
+    }
+
+    private var currentUserId: UUID? {
+        AuthManager.shared.user?.id
+    }
+
+    private var isHomeOwnedByTeammate: Bool {
+        guard let actorUserId = currentHomeStateRow?.lastActionBy else { return false }
+        guard let currentUserId else { return false }
+        return actorUserId != currentUserId
+    }
+
+    private var isDetailAccessLocked: Bool {
+        isHomeOwnedByTeammate
+    }
+
+    private var currentDisplayedHomeStatus: AddressStatus? {
+        if let row = currentHomeStateRow {
+            return row.status
+        }
+        if let editableAddress {
+            return addressStatuses[editableAddress.id]
+        }
+        if let addressId {
+            return addressStatuses[addressId]
+        }
+        return nil
+    }
+
     private var needsScroll: Bool {
         showContactBlock || showNotesBlock || dataService.buildingData.error != nil
     }
@@ -4866,6 +6922,8 @@ struct LocationCardView: View {
             unlinkedBuildingView
         } else if showAddressList {
             multipleAddressesListView
+        } else if isDetailAccessLocked {
+            lockedHomeContentView
         } else if let address = dataService.buildingData.address {
             mainContentViewWithBackToList(address: address)
         } else if let addressText = addressText, !addressText.isEmpty {
@@ -4964,12 +7022,54 @@ struct LocationCardView: View {
         }
     }
 
+    private var lockedHomeContentView: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            homeActivitySummary
+            lockedHomeMessage
+        }
+        .padding(.horizontal, 16)
+        .padding(.bottom, 12)
+    }
+
+    private var lockedHomeMessage: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Details locked")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundColor(.white)
+
+            if let currentHomeUpdatedByLabel {
+                Text("\(currentHomeUpdatedByLabel) owns this home entry. You can see the address and who hit it, but not the saved details.")
+                    .font(.system(size: 13))
+                    .foregroundColor(cardPlaceholder)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text("You can see the address, but the saved details for this home are hidden.")
+                    .font(.system(size: 13))
+                    .foregroundColor(cardPlaceholder)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(12)
+        .background(Color.white.opacity(0.06))
+        .cornerRadius(8)
+    }
+
     var body: some View {
         rootCardView
     }
 
     private var rootCardView: some View {
-        cardViewWithPresentation
+        VStack(spacing: 0) {
+            if showToolsSheet {
+                attachedToolsMenu
+                    .padding(.bottom, -4)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .zIndex(1)
+            }
+
+            cardViewWithPresentation
+        }
+        .animation(.spring(response: 0.24, dampingFraction: 0.9), value: showToolsSheet)
     }
 
     private var cardViewWithDataLoading: some View {
@@ -4977,7 +7077,11 @@ struct LocationCardView: View {
             .toolbar { keyboardToolbarContent }
             .task {
                 await dataService.fetchBuildingData(gersId: gersId, campaignId: campaignId, addressId: addressId, preferredAddressId: preferredAddressId)
-                buildingDetails = try? await BuildingDetailsAPI.shared.fetchBuildingDetails(gersId: gersId, campaignId: campaignId)
+                if NetworkMonitor.shared.isOnline {
+                    buildingDetails = try? await BuildingDetailsAPI.shared.fetchBuildingDetails(gersId: gersId, campaignId: campaignId)
+                } else {
+                    buildingDetails = nil
+                }
             }
             .onChange(of: preferredAddressId) { _, newId in
                 Task {
@@ -5031,40 +7135,18 @@ struct LocationCardView: View {
             } message: {
                 Text("This will mark the house as do not knock and show it in grey on the map.")
             }
-            .alert("Delete manual shape?", isPresented: $showDeleteManualShapeConfirmation) {
+            .alert("Delete building?", isPresented: $showDeleteBuildingConfirmation) {
                 Button("Cancel", role: .cancel) {}
                 Button("Delete", role: .destructive) {
-                    handleToolsAction(.deleteManualShape)
+                    handleToolsAction(.deleteBuilding)
                 }
             } message: {
-                Text("This removes the manual map object from the campaign and refreshes the map.")
+                Text("This deletes the building and every linked address from this campaign. This can't be undone.")
             }
             .alert("Tools", isPresented: .init(get: { toolMessage != nil }, set: { if !$0 { toolMessage = nil } })) {
                 Button("OK", role: .cancel) { toolMessage = nil }
             } message: {
                 if let toolMessage { Text(toolMessage) }
-            }
-            .confirmationDialog("Tools", isPresented: $showToolsSheet, titleVisibility: .visible) {
-                Button("Add House") {
-                    handleToolsAction(.addHouse)
-                }
-                if editableAddress != nil {
-                    Button("Add Visit") {
-                        handleToolsAction(.addVisit)
-                    }
-                    Button("Reset Home") {
-                        handleToolsAction(.resetHome)
-                    }
-                    Button("Do Not Knock", role: .destructive) {
-                        showDoNotKnockConfirmation = true
-                    }
-                }
-                if isManualShape {
-                    Button("Delete Manual Shape", role: .destructive) {
-                        showDeleteManualShapeConfirmation = true
-                    }
-                }
-                Button("Cancel", role: .cancel) {}
             }
             .alert("Couldn't save", isPresented: .init(get: { contactSaveError != nil }, set: { if !$0 { contactSaveError = nil } })) {
                 Button("OK", role: .cancel) { contactSaveError = nil }
@@ -5177,6 +7259,86 @@ struct LocationCardView: View {
             isInputFocused = false
             dismissKeyboard()
         }
+    }
+
+    private var attachedToolsMenu: some View {
+        VStack(spacing: 0) {
+            VStack(spacing: 10) {
+                Text("Tools")
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundColor(.white)
+                    .padding(.top, 18)
+
+                attachedToolsMenuButton("Add House") {
+                    showToolsSheet = false
+                    handleToolsAction(.addHouse)
+                }
+
+                if editableAddress != nil {
+                    attachedToolsMenuButton("Add Visit") {
+                        showToolsSheet = false
+                        handleToolsAction(.addVisit)
+                    }
+
+                    attachedToolsMenuButton("Reset Home") {
+                        showToolsSheet = false
+                        handleToolsAction(.resetHome)
+                    }
+
+                    attachedToolsMenuButton("Do Not Knock", isDestructive: true) {
+                        showToolsSheet = false
+                        showDoNotKnockConfirmation = true
+                    }
+                }
+
+                if canDeleteBuilding {
+                    attachedToolsMenuButton("Delete", isDestructive: true) {
+                        showToolsSheet = false
+                        showDeleteBuildingConfirmation = true
+                    }
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 18)
+            .frame(width: 274)
+            .background(
+                RoundedRectangle(cornerRadius: 18)
+                    .fill(Color.black.opacity(0.9))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 18)
+                            .stroke(Color.red.opacity(0.3), lineWidth: 1)
+                    )
+            )
+
+            AttachedMenuPointer()
+                .fill(Color.black.opacity(0.9))
+                .frame(width: 18, height: 10)
+                .overlay(
+                    AttachedMenuPointer()
+                        .stroke(Color.red.opacity(0.3), lineWidth: 1)
+                )
+                .frame(height: 12)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private func attachedToolsMenuButton(_ title: String, isDestructive: Bool = false, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 16, weight: .medium))
+                .foregroundColor(isDestructive ? .red : .white)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 14)
+                .background(
+                    RoundedRectangle(cornerRadius: 18)
+                        .fill(Color(red: 0.24, green: 0.22, blue: 0.22))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 18)
+                                .stroke(Color.black, lineWidth: 1)
+                        )
+                )
+        }
+        .buttonStyle(.plain)
     }
 
     private var cardHeader: some View {
@@ -5391,6 +7553,7 @@ struct LocationCardView: View {
     
     private func universalCardContent(displayAddress: String, address: ResolvedAddress?) -> some View {
         VStack(alignment: .leading, spacing: 14) {
+            homeActivitySummary
             if showContactBlock {
                 contactDetailsFields
             }
@@ -5927,7 +8090,9 @@ struct LocationCardView: View {
             }
 
             actionButton(icon: "wrench.and.screwdriver.fill", label: "Tools") {
-                showToolsSheet = true
+                withAnimation(.spring(response: 0.24, dampingFraction: 0.9)) {
+                    showToolsSheet.toggle()
+                }
             }
         }
         .padding(.top, 8)
@@ -5960,6 +8125,7 @@ struct LocationCardView: View {
                     .font(.system(size: 12))
                     .foregroundColor(cardPlaceholder)
             }
+            homeActivitySummary
             if showContactBlock {
                 contactDetailsFields
             }
@@ -5983,6 +8149,40 @@ struct LocationCardView: View {
             .padding(.vertical, 4)
             .background(Color(white: 0.35))
             .cornerRadius(12)
+    }
+
+    @ViewBuilder
+    private var homeActivitySummary: some View {
+        if let status = currentDisplayedHomeStatus {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    Text(status.displayName.uppercased())
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(status.tintColor.opacity(0.28))
+                        .clipShape(Capsule())
+
+                    if let updatedAt = currentHomeUpdatedAt {
+                        Text(updatedAt.formatted(date: .abbreviated, time: .shortened))
+                            .font(.system(size: 11))
+                            .foregroundColor(cardPlaceholder)
+                    }
+                }
+
+                if let currentHomeUpdatedByLabel {
+                    Text("Last hit by \(currentHomeUpdatedByLabel)")
+                        .font(.system(size: 12))
+                        .foregroundColor(cardPlaceholder)
+                } else if currentHomeStateRow == nil {
+                    Text("No saved activity yet")
+                        .font(.system(size: 12))
+                        .foregroundColor(cardPlaceholder)
+                }
+            }
+            .padding(.horizontal, 16)
+        }
     }
     
     private func voiceActionButton(address: ResolvedAddress?) -> some View {
@@ -6416,7 +8616,7 @@ struct LocationCardView: View {
             status != .none &&
             status != .untouched
 
-        try await VisitsAPI.shared.updateStatus(
+        let updatedRow = try await VisitsAPI.shared.updateStatus(
             addressId: address.id,
             campaignId: campaignId,
             status: status,
@@ -6426,14 +8626,26 @@ struct LocationCardView: View {
             sessionEventType: shouldLogSessionCompletion ? SessionEventType.recordedVisitEventType(for: status) : nil,
             location: shouldLogSessionCompletion ? SessionManager.shared.currentLocation : nil
         )
+        if let farmExecutionContext, !shouldLogSessionCompletion {
+            await VisitsAPI.shared.recordFarmAddressOutcome(
+                context: farmExecutionContext,
+                addressId: address.id,
+                status: status,
+                notes: notesText.isEmpty ? nil : notesText
+            )
+        }
         dataService.clearCacheEntry(gersId: gersId, campaignId: campaignId)
         await dataService.fetchBuildingData(gersId: gersId, campaignId: campaignId, addressId: address.id, preferredAddressId: preferredAddressId ?? address.id)
         await MainActor.run {
+            if let updatedRow {
+                onHomeStateUpdated?(updatedRow)
+            }
             onStatusUpdated?(address.id, status)
         }
     }
 
     private func toggleContactCard(address: ResolvedAddress?) {
+        guard !isDetailAccessLocked else { return }
         isInputFocused = false
         guard let address else { return }
         let isActive = hasContactOrConversation(for: address)
@@ -6485,7 +8697,7 @@ struct LocationCardView: View {
 
         do {
             if shouldLogDoorHitFirst {
-                try await VisitsAPI.shared.updateStatus(
+                let deliveredRow = try await VisitsAPI.shared.updateStatus(
                     addressId: address.id,
                     campaignId: campaignId,
                     status: .delivered,
@@ -6495,10 +8707,20 @@ struct LocationCardView: View {
                     sessionEventType: shouldLogSessionCompletion ? SessionEventType.recordedVisitEventType(for: .delivered) : nil,
                     location: shouldLogSessionCompletion ? SessionManager.shared.currentLocation : nil
                 )
+                if let farmExecutionContext, !shouldLogSessionCompletion {
+                    await VisitsAPI.shared.recordFarmAddressOutcome(
+                        context: farmExecutionContext,
+                        addressId: address.id,
+                        status: .delivered
+                    )
+                }
+                if let deliveredRow {
+                    onHomeStateUpdated?(deliveredRow)
+                }
                 onStatusUpdated?(address.id, .delivered)
             }
 
-            try await VisitsAPI.shared.updateStatus(
+            let talkedRow = try await VisitsAPI.shared.updateStatus(
                 addressId: address.id,
                 campaignId: campaignId,
                 status: .talked,
@@ -6508,6 +8730,16 @@ struct LocationCardView: View {
                 sessionEventType: shouldLogSessionCompletion ? SessionEventType.recordedVisitEventType(for: .talked) : nil,
                 location: shouldLogSessionCompletion ? SessionManager.shared.currentLocation : nil
             )
+            if let farmExecutionContext, !shouldLogSessionCompletion {
+                await VisitsAPI.shared.recordFarmAddressOutcome(
+                    context: farmExecutionContext,
+                    addressId: address.id,
+                    status: .talked
+                )
+            }
+            if let talkedRow {
+                onHomeStateUpdated?(talkedRow)
+            }
             lastPersistedContactTalkAddressId = address.id
             lastContactTalkPersistAt = Date()
             dataService.clearCacheEntry(gersId: gersId, campaignId: campaignId)
@@ -6519,6 +8751,7 @@ struct LocationCardView: View {
     }
 
     private func toggleNotesCard(address: ResolvedAddress?) {
+        guard !isDetailAccessLocked else { return }
         let isEnteringNotesMode = !showNotesBlock || showContactBlock
         let shouldAutoRecord = isEnteringNotesMode &&
             notesAutoRecordEnabled &&
@@ -6552,6 +8785,8 @@ struct LocationCardView: View {
     }
 
     private func handleToolsAction(_ action: LocationCardToolsAction) {
+        guard !isDetailAccessLocked else { return }
+        showToolsSheet = false
         switch action {
         case .addVisit:
             guard let address = editableAddress else { return }
@@ -6572,7 +8807,7 @@ struct LocationCardView: View {
                         addressId: address.id,
                         campaignId: campaignId
                     )
-                    try await VisitsAPI.shared.updateStatus(
+                    let resetRow = try await VisitsAPI.shared.updateStatus(
                         addressId: address.id,
                         campaignId: campaignId,
                         status: .untouched,
@@ -6590,6 +8825,9 @@ struct LocationCardView: View {
                         preferredAddressId: preferredAddressId ?? address.id
                     )
                     await MainActor.run {
+                        if let resetRow {
+                            onHomeStateUpdated?(resetRow)
+                        }
                         onStatusUpdated?(address.id, .untouched)
                     }
                 } catch {
@@ -6597,7 +8835,7 @@ struct LocationCardView: View {
                 }
             }
             return
-        case .addHouse, .deleteManualShape:
+        case .addHouse, .deleteBuilding:
             break
         }
 
@@ -6611,8 +8849,8 @@ struct LocationCardView: View {
             toolMessage = "Add House mode is ready. Tap the map to place or move the cylinder, then continue."
         case .addVisit, .resetHome:
             break
-        case .deleteManualShape:
-            toolMessage = "Delete Manual Shape requires the parent map view to coordinate the refresh."
+        case .deleteBuilding:
+            toolMessage = "Delete Building requires the parent map view to coordinate the refresh."
         }
     }
 
@@ -6650,6 +8888,7 @@ struct LocationCardView: View {
     }
 
     private func hydrateContactFieldsIfNeeded() {
+        guard !isDetailAccessLocked else { return }
         guard !didHydrateContactFields else { return }
         didHydrateContactFields = true
 
@@ -6702,6 +8941,7 @@ struct LocationCardView: View {
 
     /// Save form and close. If we have an address context, persist notes/status then close.
     private func onSaveForm() async {
+        guard !isDetailAccessLocked else { return }
         guard !isSavingForm else { return }
         isInputFocused = false
         isSavingForm = true
@@ -6733,6 +8973,7 @@ struct LocationCardView: View {
     }
 
     private func saveContactDetailsIfNeeded(for address: ResolvedAddress) async {
+        guard !isDetailAccessLocked else { return }
         guard showContactBlock || showNotesBlock else { return }
         guard let userId = AuthManager.shared.user?.id else { return }
 
@@ -6866,6 +9107,7 @@ struct LocationCardView: View {
                     type: .meeting,
                     note: appointmentNote
                 )
+                SessionManager.shared.recordAppointment(addressId: address.id)
             }
 
             if shouldPushCRMManually {
@@ -7030,6 +9272,7 @@ private struct ManualAddressCreationSheet: View {
     let onCancelled: () -> Void
 
     @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var networkMonitor = NetworkMonitor.shared
     @StateObject private var addressAuto = UseAddressAutocomplete()
     @State private var effectiveCoordinate: CLLocationCoordinate2D
     @State private var contactFullName = ""
@@ -7136,6 +9379,12 @@ private struct ManualAddressCreationSheet: View {
     private func centerOnSubmittedQuery(_ query: String) async {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        guard networkMonitor.isOnline else {
+            await MainActor.run {
+                errorMessage = "Searching for a new address requires a connection right now."
+            }
+            return
+        }
         do {
             let seed = try await GeoAPI.shared.forwardGeocodeSeed(trimmed)
             await MainActor.run {
@@ -7152,6 +9401,10 @@ private struct ManualAddressCreationSheet: View {
         guard !isSaving else { return }
         let trimmedFormatted = trimmedAddressQuery
         guard !trimmedFormatted.isEmpty else { return }
+        guard networkMonitor.isOnline else {
+            errorMessage = "Adding a house requires a connection right now."
+            return
+        }
 
         isSaving = true
         Task {
@@ -7560,7 +9813,9 @@ private struct TranscribedNoteSheet: View {
     let onDismiss: () -> Void
 
     @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var networkMonitor = NetworkMonitor.shared
     @State private var isSaving = false
+    @State private var errorMessage: String?
 
     var body: some View {
         NavigationStack {
@@ -7588,6 +9843,11 @@ private struct TranscribedNoteSheet: View {
                         }
                     }
                 }
+                .alert("Couldn't save voice note", isPresented: .init(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) {
+                    Button("OK", role: .cancel) { errorMessage = nil }
+                } message: {
+                    if let errorMessage { Text(errorMessage) }
+                }
         }
     }
 
@@ -7605,6 +9865,9 @@ private struct TranscribedNoteSheet: View {
             } catch {
                 await MainActor.run {
                     isSaving = false
+                    errorMessage = networkMonitor.isOnline
+                        ? error.localizedDescription
+                        : "The note was kept on device but could not be queued right now."
                 }
             }
         }
@@ -7734,97 +9997,161 @@ private final class CalendarService: ObservableObject {
     }
 }
 
-// MARK: - Campaign map loading (FLYR Lottie + blur; matches SignIn / campaign creation)
-
-private struct CampaignMapLoadingLottieView: UIViewRepresentable {
-    let name: String
-
-    func makeUIView(context: Context) -> UIView {
-        let container = UIView()
-        container.clipsToBounds = true
-        let lottie = LottieAnimationView(name: name, bundle: .main)
-        lottie.loopMode = .loop
-        lottie.contentMode = .scaleAspectFit
-        lottie.backgroundBehavior = .pauseAndRestore
-        lottie.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(lottie)
-        NSLayoutConstraint.activate([
-            lottie.topAnchor.constraint(equalTo: container.topAnchor),
-            lottie.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            lottie.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            lottie.bottomAnchor.constraint(equalTo: container.bottomAnchor)
-        ])
-        lottie.play()
-        context.coordinator.lottieView = lottie
-        return container
-    }
-
-    func updateUIView(_ uiView: UIView, context: Context) {
-        context.coordinator.lottieView?.contentMode = .scaleAspectFit
-    }
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator()
-    }
-
-    final class Coordinator {
-        weak var lottieView: LottieAnimationView?
-    }
-}
-
 private struct PreSessionGoalSheet: View {
     @Environment(\.dismiss) private var dismiss
+    let mode: SessionMode
+    @Binding var goalType: GoalType
     @Binding var goalAmount: Int
-    let maxGoal: Int
-    @State private var draftGoal: Double
+    let maxCountGoal: Int
+    @State private var draftGoalType: GoalType
+    @State private var draftGoalAmount: Double
 
-    init(goalAmount: Binding<Int>, maxGoal: Int) {
+    init(mode: SessionMode, goalType: Binding<GoalType>, goalAmount: Binding<Int>, maxCountGoal: Int) {
+        self.mode = mode
+        self._goalType = goalType
         self._goalAmount = goalAmount
-        self.maxGoal = maxGoal
-        _draftGoal = State(initialValue: Double(goalAmount.wrappedValue))
+        self.maxCountGoal = maxCountGoal
+        _draftGoalType = State(initialValue: goalType.wrappedValue)
+        _draftGoalAmount = State(initialValue: Double(goalAmount.wrappedValue))
+    }
+
+    private var availableGoalTypes: [GoalType] {
+        GoalType.goalPickerCases(for: mode)
+    }
+
+    private var normalizedDraftGoalType: GoalType {
+        availableGoalTypes.first(where: { $0 == draftGoalType }) ?? availableGoalTypes.first ?? mode.defaultGoalType
+    }
+
+    private var amountRange: ClosedRange<Double> {
+        let selectedGoal = normalizedDraftGoalType
+        let minAmount = Double(selectedGoal.minimumAmount(for: mode))
+        let maxAmount = Double(selectedGoal.maximumAmount(for: mode, targetCount: maxCountGoal))
+        return minAmount...maxAmount
+    }
+
+    private var amountStep: Double {
+        normalizedDraftGoalType == .time ? 15 : 1
+    }
+
+    private var normalizedDraftGoalAmount: Int {
+        normalizedDraftGoalType.normalizedAmount(
+            Int(draftGoalAmount.rounded()),
+            for: mode,
+            targetCount: maxCountGoal
+        )
+    }
+
+    private var goalSummaryText: String {
+        switch normalizedDraftGoalType {
+        case .appointments:
+            return "One saved appointment completes this goal."
+        default:
+            return normalizedDraftGoalType.goalLabelText(amount: normalizedDraftGoalAmount)
+        }
+    }
+
+    private func selectGoalType(_ newValue: GoalType) {
+        draftGoalType = newValue
+        draftGoalAmount = Double(newValue.normalizedAmount(
+            Int(draftGoalAmount.rounded()),
+            for: mode,
+            targetCount: maxCountGoal
+        ))
     }
 
     var body: some View {
         NavigationStack {
-            VStack(alignment: .leading, spacing: 20) {
-                Text("Up to \(maxGoal) homes in this campaign.")
-                    .font(.flyrSubheadline)
-                    .foregroundStyle(.secondary)
-                    .padding(.top, 8)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    if availableGoalTypes.count > 1 {
+                        VStack(spacing: 10) {
+                            ForEach(availableGoalTypes) { option in
+                                Button {
+                                    selectGoalType(option)
+                                } label: {
+                                    HStack(alignment: .top, spacing: 12) {
+                                        Image(systemName: normalizedDraftGoalType == option ? "largecircle.fill.circle" : "circle")
+                                            .font(.system(size: 18, weight: .semibold))
+                                            .foregroundStyle(normalizedDraftGoalType == option ? Color.flyrPrimary : Color.secondary)
+                                            .padding(.top, 2)
 
-                VStack(spacing: 12) {
-                    Text("\(Int(draftGoal))")
-                        .font(.system(size: 34, weight: .bold))
-                        .frame(maxWidth: .infinity, alignment: .center)
+                                        VStack(alignment: .leading, spacing: 3) {
+                                            Text(option.pickerTitle)
+                                                .font(.flyrBody)
+                                                .foregroundStyle(.primary)
+                                            Text(option.pickerSubtitle)
+                                                .font(.flyrCaption)
+                                                .foregroundStyle(.secondary)
+                                                .fixedSize(horizontal: false, vertical: true)
+                                        }
 
-                    Slider(
-                        value: $draftGoal,
-                        in: 1...Double(maxGoal),
-                        step: 1
-                    )
+                                        Spacer(minLength: 8)
+                                    }
+                                    .padding(14)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 12)
+                                            .fill(normalizedDraftGoalType == option ? Color.flyrPrimary.opacity(0.12) : Color(.systemGray6))
+                                    )
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text(goalSummaryText)
+                            .font(.flyrBody)
+
+                        if normalizedDraftGoalType.allowsGoalAmountEditing {
+                            Text(normalizedDraftGoalType == .time ? "\(normalizedDraftGoalAmount) min" : "\(normalizedDraftGoalAmount)")
+                                .font(.system(size: 34, weight: .bold))
+                                .frame(maxWidth: .infinity, alignment: .center)
+
+                            Slider(
+                                value: $draftGoalAmount,
+                                in: amountRange,
+                                step: amountStep
+                            )
+
+                            Stepper(
+                                value: Binding(
+                                    get: { normalizedDraftGoalAmount },
+                                    set: { draftGoalAmount = Double(normalizedDraftGoalType.normalizedAmount($0, for: mode, targetCount: maxCountGoal)) }
+                                ),
+                                in: Int(amountRange.lowerBound)...Int(amountRange.upperBound),
+                                step: Int(amountStep)
+                            ) {
+                                Text(normalizedDraftGoalType.goalLabelText(amount: normalizedDraftGoalAmount))
+                                    .font(.flyrBody)
+                            }
+                        } else {
+                            Text("This goal completes as soon as you save the first appointment.")
+                                .font(.flyrCaption)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
                 }
-
-                Stepper(value: Binding(
-                    get: { Int(draftGoal) },
-                    set: { draftGoal = Double(min(max(1, $0), maxGoal)) }
-                ), in: 1...maxGoal) {
-                    Text("Goal: \(Int(draftGoal)) homes")
-                        .font(.flyrBody)
-                }
-
-                Spacer()
+                .padding(.horizontal, 20)
+                .padding(.top, 16)
+                .padding(.bottom, 24)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
             }
-            .padding(20)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .scrollBounceBehavior(.basedOnSize)
             .navigationTitle("Goal")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(Color(.systemBackground), for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Cancel") { dismiss() }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Save") {
-                        goalAmount = min(max(1, Int(draftGoal)), maxGoal)
+                        goalType = normalizedDraftGoalType
+                        goalAmount = normalizedDraftGoalAmount
                         dismiss()
                     }
                 }

@@ -73,14 +73,105 @@ final class CampaignsAPI {
     static let shared = CampaignsAPI()
     private let client = SupabaseManager.shared.client
 
+    private struct WorkspaceMemberRow: Decodable {
+        let userId: UUID
+
+        enum CodingKeys: String, CodingKey {
+            case userId = "user_id"
+        }
+    }
+
+    private func fetchSharedCampaignIds() async throws -> [UUID] {
+        guard let session = try? await client.auth.session else { return [] }
+        struct CampaignMemberRow: Decodable {
+            let campaignId: UUID
+
+            enum CodingKeys: String, CodingKey {
+                case campaignId = "campaign_id"
+            }
+        }
+
+        let response: PostgrestResponse<[CampaignMemberRow]> = try await client
+            .from("campaign_members")
+            .select("campaign_id")
+            .eq("user_id", value: session.user.id.uuidString)
+            .execute()
+
+        return response.value.map(\.campaignId)
+    }
+
+    private func isWorkspaceMember(workspaceId: UUID) async throws -> Bool {
+        guard let session = try? await client.auth.session else { return false }
+
+        let response: PostgrestResponse<[WorkspaceMemberRow]> = try await client
+            .from("workspace_members")
+            .select("user_id")
+            .eq("workspace_id", value: workspaceId.uuidString)
+            .eq("user_id", value: session.user.id.uuidString)
+            .limit(1)
+            .execute()
+
+        return !response.value.isEmpty
+    }
+
+    private func mergeUniqueCampaigns<T>(
+        primary: [T],
+        secondary: [T],
+        id: (T) -> UUID
+    ) -> [T] {
+        var seen = Set(primary.map(id))
+        var merged = primary
+        for item in secondary where seen.insert(id(item)).inserted {
+            merged.append(item)
+        }
+        return merged
+    }
+
+    private func requireResolvedWorkspaceId(_ workspaceId: UUID?) async throws -> UUID {
+        if let workspaceId {
+            return workspaceId
+        }
+        if let resolvedWorkspaceId = await RoutePlansAPI.shared.existingWorkspaceIdForCurrentUser() {
+            return resolvedWorkspaceId
+        }
+        throw NSError(
+            domain: "CampaignsAPI",
+            code: 400,
+            userInfo: [
+                NSLocalizedDescriptionKey: "Workspace context is required before loading campaigns."
+            ]
+        )
+    }
+
     // All campaigns (optionally scoped by workspace)
     func fetchCampaigns(workspaceId: UUID? = nil) async throws -> [Campaign] {
-        var query = client.from("campaigns").select()
-        if let workspaceId = workspaceId {
-            query = query.eq("workspace_id", value: workspaceId)
+        let workspaceId = try await requireResolvedWorkspaceId(workspaceId)
+
+        let sharedIds = try await fetchSharedCampaignIds()
+        let includeWorkspaceCampaigns = try await isWorkspaceMember(workspaceId: workspaceId)
+
+        var primaryCampaigns: [Campaign] = []
+        if includeWorkspaceCampaigns {
+            let primary: PostgrestResponse<[Campaign]> = try await client
+                .from("campaigns")
+                .select()
+                .eq("workspace_id", value: workspaceId)
+                .order("created_at", ascending: false)
+                .execute()
+            primaryCampaigns = primary.value
         }
-        let res: PostgrestResponse<[Campaign]> = try await query.order("created_at", ascending: false).execute()
-        return res.value
+
+        guard !sharedIds.isEmpty else { return primaryCampaigns }
+
+        let secondary: PostgrestResponse<[Campaign]> = try await client
+            .from("campaigns")
+            .select()
+            .in("id", values: sharedIds.map(\.uuidString))
+            .order("created_at", ascending: false)
+            .execute()
+
+        return mergeUniqueCampaigns(primary: primaryCampaigns, secondary: secondary.value, id: \.id)
+            .sorted { $0.createdAt > $1.createdAt }
     }
 
     // Single campaign
@@ -223,7 +314,10 @@ final class CampaignsAPI {
             createdAt: dbRow.createdAt,
             status: .draft,
             seedQuery: dbRow.region,
-            dataConfidence: dbRow.dataConfidence
+            dataConfidence: dbRow.dataConfidence,
+            hasParcels: dbRow.hasParcels,
+            buildingLinkConfidence: dbRow.buildingLinkConfidence,
+            mapMode: dbRow.mapMode
         )
         
         print("✅ [API DEBUG] Campaign creation completed")
@@ -275,13 +369,38 @@ final class CampaignsAPI {
     // Fetch campaigns without addresses (lightweight for lists)
     func fetchCampaignsMetadata(workspaceId: UUID? = nil) async throws -> [CampaignDBRow] {
         print("🌐 [API DEBUG] Fetching campaigns metadata (no addresses)")
-        var query = client.from("campaigns").select()
-        if let workspaceId = workspaceId {
-            query = query.eq("workspace_id", value: workspaceId)
+        let workspaceId = try await requireResolvedWorkspaceId(workspaceId)
+
+        let sharedIds = try await fetchSharedCampaignIds()
+        let includeWorkspaceCampaigns = try await isWorkspaceMember(workspaceId: workspaceId)
+
+        var primaryCampaigns: [CampaignDBRow] = []
+        if includeWorkspaceCampaigns {
+            let primary: PostgrestResponse<[CampaignDBRow]> = try await client
+                .from("campaigns")
+                .select()
+                .eq("workspace_id", value: workspaceId)
+                .order("created_at", ascending: false)
+                .execute()
+            primaryCampaigns = primary.value
         }
-        let res: PostgrestResponse<[CampaignDBRow]> = try await query.order("created_at", ascending: false).execute()
-        print("✅ [API DEBUG] Fetched \(res.value.count) campaigns metadata")
-        return res.value
+
+        guard !sharedIds.isEmpty else {
+            print("✅ [API DEBUG] Fetched \(primaryCampaigns.count) campaigns metadata")
+            return primaryCampaigns
+        }
+
+        let secondary: PostgrestResponse<[CampaignDBRow]> = try await client
+            .from("campaigns")
+            .select()
+            .in("id", values: sharedIds.map(\.uuidString))
+            .order("created_at", ascending: false)
+            .execute()
+
+        let merged = mergeUniqueCampaigns(primary: primaryCampaigns, secondary: secondary.value, id: \.id)
+            .sorted { $0.createdAt > $1.createdAt }
+        print("✅ [API DEBUG] Fetched \(merged.count) campaigns metadata")
+        return merged
     }
 
     /// True if the workspace has at least one campaign created via Quick Start (tags contain "quick_start").
@@ -295,12 +414,34 @@ final class CampaignsAPI {
     // Fetches campaign metadata and address counts so list shows correct house count
     func fetchCampaignsV2(workspaceId: UUID? = nil) async throws -> [CampaignV2] {
         print("🌐 [API DEBUG] Fetching campaigns V2 from Supabase (metadata + address counts)")
-        var query = client.from("campaigns").select()
-        if let workspaceId = workspaceId {
-            query = query.eq("workspace_id", value: workspaceId)
+        let dbRows: [CampaignDBRow]
+        let workspaceId = try await requireResolvedWorkspaceId(workspaceId)
+        let sharedIds = try await fetchSharedCampaignIds()
+        let includeWorkspaceCampaigns = try await isWorkspaceMember(workspaceId: workspaceId)
+
+        var primaryCampaigns: [CampaignDBRow] = []
+        if includeWorkspaceCampaigns {
+            let primary: PostgrestResponse<[CampaignDBRow]> = try await client
+                .from("campaigns")
+                .select()
+                .eq("workspace_id", value: workspaceId)
+                .order("created_at", ascending: false)
+                .execute()
+            primaryCampaigns = primary.value
         }
-        let res: PostgrestResponse<[CampaignDBRow]> = try await query.order("created_at", ascending: false).execute()
-        let dbRows = res.value
+
+        if sharedIds.isEmpty {
+            dbRows = primaryCampaigns
+        } else {
+            let secondary: PostgrestResponse<[CampaignDBRow]> = try await client
+                .from("campaigns")
+                .select()
+                .in("id", values: sharedIds.map(\.uuidString))
+                .order("created_at", ascending: false)
+                .execute()
+            dbRows = mergeUniqueCampaigns(primary: primaryCampaigns, secondary: secondary.value, id: \.id)
+                .sorted { $0.createdAt > $1.createdAt }
+        }
         print("✅ [API DEBUG] Fetched \(dbRows.count) campaigns from DB")
         
         // 2. Fetch address counts per campaign (for house count in list)
@@ -341,7 +482,10 @@ final class CampaignsAPI {
                 createdAt: dbRow.createdAt,
                 status: status,
                 seedQuery: dbRow.region,
-                dataConfidence: dbRow.dataConfidence
+                dataConfidence: dbRow.dataConfidence,
+                hasParcels: dbRow.hasParcels,
+                buildingLinkConfidence: dbRow.buildingLinkConfidence,
+                mapMode: dbRow.mapMode
             )
             campaigns.append(campaign)
         }
@@ -803,7 +947,7 @@ final class CampaignsAPI {
         return res.value
     }
 
-    /// Row used to gate session start (provision + map roads when applicable).
+    /// Row used to gate session start on campaign provisioning only.
     struct CampaignSessionGateRow: Codable {
         let addressSource: String?
         let provisionStatus: String?
@@ -826,6 +970,16 @@ final class CampaignsAPI {
 
     /// `nil` = allowed to start session; non-nil = user-facing reason to block.
     func sessionStartBlockReason(campaignId: UUID) async -> String? {
+        if !NetworkMonitor.shared.isOnline {
+            let campaignIdString = campaignId.uuidString
+            let downloadState = await CampaignRepository.shared.getDownloadState(campaignId: campaignIdString)
+            let hasCachedBundle = await CampaignRepository.shared.getCampaignMapBundle(campaignId: campaignIdString) != nil
+            if downloadState?.isAvailableOffline == true || hasCachedBundle {
+                return nil
+            }
+            return "This campaign is not stored on this device yet. Reconnect for a moment so FLYR can prepare the area automatically, then try again."
+        }
+
         do {
             let row = try await fetchCampaignSessionGateRow(campaignId: campaignId)
             let status = (row.provisionStatus ?? "").lowercased()
@@ -834,13 +988,6 @@ final class CampaignsAPI {
             }
             if status != "ready" {
                 return "Campaign is still provisioning. Wait until it finishes, then try starting a session again."
-            }
-            let src = (row.addressSource ?? "").lowercased()
-            if src == "map" {
-                let roadsOK = await CampaignRoadService.shared.areRoadsReady(campaignId: campaignId.uuidString)
-                if !roadsOK {
-                    return "Campaign roads are not ready yet. Wait a moment, reopen the campaign, or create the campaign again if this persists."
-                }
             }
             return nil
         } catch {
@@ -875,6 +1022,9 @@ struct CampaignProvisionResponse: Codable {
     var dataConfidenceLabel: DataConfidenceLabel?
     var dataConfidenceReason: String?
     var dataConfidenceSummary: CampaignDataConfidenceSummary?
+    var hasParcels: Bool?
+    var buildingLinkConfidence: Double?
+    var mapMode: CampaignMapMode?
 
     enum CodingKeys: String, CodingKey {
         case success
@@ -888,6 +1038,9 @@ struct CampaignProvisionResponse: Codable {
         case dataConfidenceLabel = "data_confidence_label"
         case dataConfidenceReason = "data_confidence_reason"
         case dataConfidenceSummary = "data_confidence_summary"
+        case hasParcels = "has_parcels"
+        case buildingLinkConfidence = "building_link_confidence"
+        case mapMode = "map_mode"
     }
 }
 
@@ -991,7 +1144,10 @@ final class CampaignsV2APISupabase: CampaignsV2APIType {
             createdAt: dbRow.createdAt,
             status: dbRow.status ?? .draft,
             seedQuery: dbRow.region,
-            dataConfidence: dbRow.dataConfidence
+            dataConfidence: dbRow.dataConfidence,
+            hasParcels: dbRow.hasParcels,
+            buildingLinkConfidence: dbRow.buildingLinkConfidence,
+            mapMode: dbRow.mapMode
         )
     }
     

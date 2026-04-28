@@ -5,13 +5,6 @@ import UIKit
 enum UserHeadingConeBand: String, CaseIterable {
     case primary
 
-    var spreadDegrees: CLLocationDirection {
-        switch self {
-        case .primary:
-            return 70
-        }
-    }
-
     var innerRadiusMeters: Double {
         switch self {
         case .primary:
@@ -29,16 +22,36 @@ enum UserHeadingConeBand: String, CaseIterable {
     var color: UIColor {
         switch self {
         case .primary:
-            return UIColor(red: 1.0, green: 0.31, blue: 0.27, alpha: 0.16)
+            return UIColor(red: 1.0, green: 0.31, blue: 0.27, alpha: 1.0)
         }
     }
 }
 
 enum UserHeadingIndicatorRenderer {
-    static func featureCollection(center: CLLocationCoordinate2D, heading: CLLocationDirection) -> FeatureCollection {
+    static func featureCollection(
+        center: CLLocationCoordinate2D,
+        presentationState: MapHeadingPresentationState
+    ) -> FeatureCollection {
+        guard presentationState.isRenderable,
+              let heading = presentationState.heading else {
+            return FeatureCollection(features: [])
+        }
+
         let features = UserHeadingConeBand.allCases.map { band -> Feature in
-            var feature = Feature(geometry: .polygon(makeSector(center: center, heading: heading, band: band)))
-            feature.properties = ["band": .string(band.rawValue)]
+            var feature = Feature(
+                geometry: .polygon(
+                    makeSector(
+                        center: center,
+                        heading: heading,
+                        spreadDegrees: presentationState.spreadDegrees,
+                        band: band
+                    )
+                )
+            )
+            feature.properties = [
+                "band": .string(band.rawValue),
+                "opacity": .number(presentationState.opacity)
+            ]
             return feature
         }
         return FeatureCollection(features: features)
@@ -51,11 +64,12 @@ enum UserHeadingIndicatorRenderer {
     private static func makeSector(
         center: CLLocationCoordinate2D,
         heading: CLLocationDirection,
+        spreadDegrees: CLLocationDirection,
         band: UserHeadingConeBand
     ) -> Polygon {
-        let startAngle = heading - (band.spreadDegrees / 2)
-        let endAngle = heading + (band.spreadDegrees / 2)
-        let stepCount = max(12, Int(band.spreadDegrees / 5))
+        let startAngle = heading - (spreadDegrees / 2)
+        let endAngle = heading + (spreadDegrees / 2)
+        let stepCount = max(12, Int(spreadDegrees / 5))
 
         var ring: [LocationCoordinate2D] = []
         for step in 0...stepCount {

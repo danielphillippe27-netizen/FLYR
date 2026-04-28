@@ -17,7 +17,7 @@ struct SessionStatsView: View {
             
             StatItem(
                 title: manager.goalType.displayName,
-                value: "\(manager.goalAmount)"
+                value: manager.formattedGoalAmount
             )
         }
         .padding(.horizontal, 16)
@@ -58,4 +58,3 @@ struct StatItem: View {
         .frame(maxWidth: .infinity)
     }
 }
-

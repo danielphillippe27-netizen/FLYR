@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Shown when an active session is restored after a long time (forgot to end). User must resume live tracking or end and save so leaderboard rollups can count the session.
+/// Shown when an active session is restored on launch. User must explicitly resume live tracking or end and save.
 struct StaleActiveSessionResolutionView: View {
     @ObservedObject var sessionManager: SessionManager
 
@@ -30,7 +30,7 @@ struct StaleActiveSessionResolutionView: View {
                     .multilineTextAlignment(.center)
 
                 Text(
-                    "This session started \(elapsedText) ago and was never ended. Resume to keep tracking, or end it now so your doors count on the leaderboard."
+                    "We found an open session from \(elapsedText) ago. Resume to keep tracking, or end it now and save your progress."
                 )
                 .font(.flyrSubheadline)
                 .foregroundStyle(Color.muted)

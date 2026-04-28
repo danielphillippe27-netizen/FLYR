@@ -7,7 +7,6 @@ struct LeaderboardUser: Identifiable, Codable {
     let brokerage: String?
     let rank: Int
     let doorknocks: Int
-    let flyers: Int
     let leads: Int
     let conversations: Int
     let distance: Double
@@ -23,7 +22,6 @@ struct LeaderboardUser: Identifiable, Codable {
         case brokerage
         case rank
         case doorknocks
-        case flyers
         case leads
         case conversations
         case distance
@@ -41,7 +39,6 @@ struct LeaderboardUser: Identifiable, Codable {
         brokerage: String?,
         rank: Int,
         doorknocks: Int,
-        flyers: Int,
         leads: Int,
         conversations: Int,
         distance: Double,
@@ -56,7 +53,6 @@ struct LeaderboardUser: Identifiable, Codable {
         self.brokerage = brokerage
         self.rank = rank
         self.doorknocks = doorknocks
-        self.flyers = flyers
         self.leads = leads
         self.conversations = conversations
         self.distance = distance
@@ -72,8 +68,6 @@ struct LeaderboardUser: Identifiable, Codable {
         
         switch metric {
         case "doorknocks":
-            return Double(snapshot.doorknocks)
-        case "flyers":
             return Double(snapshot.doorknocks)
         case "leads":
             return Double(snapshot.leads)
@@ -102,8 +96,6 @@ struct LeaderboardUser: Identifiable, Codable {
         switch metric {
         case "doorknocks":
             return "\(doorknocks)"
-        case "flyers":
-            return "\(doorknocks)"
         case "leads":
             return "\(leads)"
         case "conversations":
@@ -111,7 +103,7 @@ struct LeaderboardUser: Identifiable, Codable {
         case "distance":
             return String(format: "%.1f km", distance)
         default:
-            return "\(flyers)"
+            return "\(doorknocks)"
         }
     }
     

@@ -100,13 +100,14 @@ struct MetricRow: View {
         CycleDetailView(
             cycle: FarmCycle(
                 farmId: UUID(),
-                cycleName: "Cycle 1",
+                cycleNumber: 1,
                 startDate: Date(),
-                endDate: Date().addingTimeInterval(60 * 60 * 24 * 60)
+                endDate: Date().addingTimeInterval(60 * 60 * 24 * 60),
+                touchCount: 0,
+                completedTouchCount: 0
             ),
             touches: []
         )
     }
 }
-
 

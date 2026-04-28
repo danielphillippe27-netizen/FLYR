@@ -86,9 +86,8 @@ struct QRCodeDetailView: View {
         guard let qrImage = qrImage else { return }
         let activityVC = UIActivityViewController(activityItems: [qrImage, qrCode.webURL], applicationActivities: nil)
         
-        if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-           let rootViewController = windowScene.windows.first?.rootViewController {
-            rootViewController.present(activityVC, animated: true)
+        if let presenter = ShareCardGenerator.rootViewController() {
+            presenter.present(activityVC, animated: true)
         }
     }
 }
@@ -112,4 +111,3 @@ struct LinkRow: View {
         .padding(.vertical, 4)
     }
 }
-

@@ -197,7 +197,13 @@ struct FullScreenMapView: View {
             return
         }
 
-        uiState.selectCampaign(id: selectedCampaignId, name: selectedCampaignName)
+        let shouldPreservePendingLiveInvite =
+            uiState.pendingLiveInviteHandoff?.campaignId == selectedCampaignId
+        uiState.selectCampaign(
+            id: selectedCampaignId,
+            name: selectedCampaignName,
+            preservePendingLiveInviteHandoff: shouldPreservePendingLiveInvite
+        )
     }
 
     private func syncSelectionFromUIState() {

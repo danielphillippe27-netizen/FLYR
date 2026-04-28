@@ -46,16 +46,14 @@ struct AppIconGeneratorPreview: View {
             try AppIconGenerator.saveIcon(to: outputURL)
             
             // Show success alert
-            if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-               let window = windowScene.windows.first,
-               let rootViewController = window.rootViewController {
+            if let presenter = ShareCardGenerator.rootViewController() {
                 let alert = UIAlertController(
                     title: "Success",
                     message: "Icon saved to AppIcon.appiconset",
                     preferredStyle: .alert
                 )
                 alert.addAction(UIAlertAction(title: "OK", style: .default))
-                rootViewController.present(alert, animated: true)
+                presenter.present(alert, animated: true)
             }
         } catch {
             print("Failed to save icon: \(error)")
@@ -66,4 +64,3 @@ struct AppIconGeneratorPreview: View {
 #Preview {
     AppIconGeneratorPreview()
 }
-

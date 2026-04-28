@@ -1,23 +1,24 @@
 import SwiftUI
 import CoreLocation
 
-/// Homes + route share card: map snapshot (live campaign capture or Mapbox static), optional vector overlay, Strava-style stats.
+/// Homes share card: map snapshot (live campaign capture or Mapbox static), optional home markers, Strava-style stats.
 struct SessionHomesShareCardView: View {
     let data: SessionSummaryData
     var forExport: Bool = false
     var darkCard: Bool = false
     var backgroundSnapshot: UIImage? = nil
-    /// Red route + green home cubes. Off when using a live campaign bitmap (already shows session art) or demo share-card mode.
+    /// Green home cubes. Off when using a live campaign bitmap (already shows session art) or demo share-card mode.
     var showVectorOverlay: Bool = true
 
     private var cornerRadius: CGFloat { forExport ? 0 : 24 }
     private var horizontalPadding: CGFloat { forExport ? 56 : 20 }
     private var headingFont: Font { .system(size: forExport ? 80 : 32, weight: .heavy) }
-    private var flyrLogoHeight: CGFloat { forExport ? 118 : 62 }
-    private var flyrExportWordmarkFont: Font { .system(size: 96, weight: .black) }
+    private var flyrLogoWidth: CGFloat { forExport ? 560 : 180 }
+    private var flyrExportWordmarkFont: Font { .system(size: 216, weight: .black) }
     private var statValueFont: Font { .system(size: forExport ? 56 : 22, weight: .bold) }
     private var statLabelFont: Font { .system(size: forExport ? 28 : 12, weight: .medium) }
-    private var topIconSize: CGFloat { forExport ? 64 : 30 }
+    private var logoTopPadding: CGFloat { forExport ? 72 : 18 }
+    private var logoTrailingPadding: CGFloat { forExport ? 48 : 16 }
 
     private var sessionHeadingTitle: String {
         guard let start = data.startTime else { return "Session" }
@@ -59,64 +60,67 @@ struct SessionHomesShareCardView: View {
                 )
                 .allowsHitTesting(false)
 
-                HStack(alignment: .center, spacing: 0) {
-                    VStack(alignment: .leading, spacing: 0) {
-                        Image(systemName: "figure.walk")
-                            .font(.system(size: topIconSize, weight: .medium))
-                            .foregroundColor(.white.opacity(0.95))
-                            .padding(.horizontal, horizontalPadding)
-                            .padding(.top, forExport ? 72 : 18)
+                VStack(alignment: .leading, spacing: 0) {
+                    Spacer(minLength: 0)
 
-                        Spacer(minLength: 0)
+                    VStack(alignment: .leading, spacing: forExport ? 20 : 10) {
+                        Text(sessionHeadingTitle)
+                            .font(headingFont)
+                            .foregroundColor(.white)
 
-                        VStack(alignment: .leading, spacing: forExport ? 20 : 10) {
-                            Text(sessionHeadingTitle)
-                                .font(headingFont)
-                                .foregroundColor(.white)
-
-                            if !routeSubtitle.isEmpty {
-                                Text(routeSubtitle)
-                                    .font(.system(size: forExport ? 30 : 14, weight: .medium))
-                                    .foregroundColor(.white.opacity(0.78))
-                            }
-
-                            HStack(alignment: .top, spacing: forExport ? 32 : 12) {
-                                stravaStatColumn(label: "Doors", value: "\(data.doorsCount)")
-                                stravaStatColumn(label: "Distance", value: data.formattedDistance)
-                                stravaStatColumn(label: "Time", value: data.formattedTimeStrava)
-                            }
+                        if !routeSubtitle.isEmpty {
+                            Text(routeSubtitle)
+                                .font(.system(size: forExport ? 30 : 14, weight: .medium))
+                                .foregroundColor(.white.opacity(0.78))
                         }
-                        .padding(.horizontal, horizontalPadding)
-                        .padding(.bottom, forExport ? 88 : 28)
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
 
-                    VStack {
-                        Spacer(minLength: 0)
-                        Group {
-                            if forExport {
-                                Text("FLYR")
-                                    .font(flyrExportWordmarkFont)
-                                    .foregroundColor(.white)
-                            } else {
-                                Image("FLYRLogo")
-                                    .resizable()
-                                    .renderingMode(.template)
-                                    .scaledToFit()
-                                    .frame(height: flyrLogoHeight)
-                                    .foregroundColor(.white)
-                            }
+                        HStack(alignment: .top, spacing: forExport ? 32 : 12) {
+                            stravaStatColumn(label: "Doors", value: "\(data.doorsCount)")
+                            stravaStatColumn(label: "Distance", value: data.formattedDistance)
+                            stravaStatColumn(label: "Time", value: data.formattedTimeStrava)
                         }
-                        .frame(maxWidth: forExport ? 280 : 160, alignment: .trailing)
-                        .padding(.trailing, horizontalPadding)
-                        Spacer(minLength: 0)
                     }
-                    .frame(maxHeight: .infinity)
+                    .padding(.horizontal, horizontalPadding)
+                    .padding(.bottom, forExport ? 88 : 28)
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+
+                flyrLogoOverlay
             }
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         }
         .foregroundColor(.white)
+    }
+
+    @ViewBuilder
+    private var flyrLogoOverlay: some View {
+        VStack {
+            HStack {
+                Spacer(minLength: 0)
+                Group {
+                    if forExport {
+                        Text("FLYR")
+                            .font(flyrExportWordmarkFont)
+                            .foregroundColor(.white)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.6)
+                            .allowsTightening(true)
+                    } else {
+                        Image("FLYRLogoWide")
+                            .resizable()
+                            .renderingMode(.template)
+                            .scaledToFit()
+                            .foregroundColor(.white)
+                    }
+                }
+                .frame(width: flyrLogoWidth, alignment: .trailing)
+                .padding(.top, logoTopPadding)
+                .padding(.trailing, logoTrailingPadding)
+            }
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+        .allowsHitTesting(false)
     }
 
     private var routeSubtitle: String {
@@ -167,7 +171,7 @@ private struct VisitedHomesMapArtwork: View {
     var body: some View {
         GeometryReader { proxy in
             let minSide = min(proxy.size.width, proxy.size.height)
-            let pad = max(24, minSide * 0.055)
+            let pad = max(14, minSide * 0.03)
             let projection = ActivityMapProjection(
                 routeSegments: routeSegments,
                 homeCoordinates: completedHomes,
@@ -187,37 +191,6 @@ private struct VisitedHomesMapArtwork: View {
                 }
 
                 if showVectorOverlay {
-                    ForEach(Array(routeSegments.enumerated()), id: \.offset) { item in
-                        let projectedPoints = item.element
-                            .filter { CLLocationCoordinate2DIsValid($0) }
-                            .map(projection.project)
-                        if projectedPoints.count >= 2 {
-                            Path { path in
-                                path.addLines(projectedPoints)
-                            }
-                            .stroke(
-                                Color.black.opacity(0.28),
-                                style: StrokeStyle(
-                                    lineWidth: max(4, minSide * 0.013),
-                                    lineCap: .round,
-                                    lineJoin: .round
-                                )
-                            )
-
-                            Path { path in
-                                path.addLines(projectedPoints)
-                            }
-                            .stroke(
-                                Color(red: 0.95, green: 0.20, blue: 0.16),
-                                style: StrokeStyle(
-                                    lineWidth: max(2.5, minSide * 0.0085),
-                                    lineCap: .round,
-                                    lineJoin: .round
-                                )
-                            )
-                        }
-                    }
-
                     ForEach(Array(completedHomes.enumerated()), id: \.offset) { item in
                         let point = projection.project(item.element)
                         CompletedHomeCubeMarker(side: max(9, minSide * 0.034))
@@ -347,8 +320,8 @@ private struct ActivityMapProjection {
             rMaxLon = mid + minSpan / 2
         }
 
-        let latPad = max((rMaxLat - rMinLat) * 0.14, minSpan * 0.08)
-        let lonPad = max((rMaxLon - rMinLon) * 0.14, minSpan * 0.08)
+        let latPad = max((rMaxLat - rMinLat) * 0.06, minSpan * 0.045)
+        let lonPad = max((rMaxLon - rMinLon) * 0.06, minSpan * 0.045)
         minLat = rMinLat - latPad
         maxLat = rMaxLat + latPad
         minLon = rMinLon - lonPad

@@ -133,7 +133,7 @@ final class FarmTouchPlannerViewModel: ObservableObject {
             let updated = FarmTouch(
                 id: touch.id,
                 farmId: touch.farmId,
-                phaseId: touch.phaseId,
+                cycleNumber: touch.cycleNumber,
                 date: touch.date,
                 type: touch.type,
                 title: touch.title,
@@ -171,7 +171,7 @@ final class FarmTouchPlannerViewModel: ObservableObject {
         let updated = FarmTouch(
             id: touch.id,
             farmId: touch.farmId,
-            phaseId: touch.phaseId,
+            cycleNumber: touch.cycleNumber,
             date: touch.date,
             type: touch.type,
             title: touch.title,
@@ -196,7 +196,7 @@ final class FarmTouchPlannerViewModel: ObservableObject {
         let updated = FarmTouch(
             id: touch.id,
             farmId: touch.farmId,
-            phaseId: touch.phaseId,
+            cycleNumber: touch.cycleNumber,
             date: touch.date,
             type: touch.type,
             title: touch.title,

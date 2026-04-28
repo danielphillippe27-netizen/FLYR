@@ -16,6 +16,9 @@ struct CampaignDBRow: Codable {
     let region: String?
     let tags: String?
     let status: CampaignStatus?
+    let hasParcels: Bool?
+    let buildingLinkConfidence: Double?
+    let mapMode: CampaignMapMode?
     let dataConfidenceScore: Double?
     let dataConfidenceLabel: DataConfidenceLabel?
     let dataConfidenceReason: String?
@@ -27,6 +30,9 @@ struct CampaignDBRow: Codable {
 
     enum CodingKeys: String, CodingKey {
         case id, title, description, scans, conversions, region, tags, status
+        case hasParcels = "has_parcels"
+        case buildingLinkConfidence = "building_link_confidence"
+        case mapMode = "map_mode"
         case typeRaw = "type"
         case addressSourceRaw = "address_source"
         case dataConfidenceScore = "data_confidence_score"
@@ -300,6 +306,9 @@ struct AddressStatusRow: Decodable, Identifiable {
     let lastVisitedAt: Date?
     let notes: String?
     let visitCount: Int
+    let lastActionBy: UUID?
+    let lastSessionId: UUID?
+    let lastHomeEventId: UUID?
     let createdAt: Date
     let updatedAt: Date
     
@@ -312,6 +321,9 @@ struct AddressStatusRow: Decodable, Identifiable {
         case lastVisitedAt = "last_visited_at"
         case notes
         case visitCount = "visit_count"
+        case lastActionBy = "last_action_by"
+        case lastSessionId = "last_session_id"
+        case lastHomeEventId = "last_home_event_id"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
     }
@@ -340,6 +352,9 @@ struct AddressStatusRow: Decodable, Identifiable {
         lastVisitedAt = try c.decodeIfPresent(Date.self, forKey: .lastVisitedAt)
         notes = try c.decodeIfPresent(String.self, forKey: .notes)
         visitCount = try c.decodeIfPresent(Int.self, forKey: .visitCount) ?? 0
+        lastActionBy = try c.decodeIfPresent(UUID.self, forKey: .lastActionBy)
+        lastSessionId = try c.decodeIfPresent(UUID.self, forKey: .lastSessionId)
+        lastHomeEventId = try c.decodeIfPresent(UUID.self, forKey: .lastHomeEventId)
         updatedAt = try c.decode(Date.self, forKey: .updatedAt)
         createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt) ?? updatedAt
     }

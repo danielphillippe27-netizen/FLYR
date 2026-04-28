@@ -39,11 +39,13 @@ actor SettingsService {
         // Supabase Swift SDK handles encoding automatically
         // For null values, we pass NSNull which will be converted to null in JSON
         let updateValue: AnyCodable = AnyCodable(value)
-        
+
         try await client
             .from("user_settings")
-            .update([key: updateValue])
-            .eq("user_id", value: userID)
+            .upsert([
+                "user_id": AnyCodable(userID.uuidString),
+                key: updateValue
+            ], onConflict: "user_id")
             .execute()
     }
     
@@ -60,4 +62,3 @@ actor SettingsService {
         try await updateSetting(userID: userID, key: "default_website", value: website ?? NSNull())
     }
 }
-

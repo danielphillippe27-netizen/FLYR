@@ -71,15 +71,34 @@ struct RecentActivityRow: View {
     }
 
     private var activityLabel: String {
-        (session.goal_type ?? "flyers") == "flyers" ? "Doors" : "Door Knock"
+        if session.isNetworkingSession {
+            return "Networking"
+        }
+        switch session.sessionModeValue {
+        case .flyer:
+            return "Flyers"
+        case .doorKnocking:
+            return "Door Knock"
+        }
     }
 
     private var iconName: String {
-        (session.goal_type ?? "flyers") == "flyers" ? "paperplane.fill" : "hand.raised.fill"
+        if session.isNetworkingSession {
+            return "person.2.fill"
+        }
+        switch session.sessionModeValue {
+        case .flyer:
+            return "paperplane.fill"
+        case .doorKnocking:
+            return "hand.raised.fill"
+        }
     }
 
     private var countDisplay: Int {
-        session.doorsCount
+        if session.isNetworkingSession {
+            return session.conversations ?? 0
+        }
+        return session.doorsCount
     }
 
     private var timeFormatter: DateFormatter {
