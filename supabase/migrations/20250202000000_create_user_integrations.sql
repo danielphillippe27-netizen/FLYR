@@ -119,3 +119,4 @@ COMMENT ON COLUMN public.user_integrations.webhook_url IS 'Webhook URL (for Zapi
 COMMENT ON COLUMN public.user_integrations.expires_at IS 'Token expiration timestamp (Unix epoch in seconds)';
 
 
+

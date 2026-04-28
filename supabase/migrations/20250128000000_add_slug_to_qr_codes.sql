@@ -23,3 +23,4 @@ WHERE slug IS NOT NULL;
 COMMENT ON COLUMN public.qr_codes.slug IS 'Unique URL-friendly identifier for QR code routing: https://flyrpro.app/q/<slug>';
 
 
+

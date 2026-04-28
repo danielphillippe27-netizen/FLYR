@@ -30,3 +30,4 @@ COMMENT ON COLUMN public.campaign_landing_pages.title IS 'Landing page title dis
 COMMENT ON COLUMN public.campaign_landing_pages.hero_type IS 'Type of hero media: image, video, or youtube';
 
 
+

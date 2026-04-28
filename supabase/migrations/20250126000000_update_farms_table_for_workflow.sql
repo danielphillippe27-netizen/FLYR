@@ -41,3 +41,4 @@ COMMENT ON COLUMN public.farms.frequency IS 'Number of touches per month (1-4)';
 
 
 
+

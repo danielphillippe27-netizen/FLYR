@@ -25,3 +25,4 @@ COMMENT ON COLUMN public.qr_codes.qr_variant IS 'A/B test variant: A or B (nulla
 
 
 
+

@@ -51,3 +51,4 @@ COMMENT ON FUNCTION public.fn_upsert_building_polygon(uuid, jsonb) IS
 
 
 
+

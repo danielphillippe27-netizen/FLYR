@@ -110,3 +110,4 @@ COMMENT ON COLUMN public.profiles.quote IS 'User profile quote/bio';
 COMMENT ON COLUMN public.profiles.profile_image_url IS 'Path to profile image in profile_images bucket';
 
 
+

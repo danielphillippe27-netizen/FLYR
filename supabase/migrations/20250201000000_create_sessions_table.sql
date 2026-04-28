@@ -79,3 +79,4 @@ CREATE POLICY "Users can delete their own sessions"
     USING (auth.uid() = user_id);
 
 
+

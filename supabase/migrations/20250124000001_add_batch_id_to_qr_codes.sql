@@ -21,3 +21,4 @@ COMMENT ON COLUMN public.qr_codes.batch_id IS 'Foreign key to batches table for 
 
 
 
+

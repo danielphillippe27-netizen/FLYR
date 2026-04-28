@@ -94,3 +94,4 @@ COMMENT ON COLUMN public.campaign_landing_pages.hero_url IS 'URL to hero image s
 
 
 
+

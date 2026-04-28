@@ -75,3 +75,4 @@ COMMENT ON COLUMN public.challenges.expires_at IS 'Calculated expiration timesta
 
 
 
+

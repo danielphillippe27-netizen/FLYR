@@ -123,3 +123,4 @@ GRANT EXECUTE ON FUNCTION public.get_leaderboard(TEXT, TEXT) TO authenticated;
 COMMENT ON FUNCTION public.get_leaderboard(TEXT, TEXT) IS 'Get leaderboard with metric and timeframe filtering, returns LeaderboardUser format';
 
 
+

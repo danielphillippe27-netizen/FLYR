@@ -65,3 +65,4 @@ COMMENT ON COLUMN public.building_touches.source_id IS 'Mapbox source ID (e.g., 
 COMMENT ON COLUMN public.building_touches.source_layer_id IS 'Mapbox source layer ID (e.g., "building", null for GeoJSON sources)';
 COMMENT ON COLUMN public.building_touches.campaign_id IS 'Optional link to a campaign if building was tapped in campaign context';
 
+

@@ -47,3 +47,4 @@ COMMENT ON FUNCTION public.get_buildings_by_address_ids(uuid[]) IS
 
 
 
+

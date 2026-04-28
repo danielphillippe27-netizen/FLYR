@@ -187,3 +187,4 @@ COMMENT ON TABLE public.contact_activities IS 'Activity history for contacts (kn
 
 
 
+

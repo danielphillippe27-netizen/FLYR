@@ -67,3 +67,4 @@ COMMENT ON COLUMN public.campaign_landing_page_analytics.timestamp_bucket IS 'Da
 
 
 
+

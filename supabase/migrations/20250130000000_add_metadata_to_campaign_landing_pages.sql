@@ -14,3 +14,4 @@ CREATE INDEX IF NOT EXISTS idx_campaign_landing_pages_metadata
 COMMENT ON COLUMN public.campaign_landing_pages.metadata IS 'JSONB metadata storing designer theme configuration: themeStyle, wallpaperStyle, fonts, buttons, colors, hero settings';
 
 
+

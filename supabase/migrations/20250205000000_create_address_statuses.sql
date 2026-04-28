@@ -114,3 +114,4 @@ COMMENT ON COLUMN public.address_statuses.last_visited_at IS 'Timestamp of most 
 COMMENT ON COLUMN public.address_statuses.notes IS 'Optional notes about the visit/status';
 COMMENT ON COLUMN public.address_statuses.visit_count IS 'Number of times this address has been visited';
 
+

@@ -182,3 +182,4 @@ COMMENT ON COLUMN public.qr_codes.metadata IS 'JSONB metadata (address_count, en
 
 
 
+

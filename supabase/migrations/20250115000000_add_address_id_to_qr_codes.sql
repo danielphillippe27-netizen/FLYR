@@ -36,3 +36,4 @@ COMMENT ON COLUMN public.qr_codes.address_id IS 'Foreign key to campaign_address
 
 
 
+
