@@ -15,6 +15,7 @@ struct CampaignsListView: View {
     @State private var showBulkArchiveConfirmation = false
     @State private var showBulkDeleteConfirmation = false
     @State private var pendingDeleteCampaign: CampaignV2?
+    @State private var isBulkActionInProgress = false
     var externalFilter: Binding<CampaignFilter>? = nil
     /// When set, empty state and "+ New Campaign" button set this to true (same as toolbar + button).
     var showCreateCampaign: Binding<Bool>? = nil
@@ -111,6 +112,11 @@ struct CampaignsListView: View {
                         CampaignListEmptyView(showCreateCampaign: showCreateCampaign, onCreateTapped: onCreateCampaignTapped)
                     }
                 } else {
+                    if isBulkSelecting {
+                        bulkSelectionActionBar
+                            .transition(.move(edge: .top).combined(with: .opacity))
+                    }
+
                     List {
                         V2CampaignsListSection(
                             store: storeV2,
@@ -203,7 +209,7 @@ struct CampaignsListView: View {
                         } label: {
                             Image(systemName: "archivebox")
                         }
-                        .disabled(selectedArchivableCampaignIDs.isEmpty)
+                        .disabled(selectedArchivableCampaignIDs.isEmpty || isBulkActionInProgress)
                     }
                     ToolbarItem(placement: .topBarTrailing) {
                         Button(role: .destructive) {
@@ -211,7 +217,7 @@ struct CampaignsListView: View {
                         } label: {
                             Image(systemName: "trash")
                         }
-                        .disabled(selectedCampaignIDs.isEmpty)
+                        .disabled(selectedCampaignIDs.isEmpty || isBulkActionInProgress)
                     }
                 }
             }
@@ -289,6 +295,47 @@ struct CampaignsListView: View {
         }
     }
 
+    private var bulkSelectionActionBar: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("\(selectedCampaignIDs.count) selected")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundColor(.primary)
+                Text(allVisibleCampaignIDsSelected ? "All visible campaigns" : "Tap rows to add or remove")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
+            Spacer(minLength: 8)
+
+            Button {
+                showBulkArchiveConfirmation = true
+            } label: {
+                Label("Archive", systemImage: "archivebox")
+                    .font(.system(size: 14, weight: .semibold))
+                    .lineLimit(1)
+            }
+            .buttonStyle(.bordered)
+            .disabled(selectedArchivableCampaignIDs.isEmpty || isBulkActionInProgress)
+
+            Button(role: .destructive) {
+                showBulkDeleteConfirmation = true
+            } label: {
+                Label("Delete", systemImage: "trash")
+                    .font(.system(size: 14, weight: .semibold))
+                    .lineLimit(1)
+            }
+            .buttonStyle(.bordered)
+            .disabled(selectedCampaignIDs.isEmpty || isBulkActionInProgress)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(Color.bgSecondary)
+        .overlay(alignment: .bottom) {
+            Divider()
+        }
+    }
+
     private func handleCampaignTap(_ campaign: CampaignV2) {
         if isBulkSelecting {
             toggleCampaignSelection(campaign)
@@ -350,6 +397,7 @@ struct CampaignsListView: View {
     private func archiveSelectedCampaigns() async {
         let idsToArchive = selectedArchivableCampaignIDs
         guard !idsToArchive.isEmpty else { return }
+        isBulkActionInProgress = true
 
         do {
             try await withThrowingTaskGroup(of: Void.self) { group in
@@ -362,6 +410,7 @@ struct CampaignsListView: View {
             }
             await MainActor.run {
                 storeV2.setStatus(ids: idsToArchive, status: .archived)
+                isBulkActionInProgress = false
                 exitBulkSelection()
                 if externalFilter != nil {
                     externalFilter?.wrappedValue = .archived
@@ -371,6 +420,7 @@ struct CampaignsListView: View {
             }
         } catch {
             await MainActor.run {
+                isBulkActionInProgress = false
                 campaignActionErrorMessage = error.localizedDescription
                 showCampaignActionError = true
             }
@@ -380,13 +430,16 @@ struct CampaignsListView: View {
     private func deleteSelectedCampaigns() async {
         let idsToDelete = selectedCampaignIDs
         guard !idsToDelete.isEmpty else { return }
+        isBulkActionInProgress = true
 
         do {
             try await CampaignsAPI.shared.deleteCampaigns(campaignIDs: Array(idsToDelete))
             storeV2.remove(ids: idsToDelete)
+            isBulkActionInProgress = false
             exitBulkSelection()
         } catch {
             await MainActor.run {
+                isBulkActionInProgress = false
                 campaignActionErrorMessage = error.localizedDescription
                 showCampaignActionError = true
             }

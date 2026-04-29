@@ -12,6 +12,16 @@ type ResolvedBuilding = {
   publicId: string;
 };
 
+type BuildingAddressLinkRow = {
+  address_id: string;
+  match_type: string | null;
+  confidence: number | null;
+  distance_meters: number | null;
+};
+
+const ADDRESS_SELECT =
+  "id, house_number, street_name, formatted, locality, region, postal_code, gers_id, building_gers_id, scans, last_scanned_at, qr_code_base64, contact_name, lead_status, product_interest, follow_up_date, raw_transcript, ai_summary";
+
 /**
  * Resolve a public building identifier to both the buildings row UUID and the public id shown on the map.
  * Supports both UUID-based manual buildings (buildings.id) and GERS-linked imported buildings.
@@ -36,6 +46,50 @@ async function resolveBuilding(
     rowId: building.id,
     publicId: building.gers_id ?? building.id,
   };
+}
+
+async function fetchGoldAddresses(
+  supabase: any,
+  campaignId: string,
+  buildingIds: string[]
+) {
+  const candidates = Array.from(
+    new Set(
+      buildingIds
+        .map((value) => value.trim())
+        .filter((value) => value.length > 0)
+    )
+  );
+
+  if (candidates.length === 0) {
+    return { data: [], error: null };
+  }
+
+  return supabase
+    .from("campaign_addresses")
+    .select(ADDRESS_SELECT)
+    .eq("campaign_id", campaignId)
+    .in("building_id", candidates);
+}
+
+function isStrongBuildingLink(link: BuildingAddressLinkRow): boolean {
+  const matchType = (link.match_type ?? "").toLowerCase();
+  if (matchType === "manual") return true;
+  if (matchType === "containment_verified") return true;
+  if (matchType === "point_on_surface") return true;
+  if (matchType === "parcel_verified") return true;
+  return (link.confidence ?? 0) >= 0.9 && matchType !== "proximity_fallback";
+}
+
+function chooseAddressLinksForDisplay(links: BuildingAddressLinkRow[]): BuildingAddressLinkRow[] {
+  if (links.length <= 1) return links;
+
+  const strongLinks = links.filter(isStrongBuildingLink);
+  if (strongLinks.length > 0 && strongLinks.length < links.length) {
+    return strongLinks;
+  }
+
+  return links;
 }
 
 function getAuthUser(request: Request) {
@@ -105,6 +159,72 @@ export async function GET(request: Request, context: RouteContext) {
     }
 
     const resolvedBuilding = await resolveBuilding(supabase, buildingIdParam);
+    const buildingIdCandidates = Array.from(
+      new Set(
+        [buildingIdParam, resolvedBuilding?.rowId, resolvedBuilding?.publicId]
+          .filter((value): value is string => Boolean(value))
+          .map((value) => value.trim())
+          .filter((value) => value.length > 0)
+      )
+    );
+
+    if (resolvedBuilding) {
+      const { data: links, error: linksError } = await supabase
+        .from("building_address_links")
+        .select("address_id, match_type, confidence, distance_meters")
+        .eq("campaign_id", campaignId)
+        .in("building_id", buildingIdCandidates);
+
+      if (linksError) {
+        console.error("[buildings/addresses] links error:", linksError);
+        return NextResponse.json(
+          { error: "Failed to fetch links", addresses: [] },
+          { status: 500 }
+        );
+      }
+
+      const displayLinks = chooseAddressLinksForDisplay((links ?? []) as BuildingAddressLinkRow[]);
+      const addressIds = displayLinks
+        .map((r) => r.address_id)
+        .filter(Boolean);
+
+      if (addressIds.length > 0) {
+        const { data: addresses, error: addrError } = await supabase
+          .from("campaign_addresses")
+          .select(ADDRESS_SELECT)
+          .eq("campaign_id", campaignId)
+          .in("id", addressIds);
+
+        if (addrError) {
+          console.error("[buildings/addresses] campaign_addresses error:", addrError);
+          return NextResponse.json(
+            { error: "Failed to fetch addresses", addresses: [] },
+            { status: 500 }
+          );
+        }
+
+        return NextResponse.json({ addresses: addresses ?? [] });
+      }
+    }
+
+    const { data: goldAddresses, error: goldError } = await fetchGoldAddresses(
+      supabase,
+      campaignId,
+      buildingIdCandidates
+    );
+
+    if (goldError) {
+      console.error("[buildings/addresses] gold fallback error:", goldError);
+      return NextResponse.json(
+        { error: "Failed to fetch addresses", addresses: [] },
+        { status: 500 }
+      );
+    }
+
+    if ((goldAddresses ?? []).length > 0) {
+      return NextResponse.json({ addresses: goldAddresses ?? [] });
+    }
+
     if (!resolvedBuilding) {
       return NextResponse.json(
         { error: "Building not found", addresses: [] },
@@ -112,52 +232,7 @@ export async function GET(request: Request, context: RouteContext) {
       );
     }
 
-    const buildingIdCandidates = Array.from(
-      new Set(
-        [resolvedBuilding.rowId, resolvedBuilding.publicId]
-          .map((value) => value.trim())
-          .filter((value) => value.length > 0)
-      )
-    );
-
-    const { data: links, error: linksError } = await supabase
-      .from("building_address_links")
-      .select("address_id")
-      .eq("campaign_id", campaignId)
-      .in("building_id", buildingIdCandidates);
-
-    if (linksError) {
-      console.error("[buildings/addresses] links error:", linksError);
-      return NextResponse.json(
-        { error: "Failed to fetch links", addresses: [] },
-        { status: 500 }
-      );
-    }
-
-    const addressIds = (links ?? [])
-      .map((r) => (r as { address_id: string }).address_id)
-      .filter(Boolean);
-    if (addressIds.length === 0) {
-      return NextResponse.json({ addresses: [] });
-    }
-
-    const { data: addresses, error: addrError } = await supabase
-      .from("campaign_addresses")
-      .select(
-        "id, house_number, street_name, formatted, locality, region, postal_code, gers_id, building_gers_id, scans, last_scanned_at, qr_code_base64, contact_name, lead_status, product_interest, follow_up_date, raw_transcript, ai_summary"
-      )
-      .eq("campaign_id", campaignId)
-      .in("id", addressIds);
-
-    if (addrError) {
-      console.error("[buildings/addresses] campaign_addresses error:", addrError);
-      return NextResponse.json(
-        { error: "Failed to fetch addresses", addresses: [] },
-        { status: 500 }
-      );
-    }
-
-    return NextResponse.json({ addresses: addresses ?? [] });
+    return NextResponse.json({ addresses: [] });
   } catch (err) {
     console.error("[buildings/addresses] GET", err);
     return NextResponse.json(

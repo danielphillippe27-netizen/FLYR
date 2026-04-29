@@ -133,10 +133,7 @@ struct NetworkingSessionView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    HStack {
-                        Spacer()
-                        endSessionButton
-                    }
+                    networkingHeader
                     headerCard
                     conversationCard
                     leadForm
@@ -145,7 +142,7 @@ struct NetworkingSessionView: View {
                 .padding(.vertical, 16)
             }
         }
-        .navigationTitle("Networking")
+        .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
         .navigationBarBackButtonHidden(true)
         .task {
@@ -207,6 +204,21 @@ struct NetworkingSessionView: View {
         } message: {
             Text(saveErrorMessage ?? "")
         }
+    }
+
+    private var networkingHeader: some View {
+        ZStack {
+            Text("Networking")
+                .font(.system(size: 20, weight: .bold))
+                .foregroundColor(.text)
+                .frame(maxWidth: .infinity)
+
+            HStack {
+                Spacer()
+                endSessionButton
+            }
+        }
+        .frame(maxWidth: .infinity)
     }
 
     private var endSessionButton: some View {

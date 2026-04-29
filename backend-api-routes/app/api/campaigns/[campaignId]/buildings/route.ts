@@ -67,6 +67,29 @@ type HiddenBuildingRow = {
   public_building_id: string;
 };
 
+type CampaignRow = {
+  territory_boundary: GeoJSON.Polygon | null;
+  provision_source: string | null;
+};
+
+type GoldBuildingRow = {
+  id: string;
+  area_sqm?: number | null;
+  building_type?: string | null;
+  geom_geojson?: string | null;
+  geom?: unknown;
+};
+
+type CampaignAddressRow = {
+  id: string;
+  formatted: string | null;
+  house_number: string | null;
+  street_name: string | null;
+  building_id: string | null;
+  visited: boolean | null;
+  scans: number | null;
+};
+
 function normalizedString(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
@@ -218,6 +241,215 @@ function filterHiddenBuildings(
   );
 }
 
+function parseGoldBuildingRows(raw: unknown): GoldBuildingRow[] {
+  if (!raw) return [];
+
+  if (Array.isArray(raw)) {
+    if (raw.length === 0) return [];
+    const first = raw[0] as Record<string, unknown>;
+    if ('geom_geojson' in first) {
+      return raw as GoldBuildingRow[];
+    }
+    if (first?.type === 'Feature') {
+      return raw
+        .map((feature) => featureToGoldBuildingRow(feature as Record<string, unknown>))
+        .filter((value): value is GoldBuildingRow => value !== null);
+    }
+    return raw as GoldBuildingRow[];
+  }
+
+  if (typeof raw === 'string') {
+    try {
+      return parseGoldBuildingRows(JSON.parse(raw));
+    } catch {
+      return [];
+    }
+  }
+
+  if (typeof raw === 'object') {
+    const obj = raw as Record<string, unknown>;
+    if ('get_gold_buildings_in_polygon_geojson' in obj) {
+      return parseGoldBuildingRows(obj.get_gold_buildings_in_polygon_geojson);
+    }
+    if (obj.type === 'FeatureCollection' && Array.isArray(obj.features)) {
+      return obj.features
+        .map((feature) => featureToGoldBuildingRow(feature as Record<string, unknown>))
+        .filter((value): value is GoldBuildingRow => value !== null);
+    }
+    if (obj.type === 'Feature') {
+      const one = featureToGoldBuildingRow(obj);
+      return one ? [one] : [];
+    }
+  }
+
+  return [];
+}
+
+function featureToGoldBuildingRow(feature: Record<string, unknown>): GoldBuildingRow | null {
+  const geometry = feature.geometry as Record<string, unknown> | undefined;
+  if (!geometry) return null;
+  const properties = (feature.properties as Record<string, unknown> | undefined) ?? {};
+  const id = properties.id ?? feature.id;
+  if (!id) return null;
+
+  return {
+    id: String(id),
+    area_sqm: typeof properties.area_sqm === 'number' ? properties.area_sqm : null,
+    building_type: typeof properties.building_type === 'string' ? properties.building_type : null,
+    geom_geojson: JSON.stringify(geometry),
+    geom: geometry,
+  };
+}
+
+function toGoldBuildingGeometry(building: GoldBuildingRow): GeoJSON.Polygon | GeoJSON.MultiPolygon | null {
+  if (typeof building.geom_geojson === 'string' && building.geom_geojson.trim()) {
+    try {
+      return JSON.parse(building.geom_geojson) as GeoJSON.Polygon | GeoJSON.MultiPolygon;
+    } catch {
+      return null;
+    }
+  }
+
+  if (typeof building.geom === 'string' && building.geom.trim()) {
+    try {
+      return JSON.parse(building.geom) as GeoJSON.Polygon | GeoJSON.MultiPolygon;
+    } catch {
+      return null;
+    }
+  }
+
+  if (building.geom && typeof building.geom === 'object') {
+    const candidate = building.geom as { type?: unknown; coordinates?: unknown };
+    if (
+      (candidate.type === 'Polygon' || candidate.type === 'MultiPolygon') &&
+      Array.isArray(candidate.coordinates)
+    ) {
+      return candidate as GeoJSON.Polygon | GeoJSON.MultiPolygon;
+    }
+  }
+
+  return null;
+}
+
+function buildGoldFallbackFeatureCollection(
+  buildings: GoldBuildingRow[],
+  campaignAddresses: CampaignAddressRow[]
+) {
+  const addressesByBuildingId = new Map<string, CampaignAddressRow[]>();
+
+  for (const address of campaignAddresses) {
+    if (!address.building_id) continue;
+    const group = addressesByBuildingId.get(address.building_id) ?? [];
+    group.push(address);
+    addressesByBuildingId.set(address.building_id, group);
+  }
+
+  const features = buildings.flatMap((building) => {
+    const geometry = toGoldBuildingGeometry(building);
+    if (!geometry) return [];
+
+    const linkedAddresses = addressesByBuildingId.get(building.id) ?? [];
+    const firstAddress = linkedAddresses[0] ?? null;
+    const scansTotal = linkedAddresses.reduce((sum, address) => sum + (address.scans ?? 0), 0);
+    const visited = linkedAddresses.some((address) => address.visited === true);
+
+    return [{
+      type: 'Feature',
+      id: building.id,
+      geometry,
+      properties: {
+        id: building.id,
+        building_id: building.id,
+        gers_id: building.id,
+        source: 'gold',
+        address_count: linkedAddresses.length,
+        address_id: linkedAddresses.length === 1 ? firstAddress?.id ?? null : null,
+        address_text: linkedAddresses.length === 1 ? firstAddress?.formatted ?? null : null,
+        house_number: linkedAddresses.length === 1 ? firstAddress?.house_number ?? null : null,
+        street_name: linkedAddresses.length === 1 ? firstAddress?.street_name ?? null : null,
+        height: 10,
+        height_m: 10,
+        min_height: 0,
+        area_sqm: building.area_sqm ?? null,
+        building_type: building.building_type ?? null,
+        feature_type: linkedAddresses.length > 0 ? 'matched_house' : 'orphan',
+        feature_status: linkedAddresses.length > 0 ? 'matched' : 'orphan_building',
+        status: visited ? 'visited' : 'not_visited',
+        scans_today: 0,
+        scans_total: scansTotal,
+        qr_scanned: scansTotal > 0,
+      },
+    }];
+  });
+
+  return {
+    type: 'FeatureCollection',
+    features,
+  };
+}
+
+async function fetchGoldFallbackFeatures(
+  supabase: any,
+  campaignId: string,
+  territoryBoundary: GeoJSON.Polygon | null
+) {
+  const { data: addresses, error: addressError } = await supabase
+    .from('campaign_addresses')
+    .select('id, formatted, house_number, street_name, building_id, visited, scans')
+    .eq('campaign_id', campaignId)
+    .order('id', { ascending: true });
+
+  if (addressError) {
+    console.warn('[buildings] Gold fallback address query failed:', addressError.message);
+    return null;
+  }
+
+  const campaignAddresses = (addresses ?? []) as CampaignAddressRow[];
+  const linkedBuildingIds = Array.from(
+    new Set(
+      campaignAddresses
+        .map((address) => address.building_id)
+        .filter((value): value is string => typeof value === 'string' && value.length > 0)
+    )
+  );
+
+  let goldBuildings: GoldBuildingRow[] = [];
+
+  if (linkedBuildingIds.length > 0) {
+    const { data: linkedBuildings, error: linkedBuildingsError } = await supabase
+      .from('ref_buildings_gold')
+      .select('id, area_sqm, building_type, geom')
+      .in('id', linkedBuildingIds);
+
+    if (!linkedBuildingsError && Array.isArray(linkedBuildings) && linkedBuildings.length > 0) {
+      goldBuildings = linkedBuildings as GoldBuildingRow[];
+    } else if (linkedBuildingsError) {
+      console.warn('[buildings] Gold fallback linked-building query failed:', linkedBuildingsError.message);
+    }
+  }
+
+  if (goldBuildings.length === 0 && territoryBoundary) {
+    const { data: polygonBuildings, error: polygonBuildingsError } = await supabase.rpc(
+      'get_gold_buildings_in_polygon_geojson',
+      { p_polygon_geojson: JSON.stringify(territoryBoundary) }
+    );
+
+    if (polygonBuildingsError) {
+      console.warn('[buildings] Gold fallback polygon query failed:', polygonBuildingsError.message);
+      return null;
+    }
+
+    goldBuildings = parseGoldBuildingRows(polygonBuildings);
+  }
+
+  if (goldBuildings.length === 0) {
+    return null;
+  }
+
+  const fallback = buildGoldFallbackFeatureCollection(goldBuildings, campaignAddresses);
+  return fallback.features.length > 0 ? fallback : null;
+}
+
 /**
  * Fetch building GeoJSON from S3 using bucket + key from campaign_snapshots.
  * Returns null if the object cannot be fetched (caller falls back to empty).
@@ -270,8 +502,9 @@ async function fetchFromS3(bucket: string, key: string): Promise<unknown | null>
  *   1. rpc_get_campaign_full_features — Gold path or Silver path via DB.
  *      Returns Polygon/MultiPolygon features; iOS MapFeaturesService uses these for 3D extrusion.
  *   2. S3 fallback — reads campaign_snapshots (bucket + buildings_key), fetches + gunzips from S3.
- *      Used for Silver campaigns where building polygons live in S3, not the buildings table.
- *   3. Empty FeatureCollection — campaign has no buildings yet (e.g. not provisioned).
+ *      Used for Silver/Lambda campaigns where building polygons live in S3, not the buildings table.
+ *   3. Gold DB fallback — reads ref_buildings_gold when the campaign is map-ready but linking is still pending.
+ *   4. Empty FeatureCollection — campaign has no buildings yet (e.g. not provisioned).
  */
 export async function GET(request: Request, context: RouteContext): Promise<Response> {
   try {
@@ -292,6 +525,14 @@ export async function GET(request: Request, context: RouteContext): Promise<Resp
     if (!canAccess) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
+
+    const { data: campaignMeta } = await supabase
+      .from('campaigns')
+      .select('territory_boundary, provision_source')
+      .eq('id', campaignId)
+      .maybeSingle();
+
+    const campaignRow = (campaignMeta ?? null) as CampaignRow | null;
 
     const { data: hiddenBuildings } = await supabase
       .from("campaign_hidden_buildings")
@@ -456,6 +697,30 @@ export async function GET(request: Request, context: RouteContext): Promise<Resp
         }, {
           headers: { "Content-Type": "application/json" },
         });
+      }
+    }
+
+    if (campaignRow?.provision_source === 'gold') {
+      const goldFallback = await fetchGoldFallbackFeatures(
+        supabase,
+        campaignId,
+        campaignRow.territory_boundary
+      );
+
+      if (goldFallback) {
+        const mergedFeatures = dedupeFeatures([
+          ...filterHiddenBuildings(goldFallback.features as GeoJSONFeature[], hiddenBuildingIds),
+          ...rpcManualPolygonFeatures,
+          ...rpcManualAddressProxyFeatures,
+        ]);
+
+        if (mergedFeatures.length > 0) {
+          console.log(`[buildings] Gold fallback returned ${mergedFeatures.length} polygon/proxy features`);
+          return NextResponse.json(
+            { type: 'FeatureCollection', features: mergedFeatures },
+            { headers: { 'Content-Type': 'application/json' } }
+          );
+        }
       }
     }
 

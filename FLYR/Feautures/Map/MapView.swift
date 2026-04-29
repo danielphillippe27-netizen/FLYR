@@ -202,6 +202,7 @@ struct FullScreenMapView: View {
         uiState.selectCampaign(
             id: selectedCampaignId,
             name: selectedCampaignName,
+            boundaryCoordinates: selectedCampaignId.flatMap(campaignCenterSeedCoordinates) ?? [],
             preservePendingLiveInviteHandoff: shouldPreservePendingLiveInvite
         )
     }
@@ -223,6 +224,13 @@ struct FullScreenMapView: View {
     /// One branch for embedded campaign map so starting a session does not destroy/recreate `CampaignMapView`.
     private var mapTabEmbeddedCampaignId: UUID? {
         sessionManager.campaignId ?? selectedCampaignId
+    }
+
+    private func campaignCenterSeedCoordinates(for campaignId: UUID) -> [CLLocationCoordinate2D] {
+        guard let marker = campaignMarkers.first(where: { $0.id == campaignId }) else {
+            return []
+        }
+        return CLLocationCoordinate2DIsValid(marker.coordinate) ? [marker.coordinate] : []
     }
 
     private var legacySessionFallbackView: some View {
@@ -265,6 +273,7 @@ struct FullScreenMapView: View {
             CampaignMapView(
                 campaignId: campaignId.uuidString,
                 routeWorkContext: routeWorkContext(for: campaignId),
+                initialCenter: campaignCenterSeedCoordinates(for: campaignId).first,
                 onDismissFromMap: sessionManager.sessionId == nil
                     ? {
                         HapticManager.light()
@@ -543,6 +552,13 @@ struct FullScreenMapView: View {
             newCampaignMarkers.append(CampaignMarker.fromCampaign(campaign, center: center))
         }
         campaignMarkers = newCampaignMarkers
+
+        if let selectedCampaignId,
+           uiState.selectedMapCampaignId == selectedCampaignId,
+           !campaignCenterSeedCoordinates(for: selectedCampaignId).isEmpty,
+           uiState.selectedMapCampaignBoundaryCoordinates.isEmpty {
+            syncSelectionToUIState()
+        }
         
         // Load farm markers
         var newFarmMarkers: [FarmMarker] = []

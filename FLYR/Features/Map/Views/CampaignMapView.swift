@@ -4,6 +4,7 @@ import MapboxMaps
 import Combine
 import CoreLocation
 import EventKit
+import GoogleMaps
 
 // MARK: - Display Mode
 /// Controls what's visible on the campaign map (cubes only or pins only — never both)
@@ -386,6 +387,68 @@ private struct SessionConnectivityBanner: View {
     }
 }
 
+private struct StartDoorKnockingSuggestionDialog: View {
+    let onCancel: () -> Void
+    let onStart: () -> Void
+
+    var body: some View {
+        VStack(spacing: 30) {
+            ZStack {
+                Circle()
+                    .stroke(Color.flyrPrimary, lineWidth: 5)
+                    .frame(width: 96, height: 96)
+                Text("?")
+                    .font(.system(size: 58, weight: .bold))
+                    .foregroundColor(.flyrPrimary)
+            }
+
+            Text("Would you like to start a door knocking session?")
+                .font(.system(size: 28, weight: .medium))
+                .foregroundColor(.black)
+                .multilineTextAlignment(.center)
+                .lineLimit(3)
+                .minimumScaleFactor(0.82)
+                .padding(.horizontal, 10)
+
+            HStack(spacing: 18) {
+                Button {
+                    onCancel()
+                } label: {
+                    Text("NO")
+                        .font(.system(size: 20, weight: .bold))
+                        .foregroundColor(.secondary)
+                        .frame(maxWidth: .infinity, minHeight: 60)
+                        .background(Color.white)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 14)
+                                .stroke(Color.flyrPrimary, lineWidth: 2)
+                        )
+                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                }
+                .buttonStyle(.plain)
+
+                Button {
+                    onStart()
+                } label: {
+                    Text("YES")
+                        .font(.system(size: 20, weight: .bold))
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity, minHeight: 60)
+                        .background(Color.flyrPrimary)
+                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 26)
+        .padding(.vertical, 34)
+        .background(Color.white)
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .shadow(color: .black.opacity(0.18), radius: 18, x: 0, y: 8)
+        .padding(.horizontal, 38)
+    }
+}
+
 private struct BackgroundGPSInfoSheetView: View {
     enum InfoContext {
         case preSession
@@ -488,6 +551,11 @@ enum LocationCardToolsAction {
     case deleteBuilding
 }
 
+enum LocationCardActionRowStyle {
+    case campaignTools
+    case standardStatus
+}
+
 fileprivate struct ManualShapeContext {
     let buildingId: String?
     let addressId: UUID?
@@ -506,6 +574,12 @@ fileprivate struct PendingManualAddressDraft: Identifiable {
 fileprivate struct PendingManualAddressConfirmation {
     let addressId: UUID
     let coordinate: CLLocationCoordinate2D
+}
+
+fileprivate struct QuickStartStandardSavedHome: Identifiable {
+    let id = UUID()
+    let coordinate: CLLocationCoordinate2D
+    let address: MapLayerManager.AddressTapResult
 }
 
 private struct AttachedMenuPointer: Shape {
@@ -670,6 +744,7 @@ struct CampaignMapView: View {
     let farmCycleName: String?
     let farmExecutionContext: FarmExecutionContext?
     let quickStartEnabled: Bool
+    let initialCenter: CLLocationCoordinate2D?
     let showPreSessionStartButton: Bool
     let demoLaunchConfiguration: DemoSessionLaunchConfiguration?
     /// When set (e.g. Map tab / fullscreen preview), shows the white dismiss control top-trailing beside the GPS pill.
@@ -688,6 +763,14 @@ struct CampaignMapView: View {
             return CGSize(width: 320, height: 260)
         }
         return size
+    }
+
+    private static func coordinateAverage(_ coordinates: [CLLocationCoordinate2D]) -> CLLocationCoordinate2D? {
+        let valid = coordinates.filter(CLLocationCoordinate2DIsValid)
+        guard !valid.isEmpty else { return nil }
+        let latitude = valid.map(\.latitude).reduce(0, +) / Double(valid.count)
+        let longitude = valid.map(\.longitude).reduce(0, +) / Double(valid.count)
+        return CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
     }
 
     @StateObject private var featuresService = MapFeaturesService.shared
@@ -755,6 +838,7 @@ struct CampaignMapView: View {
     @State private var showBeaconSheet = false
     @State private var showGoalSheet = false
     @State private var showActiveSessionInfoSheet = false
+    @State private var showQuickStartContactBook = false
     @State private var liveSessionShareCode: LiveSessionShareCodePresentation?
     @State private var liveSessionCodeErrorMessage: String?
     @State private var pendingLiveInvitePrompt: PendingLiveInviteHandoff?
@@ -777,9 +861,17 @@ struct CampaignMapView: View {
     @State private var showStandardCanvassingNotice = false
     @State private var showStandardCanvassingLearnMore = false
     @State private var hasPresentedStandardCanvassingNotice = false
-
+    @State private var preSessionChangedHomeIds: Set<UUID> = []
+    @State private var showDoorKnockingSuggestion = false
+    @State private var hasDismissedDoorKnockingSuggestion = false
     private let buildingRenderPendingOverlayTimeout: TimeInterval = 6
     private let sessionBottomOverlayReservedHeight: CGFloat = 104
+    private let quickStartRadiusMeters = 500
+    @State private var standardMapTapCircleCoordinate: CLLocationCoordinate2D?
+    @State private var quickStartStandardSavedHomes: [QuickStartStandardSavedHome] = []
+    @State private var quickStartStandardTapTask: Task<Void, Never>?
+    @State private var quickStartFlyrPreparationTask: Task<Void, Never>?
+    @State private var hasStartedQuickStartFlyrPreparation = false
 
     init(
         campaignId: String,
@@ -788,6 +880,7 @@ struct CampaignMapView: View {
         farmCycleName: String? = nil,
         farmExecutionContext: FarmExecutionContext? = nil,
         quickStartEnabled: Bool = false,
+        initialCenter: CLLocationCoordinate2D? = nil,
         showPreSessionStartButton: Bool = true,
         demoLaunchConfiguration: DemoSessionLaunchConfiguration? = nil,
         onDismissFromMap: (() -> Void)? = nil
@@ -798,6 +891,7 @@ struct CampaignMapView: View {
         self.farmCycleName = farmCycleName
         self.farmExecutionContext = farmExecutionContext
         self.quickStartEnabled = quickStartEnabled
+        self.initialCenter = initialCenter
         self.showPreSessionStartButton = showPreSessionStartButton
         self.demoLaunchConfiguration = demoLaunchConfiguration
         self.onDismissFromMap = onDismissFromMap
@@ -866,16 +960,41 @@ struct CampaignMapView: View {
         matchingPlannedFarmExecution?.sessionMode ?? preSessionSelectedMode
     }
 
-    private var effectiveCampaignMapMode: CampaignMapMode {
-        campaignMapMode ?? .smartBuildings
+    private var resolvedCampaignMapMode: CampaignMapMode {
+        CampaignMapMode.resolvedForPresentation(
+            explicit: campaignMapMode,
+            hasParcels: campaignHasParcels,
+            buildingLinkConfidence: campaignBuildingLinkConfidence,
+            provisionPhase: currentCampaignProvisionPhase
+        )
     }
 
-    private var isStandardPinsMode: Bool {
+    private var effectiveCampaignMapMode: CampaignMapMode {
+        resolvedCampaignMapMode
+    }
+
+    private var isQuickStartStandardMode: Bool {
+        quickStartEnabled
+    }
+
+    private var quickStartUsesGoogleMapsRenderer: Bool {
+        quickStartEnabled
+    }
+
+    private var isCampaignStandardPinsMode: Bool {
         effectiveCampaignMapMode.usesStandardPins
     }
 
+    private var usesStandardPinsRenderer: Bool {
+        quickStartUsesGoogleMapsRenderer || isCampaignStandardPinsMode
+    }
+
+    private var shouldPresentStandardCanvassingNotice: Bool {
+        isCampaignStandardPinsMode
+    }
+
     private var gpsProximityAvailableForCampaign: Bool {
-        !isStandardPinsMode
+        !usesStandardPinsRenderer
     }
 
     private var effectiveGPSProximityEnabled: Bool {
@@ -890,7 +1009,7 @@ struct CampaignMapView: View {
     }
 
     private var campaignMapDefaultPitch: Double {
-        isStandardPinsMode ? 0 : 60
+        usesStandardPinsRenderer ? 0 : 60
     }
 
     private var suppressCampaignScanHighlights: Bool {
@@ -1007,6 +1126,41 @@ struct CampaignMapView: View {
         }
     }
 
+    private var quickStartStandardMarkers: [StandardCampaignMapMarker] {
+        quickStartStandardSavedHomes.map { home in
+            StandardCampaignMapMarker(
+                addressId: home.address.addressId,
+                coordinate: home.coordinate,
+                title: home.address.formatted,
+                address: home.address,
+                status: addressStatuses[home.address.addressId] ?? .untouched
+            )
+        }
+    }
+
+    private var standardMapMarkers: [StandardCampaignMapMarker] {
+        guard quickStartEnabled else { return standardPinsMarkers }
+        var seen = Set<String>()
+        var merged: [StandardCampaignMapMarker] = []
+        for marker in standardPinsMarkers + quickStartStandardMarkers {
+            guard seen.insert(marker.addressId.uuidString.lowercased()).inserted else { continue }
+            merged.append(marker)
+        }
+        return merged
+    }
+
+    private var fallbackMapCenter: CLLocationCoordinate2D? {
+        if let boundaryCenter = campaignBoundaryCenter {
+            return boundaryCenter
+        }
+        return initialCenter
+    }
+
+    private var campaignBoundaryCenter: CLLocationCoordinate2D? {
+        guard !campaignBoundaryCoordinates.isEmpty else { return nil }
+        return Self.coordinateAverage(campaignBoundaryCoordinates)
+    }
+
     private var standardPinsMapInsets: UIEdgeInsets {
         UIEdgeInsets(
             top: sessionManager.sessionId != nil ? 148 : 136,
@@ -1061,6 +1215,9 @@ struct CampaignMapView: View {
             }
             .sheet(isPresented: $showStandardCanvassingLearnMore) {
                 standardCanvassingLearnMoreSheet
+            }
+            .sheet(isPresented: $showQuickStartContactBook) {
+                QuickStartContactBookView()
             }
             .sheet(item: $liveSessionShareCode) { details in
                 LiveSessionShareCodeSheet(details: details)
@@ -1268,6 +1425,10 @@ struct CampaignMapView: View {
                 showStandardCanvassingNotice = false
                 showStandardCanvassingLearnMore = false
                 hasPresentedStandardCanvassingNotice = false
+                preSessionChangedHomeIds = []
+                showDoorKnockingSuggestion = false
+                hasDismissedDoorKnockingSuggestion = false
+                standardMapTapCircleCoordinate = nil
                 loadCampaignData(force: true)
                 loadCampaignPresentationConfiguration(forceRemoteRefresh: true)
                 loadCampaignBoundaryFallback(forceRemoteRefresh: true)
@@ -1294,8 +1455,11 @@ struct CampaignMapView: View {
             .onDisappear {
                 statusRefreshTask?.cancel()
                 buildingRenderCheckTask?.cancel()
+                quickStartStandardTapTask?.cancel()
+                quickStartFlyrPreparationTask?.cancel()
                 Task { await statsSubscriber?.unsubscribe() }
                 subscribedRealtimeCampaignId = nil
+                standardMapTapCircleCoordinate = nil
                 LiveCampaignMapSnapshotStore.shared.setPreferredSummaryCamera(nil)
                 Task { await liveSessionVoiceService.endPushToTalk() }
             }
@@ -1334,10 +1498,14 @@ struct CampaignMapView: View {
                 updateMapData()
             }
             .onChange(of: displayMode) { _, _ in
-                if isStandardPinsMode, displayMode != .addresses {
+                if usesStandardPinsRenderer, displayMode != .addresses {
                     displayMode = .addresses
                 }
                 refreshVisibleBuildingRenderMonitoring(reset: false)
+            }
+            .task(id: campaignId) {
+                guard quickStartEnabled else { return }
+                startQuickStartFlyrPreparationIfNeeded()
             }
     }
 
@@ -1632,6 +1800,7 @@ struct CampaignMapView: View {
             mapEditToolOverlay
             flyerModeOverlay
             locationCardOverlay(bottomInset: keyboardInset)
+            doorKnockingSuggestionOverlay
             loadingOverlay
                 .animation(.easeInOut(duration: 0.28), value: featuresService.isLoading)
             buildingRenderPendingOverlay
@@ -1646,6 +1815,28 @@ struct CampaignMapView: View {
                 )
                 .padding(.bottom, 8)
             }
+        }
+    }
+
+    @ViewBuilder
+    private var doorKnockingSuggestionOverlay: some View {
+        if showDoorKnockingSuggestion {
+            Color.black.opacity(0.12)
+                .ignoresSafeArea()
+                .onTapGesture {
+                    dismissDoorKnockingSuggestion()
+                }
+
+            StartDoorKnockingSuggestionDialog(
+                onCancel: {
+                    dismissDoorKnockingSuggestion()
+                },
+                onStart: {
+                    startDoorKnockingFromSuggestion()
+                }
+            )
+            .transition(.scale(scale: 0.96).combined(with: .opacity))
+            .zIndex(20)
         }
     }
 
@@ -1668,11 +1859,13 @@ struct CampaignMapView: View {
         let size = Self.sanitizedMapContainerSize(raw)
         let hasValidSize = size.width > 0 && size.height > 0
         if hasValidSize {
-            if isStandardPinsMode {
+            if usesStandardPinsRenderer {
                 StandardCampaignGoogleMapView(
                     campaignId: campaignId,
-                    markers: standardPinsMarkers,
+                    markers: standardMapMarkers,
                     pathCoordinates: sessionManager.pathCoordinates,
+                    fallbackCenter: fallbackMapCenter,
+                    selectedCircleCenter: standardMapTapCircleCoordinate,
                     showUserLocation: sessionManager.sessionId != nil && !sessionManager.isDemoSession,
                     contentInsets: standardPinsMapInsets,
                     onReady: {
@@ -1683,15 +1876,8 @@ struct CampaignMapView: View {
                     onMarkerTap: { address in
                         presentAddressSelection(address)
                     },
-                    onMapTap: {
-                        if showLocationCard {
-                            withAnimation {
-                                showLocationCard = false
-                            }
-                            selectedBuilding = nil
-                            selectedAddress = nil
-                            selectedAddressIdForCard = nil
-                        }
+                    onMapTap: { coordinate in
+                        handleStandardMapTap(at: coordinate)
                     }
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1837,9 +2023,11 @@ struct CampaignMapView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 8))
                     }
                     HStack(alignment: .top, spacing: 12) {
-                        if isStandardPinsMode {
+                        if quickStartEnabled {
+                            quickStartContactBookButton
+                        } else if isCampaignStandardPinsMode {
                             standardCanvassingModePill
-                        } else {
+                        } else if !isQuickStartStandardMode {
                             BuildingCircleToggle(mode: $displayMode) { _ in
                                 updateMapData()
                             }
@@ -1874,9 +2062,11 @@ struct CampaignMapView: View {
             } else {
                 // Pre-session: toggle top-left; GPS (+ optional map dismiss) top-right
                 HStack(alignment: .top, spacing: 0) {
-                    if isStandardPinsMode {
+                    if quickStartEnabled {
+                        quickStartContactBookButton
+                    } else if isCampaignStandardPinsMode {
                         standardCanvassingModePill
-                    } else {
+                    } else if !isQuickStartStandardMode {
                         BuildingCircleToggle(mode: $displayMode) { _ in
                             updateMapData()
                         }
@@ -1980,6 +2170,22 @@ struct CampaignMapView: View {
                 }
             }
         }
+    }
+
+    private var quickStartContactBookButton: some View {
+        Button {
+            HapticManager.light()
+            showQuickStartContactBook = true
+        } label: {
+            Image(systemName: "person.crop.rectangle.stack")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundColor(.white)
+                .frame(width: 38, height: 38)
+                .background(Color.black.opacity(0.72))
+                .clipShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Open Quick Start contact book")
     }
 
     private var campIdFromString: UUID? {
@@ -2399,7 +2605,10 @@ struct CampaignMapView: View {
     }
 
     private var gpsProximitySubtitle: String {
-        if isStandardPinsMode {
+        if isQuickStartStandardMode {
+            return "Proximity auto-complete is disabled in Quick Start map mode."
+        }
+        if isCampaignStandardPinsMode {
             return "Proximity auto-complete is disabled for this campaign in Standard Canvassing Mode."
         }
         switch effectivePreSessionMode {
@@ -2478,7 +2687,7 @@ struct CampaignMapView: View {
                 Image(systemName: context.sessionMode == .flyer ? "newspaper.fill" : "hand.raised.fill")
                     .font(.system(size: 13, weight: .semibold))
             }
-            Text(context.sessionMode == .flyer ? "Flyers" : "Doorknock")
+            Text("Mode")
                 .font(.system(size: 13, weight: .semibold))
                 .lineLimit(1)
             Text("Planned")
@@ -2497,7 +2706,6 @@ struct CampaignMapView: View {
         let currentMode = preSessionSelectedMode
         let isStartingCurrentMode = currentMode == .doorKnocking ? isStartingDoor : isStartingFlyers
         let iconName = currentMode == .doorKnocking ? "hand.raised.fill" : "newspaper.fill"
-        let label = currentMode == .doorKnocking ? "Doorknock" : "Flyers"
 
         return Button {
             guard !isBusy else { return }
@@ -2514,7 +2722,7 @@ struct CampaignMapView: View {
                     Image(systemName: iconName)
                         .font(.system(size: 13, weight: .semibold))
                 }
-                Text(label)
+                Text("Mode")
                     .font(.system(size: 13, weight: .semibold))
                     .lineLimit(1)
                     .minimumScaleFactor(0.82)
@@ -2538,7 +2746,7 @@ struct CampaignMapView: View {
             HStack(spacing: 6) {
                 Image(systemName: "target")
                     .font(.system(size: 13, weight: .semibold))
-                Text("\(effectivePreSessionGoalType.pillLabel) \(preSessionGoalPillValue)")
+                Text("Target")
                     .font(.system(size: 13, weight: .semibold))
                     .lineLimit(1)
                     .minimumScaleFactor(0.82)
@@ -2721,6 +2929,53 @@ struct CampaignMapView: View {
         }
     }
 
+    private func registerPreSessionHomeStateChange(addressId: UUID, status: AddressStatus) {
+        guard sessionManager.sessionId == nil,
+              status != .none,
+              status != .untouched,
+              !hasDismissedDoorKnockingSuggestion,
+              !showDoorKnockingSuggestion else {
+            return
+        }
+
+        preSessionChangedHomeIds.insert(addressId)
+        guard preSessionChangedHomeIds.count >= 2 else { return }
+        guard UUID(uuidString: campaignId) != nil,
+              !sessionTargets(for: .doorKnocking).isEmpty else {
+            return
+        }
+
+        preSessionSelectedMode = .doorKnocking
+        withAnimation(.spring(response: 0.28, dampingFraction: 0.84)) {
+            showDoorKnockingSuggestion = true
+        }
+    }
+
+    private func dismissDoorKnockingSuggestion() {
+        hasDismissedDoorKnockingSuggestion = true
+        withAnimation(.easeOut(duration: 0.18)) {
+            showDoorKnockingSuggestion = false
+        }
+    }
+
+    private func startDoorKnockingFromSuggestion() {
+        guard let campId = UUID(uuidString: campaignId) else {
+            dismissDoorKnockingSuggestion()
+            return
+        }
+
+        hasDismissedDoorKnockingSuggestion = true
+        showDoorKnockingSuggestion = false
+        preSessionSelectedMode = .doorKnocking
+        startFromPreSessionBar(
+            campaignId: campId,
+            mode: .doorKnocking,
+            goalType: effectivePreSessionGoalType,
+            goalAmount: effectivePreSessionGoalAmount,
+            enableSharedLiveCanvassing: false
+        )
+    }
+
     private func startFromPreSessionBar(
         campaignId: UUID,
         mode: SessionMode,
@@ -2859,7 +3114,7 @@ struct CampaignMapView: View {
         quickStartStartingMode = mode
         quickStartStartingSharedLive = enableSharedLiveCanvassing
 
-        if isStandardPinsMode {
+        if usesStandardPinsRenderer {
             displayMode = .addresses
             scheduleLayerVisibilityReassert()
         } else {
@@ -2943,7 +3198,7 @@ struct CampaignMapView: View {
             HapticManager.medium()
             quickStartStartingMode = mode
             quickStartStartingSharedLive = false
-            if isStandardPinsMode || mode == .flyer {
+            if usesStandardPinsRenderer || mode == .flyer {
                 displayMode = .addresses
             } else {
                 displayMode = buildingSessionTargets.isEmpty ? .addresses : .buildings
@@ -3175,7 +3430,7 @@ struct CampaignMapView: View {
     private func updateLayerVisibility(for mode: DisplayMode) {
         guard let manager = layerManager else { return }
         guard let map = mapView?.mapboxMap else { return }
-        let effectiveMode: DisplayMode = isStandardPinsMode ? .addresses : mode
+        let effectiveMode: DisplayMode = usesStandardPinsRenderer ? .addresses : mode
         
         let hasBuildingsLayer = map.allLayerIdentifiers.contains(where: { $0.id == MapLayerManager.buildingsLayerId })
         let hasTownhomeOverlayLayer = map.allLayerIdentifiers.contains(where: { $0.id == MapLayerManager.townhomeOverlayLayerId })
@@ -3280,6 +3535,8 @@ struct CampaignMapView: View {
                     addressStatusRows: addressStatusRows,
                     campaignMembersByUserId: sharedLiveCanvassingService.memberDirectory,
                     sessionTargetIdForAddress: sessionTargetIdForAddress,
+                    actionRowStyle: quickStartEnabled ? .standardStatus : .campaignTools,
+                    quickStartContactBookMode: quickStartEnabled,
                     onSelectAddress: { setSelectedAddressForCard($0) },
                     onAddressesResolved: { ids in
                         buildingAddressMap[gersIdString.lowercased()] = deduplicatedAddressIds(ids)
@@ -3301,6 +3558,7 @@ struct CampaignMapView: View {
                         }
                         // Update local status cache
                         addressStatuses[addressId] = status
+                        registerPreSessionHomeStateChange(addressId: addressId, status: status)
                         if let targetId = sessionTargetIdForAddress(addressId: addressId) {
                             Task {
                                 if status == .none || status == .untouched {
@@ -3382,6 +3640,8 @@ struct CampaignMapView: View {
                     addressStatusRows: addressStatusRows,
                     campaignMembersByUserId: sharedLiveCanvassingService.memberDirectory,
                     sessionTargetIdForAddress: sessionTargetIdForAddress,
+                    actionRowStyle: quickStartEnabled ? .standardStatus : .campaignTools,
+                    quickStartContactBookMode: quickStartEnabled,
                     onSelectAddress: { setSelectedAddressForCard($0) },
                     onAddressesResolved: { ids in
                         if !gersIdString.isEmpty {
@@ -3405,6 +3665,7 @@ struct CampaignMapView: View {
                         }
                         // Update local status cache
                         addressStatuses[addressId] = status
+                        registerPreSessionHomeStateChange(addressId: addressId, status: status)
                         if let targetId = sessionTargetIdForAddress(addressId: addressId) {
                             Task {
                                 if status == .none || status == .untouched {
@@ -3467,7 +3728,7 @@ struct CampaignMapView: View {
 
     @ViewBuilder
     private var loadingOverlay: some View {
-        if featuresService.isLoading {
+        if featuresService.isLoading && !quickStartEnabled {
             ZStack {
                 Color.black
                     .ignoresSafeArea()
@@ -3528,8 +3789,9 @@ struct CampaignMapView: View {
             addDemoTargetPulseLayersIfNeeded(map: map)
 
             // Set initial camera so map shows (default center; will fly to campaign when data loads)
+            let initialCameraCenter = fallbackMapCenter ?? Self.defaultCenter
             map.camera.fly(to: CameraOptions(
-                center: Self.defaultCenter,
+                center: initialCameraCenter,
                 padding: nil,
                 zoom: 16,
                 bearing: nil,
@@ -3618,6 +3880,11 @@ struct CampaignMapView: View {
         }
     }
 
+    private var currentCampaignProvisionPhase: CampaignProvisionPhase? {
+        guard let campaignUUID = UUID(uuidString: campaignId) else { return nil }
+        return CampaignV2Store.shared.campaign(id: campaignUUID)?.provisionPhase
+    }
+
     private func applyCampaignPresentationConfiguration(
         mapMode: CampaignMapMode?,
         hasParcels: Bool?,
@@ -3627,10 +3894,10 @@ struct CampaignMapView: View {
         campaignHasParcels = hasParcels
         campaignBuildingLinkConfidence = buildingLinkConfidence
 
-        if isStandardPinsMode {
+        if usesStandardPinsRenderer {
             displayMode = .addresses
             scheduleLayerVisibilityReassert()
-            if !hasPresentedStandardCanvassingNotice {
+            if shouldPresentStandardCanvassingNotice, !hasPresentedStandardCanvassingNotice {
                 hasPresentedStandardCanvassingNotice = true
                 showStandardCanvassingNotice = true
             }
@@ -3642,9 +3909,9 @@ struct CampaignMapView: View {
     private func enforceCampaignMapPresentationMode() {
         guard let mapView else { return }
 
-        mapView.gestures.options.pitchEnabled = !isStandardPinsMode
+        mapView.gestures.options.pitchEnabled = !usesStandardPinsRenderer
 
-        guard isStandardPinsMode else { return }
+        guard usesStandardPinsRenderer else { return }
 
         let cameraState = mapView.mapboxMap.cameraState
         guard abs(cameraState.pitch) > 0.1 else { return }
@@ -5186,8 +5453,17 @@ struct CampaignMapView: View {
             return
         }
 
+        if quickStartEnabled {
+            guard let mapView else { return }
+            let coordinate = mapView.mapboxMap.coordinate(for: point)
+            handleStandardMapTap(
+                at: CLLocationCoordinate2D(latitude: coordinate.latitude, longitude: coordinate.longitude)
+            )
+            return
+        }
+
         guard let manager = layerManager else { return }
-        let effectiveMode: DisplayMode = isStandardPinsMode ? .addresses : displayMode
+        let effectiveMode: DisplayMode = usesStandardPinsRenderer ? .addresses : displayMode
 
         switch effectiveMode {
         case .buildings:
@@ -5217,10 +5493,245 @@ struct CampaignMapView: View {
         }
     }
 
+    private func handleStandardMapTap(at coordinate: CLLocationCoordinate2D) {
+        standardMapTapCircleCoordinate = coordinate
+
+        if quickStartEnabled {
+            if let savedHome = nearestQuickStartSavedHome(to: coordinate) {
+                presentAddressSelection(savedHome.address)
+                return
+            }
+
+            quickStartStandardTapTask?.cancel()
+            showLocationCard = false
+            selectedBuilding = nil
+            selectedAddress = nil
+            selectedAddressIdForCard = nil
+
+            quickStartStandardTapTask = Task {
+                await createQuickStartStandardAddress(at: coordinate)
+            }
+            return
+        }
+
+        if let address = nearestVisibleAddress(to: coordinate) {
+            presentAddressSelection(address)
+            return
+        }
+
+        withAnimation {
+            showLocationCard = false
+        }
+        selectedBuilding = nil
+        selectedAddress = nil
+        selectedAddressIdForCard = nil
+    }
+
+    private func nearestQuickStartSavedHome(
+        to coordinate: CLLocationCoordinate2D,
+        maxDistanceMeters: CLLocationDistance = 35
+    ) -> QuickStartStandardSavedHome? {
+        let tappedLocation = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
+
+        return quickStartStandardSavedHomes.min { lhs, rhs in
+            let lhsDistance = tappedLocation.distance(
+                from: CLLocation(latitude: lhs.coordinate.latitude, longitude: lhs.coordinate.longitude)
+            )
+            let rhsDistance = tappedLocation.distance(
+                from: CLLocation(latitude: rhs.coordinate.latitude, longitude: rhs.coordinate.longitude)
+            )
+            return lhsDistance < rhsDistance
+        }.flatMap { home in
+            let distance = tappedLocation.distance(
+                from: CLLocation(latitude: home.coordinate.latitude, longitude: home.coordinate.longitude)
+            )
+            return distance <= maxDistanceMeters ? home : nil
+        }
+    }
+
+    @MainActor
+    private func createQuickStartStandardAddress(at coordinate: CLLocationCoordinate2D) async {
+        defer { quickStartStandardTapTask = nil }
+
+        do {
+            let geocodedAddress = try await reverseGeocodeQuickStartAddress(at: coordinate)
+            let response = try await BuildingLinkService.shared.createManualAddress(
+                campaignId: campaignId,
+                input: ManualAddressCreateInput(
+                    coordinate: coordinate,
+                    formatted: geocodedAddress.formatted,
+                    houseNumber: geocodedAddress.houseNumber,
+                    streetName: geocodedAddress.streetName,
+                    locality: geocodedAddress.locality,
+                    region: geocodedAddress.region,
+                    postalCode: geocodedAddress.postalCode,
+                    country: geocodedAddress.country,
+                    buildingId: nil
+                )
+            )
+
+            let tappedAddress = addressTapResult(
+                from: response.address,
+                fallbackFormatted: geocodedAddress.formatted
+            )
+            quickStartStandardSavedHomes.append(
+                QuickStartStandardSavedHome(coordinate: coordinate, address: tappedAddress)
+            )
+            presentAddressSelection(tappedAddress)
+        } catch is CancellationError {
+            return
+        } catch {
+            manualShapeMessage = error.localizedDescription
+        }
+    }
+
+    private func startQuickStartFlyrPreparationIfNeeded() {
+        guard quickStartEnabled,
+              !hasStartedQuickStartFlyrPreparation,
+              let campaignUUID = UUID(uuidString: campaignId) else {
+            return
+        }
+
+        hasStartedQuickStartFlyrPreparation = true
+        quickStartFlyrPreparationTask?.cancel()
+        quickStartFlyrPreparationTask = Task {
+            do {
+                try await HomesService.shared.prepareQuickStartCampaignData(
+                    campaignId: campaignUUID,
+                    radiusMeters: quickStartRadiusMeters
+                )
+
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    lastLoadedDataKey = nil
+                }
+                await featuresService.fetchAllCampaignFeatures(campaignId: campaignId)
+                await MainActor.run {
+                    quickStartFlyrPreparationTask = nil
+                    updateMapData()
+                }
+            } catch is CancellationError {
+                await MainActor.run {
+                    quickStartFlyrPreparationTask = nil
+                    hasStartedQuickStartFlyrPreparation = false
+                }
+                return
+            } catch {
+                await MainActor.run {
+                    quickStartFlyrPreparationTask = nil
+                    hasStartedQuickStartFlyrPreparation = false
+                    manualShapeMessage = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    private func reverseGeocodeQuickStartAddress(
+        at coordinate: CLLocationCoordinate2D
+    ) async throws -> (
+        formatted: String,
+        houseNumber: String?,
+        streetName: String?,
+        locality: String?,
+        region: String?,
+        postalCode: String?,
+        country: String?
+    ) {
+        do {
+            let response = try await GMSGeocoder().reverseGeocodeCoordinate(coordinate)
+            if let address = response.firstResult() {
+                let thoroughfare = address.thoroughfare?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let lines = (address.lines ?? []).filter {
+                    !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                }
+                let formatted = lines.isEmpty
+                    ? (thoroughfare ?? fallbackQuickStartAddressLabel(for: coordinate))
+                    : lines.joined(separator: ", ")
+                let parsedStreet = parseStreetNumberAndName(from: thoroughfare)
+                return (
+                    formatted: formatted,
+                    houseNumber: parsedStreet.houseNumber,
+                    streetName: parsedStreet.streetName,
+                    locality: address.locality?.trimmingCharacters(in: .whitespacesAndNewlines),
+                    region: address.administrativeArea?.trimmingCharacters(in: .whitespacesAndNewlines),
+                    postalCode: address.postalCode?.trimmingCharacters(in: .whitespacesAndNewlines),
+                    country: address.country?.trimmingCharacters(in: .whitespacesAndNewlines)
+                )
+            }
+        } catch {
+            print("⚠️ [QuickStart] Google reverse geocode failed: \(error)")
+        }
+
+        let fallbackFormatted = (try? await GeoAPI.shared.reverseAddressString(at: coordinate))
+            ?? fallbackQuickStartAddressLabel(for: coordinate)
+        let parsedStreet = parseStreetNumberAndName(from: fallbackFormatted)
+        return (
+            formatted: fallbackFormatted,
+            houseNumber: parsedStreet.houseNumber,
+            streetName: parsedStreet.streetName,
+            locality: nil,
+            region: nil,
+            postalCode: nil,
+            country: nil
+        )
+    }
+
+    private func fallbackQuickStartAddressLabel(for coordinate: CLLocationCoordinate2D) -> String {
+        String(format: "Pinned Home %.5f, %.5f", coordinate.latitude, coordinate.longitude)
+    }
+
+    private func parseStreetNumberAndName(from raw: String?) -> (houseNumber: String?, streetName: String?) {
+        let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !trimmed.isEmpty else { return (nil, nil) }
+
+        let components = trimmed.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
+        guard let first = components.first else { return (nil, trimmed) }
+
+        let firstString = String(first)
+        let looksLikeHouseNumber = firstString.range(
+            of: #"^\d+[A-Za-z\-\/]*$"#,
+            options: .regularExpression
+        ) != nil
+        guard looksLikeHouseNumber else { return (nil, trimmed) }
+
+        let streetName = components.count > 1
+            ? String(components[1]).trimmingCharacters(in: .whitespacesAndNewlines)
+            : nil
+        return (firstString, streetName?.isEmpty == true ? nil : streetName)
+    }
+
+    private func nearestVisibleAddress(
+        to coordinate: CLLocationCoordinate2D,
+        maxDistanceMeters: CLLocationDistance = 45
+    ) -> MapLayerManager.AddressTapResult? {
+        let tappedLocation = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
+
+        var bestMatch: AddressFeature?
+        var bestDistance = CLLocationDistance.greatestFiniteMagnitude
+
+        for feature in visibleAddressFeatures {
+            guard let candidateCoordinate = CampaignTargetResolver.coordinate(for: feature.geometry) else { continue }
+            let candidateLocation = CLLocation(
+                latitude: candidateCoordinate.latitude,
+                longitude: candidateCoordinate.longitude
+            )
+            let distance = tappedLocation.distance(from: candidateLocation)
+            if distance < bestDistance {
+                bestDistance = distance
+                bestMatch = feature
+            }
+        }
+
+        guard bestDistance <= maxDistanceMeters,
+              let bestMatch else { return nil }
+        return addressTapResult(from: bestMatch)
+    }
+
     private func presentBuildingSelection(_ building: BuildingProperties) {
         selectedBuilding = building
-        selectedAddress = resolveAddressForBuilding(building: building)
-        selectedAddressIdForCard = nil
+        let resolvedAddress = resolveAddressForBuilding(building: building)
+        selectedAddress = resolvedAddress
+        selectedAddressIdForCard = resolvedAddress?.addressId ?? UUID(uuidString: building.addressId ?? "")
         withAnimation { showLocationCard = true }
     }
 
@@ -5507,12 +6018,6 @@ struct CampaignMapView: View {
     /// Resolve address(es) from loaded address features for a tapped building.
     /// Tries multiple matching strategies: addressId, gersId, building id, and address_text.
     private func resolveAddressForBuilding(building: BuildingProperties) -> MapLayerManager.AddressTapResult? {
-        // Multi-address Gold: address_id is null → don't resolve to a single address; list mode handles it
-        if building.source == "gold",
-           building.addressId == nil || building.addressId?.isEmpty == true {
-            return nil
-        }
-
         // Address cylinders often carry the campaign address UUID in `id` only; lenient building decode hides `address_id`.
         if let addrId = UUID(uuidString: building.id.trimmingCharacters(in: .whitespacesAndNewlines)),
            !visibleAddressFeatures.isEmpty {
@@ -5628,6 +6133,27 @@ struct CampaignMapView: View {
         )
     }
 
+    private func addressTapResult(
+        from address: CampaignAddressResponse,
+        fallbackFormatted: String? = nil
+    ) -> MapLayerManager.AddressTapResult {
+        let resolvedFormatted = nonEmptyAddressText(
+            formatted: address.formatted,
+            houseNumber: address.houseNumber,
+            streetName: address.streetName
+        ) ?? fallbackFormatted ?? "Pinned Home"
+
+        return MapLayerManager.AddressTapResult(
+            addressId: address.id,
+            formatted: resolvedFormatted,
+            gersId: address.gersId,
+            buildingGersId: address.buildingGersId,
+            houseNumber: address.houseNumber,
+            streetName: address.streetName,
+            source: "manual"
+        )
+    }
+
     /// Prefer explicit formatted value, then fall back to "house number + street name".
     private func nonEmptyAddressText(formatted: String?, houseNumber: String?, streetName: String?) -> String? {
         let formattedValue = formatted?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -5680,7 +6206,7 @@ struct CampaignMapView: View {
     }
 
     private func sessionTargets(for mode: SessionMode) -> [ResolvedCampaignTarget] {
-        if isStandardPinsMode {
+        if usesStandardPinsRenderer {
             let addressTargets = CampaignTargetResolver.addressTargets(from: visibleAddressFeatures)
             if !addressTargets.isEmpty {
                 return addressTargets
@@ -5791,7 +6317,7 @@ struct CampaignMapView: View {
         guard !targets.isEmpty else { return }
 
         hasStartedDemoLaunch = true
-        displayMode = isStandardPinsMode ? .addresses : .buildings
+        displayMode = usesStandardPinsRenderer ? .addresses : .buildings
         scheduleLayerVisibilityReassert()
 
         let centroids = Dictionary(uniqueKeysWithValues: targets.map { ($0.id, $0.coordinate) })
@@ -5971,8 +6497,8 @@ struct CampaignMapboxMapViewRepresentable: UIViewRepresentable {
     let onTap: (CGPoint) -> Void
     let onLongPress: (CGPoint) -> Void
 
-    private static let lightStyleURI = StyleURI(rawValue: "mapbox://styles/fliper27/cml6z0dhg002301qo9xxc08k4")!
-    private static let darkStyleURI = StyleURI(rawValue: "mapbox://styles/fliper27/cml6zc5pq002801qo4lh13o19")!
+    private static let lightStyleURI = StyleURI(rawValue: "mapbox://styles/mapbox/streets-v11")!
+    private static let darkStyleURI = StyleURI(rawValue: "mapbox://styles/mapbox/dark-v11")!
 
     func makeUIView(context: Context) -> MapView {
         let options = MapInitOptions()
@@ -6648,6 +7174,8 @@ struct LocationCardView: View {
     var campaignMembersByUserId: [UUID: SharedCanvassingMember] = [:]
     /// Resolves the session target that should receive completion credit for a specific address.
     var sessionTargetIdForAddress: ((UUID) -> String?)?
+    var actionRowStyle: LocationCardActionRowStyle = .campaignTools
+    var quickStartContactBookMode = false
     /// Called when user selects an address from the list (id) or taps "Back to list" (nil)
     var onSelectAddress: ((UUID?) -> Void)?
     /// Called once when addresses are resolved, with all address UUIDs for this building
@@ -6727,7 +7255,7 @@ struct LocationCardView: View {
     private let contactTalkPersistDebounceSeconds: TimeInterval = 2
     private let locationCardDraftStoragePrefix = "flyr.location_card_draft"
 
-    init(gersId: String, campaignId: UUID, sessionId: UUID? = nil, farmExecutionContext: FarmExecutionContext? = nil, addressId: UUID? = nil, addressText: String? = nil, preferredAddressId: UUID? = nil, buildingSource: String? = nil, addressSource: String? = nil, addressStatuses: [UUID: AddressStatus] = [:], addressStatusRows: [UUID: AddressStatusRow] = [:], campaignMembersByUserId: [UUID: SharedCanvassingMember] = [:], sessionTargetIdForAddress: ((UUID) -> String?)? = nil, onSelectAddress: ((UUID?) -> Void)? = nil, onAddressesResolved: (([UUID]) -> Void)? = nil, onClose: @escaping () -> Void, onStatusUpdated: ((UUID, AddressStatus) -> Void)? = nil, onHomeStateUpdated: ((AddressStatusRow) -> Void)? = nil, onToolsAction: ((LocationCardToolsAction) -> Void)? = nil) {
+    init(gersId: String, campaignId: UUID, sessionId: UUID? = nil, farmExecutionContext: FarmExecutionContext? = nil, addressId: UUID? = nil, addressText: String? = nil, preferredAddressId: UUID? = nil, buildingSource: String? = nil, addressSource: String? = nil, addressStatuses: [UUID: AddressStatus] = [:], addressStatusRows: [UUID: AddressStatusRow] = [:], campaignMembersByUserId: [UUID: SharedCanvassingMember] = [:], sessionTargetIdForAddress: ((UUID) -> String?)? = nil, actionRowStyle: LocationCardActionRowStyle = .campaignTools, quickStartContactBookMode: Bool = false, onSelectAddress: ((UUID?) -> Void)? = nil, onAddressesResolved: (([UUID]) -> Void)? = nil, onClose: @escaping () -> Void, onStatusUpdated: ((UUID, AddressStatus) -> Void)? = nil, onHomeStateUpdated: ((AddressStatusRow) -> Void)? = nil, onToolsAction: ((LocationCardToolsAction) -> Void)? = nil) {
         self.gersId = gersId
         self.campaignId = campaignId
         self.sessionId = sessionId
@@ -6741,6 +7269,8 @@ struct LocationCardView: View {
         self.addressStatusRows = addressStatusRows
         self.campaignMembersByUserId = campaignMembersByUserId
         self.sessionTargetIdForAddress = sessionTargetIdForAddress
+        self.actionRowStyle = actionRowStyle
+        self.quickStartContactBookMode = quickStartContactBookMode
         self.onSelectAddress = onSelectAddress
         self.onAddressesResolved = onAddressesResolved
         self.onClose = onClose
@@ -6775,6 +7305,33 @@ struct LocationCardView: View {
             return String(full[..<idx]).trimmingCharacters(in: .whitespaces)
         }
         return full.trimmingCharacters(in: .whitespaces)
+    }
+
+    private func multiAddressRowLabel(for address: ResolvedAddress) -> String {
+        let combined = [address.houseNumber, address.streetName]
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+
+        if combined.range(of: "[A-Za-z]", options: .regularExpression) != nil {
+            return streetOnly(from: combined)
+        }
+
+        let formatted = address.formatted.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !formatted.isEmpty {
+            let formattedStreet = streetOnly(from: formatted)
+            if formattedStreet.range(of: "[A-Za-z]", options: .regularExpression) != nil {
+                return formattedStreet
+            }
+        }
+
+        let displayStreet = streetOnly(from: address.displayStreet)
+        if !displayStreet.isEmpty {
+            return displayStreet
+        }
+
+        let houseNumber = address.houseNumber.trimmingCharacters(in: .whitespacesAndNewlines)
+        return houseNumber.isEmpty ? "Address" : houseNumber
     }
 
     private var preferredHeaderAddressText: String? {
@@ -6948,7 +7505,7 @@ struct LocationCardView: View {
                     onSelectAddress?(addr.id)
                 } label: {
                     HStack {
-                        Text(streetOnly(from: addr.displayStreet))
+                        Text(multiAddressRowLabel(for: addr))
                             .font(.system(size: 14))
                             .foregroundColor(
                                 isDoNotKnock
@@ -7076,7 +7633,7 @@ struct LocationCardView: View {
         baseCardView
             .toolbar { keyboardToolbarContent }
             .task {
-                await dataService.fetchBuildingData(gersId: gersId, campaignId: campaignId, addressId: addressId, preferredAddressId: preferredAddressId)
+                await dataService.fetchBuildingData(gersId: gersId, campaignId: campaignId, addressId: addressId, preferredAddressId: preferredAddressId, addressTextHint: addressText)
                 if NetworkMonitor.shared.isOnline {
                     buildingDetails = try? await BuildingDetailsAPI.shared.fetchBuildingDetails(gersId: gersId, campaignId: campaignId)
                 } else {
@@ -7085,7 +7642,7 @@ struct LocationCardView: View {
             }
             .onChange(of: preferredAddressId) { _, newId in
                 Task {
-                    await dataService.fetchBuildingData(gersId: gersId, campaignId: campaignId, addressId: addressId, preferredAddressId: newId)
+                    await dataService.fetchBuildingData(gersId: gersId, campaignId: campaignId, addressId: addressId, preferredAddressId: newId, addressTextHint: addressText)
                 }
             }
             .onChange(of: appointmentStartDate) { _, newValue in
@@ -7996,14 +8553,18 @@ struct LocationCardView: View {
 
     private func extractedStatusTint(for status: AddressStatus) -> Color {
         switch status {
-        case .talked, .appointment, .hotLead:
+        case .talked, .hotLead:
             return .blue
+        case .appointment:
+            return .purple
+        case .futureSeller:
+            return .yellow
         case .doNotKnock:
             return .green
         case .noAnswer:
-            return .orange
-        default:
             return .red
+        default:
+            return .green
         }
     }
 
@@ -8020,7 +8581,14 @@ struct LocationCardView: View {
         isActive ? activeColor : inactiveColor
     }
 
-    private func actionButton(icon: String, label: String, isActive: Bool = false, activeColor: Color = .red, action: @escaping () -> Void) -> some View {
+    private func actionButton(
+        icon: String,
+        label: String,
+        isActive: Bool = false,
+        activeColor: Color = .red,
+        inactiveColor: Color = .red,
+        action: @escaping () -> Void
+    ) -> some View {
         Button(action: action) {
             Image(systemName: icon)
                 .font(.system(size: 18))
@@ -8031,7 +8599,8 @@ struct LocationCardView: View {
                     actionButtonPillStyle(
                         background: actionButtonBackground(
                             isActive: isActive,
-                            activeColor: activeColor
+                            activeColor: activeColor,
+                            inactiveColor: inactiveColor
                         )
                     )
                 )
@@ -8040,9 +8609,25 @@ struct LocationCardView: View {
         .accessibilityLabel(label)
     }
 
+    private func isUnvisitedStatusActionActive(for address: ResolvedAddress?) -> Bool {
+        guard let address else { return true }
+        let status = addressStatuses[address.id] ?? .untouched
+        return status == .none || status == .untouched
+    }
+
     private func isVisitedActionActive(for address: ResolvedAddress?) -> Bool {
         guard let address, let status = addressStatuses[address.id] else { return false }
         return status != .none && status != .untouched
+    }
+
+    private func isVisitedStatusActionActive(for address: ResolvedAddress?) -> Bool {
+        guard let address, let status = addressStatuses[address.id] else { return false }
+        return status == .delivered
+    }
+
+    private func isNoAnswerStatusActionActive(for address: ResolvedAddress?) -> Bool {
+        guard let address else { return false }
+        return addressStatuses[address.id] == .noAnswer
     }
 
     private func hasContactOrConversation(for address: ResolvedAddress?) -> Bool {
@@ -8057,7 +8642,30 @@ struct LocationCardView: View {
         return showContactBlock
     }
 
+    private func hasStandardConversation(for address: ResolvedAddress?) -> Bool {
+        guard let address else {
+            return showContactBlock
+        }
+
+        if let status = addressStatuses[address.id],
+           status == .talked || status == .hotLead {
+            return true
+        }
+
+        return showContactBlock
+    }
+
+    @ViewBuilder
     private func actionButtons(address: ResolvedAddress?) -> some View {
+        switch actionRowStyle {
+        case .campaignTools:
+            campaignToolsActionButtons(address: address)
+        case .standardStatus:
+            standardStatusActionButtons(address: address)
+        }
+    }
+
+    private func campaignToolsActionButtons(address: ResolvedAddress?) -> some View {
         HStack(spacing: 8) {
             actionButton(
                 icon: "door.left.hand.closed",
@@ -8093,6 +8701,73 @@ struct LocationCardView: View {
                 withAnimation(.spring(response: 0.24, dampingFraction: 0.9)) {
                     showToolsSheet.toggle()
                 }
+            }
+        }
+        .padding(.top, 8)
+    }
+
+    private func standardStatusActionButtons(address: ResolvedAddress?) -> some View {
+        HStack(spacing: 7) {
+            actionButton(
+                icon: "circle",
+                label: "Unvisited",
+                isActive: isUnvisitedStatusActionActive(for: address),
+                activeColor: Color(UIColor(hex: "#9ca3af")!),
+                inactiveColor: Color(UIColor(hex: "#ef4444")!)
+            ) {
+                guard let address else { return }
+                Task {
+                    do {
+                        try await logVisitStatus(address, status: .untouched)
+                    } catch {
+                        await MainActor.run { contactSaveError = error.localizedDescription }
+                    }
+                }
+            }
+
+            actionButton(
+                icon: "door.left.hand.closed",
+                label: "Visited",
+                isActive: isVisitedStatusActionActive(for: address),
+                activeColor: Color(UIColor(hex: "#22c55e")!)
+            ) {
+                guard let address else { return }
+                Task {
+                    do {
+                        try await logVisitStatus(address, status: .delivered)
+                    } catch {
+                        await MainActor.run { contactSaveError = error.localizedDescription }
+                    }
+                }
+            }
+
+            actionButton(
+                icon: "xmark",
+                label: "No one home",
+                isActive: isNoAnswerStatusActionActive(for: address),
+                activeColor: Color(UIColor(hex: "#ef4444")!)
+            ) {
+                guard let address else { return }
+                Task {
+                    do {
+                        try await logVisitStatus(address, status: .noAnswer)
+                    } catch {
+                        await MainActor.run { contactSaveError = error.localizedDescription }
+                    }
+                }
+            }
+
+            actionButton(
+                icon: "person.fill",
+                label: "Conversation",
+                isActive: hasStandardConversation(for: address),
+                activeColor: Color(UIColor(hex: "#3b82f6")!)
+            ) {
+                toggleContactCard(address: address)
+            }
+
+            actionButton(icon: "note.text", label: "Notes") {
+                toggleNotesCard(address: address)
             }
         }
         .padding(.top, 8)
@@ -8435,8 +9110,10 @@ struct LocationCardView: View {
 
     private func mapVoiceOutcomeToSuggestedStatus(_ rawStatus: String) -> AddressStatus {
         switch rawStatus.lowercased() {
-        case "appointment_set", "follow_up", "appointment":
+        case "appointment_set", "appointment":
             return .appointment
+        case "follow_up":
+            return .futureSeller
         case "hot_lead":
             return .hotLead
         case "spoke", "talked":
@@ -8455,6 +9132,11 @@ struct LocationCardView: View {
         if !trimmedAppointmentTitle.isEmpty {
             return .appointment
         }
+        if showFollowUpDetails ||
+            !followUpText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+            !followUpNotes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return .futureSeller
+        }
         return suggestedStatusFromVoice ?? .talked
     }
 
@@ -8469,7 +9151,7 @@ struct LocationCardView: View {
         switch leadStatus.lowercased() {
         case "not_home": return .noAnswer
         case "interested": return .hotLead
-        case "follow_up": return .appointment
+        case "follow_up": return .futureSeller
         case "not_interested": return .doNotKnock
         default: return .talked
         }
@@ -9000,6 +9682,8 @@ struct LocationCardView: View {
             ?? ""
         let resolvedName = !fullName.isEmpty ? fullName : fallbackName
         let reminderDate = showFollowUpDetails ? followUpDate : nil
+        let contactCampaignId: UUID? = quickStartContactBookMode ? nil : campaignId
+        let contactTags = mergedContactTags(base: existingQuickStartTags(from: dataService.buildingData.primaryResident?.tags))
         let appointmentEndNormalized = appointmentStartDate.addingTimeInterval(3600)
         let crmAppointment: LeadSyncAppointment? = trimmedAppointmentTitle.isEmpty
             ? nil
@@ -9041,9 +9725,10 @@ struct LocationCardView: View {
             phone: nil,
             email: nil,
             address: address.displayFull,
-            campaignId: campaignId,
+            campaignId: contactCampaignId,
             gersId: gersId,
             addressId: address.id,
+            tags: contactTags,
             status: .warm
         )
 
@@ -9053,11 +9738,11 @@ struct LocationCardView: View {
             phone: trimmedPhone.isEmpty ? baseContact.phone : trimmedPhone,
             email: trimmedEmail.isEmpty ? baseContact.email : trimmedEmail,
             address: address.displayFull,
-            campaignId: campaignId,
+            campaignId: contactCampaignId,
             farmId: baseContact.farmId,
             gersId: gersId,
             addressId: address.id,
-            tags: baseContact.tags,
+            tags: mergedContactTags(base: baseContact.tags),
             status: baseContact.status == .new ? .warm : baseContact.status,
             lastContacted: Date(),
             notes: trimmedNotes.isEmpty ? baseContact.notes : trimmedNotes,
@@ -9132,11 +9817,11 @@ struct LocationCardView: View {
                     phone: trimmedSecondPhone.isEmpty ? secondaryExistingContact?.phone : trimmedSecondPhone,
                     email: trimmedSecondEmail.isEmpty ? secondaryExistingContact?.email : trimmedSecondEmail,
                     address: address.displayFull,
-                    campaignId: campaignId,
+                    campaignId: contactCampaignId,
                     farmId: secondaryExistingContact?.farmId,
                     gersId: gersId,
                     addressId: address.id,
-                    tags: secondaryExistingContact?.tags,
+                    tags: mergedContactTags(base: secondaryExistingContact?.tags),
                     status: secondaryExistingContact?.status == .new ? .warm : (secondaryExistingContact?.status ?? .warm),
                     lastContacted: Date(),
                     notes: secondaryExistingContact?.notes,
@@ -9171,6 +9856,22 @@ struct LocationCardView: View {
         } catch {
             contactSaveError = error.localizedDescription
         }
+    }
+
+    private func existingQuickStartTags(from tags: String?) -> String? {
+        quickStartContactBookMode ? mergedContactTags(base: tags) : tags
+    }
+
+    private func mergedContactTags(base: String?) -> String? {
+        guard quickStartContactBookMode else { return base }
+        var pieces = (base ?? "")
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        if !pieces.contains(where: { $0.caseInsensitiveCompare("quick_start") == .orderedSame }) {
+            pieces.append("quick_start")
+        }
+        return pieces.joined(separator: ",")
     }
 
     private func followUpSummary(details: String, reminderDate: Date?, notes: String, type: FollowUpType) -> String? {

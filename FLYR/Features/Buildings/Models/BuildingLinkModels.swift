@@ -36,6 +36,10 @@ struct BuildingProperties: Codable {
     let source: String?
     /// Gold multi-address: number of addresses in this building (RPC)
     let addressCount: Int?
+    /// Source footprint area, used to filter non-linkable sheds/outbuildings.
+    let areaSqm: Double?
+    /// Source building classification, e.g. shed, garage, residential.
+    let buildingType: String?
     /// QR code was scanned
     let qrScanned: Bool?
 
@@ -62,6 +66,8 @@ struct BuildingProperties: Codable {
         case confidence
         case source
         case addressCount = "address_count"
+        case areaSqm = "area_sqm"
+        case buildingType = "building_type"
         case qrScanned = "qr_scanned"
     }
 
@@ -88,6 +94,8 @@ struct BuildingProperties: Codable {
         confidence: Double?,
         source: String?,
         addressCount: Int?,
+        areaSqm: Double?,
+        buildingType: String?,
         qrScanned: Bool?
     ) {
         self.id = id
@@ -112,6 +120,8 @@ struct BuildingProperties: Codable {
         self.confidence = confidence
         self.source = source
         self.addressCount = addressCount
+        self.areaSqm = areaSqm
+        self.buildingType = buildingType
         self.qrScanned = qrScanned
     }
 
@@ -146,6 +156,8 @@ struct BuildingProperties: Codable {
         confidence = (try? c.decodeIfPresent(Double.self, forKey: .confidence)) ?? (try? c.decodeIfPresent(Int.self, forKey: .confidence)).map(Double.init)
         source = try? c.decodeIfPresent(String.self, forKey: .source)
         addressCount = try? c.decodeIfPresent(Int.self, forKey: .addressCount)
+        areaSqm = (try? c.decodeIfPresent(Double.self, forKey: .areaSqm)) ?? (try? c.decodeIfPresent(Int.self, forKey: .areaSqm)).map(Double.init)
+        buildingType = try? c.decodeIfPresent(String.self, forKey: .buildingType)
         qrScanned = try? c.decodeIfPresent(Bool.self, forKey: .qrScanned)
     }
 

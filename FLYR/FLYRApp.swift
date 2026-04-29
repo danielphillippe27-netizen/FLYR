@@ -19,7 +19,16 @@ struct FLYRApp: App {
         }
         let googleMapsAPIKey = Config.googleMapsAPIKey
         if !googleMapsAPIKey.isEmpty {
-            GMSServices.provideAPIKey(googleMapsAPIKey)
+            let didProvideGoogleMapsKey = GMSServices.provideAPIKey(googleMapsAPIKey)
+            #if DEBUG
+            if !didProvideGoogleMapsKey {
+                print("⚠️ [GoogleMaps] Failed to register Google Maps API key for this build.")
+            }
+            #endif
+        } else {
+            #if DEBUG
+            print("⚠️ [GoogleMaps] GOOGLE_MAPS_API_KEY is missing or unresolved in Info.plist.")
+            #endif
         }
         _ = OfflineDatabase.shared
         NetworkMonitor.shared.startIfNeeded()

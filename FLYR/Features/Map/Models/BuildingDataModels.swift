@@ -68,10 +68,18 @@ struct ResolvedAddress: Codable, Identifiable, Sendable {
     
     /// Returns a compact display address (street only)
     var displayStreet: String {
+        let combinedStreet = [houseNumber, streetName]
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
         let streetValue = street.trimmingCharacters(in: .whitespacesAndNewlines)
         let formattedValue = formatted.trimmingCharacters(in: .whitespacesAndNewlines)
+        let combinedHasLetters = combinedStreet.range(of: "[A-Za-z]", options: .regularExpression) != nil
         let streetHasLetters = streetValue.range(of: "[A-Za-z]", options: .regularExpression) != nil
 
+        if !combinedStreet.isEmpty, combinedHasLetters {
+            return combinedStreet
+        }
         if !streetValue.isEmpty, streetHasLetters {
             return streetValue
         }
@@ -419,10 +427,16 @@ struct CampaignAddressResponse: Codable {
 struct BuildingAddressLinkResponse: Codable {
     let addressId: UUID
     let campaignAddress: CampaignAddressResponse?
+    let matchType: String?
+    let confidence: Double?
+    let distanceMeters: Double?
     
     enum CodingKeys: String, CodingKey {
         case addressId = "address_id"
         case campaignAddress = "campaign_addresses"
+        case matchType = "match_type"
+        case confidence
+        case distanceMeters = "distance_meters"
     }
 }
 

@@ -7,12 +7,20 @@ final class HomesService {
 
     private init() {}
 
-    func createQuickStartCampaign(
+    private let quickStartTags = "quick_start,quick_start_map"
+
+    func createQuickStartCampaignShell(
         center: CLLocationCoordinate2D,
         radiusMeters: Int,
         limitHomes: Int,
         workspaceId: UUID
     ) async throws -> CampaignV2 {
+        if let existing = try await CampaignsAPI.shared.fetchQuickStartMapCampaign(workspaceId: workspaceId) {
+            print("🌐 [QuickStart] Reusing Quick Start map campaign: \(existing.id)")
+            try await updateQuickStartBoundary(campaignId: existing.id, center: center, radiusMeters: radiusMeters)
+            return existing
+        }
+
         let name = quickStartCampaignName(radiusMeters: radiusMeters)
         let description = String(
             format: "source=quick_start radius_m=%d center_lat=%.6f center_lng=%.6f",
@@ -30,25 +38,44 @@ final class HomesService {
             seedQuery: "Quick Start",
             seedLon: center.longitude,
             seedLat: center.latitude,
-            tags: "quick_start",
+            tags: quickStartTags,
             addressesJSON: [],
             workspaceId: workspaceId
         )
 
         print("🌐 [QuickStart] Creating campaign shell for closest-home flow")
         let campaign = try await CampaignsAPI.shared.createV2(payload)
+        try await updateQuickStartBoundary(campaignId: campaign.id, center: center, radiusMeters: radiusMeters)
+        return campaign
+    }
 
+    private func updateQuickStartBoundary(
+        campaignId: UUID,
+        center: CLLocationCoordinate2D,
+        radiusMeters: Int
+    ) async throws {
         let polygon = quickStartPolygon(center: center, radiusMeters: radiusMeters)
         let polygonGeoJSON = quickStartPolygonGeoJSON(polygon)
         try await CampaignsAPI.shared.updateTerritoryBoundary(
-            campaignId: campaign.id,
+            campaignId: campaignId,
             polygonGeoJSON: polygonGeoJSON
         )
+    }
 
-        let provision = try await CampaignsAPI.shared.provisionCampaign(campaignId: campaign.id)
-        let state = try await CampaignsAPI.shared.waitForProvisionReady(campaignId: campaign.id)
+    func prepareQuickStartCampaignData(
+        campaignId: UUID,
+        radiusMeters: Int
+    ) async throws {
+        let provision = try await CampaignsAPI.shared.provisionCampaign(campaignId: campaignId)
+        let finalProvisionStatus: CampaignProvisionStatus?
+        if provision?.provisionStatus == .ready {
+            finalProvisionStatus = .ready
+        } else {
+            let state = try await CampaignsAPI.shared.waitForProvisionReady(campaignId: campaignId)
+            finalProvisionStatus = state.provisionStatus
+        }
 
-        if state.provisionStatus == "failed" {
+        if finalProvisionStatus == .failed {
             let detail = provision?.message ?? "Provision status failed"
             throw NSError(
                 domain: "QuickStart",
@@ -57,11 +84,11 @@ final class HomesService {
             )
         }
 
-        if state.provisionStatus != "ready" {
-            print("⚠️ [QuickStart] Provision status did not reach ready: \(state.provisionStatus ?? "unknown")")
+        if finalProvisionStatus != .ready {
+            print("⚠️ [QuickStart] Provision status did not reach ready: \(finalProvisionStatus?.rawValue ?? "unknown")")
         }
 
-        let campaignAddresses = try await fetchCampaignAddressesWithRetry(campaignId: campaign.id)
+        let campaignAddresses = try await fetchCampaignAddressesWithRetry(campaignId: campaignId)
         guard !campaignAddresses.isEmpty else {
             throw NSError(
                 domain: "QuickStart",
@@ -72,10 +99,10 @@ final class HomesService {
 
         // Best-effort building prewarm so quick start lands with populated map layers.
         do {
-            let byCampaign = try await BuildingsAPI.shared.fetchBuildingPolygons(campaignId: campaign.id)
+            let byCampaign = try await BuildingsAPI.shared.fetchBuildingPolygons(campaignId: campaignId)
             if !byCampaign.features.isEmpty {
                 MapFeaturesService.shared.primeBuildingPolygons(
-                    campaignId: campaign.id.uuidString,
+                    campaignId: campaignId.uuidString,
                     features: byCampaign.features
                 )
                 print("✅ [QuickStart] Campaign building fetch loaded \(byCampaign.features.count) features")
@@ -84,7 +111,7 @@ final class HomesService {
                 let byAddress = try await BuildingsAPI.shared.fetchBuildingPolygons(addressIds: campaignAddresses.map(\.id))
                 if !byAddress.features.isEmpty {
                     MapFeaturesService.shared.primeBuildingPolygons(
-                        campaignId: campaign.id.uuidString,
+                        campaignId: campaignId.uuidString,
                         features: byAddress.features
                     )
                 }
@@ -93,8 +120,6 @@ final class HomesService {
         } catch {
             print("⚠️ [QuickStart] Building prewarm skipped: \(error)")
         }
-
-        return campaign
     }
 
     private func fetchCampaignAddressesWithRetry(

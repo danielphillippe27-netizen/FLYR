@@ -382,13 +382,28 @@ struct NewCampaignScreen: View {
                         if let confidence = provisionResponse?.dataConfidenceSummary {
                             createdCampaign.dataConfidence = confidence
                         }
+                        createdCampaign.provisionStatus = provisionResponse?.provisionStatus
+                        createdCampaign.provisionSource = provisionResponse?.provisionSource
+                        createdCampaign.provisionPhase = provisionResponse?.provisionPhase
                         createdCampaign.hasParcels = provisionResponse?.hasParcels
                         createdCampaign.buildingLinkConfidence = provisionResponse?.buildingLinkConfidence
                         createdCampaign.mapMode = provisionResponse?.mapMode
                         store.update(createdCampaign)
-                        let provisionState = try await CampaignsAPI.shared.waitForProvisionReady(campaignId: created.id)
-                        if provisionState.provisionStatus != "ready" {
-                            createHook.error = "Campaign created but provisioning did not complete (status: \(provisionState.provisionStatus ?? "unknown")). You can retry from campaign details."
+                        let needsProvisionWait = provisionResponse?.provisionStatus != .ready
+                        var finalProvisionStatus = provisionResponse?.provisionStatus
+                        if needsProvisionWait {
+                            let provisionState = try await CampaignsAPI.shared.waitForProvisionReady(campaignId: created.id)
+                            createdCampaign.provisionStatus = provisionState.provisionStatus
+                            createdCampaign.provisionSource = provisionState.provisionSource
+                            createdCampaign.provisionPhase = provisionState.provisionPhase
+                            createdCampaign.addressesReadyAt = provisionState.addressesReadyAt
+                            createdCampaign.mapReadyAt = provisionState.mapReadyAt
+                            createdCampaign.optimizedAt = provisionState.optimizedAt
+                            store.update(createdCampaign)
+                            finalProvisionStatus = provisionState.provisionStatus
+                        }
+                        if finalProvisionStatus != .ready {
+                            createHook.error = "Campaign created but provisioning did not complete (status: \(finalProvisionStatus?.rawValue ?? "unknown")). You can retry from campaign details."
                             shouldNavigateToDetails = false
                         } else {
                             let dbAddressCount = (try? await CampaignsAPI.shared.fetchAddresses(campaignId: created.id).count) ?? 0

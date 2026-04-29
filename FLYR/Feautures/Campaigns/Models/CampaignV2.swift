@@ -5,6 +5,50 @@ enum CampaignMapMode: String, Codable, Equatable {
     case hybrid
     case standardPins = "standard_pins"
 
+    static func resolved(
+        explicit mapMode: CampaignMapMode?,
+        hasParcels: Bool?,
+        buildingLinkConfidence: Double?
+    ) -> CampaignMapMode {
+        if let mapMode {
+            return mapMode
+        }
+
+        guard let buildingLinkConfidence else {
+            return .standardPins
+        }
+
+        if hasParcels == true {
+            return buildingLinkConfidence >= 90 ? .smartBuildings : .hybrid
+        }
+
+        if buildingLinkConfidence >= 90 {
+            return .smartBuildings
+        }
+
+        if buildingLinkConfidence >= 60 {
+            return .hybrid
+        }
+
+        return .standardPins
+    }
+
+    static func resolvedForPresentation(
+        explicit mapMode: CampaignMapMode?,
+        hasParcels: Bool?,
+        buildingLinkConfidence: Double?,
+        provisionPhase _: CampaignProvisionPhase?
+    ) -> CampaignMapMode {
+        let resolvedMode = resolved(
+            explicit: mapMode,
+            hasParcels: hasParcels,
+            buildingLinkConfidence: buildingLinkConfidence
+        )
+
+        // Campaigns/farms should stay on the original building-based renderer.
+        return resolvedMode == .standardPins ? .hybrid : resolvedMode
+    }
+
     var bannerTitle: String {
         switch self {
         case .standardPins:
@@ -217,6 +261,29 @@ enum CampaignStatus: String, Codable {
     case archived = "archived"
 }
 
+enum CampaignProvisionStatus: String, Codable, Equatable {
+    case pending
+    case ready
+    case failed
+}
+
+enum CampaignProvisionSource: String, Codable, Equatable {
+    case gold
+    case silver
+    case lambda
+}
+
+enum CampaignProvisionPhase: String, Codable, Equatable {
+    case created
+    case sourceProbed = "source_probed"
+    case addressesLoading = "addresses_loading"
+    case addressesReady = "addresses_ready"
+    case mapReady = "map_ready"
+    case optimizing
+    case optimized
+    case failed
+}
+
 // MARK: - Campaign V2
 
 struct CampaignV2: Identifiable, Codable, Equatable {
@@ -232,9 +299,24 @@ struct CampaignV2: Identifiable, Codable, Equatable {
     var status: CampaignStatus
     var seedQuery: String?    // Maps to DB region (e.g., "Main St, Toronto")
     var dataConfidence: CampaignDataConfidenceSummary?
+    var provisionStatus: CampaignProvisionStatus?
+    var provisionSource: CampaignProvisionSource?
+    var provisionPhase: CampaignProvisionPhase?
+    var addressesReadyAt: Date?
+    var mapReadyAt: Date?
+    var optimizedAt: Date?
     var hasParcels: Bool?
     var buildingLinkConfidence: Double?
     var mapMode: CampaignMapMode?
+
+    var presentationMapMode: CampaignMapMode {
+        CampaignMapMode.resolvedForPresentation(
+            explicit: mapMode,
+            hasParcels: hasParcels,
+            buildingLinkConfidence: buildingLinkConfidence,
+            provisionPhase: provisionPhase
+        )
+    }
     
     // Computed progress based on scans/total_flyers (0.0-1.0)
     var progress: Double {
@@ -259,6 +341,12 @@ struct CampaignV2: Identifiable, Codable, Equatable {
         status = try container.decodeIfPresent(CampaignStatus.self, forKey: .status) ?? .draft
         seedQuery = try container.decodeIfPresent(String.self, forKey: .seedQuery)
         dataConfidence = try container.decodeIfPresent(CampaignDataConfidenceSummary.self, forKey: .dataConfidence)
+        provisionStatus = try container.decodeIfPresent(CampaignProvisionStatus.self, forKey: .provisionStatus)
+        provisionSource = try container.decodeIfPresent(CampaignProvisionSource.self, forKey: .provisionSource)
+        provisionPhase = try container.decodeIfPresent(CampaignProvisionPhase.self, forKey: .provisionPhase)
+        addressesReadyAt = try container.decodeIfPresent(Date.self, forKey: .addressesReadyAt)
+        mapReadyAt = try container.decodeIfPresent(Date.self, forKey: .mapReadyAt)
+        optimizedAt = try container.decodeIfPresent(Date.self, forKey: .optimizedAt)
         hasParcels = try container.decodeIfPresent(Bool.self, forKey: .hasParcels)
         buildingLinkConfidence = try container.decodeIfPresent(Double.self, forKey: .buildingLinkConfidence)
         mapMode = try container.decodeIfPresent(CampaignMapMode.self, forKey: .mapMode)
@@ -297,6 +385,8 @@ struct CampaignV2: Identifiable, Codable, Equatable {
     enum CodingKeys: String, CodingKey {
         case id, name, type, addressSource, addresses, createdAt, status
         case totalFlyers, scans, conversions, seedQuery, dataConfidence
+        case provisionStatus, provisionSource, provisionPhase
+        case addressesReadyAt, mapReadyAt, optimizedAt
         case hasParcels, buildingLinkConfidence, mapMode
         case progress // For backward compatibility only
     }
@@ -316,6 +406,12 @@ struct CampaignV2: Identifiable, Codable, Equatable {
         try container.encode(status, forKey: .status)
         try container.encodeIfPresent(seedQuery, forKey: .seedQuery)
         try container.encodeIfPresent(dataConfidence, forKey: .dataConfidence)
+        try container.encodeIfPresent(provisionStatus, forKey: .provisionStatus)
+        try container.encodeIfPresent(provisionSource, forKey: .provisionSource)
+        try container.encodeIfPresent(provisionPhase, forKey: .provisionPhase)
+        try container.encodeIfPresent(addressesReadyAt, forKey: .addressesReadyAt)
+        try container.encodeIfPresent(mapReadyAt, forKey: .mapReadyAt)
+        try container.encodeIfPresent(optimizedAt, forKey: .optimizedAt)
         try container.encodeIfPresent(hasParcels, forKey: .hasParcels)
         try container.encodeIfPresent(buildingLinkConfidence, forKey: .buildingLinkConfidence)
         try container.encodeIfPresent(mapMode, forKey: .mapMode)
@@ -334,6 +430,12 @@ struct CampaignV2: Identifiable, Codable, Equatable {
         status: CampaignStatus = .draft,
         seedQuery: String? = nil,
         dataConfidence: CampaignDataConfidenceSummary? = nil,
+        provisionStatus: CampaignProvisionStatus? = nil,
+        provisionSource: CampaignProvisionSource? = nil,
+        provisionPhase: CampaignProvisionPhase? = nil,
+        addressesReadyAt: Date? = nil,
+        mapReadyAt: Date? = nil,
+        optimizedAt: Date? = nil,
         hasParcels: Bool? = nil,
         buildingLinkConfidence: Double? = nil,
         mapMode: CampaignMapMode? = nil
@@ -350,6 +452,12 @@ struct CampaignV2: Identifiable, Codable, Equatable {
         self.status = status
         self.seedQuery = seedQuery
         self.dataConfidence = dataConfidence
+        self.provisionStatus = provisionStatus
+        self.provisionSource = provisionSource
+        self.provisionPhase = provisionPhase
+        self.addressesReadyAt = addressesReadyAt
+        self.mapReadyAt = mapReadyAt
+        self.optimizedAt = optimizedAt
         self.hasParcels = hasParcels
         self.buildingLinkConfidence = buildingLinkConfidence
         self.mapMode = mapMode

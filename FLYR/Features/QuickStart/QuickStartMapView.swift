@@ -11,6 +11,7 @@ struct QuickStartMapView: View {
     @StateObject private var locationManager = LocationManager()
 
     @State private var createdCampaignId: UUID?
+    @State private var quickStartInitialCenter: CLLocationCoordinate2D?
     @State private var isPreparingCampaign = false
     @State private var errorMessage: String?
     @State private var hasAttemptedPreparation = false
@@ -35,7 +36,11 @@ struct QuickStartMapView: View {
         Group {
             if canUseQuickStart {
                 if let campaignId = createdCampaignId {
-                    CampaignMapView(campaignId: campaignId.uuidString, quickStartEnabled: true)
+                    CampaignMapView(
+                        campaignId: campaignId.uuidString,
+                        quickStartEnabled: true,
+                        initialCenter: quickStartInitialCenter
+                    )
                 } else {
                     loadingOrErrorView
                 }
@@ -179,6 +184,7 @@ struct QuickStartMapView: View {
         hasAttemptedPreparation = true
         isPreparingCampaign = true
         errorMessage = nil
+        quickStartInitialCenter = location.coordinate
 
         Task {
             let workspaceId = await RoutePlansAPI.shared.resolveWorkspaceId(preferred: WorkspaceContext.shared.workspaceId)
@@ -192,7 +198,7 @@ struct QuickStartMapView: View {
             }
 
             do {
-                let campaign = try await HomesService.shared.createQuickStartCampaign(
+                let campaign = try await HomesService.shared.createQuickStartCampaignShell(
                     center: location.coordinate,
                     radiusMeters: radiusMeters,
                     limitHomes: limitHomes,

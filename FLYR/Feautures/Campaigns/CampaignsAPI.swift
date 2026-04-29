@@ -315,6 +315,12 @@ final class CampaignsAPI {
             status: .draft,
             seedQuery: dbRow.region,
             dataConfidence: dbRow.dataConfidence,
+            provisionStatus: dbRow.provisionStatus,
+            provisionSource: dbRow.provisionSource,
+            provisionPhase: dbRow.provisionPhase,
+            addressesReadyAt: dbRow.addressesReadyAt,
+            mapReadyAt: dbRow.mapReadyAt,
+            optimizedAt: dbRow.optimizedAt,
             hasParcels: dbRow.hasParcels,
             buildingLinkConfidence: dbRow.buildingLinkConfidence,
             mapMode: dbRow.mapMode
@@ -385,6 +391,8 @@ final class CampaignsAPI {
             primaryCampaigns = primary.value
         }
 
+        primaryCampaigns = primaryCampaigns.filter { !Self.isQuickStartCampaign(tags: $0.tags) }
+
         guard !sharedIds.isEmpty else {
             print("✅ [API DEBUG] Fetched \(primaryCampaigns.count) campaigns metadata")
             return primaryCampaigns
@@ -397,7 +405,8 @@ final class CampaignsAPI {
             .order("created_at", ascending: false)
             .execute()
 
-        let merged = mergeUniqueCampaigns(primary: primaryCampaigns, secondary: secondary.value, id: \.id)
+        let visibleSecondary = secondary.value.filter { !Self.isQuickStartCampaign(tags: $0.tags) }
+        let merged = mergeUniqueCampaigns(primary: primaryCampaigns, secondary: visibleSecondary, id: \.id)
             .sorted { $0.createdAt > $1.createdAt }
         print("✅ [API DEBUG] Fetched \(merged.count) campaigns metadata")
         return merged
@@ -406,8 +415,51 @@ final class CampaignsAPI {
     /// True if the workspace has at least one campaign created via Quick Start (tags contain "quick_start").
     /// Used to enforce "one free Quick Start, then Pro required".
     func hasQuickStartCampaign(workspaceId: UUID?) async throws -> Bool {
-        let rows = try await fetchCampaignsMetadata(workspaceId: workspaceId)
+        let rows = try await fetchCampaignsMetadataIncludingQuickStart(workspaceId: workspaceId)
         return rows.contains { ($0.tags ?? "").lowercased().contains("quick_start") }
+    }
+
+    func fetchQuickStartMapCampaign(workspaceId: UUID?) async throws -> CampaignV2? {
+        let rows = try await fetchCampaignsMetadataIncludingQuickStart(workspaceId: workspaceId)
+            .filter { Self.isQuickStartCampaign(tags: $0.tags) }
+            .sorted { $0.createdAt > $1.createdAt }
+        guard let row = rows.first else { return nil }
+        return campaignV2(from: row, totalFlyers: 0)
+    }
+
+    private static func isQuickStartCampaign(tags: String?) -> Bool {
+        (tags ?? "").lowercased().contains("quick_start")
+    }
+
+    private func fetchCampaignsMetadataIncludingQuickStart(workspaceId: UUID? = nil) async throws -> [CampaignDBRow] {
+        let workspaceId = try await requireResolvedWorkspaceId(workspaceId)
+        let sharedIds = try await fetchSharedCampaignIds()
+        let includeWorkspaceCampaigns = try await isWorkspaceMember(workspaceId: workspaceId)
+
+        var primaryCampaigns: [CampaignDBRow] = []
+        if includeWorkspaceCampaigns {
+            let primary: PostgrestResponse<[CampaignDBRow]> = try await client
+                .from("campaigns")
+                .select()
+                .eq("workspace_id", value: workspaceId)
+                .order("created_at", ascending: false)
+                .execute()
+            primaryCampaigns = primary.value
+        }
+
+        guard !sharedIds.isEmpty else {
+            return primaryCampaigns
+        }
+
+        let secondary: PostgrestResponse<[CampaignDBRow]> = try await client
+            .from("campaigns")
+            .select()
+            .in("id", values: sharedIds.map(\.uuidString))
+            .order("created_at", ascending: false)
+            .execute()
+
+        return mergeUniqueCampaigns(primary: primaryCampaigns, secondary: secondary.value, id: \.id)
+            .sorted { $0.createdAt > $1.createdAt }
     }
     
     // Fetch Campaigns V2 - REAL SUPABASE INTEGRATION
@@ -431,7 +483,7 @@ final class CampaignsAPI {
         }
 
         if sharedIds.isEmpty {
-            dbRows = primaryCampaigns
+            dbRows = primaryCampaigns.filter { !Self.isQuickStartCampaign(tags: $0.tags) }
         } else {
             let secondary: PostgrestResponse<[CampaignDBRow]> = try await client
                 .from("campaigns")
@@ -439,7 +491,9 @@ final class CampaignsAPI {
                 .in("id", values: sharedIds.map(\.uuidString))
                 .order("created_at", ascending: false)
                 .execute()
-            dbRows = mergeUniqueCampaigns(primary: primaryCampaigns, secondary: secondary.value, id: \.id)
+            let visiblePrimary = primaryCampaigns.filter { !Self.isQuickStartCampaign(tags: $0.tags) }
+            let visibleSecondary = secondary.value.filter { !Self.isQuickStartCampaign(tags: $0.tags) }
+            dbRows = mergeUniqueCampaigns(primary: visiblePrimary, secondary: visibleSecondary, id: \.id)
                 .sorted { $0.createdAt > $1.createdAt }
         }
         print("✅ [API DEBUG] Fetched \(dbRows.count) campaigns from DB")
@@ -470,28 +524,42 @@ final class CampaignsAPI {
         for dbRow in dbRows {
             let totalFlyers = addressCountByCampaignId[dbRow.id] ?? 0
             let status = dbRow.status ?? .draft
-            let campaign = CampaignV2(
-                id: dbRow.id,
-                name: dbRow.title,
-                type: dbRow.campaignType,
-                addressSource: dbRow.addressSource,
-                addresses: [], // Empty - will be loaded on demand when user opens detail
-                totalFlyers: totalFlyers,
-                scans: dbRow.scans,
-                conversions: dbRow.conversions,
-                createdAt: dbRow.createdAt,
-                status: status,
-                seedQuery: dbRow.region,
-                dataConfidence: dbRow.dataConfidence,
-                hasParcels: dbRow.hasParcels,
-                buildingLinkConfidence: dbRow.buildingLinkConfidence,
-                mapMode: dbRow.mapMode
-            )
+            let campaign = campaignV2(from: dbRow, totalFlyers: totalFlyers, status: status)
             campaigns.append(campaign)
         }
         
         print("✅ [API DEBUG] Converted \(campaigns.count) campaigns to CampaignV2 with house counts")
         return campaigns
+    }
+
+    private func campaignV2(
+        from dbRow: CampaignDBRow,
+        totalFlyers: Int,
+        status: CampaignStatus? = nil
+    ) -> CampaignV2 {
+        CampaignV2(
+            id: dbRow.id,
+            name: dbRow.title,
+            type: dbRow.campaignType,
+            addressSource: dbRow.addressSource,
+            addresses: [],
+            totalFlyers: totalFlyers,
+            scans: dbRow.scans,
+            conversions: dbRow.conversions,
+            createdAt: dbRow.createdAt,
+            status: status ?? dbRow.status ?? .draft,
+            seedQuery: dbRow.region,
+            dataConfidence: dbRow.dataConfidence,
+            provisionStatus: dbRow.provisionStatus,
+            provisionSource: dbRow.provisionSource,
+            provisionPhase: dbRow.provisionPhase,
+            addressesReadyAt: dbRow.addressesReadyAt,
+            mapReadyAt: dbRow.mapReadyAt,
+            optimizedAt: dbRow.optimizedAt,
+            hasParcels: dbRow.hasParcels,
+            buildingLinkConfidence: dbRow.buildingLinkConfidence,
+            mapMode: dbRow.mapMode
+        )
     }
 
     /// Single RPC: centroid (lat/lon) per campaign for map markers. Skips campaigns with no addresses.
@@ -630,6 +698,35 @@ final class CampaignsAPI {
         return URLSession(configuration: configuration)
     }
 
+    private static func provisionResponse(from state: CampaignProvisionState) -> CampaignProvisionResponse {
+        CampaignProvisionResponse(
+            success: state.provisionStatus == .ready,
+            addressesSaved: nil,
+            buildingsSaved: nil,
+            roadsCount: nil,
+            roadsSaved: nil,
+            message: state.provisionStatus == .ready
+                ? "Campaign is map-ready."
+                : "Campaign provisioning is still in progress.",
+            error: nil,
+            dataConfidenceScore: nil,
+            dataConfidenceLabel: nil,
+            dataConfidenceReason: nil,
+            dataConfidenceSummary: nil,
+            provisionStatus: state.provisionStatus,
+            provisionPhase: state.provisionPhase,
+            provisionSource: state.provisionSource,
+            mapReady: state.provisionStatus == .ready,
+            optimized: state.provisionPhase == .optimized,
+            postprocessDeferred: state.provisionPhase != .optimized,
+            parcelEnrichmentStatus: nil,
+            warning: "Provision request timed out on the client, but the server kept working.",
+            hasParcels: nil,
+            buildingLinkConfidence: nil,
+            mapMode: nil
+        )
+    }
+
     /// Update campaign's territory boundary (polygon). Backend reads this when provisioning (Lambda/S3 server-side).
     func updateTerritoryBoundary(campaignId: UUID, polygonGeoJSON: String) async throws {
         guard let data = polygonGeoJSON.data(using: .utf8) else {
@@ -733,18 +830,18 @@ final class CampaignsAPI {
                     timeoutSeconds: Self.provisionResourceTimeout,
                     pollIntervalSeconds: 2
                 )
-                if state.provisionStatus == "ready" {
+                if state.provisionStatus == .ready {
                     print("✅ [API DEBUG] Provision completed server-side after client timeout for campaign \(campaignId)")
-                    return nil
+                    return Self.provisionResponse(from: state)
                 }
-                if state.provisionStatus == "failed" {
+                if state.provisionStatus == .failed {
                     throw NSError(
                         domain: "CampaignsAPI",
                         code: NSURLErrorTimedOut,
                         userInfo: [NSLocalizedDescriptionKey: "Provision timed out and later failed on the server."]
                     )
                 }
-                print("⚠️ [API DEBUG] Provision still not ready after timeout; last status=\(state.provisionStatus ?? "unknown")")
+                print("⚠️ [API DEBUG] Provision still not ready after timeout; last status=\(state.provisionStatus?.rawValue ?? "unknown"), phase=\(state.provisionPhase?.rawValue ?? "unknown")")
             }
             throw error
         }
@@ -963,12 +1060,12 @@ final class CampaignsAPI {
 
         while Date().timeIntervalSince(start) * 1_000_000_000 < Double(timeoutNanos) {
             let state = try await fetchProvisionState(campaignId: campaignId)
-            print("🧭 [API] Provision state campaign=\(campaignId) status=\(state.provisionStatus ?? "nil")")
+            print("🧭 [API] Provision state campaign=\(campaignId) status=\(state.provisionStatus?.rawValue ?? "nil") phase=\(state.provisionPhase?.rawValue ?? "nil")")
 
-            if state.provisionStatus == "ready" {
+            if state.provisionStatus == .ready {
                 return state
             }
-            if state.provisionStatus == "failed" {
+            if state.provisionStatus == .failed {
                 return state
             }
 
@@ -981,7 +1078,7 @@ final class CampaignsAPI {
     private func fetchProvisionState(campaignId: UUID) async throws -> CampaignProvisionState {
         let res: PostgrestResponse<CampaignProvisionState> = try await client
             .from("campaigns")
-            .select("id,provision_status,provisioned_at,snapshot_bucket,snapshot_prefix,snapshot_buildings_url,snapshot_roads_url,address_source")
+            .select("id,provision_status,provision_source,provision_phase,provisioned_at,addresses_ready_at,map_ready_at,optimized_at,snapshot_bucket,snapshot_prefix,snapshot_buildings_url,snapshot_roads_url,address_source")
             .eq("id", value: campaignId.uuidString)
             .single()
             .execute()
@@ -1063,6 +1160,14 @@ struct CampaignProvisionResponse: Codable {
     var dataConfidenceLabel: DataConfidenceLabel?
     var dataConfidenceReason: String?
     var dataConfidenceSummary: CampaignDataConfidenceSummary?
+    var provisionStatus: CampaignProvisionStatus?
+    var provisionPhase: CampaignProvisionPhase?
+    var provisionSource: CampaignProvisionSource?
+    var mapReady: Bool?
+    var optimized: Bool?
+    var postprocessDeferred: Bool?
+    var parcelEnrichmentStatus: String?
+    var warning: String?
     var hasParcels: Bool?
     var buildingLinkConfidence: Double?
     var mapMode: CampaignMapMode?
@@ -1079,6 +1184,14 @@ struct CampaignProvisionResponse: Codable {
         case dataConfidenceLabel = "data_confidence_label"
         case dataConfidenceReason = "data_confidence_reason"
         case dataConfidenceSummary = "data_confidence_summary"
+        case provisionStatus = "provision_status"
+        case provisionPhase = "provision_phase"
+        case provisionSource = "provision_source"
+        case mapReady = "map_ready"
+        case optimized
+        case postprocessDeferred = "postprocess_deferred"
+        case parcelEnrichmentStatus = "parcel_enrichment_status"
+        case warning
         case hasParcels = "has_parcels"
         case buildingLinkConfidence = "building_link_confidence"
         case mapMode = "map_mode"
@@ -1088,8 +1201,13 @@ struct CampaignProvisionResponse: Codable {
 
 struct CampaignProvisionState: Codable {
     let id: UUID
-    let provisionStatus: String?
+    let provisionStatus: CampaignProvisionStatus?
+    let provisionSource: CampaignProvisionSource?
+    let provisionPhase: CampaignProvisionPhase?
     let provisionedAt: Date?
+    let addressesReadyAt: Date?
+    let mapReadyAt: Date?
+    let optimizedAt: Date?
     let snapshotBucket: String?
     let snapshotPrefix: String?
     let snapshotBuildingsURL: String?
@@ -1099,7 +1217,12 @@ struct CampaignProvisionState: Codable {
     enum CodingKeys: String, CodingKey {
         case id
         case provisionStatus = "provision_status"
+        case provisionSource = "provision_source"
+        case provisionPhase = "provision_phase"
         case provisionedAt = "provisioned_at"
+        case addressesReadyAt = "addresses_ready_at"
+        case mapReadyAt = "map_ready_at"
+        case optimizedAt = "optimized_at"
         case snapshotBucket = "snapshot_bucket"
         case snapshotPrefix = "snapshot_prefix"
         case snapshotBuildingsURL = "snapshot_buildings_url"
@@ -1186,6 +1309,12 @@ final class CampaignsV2APISupabase: CampaignsV2APIType {
             status: dbRow.status ?? .draft,
             seedQuery: dbRow.region,
             dataConfidence: dbRow.dataConfidence,
+            provisionStatus: dbRow.provisionStatus,
+            provisionSource: dbRow.provisionSource,
+            provisionPhase: dbRow.provisionPhase,
+            addressesReadyAt: dbRow.addressesReadyAt,
+            mapReadyAt: dbRow.mapReadyAt,
+            optimizedAt: dbRow.optimizedAt,
             hasParcels: dbRow.hasParcels,
             buildingLinkConfidence: dbRow.buildingLinkConfidence,
             mapMode: dbRow.mapMode

@@ -16,6 +16,12 @@ struct CampaignDBRow: Codable {
     let region: String?
     let tags: String?
     let status: CampaignStatus?
+    let provisionStatus: CampaignProvisionStatus?
+    let provisionSource: CampaignProvisionSource?
+    let provisionPhase: CampaignProvisionPhase?
+    let addressesReadyAt: Date?
+    let mapReadyAt: Date?
+    let optimizedAt: Date?
     let hasParcels: Bool?
     let buildingLinkConfidence: Double?
     let mapMode: CampaignMapMode?
@@ -30,6 +36,12 @@ struct CampaignDBRow: Codable {
 
     enum CodingKeys: String, CodingKey {
         case id, title, description, scans, conversions, region, tags, status
+        case provisionStatus = "provision_status"
+        case provisionSource = "provision_source"
+        case provisionPhase = "provision_phase"
+        case addressesReadyAt = "addresses_ready_at"
+        case mapReadyAt = "map_ready_at"
+        case optimizedAt = "optimized_at"
         case hasParcels = "has_parcels"
         case buildingLinkConfidence = "building_link_confidence"
         case mapMode = "map_mode"
@@ -192,7 +204,7 @@ enum AddressStatus: String, Codable, CaseIterable {
         case .talked: return "Talked"
         case .appointment: return "Appointment"
         case .doNotKnock: return "Do Not Knock"
-        case .futureSeller: return "Future Seller"
+        case .futureSeller: return "Follow Up"
         case .hotLead: return "Hot Lead"
         }
     }
@@ -207,7 +219,7 @@ enum AddressStatus: String, Codable, CaseIterable {
         case .talked: return "Spoke with resident"
         case .appointment: return "Appointment scheduled"
         case .doNotKnock: return "Do not knock"
-        case .futureSeller: return "Future seller"
+        case .futureSeller: return "Follow up"
         case .hotLead: return "Hot lead"
         }
     }
@@ -222,7 +234,7 @@ enum AddressStatus: String, Codable, CaseIterable {
         case .talked: return "person.wave.2.fill"
         case .appointment: return "calendar"
         case .doNotKnock: return "hand.raised.fill"
-        case .futureSeller: return "house.fill"
+        case .futureSeller: return "arrow.uturn.right.circle.fill"
         case .hotLead: return "flame.fill"
         }
     }
@@ -237,7 +249,7 @@ enum AddressStatus: String, Codable, CaseIterable {
         case .talked: return .green
         case .appointment: return .purple
         case .doNotKnock: return .red
-        case .futureSeller: return .teal
+        case .futureSeller: return .yellow
         case .hotLead: return .red
         }
     }

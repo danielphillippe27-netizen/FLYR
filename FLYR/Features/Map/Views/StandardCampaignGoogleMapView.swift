@@ -1,7 +1,7 @@
 import SwiftUI
-import GoogleMaps
 import CoreLocation
 import UIKit
+import GoogleMaps
 
 struct StandardCampaignMapMarker: Equatable {
     let addressId: UUID
@@ -19,37 +19,124 @@ struct StandardCampaignMapMarker: Equatable {
     }
 }
 
+private enum StandardCampaignMarkerIcon {
+    private static var cache: [String: UIImage] = [:]
+
+    static func image(for status: AddressStatus) -> UIImage {
+        let key = status.rawValue
+        if let cached = cache[key] {
+            return cached
+        }
+
+        let image = makeImage(
+            fillColor: fillColor(for: status),
+            symbolName: symbolName(for: status)
+        )
+        cache[key] = image
+        return image
+    }
+
+    private static func fillColor(for status: AddressStatus) -> UIColor {
+        switch status {
+        case .none, .untouched:
+            return MapStatusColor.untouched
+        case .noAnswer:
+            return MapStatusColor.untouched
+        case .delivered:
+            return MapStatusColor.touched
+        case .talked, .hotLead:
+            return MapStatusColor.conversations
+        case .futureSeller:
+            return UIColor(hex: "#facc15") ?? .systemYellow
+        case .appointment:
+            return UIColor(hex: "#8b5cf6") ?? .systemPurple
+        case .doNotKnock:
+            return MapStatusColor.doNotKnock
+        }
+    }
+
+    private static func symbolName(for status: AddressStatus) -> String {
+        switch status {
+        case .none, .untouched:
+            return "megaphone.fill"
+        case .delivered, .noAnswer:
+            return "door.left.hand.closed"
+        case .talked, .hotLead:
+            return "person.fill"
+        case .futureSeller:
+            return "arrow.uturn.right.circle.fill"
+        case .appointment:
+            return "calendar"
+        case .doNotKnock:
+            return "hand.raised.fill"
+        }
+    }
+
+    private static func makeImage(fillColor: UIColor, symbolName: String) -> UIImage {
+        let canvasSize = CGSize(width: 24, height: 24)
+        let symbolRect = CGRect(x: 3, y: 3, width: 18, height: 18)
+
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = UIScreen.main.scale
+        let renderer = UIGraphicsImageRenderer(size: canvasSize, format: format)
+
+        return renderer.image { context in
+            let cgContext = context.cgContext
+            cgContext.setShadow(offset: CGSize(width: 0, height: 1), blur: 3, color: UIColor.black.withAlphaComponent(0.28).cgColor)
+
+            let configuration = UIImage.SymbolConfiguration(pointSize: 18, weight: .bold)
+            if let symbol = UIImage(systemName: symbolName, withConfiguration: configuration)?
+                .withTintColor(fillColor, renderingMode: .alwaysOriginal) {
+                symbol.draw(in: symbolRect)
+            }
+        }
+    }
+}
+
 struct StandardCampaignGoogleMapView: UIViewRepresentable {
+    private static let defaultCenter = CLLocationCoordinate2D(latitude: 43.6532, longitude: -79.3832)
+
     let campaignId: String
     let markers: [StandardCampaignMapMarker]
     let pathCoordinates: [CLLocationCoordinate2D]
+    let fallbackCenter: CLLocationCoordinate2D?
+    let selectedCircleCenter: CLLocationCoordinate2D?
     let showUserLocation: Bool
     let contentInsets: UIEdgeInsets
     let onReady: (() -> Void)?
     let onMarkerTap: (MapLayerManager.AddressTapResult) -> Void
-    let onMapTap: () -> Void
+    let onMapTap: (CLLocationCoordinate2D) -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator(parent: self)
     }
 
     func makeUIView(context: Context) -> GMSMapView {
+        let initialCenter = fallbackCenter ?? Self.defaultCenter
         let options = GMSMapViewOptions()
+        options.camera = GMSCameraPosition.camera(withTarget: initialCenter, zoom: 15)
+        options.backgroundColor = UIColor.systemGray6
+
         let mapView = GMSMapView(options: options)
         mapView.delegate = context.coordinator
         mapView.mapType = .normal
-        mapView.isBuildingsEnabled = false
-        mapView.isIndoorEnabled = false
+        mapView.isBuildingsEnabled = true
         mapView.isTrafficEnabled = false
+        mapView.isIndoorEnabled = false
         mapView.isMyLocationEnabled = showUserLocation
         mapView.padding = contentInsets
+
+        mapView.settings.compassButton = false
         mapView.settings.rotateGestures = false
         mapView.settings.tiltGestures = false
-        mapView.settings.compassButton = false
         mapView.settings.myLocationButton = false
-        mapView.accessibilityElementsHidden = false
+        mapView.settings.indoorPicker = false
 
         DispatchQueue.main.async {
+            context.coordinator.syncMarkers(on: mapView)
+            context.coordinator.syncPath(on: mapView)
+            context.coordinator.syncTapCircle(on: mapView)
+            context.coordinator.updateCameraIfNeeded(on: mapView)
             onReady?()
         }
 
@@ -62,16 +149,19 @@ struct StandardCampaignGoogleMapView: UIViewRepresentable {
         uiView.isMyLocationEnabled = showUserLocation
         context.coordinator.syncMarkers(on: uiView)
         context.coordinator.syncPath(on: uiView)
+        context.coordinator.syncTapCircle(on: uiView)
         context.coordinator.updateCameraIfNeeded(on: uiView)
     }
 
     final class Coordinator: NSObject, GMSMapViewDelegate {
         var parent: StandardCampaignGoogleMapView
         private var markersByAddressId: [UUID: GMSMarker] = [:]
-        private var markerModelsByAddressId: [UUID: StandardCampaignMapMarker] = [:]
         private var pathPolyline: GMSPolyline?
+        private var tapCircle: GMSCircle?
         private var lastCampaignId: String?
         private var hasAppliedInitialCamera = false
+        private var lastMarkerCount = 0
+        private var lastFallbackCenter: CLLocationCoordinate2D?
 
         init(parent: StandardCampaignGoogleMapView) {
             self.parent = parent
@@ -83,114 +173,130 @@ struct StandardCampaignGoogleMapView: UIViewRepresentable {
             for (addressId, marker) in markersByAddressId where incomingByID[addressId] == nil {
                 marker.map = nil
                 markersByAddressId[addressId] = nil
-                markerModelsByAddressId[addressId] = nil
             }
 
             for markerData in parent.markers {
-                let marker = markersByAddressId[markerData.addressId] ?? GMSMarker()
+                let marker = markersByAddressId[markerData.addressId] ?? {
+                    let marker = GMSMarker(position: markerData.coordinate)
+                    marker.map = mapView
+                    markersByAddressId[markerData.addressId] = marker
+                    return marker
+                }()
+
                 marker.position = markerData.coordinate
                 marker.title = markerData.title
                 marker.snippet = markerData.status.displayName
-                marker.icon = GMSMarker.markerImage(with: markerColor(for: markerData.status))
-                marker.userData = markerData.addressId.uuidString
-                marker.tracksViewChanges = false
-                marker.map = mapView
-                markersByAddressId[markerData.addressId] = marker
-                markerModelsByAddressId[markerData.addressId] = markerData
+                marker.icon = StandardCampaignMarkerIcon.image(for: markerData.status)
+                marker.groundAnchor = CGPoint(x: 0.5, y: 0.5)
+                marker.userData = markerData.address
+                marker.appearAnimation = .none
             }
         }
 
         func syncPath(on mapView: GMSMapView) {
-            guard parent.pathCoordinates.count >= 2 else {
-                pathPolyline?.map = nil
-                pathPolyline = nil
+            pathPolyline?.map = nil
+            pathPolyline = nil
+
+            let validCoordinates = parent.pathCoordinates.filter(CLLocationCoordinate2DIsValid)
+            guard validCoordinates.count >= 2 else {
                 return
             }
 
             let path = GMSMutablePath()
-            for coordinate in parent.pathCoordinates where CLLocationCoordinate2DIsValid(coordinate) {
-                path.add(coordinate)
-            }
+            validCoordinates.forEach { path.add($0) }
 
-            guard path.count() >= 2 else {
-                pathPolyline?.map = nil
-                pathPolyline = nil
-                return
-            }
-
-            let polyline = pathPolyline ?? GMSPolyline()
-            polyline.path = path
-            polyline.strokeWidth = 4
+            let polyline = GMSPolyline(path: path)
             polyline.strokeColor = UIColor.white.withAlphaComponent(0.9)
-            polyline.geodesic = true
-            polyline.zIndex = 0
+            polyline.strokeWidth = 4
             polyline.map = mapView
             pathPolyline = polyline
+        }
+
+        func syncTapCircle(on mapView: GMSMapView) {
+            tapCircle?.map = nil
+            tapCircle = nil
         }
 
         func updateCameraIfNeeded(on mapView: GMSMapView) {
             if lastCampaignId != parent.campaignId {
                 lastCampaignId = parent.campaignId
                 hasAppliedInitialCamera = false
+                lastMarkerCount = 0
+                lastFallbackCenter = nil
             }
 
+            if lastMarkerCount == 0, !parent.markers.isEmpty {
+                hasAppliedInitialCamera = false
+            }
+
+            if parent.markers.isEmpty, fallbackCenterChanged {
+                hasAppliedInitialCamera = false
+            }
+
+            lastMarkerCount = parent.markers.count
+            lastFallbackCenter = parent.fallbackCenter
+
             guard !hasAppliedInitialCamera else { return }
-            guard !parent.markers.isEmpty else { return }
 
-            hasAppliedInitialCamera = true
+            let markerCoordinates = parent.markers.map(\.coordinate).filter(CLLocationCoordinate2DIsValid)
+            let pathCoordinates = parent.pathCoordinates.filter(CLLocationCoordinate2DIsValid)
+            let coordinatesForBounds = markerCoordinates.isEmpty ? pathCoordinates : markerCoordinates
 
-            if parent.markers.count == 1, let marker = parent.markers.first {
-                let camera = GMSCameraPosition.camera(
-                    withLatitude: marker.coordinate.latitude,
-                    longitude: marker.coordinate.longitude,
-                    zoom: 17
-                )
-                mapView.camera = camera
+            if coordinatesForBounds.isEmpty {
+                let fallbackCenter = parent.fallbackCenter ?? StandardCampaignGoogleMapView.defaultCenter
+                hasAppliedInitialCamera = true
+                mapView.moveCamera(GMSCameraUpdate.setTarget(fallbackCenter, zoom: 15))
                 return
             }
 
-            var bounds = GMSCoordinateBounds()
-            for marker in parent.markers {
-                bounds = bounds.includingCoordinate(marker.coordinate)
+            hasAppliedInitialCamera = true
+
+            if coordinatesForBounds.count == 1, let coordinate = coordinatesForBounds.first {
+                mapView.moveCamera(GMSCameraUpdate.setTarget(coordinate, zoom: 18))
+                return
+            }
+
+            guard let bounds = bounds(for: coordinatesForBounds), bounds.isValid else {
+                return
             }
 
             mapView.moveCamera(GMSCameraUpdate.fit(bounds))
         }
 
-        func mapView(_ mapView: GMSMapView, didTap marker: GMSMarker) -> Bool {
-            guard let rawID = marker.userData as? String,
-                  let addressId = UUID(uuidString: rawID),
-                  let markerData = markerModelsByAddressId[addressId] else {
+        private var fallbackCenterChanged: Bool {
+            switch (lastFallbackCenter, parent.fallbackCenter) {
+            case (nil, nil):
                 return false
+            case (.some, nil), (nil, .some):
+                return true
+            case let (.some(lhs), .some(rhs)):
+                return lhs.latitude != rhs.latitude || lhs.longitude != rhs.longitude
             }
-
-            parent.onMarkerTap(markerData.address)
-            return true
         }
 
         func mapView(_ mapView: GMSMapView, didTapAt coordinate: CLLocationCoordinate2D) {
-            parent.onMapTap()
+            parent.onMapTap(coordinate)
         }
 
-        private func markerColor(for status: AddressStatus) -> UIColor {
-            switch status {
-            case .none, .untouched:
-                return MapStatusColor.untouched
-            case .noAnswer:
-                return MapStatusColor.pendingVisited
-            case .delivered:
-                return .systemBlue
-            case .talked:
-                return MapStatusColor.touched
-            case .appointment:
-                return MapStatusColor.conversations
-            case .doNotKnock:
-                return MapStatusColor.doNotKnock
-            case .futureSeller:
-                return .systemTeal
-            case .hotLead:
-                return .systemRed
+        func mapView(_ mapView: GMSMapView, didTap marker: GMSMarker) -> Bool {
+            guard let address = marker.userData as? MapLayerManager.AddressTapResult else {
+                return false
             }
+
+            parent.onMarkerTap(address)
+            mapView.selectedMarker = nil
+            return true
         }
+
+        private func bounds(for coordinates: [CLLocationCoordinate2D]) -> GMSCoordinateBounds? {
+            guard !coordinates.isEmpty else { return nil }
+
+            var bounds = GMSCoordinateBounds()
+            for coordinate in coordinates {
+                bounds = bounds.includingCoordinate(coordinate)
+            }
+            return bounds
+        }
+
     }
 }

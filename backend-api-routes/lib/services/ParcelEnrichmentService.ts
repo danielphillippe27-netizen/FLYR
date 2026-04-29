@@ -411,20 +411,6 @@ export class ParcelEnrichmentService {
     debugOverride?: ParcelEnrichmentDebug
   ): Promise<ParcelPreparationResult> {
     const regionCode = (campaign.region || '').trim().toUpperCase();
-    if (regionCode && regionCode !== 'ON') {
-      return {
-        status: 'skipped',
-        sourceId: null,
-        parcelCount: 0,
-        parcels: [],
-        error: `Parcel enrichment is currently configured for Ontario campaigns only (campaign region: ${regionCode}).`,
-        debug: {
-          ...(debugOverride ?? {}),
-          completed_at: new Date().toISOString(),
-        },
-      };
-    }
-
     const bbox = getCampaignBbox(campaign);
     const campaignPolygon = campaign.territory_boundary;
     if (!bbox) {

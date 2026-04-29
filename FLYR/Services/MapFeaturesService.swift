@@ -407,6 +407,18 @@ private func decodeFeatureCollection<F: Codable>(_ data: Data) throws -> MapFeat
 @MainActor
 final class MapFeaturesService: ObservableObject {
     static let shared = MapFeaturesService()
+    private static let minLinkableBuildingAreaSqm: Double = 30
+    private static let nonLinkableBuildingTypes: Set<String> = [
+        "shed",
+        "garage",
+        "garages",
+        "carport",
+        "parking",
+        "parking_garage",
+        "outbuilding",
+        "accessory",
+        "ancillary"
+    ]
     
     private let supabase = SupabaseClientShim()
     
@@ -451,7 +463,9 @@ final class MapFeaturesService: ObservableObject {
     }
 
     func primeBuildingPolygons(campaignId: String, features: [GeoJSONFeature]) {
-        let collection = buildingFeatureCollectionFromGeoJSON(GeoJSONFeatureCollection(features: features))
+        let collection = filteredRenderableBuildingCollection(
+            buildingFeatureCollectionFromGeoJSON(GeoJSONFeatureCollection(features: features))
+        )
         guard !collection.features.isEmpty else { return }
         prewarmedBuildingsByCampaign[campaignId.lowercased()] = collection
         print("✅ [MapFeatures] Primed \(collection.features.count) prewarmed building polygons for campaign \(campaignId)")
@@ -495,8 +509,9 @@ final class MapFeaturesService: ObservableObject {
             }
             
             let result: BuildingFeatureCollection = try decodeFeatureCollection(data)
-            self.buildings = result
-            print("✅ [MapFeatures] Loaded \(result.features.count) building features")
+            let filtered = filteredRenderableBuildingCollection(result)
+            self.buildings = filtered
+            print("✅ [MapFeatures] Loaded \(filtered.features.count) building features")
             
         } catch let decodingError as DecodingError {
             self.error = decodingError
@@ -546,8 +561,9 @@ final class MapFeaturesService: ObservableObject {
                 params: params
             )
             
-            self.buildings = result
-            print("✅ [MapFeatures] Loaded \(result.features.count) buildings in viewport")
+            let filtered = filteredRenderableBuildingCollection(result)
+            self.buildings = filtered
+            print("✅ [MapFeatures] Loaded \(filtered.features.count) buildings in viewport")
             
         } catch {
             self.error = error
@@ -627,7 +643,7 @@ final class MapFeaturesService: ObservableObject {
 
         if let cachedBundle = await campaignRepository.getCampaignMapBundle(campaignId: campaignId),
            isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) {
-            self.buildings = cachedBundle.buildings
+            self.buildings = filteredRenderableBuildingCollection(cachedBundle.buildings)
             self.addresses = cachedBundle.addresses
             self.roads = cachedBundle.roads
             self.silverBuildingLinks = cachedBundle.silverBuildingLinks
@@ -685,7 +701,7 @@ final class MapFeaturesService: ObservableObject {
         }
 
         // If the campaign still has no buildings or addresses, replay the same polygon-backed
-        // create flow used by NewCampaignScreen: generate-address-list -> provision -> reload.
+        // create flow used by NewCampaignScreen: provision -> reload.
         if (self.buildings?.features.isEmpty ?? true) && (self.addresses?.features.isEmpty ?? true) {
             await replayCampaignCreationPathIfNeeded(campaignId: campaignId, requestId: requestId)
         }
@@ -745,7 +761,7 @@ final class MapFeaturesService: ObservableObject {
     ) async {
         guard isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else { return }
 
-        self.buildings = payload.buildings
+        self.buildings = filteredRenderableBuildingCollection(payload.buildings)
         self.addresses = payload.addresses
         self.roads = RoadFeatureCollection(type: "FeatureCollection", features: [])
 
@@ -763,9 +779,10 @@ final class MapFeaturesService: ObservableObject {
         do {
             let features = try await BuildingLinkService.shared.fetchBuildings(campaignId: campaignId)
             guard isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else { return }
-            self.buildings = BuildingFeatureCollection(type: "FeatureCollection", features: features)
-            await campaignRepository.upsertBuildings(campaignId: campaignId, features: features)
-            print("✅ [MapFeatures] Loaded \(features.count) building features from API (Gold/Silver/S3)")
+            let filtered = filteredRenderableBuildingFeatures(features)
+            self.buildings = BuildingFeatureCollection(type: "FeatureCollection", features: filtered)
+            await campaignRepository.upsertBuildings(campaignId: campaignId, features: filtered)
+            print("✅ [MapFeatures] Loaded \(filtered.count) building features from API (Gold/Silver/S3)")
         } catch {
             if isCancellationError(error) {
                 print("ℹ️ [MapFeatures] Buildings API request cancelled")
@@ -779,6 +796,83 @@ final class MapFeaturesService: ObservableObject {
                 self.buildings = BuildingFeatureCollection(type: "FeatureCollection", features: [])
             }
         }
+    }
+
+    private func filteredRenderableBuildingCollection(_ collection: BuildingFeatureCollection) -> BuildingFeatureCollection {
+        BuildingFeatureCollection(
+            type: collection.type,
+            features: filteredRenderableBuildingFeatures(collection.features)
+        )
+    }
+
+    private func filteredRenderableBuildingFeatures(_ features: [BuildingFeature]) -> [BuildingFeature] {
+        let filtered = features.filter(Self.isRenderableBuildingFeature)
+        let removed = features.count - filtered.count
+        if removed > 0 {
+            print("🧹 [MapFeatures] Filtered \(removed) non-linkable shed/outbuilding footprints")
+        }
+        return filtered
+    }
+
+    private static func isRenderableBuildingFeature(_ feature: BuildingFeature) -> Bool {
+        let geometryType = feature.geometry.type.lowercased()
+        guard geometryType == "polygon" || geometryType == "multipolygon" else {
+            return true
+        }
+
+        let source = feature.properties.source?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if source == "manual" {
+            return true
+        }
+
+        let buildingType = feature.properties.buildingType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if let buildingType, nonLinkableBuildingTypes.contains(buildingType) {
+            return false
+        }
+
+        let area = feature.properties.areaSqm ?? geometryAreaSqm(feature.geometry)
+        guard let area else { return true }
+        return area >= minLinkableBuildingAreaSqm
+    }
+
+    private static func geometryAreaSqm(_ geometry: MapFeatureGeoJSONGeometry) -> Double? {
+        if let polygon = geometry.asPolygon {
+            return polygonAreaSqm(polygon)
+        }
+        if let multiPolygon = geometry.asMultiPolygon {
+            return multiPolygon.reduce(0) { $0 + polygonAreaSqm($1) }
+        }
+        return nil
+    }
+
+    private static func polygonAreaSqm(_ polygon: [[[Double]]]) -> Double {
+        guard let outer = polygon.first else { return 0 }
+        let outerArea = ringAreaSqm(outer)
+        let holesArea = polygon.dropFirst().reduce(0) { $0 + ringAreaSqm($1) }
+        return max(outerArea - holesArea, 0)
+    }
+
+    private static func ringAreaSqm(_ ring: [[Double]]) -> Double {
+        guard ring.count >= 4 else { return 0 }
+        let points = ring.compactMap { point -> (lon: Double, lat: Double)? in
+            guard point.count >= 2 else { return nil }
+            return (lon: point[0], lat: point[1])
+        }
+        guard points.count >= 4 else { return 0 }
+
+        let avgLatRad = points.reduce(0) { $0 + $1.lat } / Double(points.count) * .pi / 180
+        let metersPerDegreeLat = 111_320.0
+        let metersPerDegreeLon = max(cos(avgLatRad), 0.01) * 111_320.0
+        var area = 0.0
+
+        for index in points.indices {
+            let current = points[index]
+            let next = points[(index + 1) % points.count]
+            area += (current.lon * metersPerDegreeLon) * (next.lat * metersPerDegreeLat)
+            area -= (next.lon * metersPerDegreeLon) * (current.lat * metersPerDegreeLat)
+        }
+
+        return abs(area) / 2
     }
 
     private func replayCampaignCreationPathIfNeeded(campaignId: String, requestId: UUID? = nil) async {
@@ -806,23 +900,23 @@ final class MapFeaturesService: ObservableObject {
 
         print("🔁 [MapFeatures] Replaying polygon create flow for empty campaign \(campaignId)")
 
-        do {
-            _ = try await OvertureAddressService.shared.getAddressesInPolygon(
-                polygonGeoJSON: polygonGeoJSON,
-                campaignId: campaignUUID
-            )
-        } catch {
-            print("⚠️ [MapFeatures] generate-address-list replay failed: \(error.localizedDescription)")
-        }
+        print("🔁 [MapFeatures] Territory boundary payload size: \(polygonGeoJSON.count) bytes")
 
         do {
-            _ = try await CampaignsAPI.shared.provisionCampaign(campaignId: campaignUUID)
-            let state = try await CampaignsAPI.shared.waitForProvisionReady(
-                campaignId: campaignUUID,
-                timeoutSeconds: 45,
-                pollIntervalSeconds: 2
-            )
-            print("✅ [MapFeatures] Replay provision finished with status \(state.provisionStatus ?? "unknown")")
+            let provisionResponse = try await CampaignsAPI.shared.provisionCampaign(campaignId: campaignUUID)
+            if provisionResponse?.provisionStatus == .ready {
+                print(
+                    "✅ [MapFeatures] Replay provision finished with status \(provisionResponse?.provisionStatus?.rawValue ?? "unknown") " +
+                    "phase \(provisionResponse?.provisionPhase?.rawValue ?? "unknown")"
+                )
+            } else {
+                let state = try await CampaignsAPI.shared.waitForProvisionReady(
+                    campaignId: campaignUUID,
+                    timeoutSeconds: 45,
+                    pollIntervalSeconds: 2
+                )
+                print("✅ [MapFeatures] Replay provision finished with status \(state.provisionStatus?.rawValue ?? "unknown") phase \(state.provisionPhase?.rawValue ?? "unknown")")
+            }
         } catch {
             print("⚠️ [MapFeatures] provision replay failed: \(error.localizedDescription)")
         }
@@ -955,7 +1049,9 @@ final class MapFeaturesService: ObservableObject {
 
             // If edge function returned features directly, render those immediately.
             if let ensureFeatures = ensureResponse.features, !ensureFeatures.isEmpty {
-                let immediate = buildingFeatureCollectionFromGeoJSON(GeoJSONFeatureCollection(features: ensureFeatures))
+                let immediate = filteredRenderableBuildingCollection(
+                    buildingFeatureCollectionFromGeoJSON(GeoJSONFeatureCollection(features: ensureFeatures))
+                )
                 if !immediate.features.isEmpty {
                     immediateCollection = immediate
                     guard isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else { return }
@@ -973,7 +1069,9 @@ final class MapFeaturesService: ObservableObject {
                 collection = try await BuildingsAPI.shared.fetchBuildingPolygons(campaignId: campaignUUID)
             }
             
-            let buildingCollection = buildingFeatureCollectionFromGeoJSON(collection)
+            let buildingCollection = filteredRenderableBuildingCollection(
+                buildingFeatureCollectionFromGeoJSON(collection)
+            )
             guard isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else { return }
             if !buildingCollection.features.isEmpty {
                 self.buildings = buildingCollection
@@ -1074,6 +1172,8 @@ final class MapFeaturesService: ObservableObject {
             confidence: (p["confidence"]?.value as? Double).flatMap { $0 >= 0 ? $0 : nil },
             source: str("source"),
             addressCount: int("address_count") > 0 ? int("address_count") : nil,
+            areaSqm: double("area_sqm") > 0 ? double("area_sqm") : nil,
+            buildingType: str("building_type"),
             qrScanned: bool("qr_scanned")
         )
     }

@@ -352,6 +352,45 @@ final class BuildingDataServiceTests: XCTestCase {
         XCTAssertEqual(sorted.map(\.houseNumber), ["12", "12A", "12B"])
     }
 
+    func testDeduplicatedAddressesForDisplayCollapsesSameHomeWithDifferentIds() throws {
+        let firstId = UUID()
+        let duplicateId = UUID()
+        let addresses = try [
+            makeCampaignAddressResponse(id: firstId, houseNumber: "83", streetName: "Post Rd", formatted: "83 POST RD, Toronto, ON"),
+            makeCampaignAddressResponse(id: duplicateId, houseNumber: "83", streetName: "POST RD", formatted: "83 Post Rd, Toronto, ON")
+        ]
+
+        let deduped = BuildingDataService.deduplicatedAddressesForDisplay(addresses)
+
+        XCTAssertEqual(deduped.count, 1)
+        XCTAssertEqual(deduped.first?.id, firstId)
+    }
+
+    func testDeduplicatedAddressesForDisplayPreservesRequestedDuplicate() throws {
+        let firstId = UUID()
+        let requestedId = UUID()
+        let addresses = try [
+            makeCampaignAddressResponse(id: firstId, houseNumber: "83", streetName: "Post Rd", formatted: "83 POST RD, Toronto, ON"),
+            makeCampaignAddressResponse(id: requestedId, houseNumber: "83", streetName: "POST RD", formatted: "83 Post Rd, Toronto, ON")
+        ]
+
+        let deduped = BuildingDataService.deduplicatedAddressesForDisplay(addresses, requestedAddressId: requestedId)
+
+        XCTAssertEqual(deduped.count, 1)
+        XCTAssertEqual(deduped.first?.id, requestedId)
+    }
+
+    func testDeduplicatedAddressesForDisplayKeepsDifferentHomes() throws {
+        let addresses = try [
+            makeCampaignAddressResponse(houseNumber: "83", streetName: "Post Rd", formatted: "83 Post Rd, Toronto, ON"),
+            makeCampaignAddressResponse(houseNumber: "85", streetName: "Post Rd", formatted: "85 Post Rd, Toronto, ON")
+        ]
+
+        let deduped = BuildingDataService.deduplicatedAddressesForDisplay(addresses)
+
+        XCTAssertEqual(deduped.map(\.houseNumber), ["83", "85"])
+    }
+
     func testTownhomeOverlayBuildsMixedRedGreenBlueSegments() throws {
         let building = try makeBuildingFeature(gersId: "townhome-1")
         let firstId = UUID()

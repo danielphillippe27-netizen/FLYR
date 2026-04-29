@@ -155,7 +155,7 @@ struct SessionStartView: View {
             }
 
             quickActionButton(
-                title: "Network",
+                title: "Networking",
                 systemImage: "person.2.circle",
                 backgroundColor: .info
             ) {

@@ -19,7 +19,7 @@ struct NewCampaignDetailView: View {
     @ObservedObject private var authManager = AuthManager.shared
     @ObservedObject private var sessionManager = SessionManager.shared
     @StateObject private var hook = UseCampaignV2()
-    @State private var mapCenter: CLLocationCoordinate2D = CLLocationCoordinate2D(latitude: 43.65, longitude: -79.38) // Toronto default
+    @State private var mapCenter: CLLocationCoordinate2D?
     @State private var isMapFullscreen = false
     @State private var addressStatuses: [String: AddressStatus] = [:]
     @State private var showShareCardView = false
@@ -89,20 +89,6 @@ struct NewCampaignDetailView: View {
         presentation?.isJustListedMearnsDemo == true
     }
 
-    private var mapModeTitle: String {
-        hook.item?.mapMode?.settingsTitle ?? "Smart Buildings"
-    }
-
-    private var buildingLinkConfidenceLabel: String {
-        guard let confidence = hook.item?.buildingLinkConfidence else { return "Not available" }
-        return "\(Int(confidence.rounded()))%"
-    }
-
-    private var parcelsAvailabilityLabel: String {
-        guard let hasParcels = hook.item?.hasParcels else { return "Not available" }
-        return hasParcels ? "Yes" : "No"
-    }
-
     private var isFounderDemoEnabled: Bool {
         DemoFounderAccess.isAllowed(user: authManager.user)
     }
@@ -119,12 +105,13 @@ struct NewCampaignDetailView: View {
         
         var markers: [MapMarker] = []
         
-        // Add campaign center marker
-        markers.append(MapMarker(
-            coordinate: mapCenter,
-            title: campaign.name,
-            color: "red"
-        ))
+        if let mapCenter {
+            markers.append(MapMarker(
+                coordinate: mapCenter,
+                title: campaign.name,
+                color: "red"
+            ))
+        }
         
         // Add address markers
         for (index, address) in campaign.addresses.prefix(5).enumerated() {
@@ -242,30 +229,6 @@ struct NewCampaignDetailView: View {
                 .background(Color.bgSecondary)
                 .cornerRadius(12)
 
-                if hook.item != nil {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("Campaign Settings")
-                            .font(.subheading)
-                            .foregroundColor(.text)
-
-                        VStack(alignment: .leading, spacing: 10) {
-                            detailRow(label: "Map Mode", value: mapModeTitle)
-                            detailRow(label: "Building confidence", value: buildingLinkConfidenceLabel)
-                            detailRow(label: "Parcels available", value: parcelsAvailabilityLabel)
-
-                            if hook.item?.mapMode?.usesStandardPins == true {
-                                Text("Every address is still trackable. You can still mark visits, conversations, follow-ups, and outcomes manually.")
-                                    .font(.flyrCaption)
-                                    .foregroundColor(.muted)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
-                        }
-                        .padding(16)
-                        .background(Color.bgSecondary)
-                        .cornerRadius(12)
-                    }
-                }
-
                 // Map Section - 3D Campaign Map (MapFeaturesService + MapLayerManager)
                 VStack(alignment: .leading, spacing: 12) {
                     Text("Campaign Area")
@@ -275,6 +238,7 @@ struct NewCampaignDetailView: View {
                     ZStack {
                         CampaignMapView(
                             campaignId: campaignID.uuidString,
+                            initialCenter: mapCenter,
                             showPreSessionStartButton: false
                         )
                             .frame(height: 260)
@@ -651,7 +615,11 @@ struct NewCampaignDetailView: View {
                 Divider()
                 Button(action: {
                     HapticManager.medium()
-                    uiState.selectCampaign(id: campaignID, name: hook.item?.name)
+                    uiState.selectCampaign(
+                        id: campaignID,
+                        name: hook.item?.name,
+                        boundaryCoordinates: mapCenter.map { [$0] } ?? []
+                    )
                     uiState.selectedTabIndex = 1
                 }) {
                     Text("Start Session")
@@ -887,13 +855,13 @@ struct NewCampaignDetailView: View {
                     mapCenter = firstAddressWithCoords.coordinate!
                     print("🗺️ [MAP] First address has no coordinates, using first available: \(firstAddressWithCoords.coordinate!)")
                 } else {
-                    // Keep default Toronto center if no addresses have coordinates
-                    print("🗺️ [MAP] No addresses with coordinates, using default center")
+                    mapCenter = nil
+                    print("🗺️ [MAP] No addresses with coordinates; waiting for campaign map data")
                 }
             }
         } else {
-            // Keep default Toronto center if campaign has no addresses
-            print("🗺️ [MAP] Campaign has no addresses, using default center")
+            mapCenter = nil
+            print("🗺️ [MAP] Campaign has no addresses; waiting for campaign map data")
         }
     }
 

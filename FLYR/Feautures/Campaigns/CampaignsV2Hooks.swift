@@ -108,6 +108,8 @@ final class UseCampaignV2: ObservableObject {
             let needsRefresh =
                 campaign.addresses.isEmpty ||
                 campaign.dataConfidence == nil ||
+                campaign.provisionStatus == nil ||
+                campaign.provisionPhase == nil ||
                 campaign.mapMode == nil ||
                 campaign.buildingLinkConfidence == nil ||
                 campaign.hasParcels == nil
@@ -117,6 +119,8 @@ final class UseCampaignV2: ObservableObject {
                 let missingReasons = [
                     campaign.addresses.isEmpty ? "addresses" : nil,
                     campaign.dataConfidence == nil ? "data confidence" : nil,
+                    campaign.provisionStatus == nil ? "provision status" : nil,
+                    campaign.provisionPhase == nil ? "provision phase" : nil,
                     campaign.mapMode == nil ? "map mode" : nil,
                     campaign.buildingLinkConfidence == nil ? "building link confidence" : nil,
                     campaign.hasParcels == nil ? "parcel availability" : nil
@@ -136,6 +140,12 @@ final class UseCampaignV2: ObservableObject {
                     campaign.seedQuery = fullCampaign.seedQuery
                     campaign.scans = fullCampaign.scans
                     campaign.conversions = fullCampaign.conversions
+                    campaign.provisionStatus = fullCampaign.provisionStatus
+                    campaign.provisionSource = fullCampaign.provisionSource
+                    campaign.provisionPhase = fullCampaign.provisionPhase
+                    campaign.addressesReadyAt = fullCampaign.addressesReadyAt
+                    campaign.mapReadyAt = fullCampaign.mapReadyAt
+                    campaign.optimizedAt = fullCampaign.optimizedAt
                     campaign.hasParcels = fullCampaign.hasParcels
                     campaign.buildingLinkConfidence = fullCampaign.buildingLinkConfidence
                     campaign.mapMode = fullCampaign.mapMode

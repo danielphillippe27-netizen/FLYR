@@ -54,8 +54,8 @@ final class MapLayerManager {
     /// Shared layer min zoom for 3D address circles.
     private static let addressMarkersLayerMinZoom: Double = 15.0
     
-    /// Delay house number labels slightly so they appear once the user has zoomed a bit further in.
-    private static let addressNumbersLayerMinZoom: Double = 15.55
+    /// Delay house number labels until the user is at a tighter, house-level zoom.
+    private static let addressNumbersLayerMinZoom: Double = 17.0
     
     /// Opacity vs camera zoom for 3D address circles.
     private static var addressMarkersZoomOpacityExpression: Exp {
@@ -80,15 +80,15 @@ final class MapLayerManager {
         Exp(.interpolate) {
             Exp(.linear)
             Exp(.zoom)
-            15.55
+            17.0
             0.0
-            15.9
+            17.25
             0.28
-            16.25
+            17.5
             0.62
-            16.7
+            17.8
             0.9
-            17.2
+            18.1
             1.0
         }
     }
@@ -465,7 +465,7 @@ final class MapLayerManager {
                     0
                 }
                 MapStatusColor.qrScanned
-                // Blue: conversation / talked / appointment / hot_lead (normalized "hot" or raw)
+                // Blue: conversation / talked / hot_lead (normalized "hot" or raw)
                 Exp(.eq) {
                     Exp(.coalesce) {
                         Exp(.featureState) { "status" }
@@ -492,7 +492,7 @@ final class MapLayerManager {
                     }
                     "appointment"
                 }
-                MapStatusColor.conversations
+                MapStatusColor.qrScanned
                 Exp(.eq) {
                     Exp(.coalesce) {
                         Exp(.featureState) { "status" }
@@ -521,7 +521,7 @@ final class MapLayerManager {
                     "pending_visited"
                 }
                 MapStatusColor.pendingVisited
-                // Green: touched / visited / no_answer / delivered / future_seller
+                // Green: touched / visited / delivered
                 Exp(.eq) {
                     Exp(.coalesce) {
                         Exp(.featureState) { "status" }
@@ -550,18 +550,7 @@ final class MapLayerManager {
                     }
                     "no_answer"
                 }
-                Exp(.switchCase) {
-                    Exp(.eq) {
-                        Exp(.coalesce) {
-                            Exp(.featureState) { "visit_owner" }
-                            Exp(.get) { "visit_owner" }
-                            ""
-                        }
-                        "teammate"
-                    }
-                    MapStatusColor.teammateTouched
-                    MapStatusColor.touched
-                }
+                MapStatusColor.untouched
                 Exp(.eq) {
                     Exp(.coalesce) {
                         Exp(.featureState) { "status" }
@@ -590,18 +579,7 @@ final class MapLayerManager {
                     }
                     "future_seller"
                 }
-                Exp(.switchCase) {
-                    Exp(.eq) {
-                        Exp(.coalesce) {
-                            Exp(.featureState) { "visit_owner" }
-                            Exp(.get) { "visit_owner" }
-                            ""
-                        }
-                        "teammate"
-                    }
-                    MapStatusColor.teammateTouched
-                    MapStatusColor.touched
-                }
+                UIColor(hex: "#facc15") ?? .systemYellow
                 MapStatusColor.untouched
             }
         )
@@ -1095,7 +1073,7 @@ final class MapLayerManager {
             if cachedAddressPointSignature == pointSignature, let cachedAddressPolygonData {
                 polygonData = cachedAddressPolygonData
             } else {
-                polygonData = try Self.convertAddressPointsToCirclePolygons(data, radiusMeters: 2.7, height: 10, segments: 20)
+                polygonData = try Self.convertAddressPointsToCirclePolygons(data, radiusMeters: 1.35, height: 10, segments: 20)
                 cachedAddressPointSignature = pointSignature
                 cachedAddressPolygonData = polygonData
             }
@@ -1136,7 +1114,7 @@ final class MapLayerManager {
                 )
                 let polygonData = try Self.convertAddressPointsToCirclePolygons(
                     pointData,
-                    radiusMeters: 2.7,
+                    radiusMeters: 1.35,
                     height: 11,
                     segments: 24
                 )
