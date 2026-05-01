@@ -692,12 +692,21 @@ struct SimpleMapViewRepresentable: UIViewRepresentable {
 
     func makeUIView(context: Context) -> MapView {
         let mapView = MapView(frame: .zero)
+        if mapStyleFromScheme == .light {
+            mapView.backgroundColor = MapTheme.lightAtmosphereBlue
+        }
 
         mapView.ornaments.options.scaleBar.visibility = .hidden
         mapView.ornaments.options.logo.margins = CGPoint(x: 8, y: 24)
         mapView.ornaments.options.compass.visibility = .hidden
 
-        mapView.mapboxMap?.loadStyle(mapStyleFromScheme.mapboxStyleURI)
+        if let map = mapView.mapboxMap {
+            if mapStyleFromScheme == .light {
+                MapTheme.loadBlueStandardLightStyle(on: map)
+            } else {
+                map.loadStyle(mapStyleFromScheme.mapboxStyleURI)
+            }
+        }
 
         context.coordinator.mapView = mapView
         Self.currentMapView = mapView
@@ -813,7 +822,12 @@ struct SimpleMapViewRepresentable: UIViewRepresentable {
                   let map = mapView.mapboxMap,
                   currentStyle != style else { return }
             currentStyle = style
-            map.loadStyle(style.mapboxStyleURI)
+            mapView.backgroundColor = style == .light ? MapTheme.lightAtmosphereBlue : .black
+            if style == .light {
+                MapTheme.loadBlueStandardLightStyle(on: map)
+            } else {
+                map.loadStyle(style.mapboxStyleURI)
+            }
             _ = map.onStyleLoaded.observeNext { [weak self] _ in
                 guard let self = self, let mapView = self.mapView else { return }
                 self.addUserLocationLayerIfNeeded(mapView: mapView)

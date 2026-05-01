@@ -35,23 +35,52 @@ export interface StandardBuildingCollection {
 }
 
 export class BuildingAdapter {
+  private static polygonArea(ring: number[][]): number {
+    let area = 0;
+    for (let i = 0; i < ring.length - 1; i++) {
+      const [x1, y1] = ring[i];
+      const [x2, y2] = ring[i + 1];
+      area += x1 * y2 - x2 * y1;
+    }
+    return Math.abs(area / 2);
+  }
+
+  private static normalizeToPolygon(geometry: GeoJSON.Polygon | GeoJSON.MultiPolygon): GeoJSON.Polygon {
+    if (geometry.type === 'Polygon') {
+      return geometry;
+    }
+
+    const largestPolygon = geometry.coordinates.reduce((best, polygon) => {
+      const area = this.polygonArea(polygon[0] ?? []);
+      return area > best.area ? { area, polygon } : best;
+    }, { area: -1, polygon: geometry.coordinates[0] });
+
+    return {
+      type: 'Polygon',
+      coordinates: largestPolygon.polygon,
+    };
+  }
+
   /**
    * Convert Gold database rows to standard GeoJSON
    */
   static fromGoldRows(rows: GoldBuildingRow[]): StandardBuildingCollection {
     return {
       type: 'FeatureCollection',
-      features: rows.map((row) => ({
-        type: 'Feature',
-        geometry: JSON.parse(row.geom_geojson),
-        properties: {
-          gers_id: row.id,
-          external_id: row.external_id || row.source_id,
-          area: row.area_sqm,
-          height: null,
-          layer: 'building',
-        },
-      })),
+      features: rows.map((row) => {
+        const geometry = JSON.parse(row.geom_geojson) as GeoJSON.Polygon | GeoJSON.MultiPolygon;
+        return {
+          type: 'Feature',
+          geometry: this.normalizeToPolygon(geometry),
+          properties: {
+            gers_id: row.id,
+            external_id: row.external_id || row.source_id,
+            area: row.area_sqm,
+            height: null,
+            layer: 'building',
+          },
+        };
+      }),
     };
   }
 

@@ -33,6 +33,7 @@ struct WorkspaceOnboardingView: View {
         do {
             await ensureFreshSession()
             let response = try await AccessAPI.shared.completeOnboarding(request)
+            await hydrateWorkspaceContextAfterOnboarding()
             _ = await entitlementsService.fetchEntitlement()
             await StoreKitManager.shared.refreshLocalProFromCurrentEntitlements()
             await MainActor.run {
@@ -42,6 +43,7 @@ struct WorkspaceOnboardingView: View {
             do {
                 await ensureFreshSession()
                 let response = try await AccessAPI.shared.completeOnboarding(request)
+                await hydrateWorkspaceContextAfterOnboarding()
                 _ = await entitlementsService.fetchEntitlement()
                 await StoreKitManager.shared.refreshLocalProFromCurrentEntitlements()
                 await MainActor.run {
@@ -54,6 +56,23 @@ struct WorkspaceOnboardingView: View {
                 }
             }
         }
+    }
+
+    @MainActor
+    private func hydrateWorkspaceContextAfterOnboarding() async {
+        do {
+            let state = try await AccessAPI.shared.getState()
+            WorkspaceContext.shared.update(from: state)
+            if WorkspaceContext.shared.workspaceId != nil {
+                return
+            }
+        } catch {
+            #if DEBUG
+            print("⚠️ [Onboarding] Failed to refresh access state after onboarding: \(error)")
+            #endif
+        }
+
+        _ = await RoutePlansAPI.shared.existingWorkspaceIdForCurrentUser()
     }
     
     private func advanceAfterSuccessfulOnboarding(_ response: OnboardingCompleteResponse) {

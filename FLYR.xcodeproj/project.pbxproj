@@ -407,6 +407,7 @@
 /* Begin PBXShellScriptBuildPhase section */
 		8DA7EA6C8EA51D99DE4D2806 /* Generate Framework dSYMs */ = {
 			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
 			buildActionMask = 2147483647;
 			files = (
 			);

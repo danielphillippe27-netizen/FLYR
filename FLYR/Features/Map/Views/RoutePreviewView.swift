@@ -330,10 +330,11 @@ struct RoutePreviewMapView: UIViewRepresentable {
     
     func updateUIView(_ mapView: MapView, context: Context) {
         // Set up map style and layers
-        mapView.mapboxMap.styleURI = .init(rawValue: "mapbox://styles/fliper27/cml6z0dhg002301qo9xxc08k4")
+        MapTheme.loadBlueStandardLightStyle(on: mapView.mapboxMap)
         
         // Wait for style to load, then add route
         mapView.mapboxMap.onStyleLoaded.observe { _ in
+            MapTheme.applyLightModeShadowPolicy(to: mapView.mapboxMap, pitch: mapView.mapboxMap.cameraState.pitch)
             self.addRouteLayer(to: mapView)
             self.addWaypointAnnotations(to: mapView)
             self.frameRoute(in: mapView)

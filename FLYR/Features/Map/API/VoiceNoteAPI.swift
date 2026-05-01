@@ -54,7 +54,8 @@ enum VoiceNoteAPI {
                 rawTranscript: normalizedTranscript,
                 aiSummary: normalizedTranscript,
                 clearAll: false
-            )
+            ),
+            dependencyKey: "address_capture_metadata:\(campaignId.uuidString.lowercased()):\(addressId.uuidString.lowercased())"
         )
         if await MainActor.run(body: { NetworkMonitor.shared.isOnline }) {
             await MainActor.run {

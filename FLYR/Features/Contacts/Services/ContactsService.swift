@@ -125,7 +125,8 @@ actor ContactsService {
                     workspaceId: cachedContext.workspaceId?.uuidString,
                     addressId: cachedContext.contact.addressId?.uuidString,
                     syncToCRM: syncToCRM
-                )
+                ),
+                dependencyKey: "contact:\(cachedContext.contact.id.uuidString.lowercased())"
             )
         }
         await scheduleSyncIfPossible()
@@ -337,7 +338,8 @@ actor ContactsService {
                     workspaceId: cachedContext.workspaceId?.uuidString,
                     addressId: cachedContext.contact.addressId?.uuidString,
                     syncToCRM: syncToCRM
-                )
+                ),
+                dependencyKey: "contact:\(cachedContext.contact.id.uuidString.lowercased())"
             )
         }
         await scheduleSyncIfPossible()
@@ -366,7 +368,8 @@ actor ContactsService {
                 type: activity.type.rawValue,
                 note: activity.note,
                 timestamp: OfflineDateCodec.string(from: activity.timestamp)
-            )
+            ),
+            dependencyKey: "contact:\(activity.contactId.uuidString.lowercased())"
         )
         await scheduleSyncIfPossible()
         return activity
@@ -602,7 +605,8 @@ actor ContactsService {
             entityType: "contact",
             entityId: contact.id.uuidString,
             operation: .deleteContact,
-            payload: DeleteContactOutboxPayload(contactId: contact.id.uuidString)
+            payload: DeleteContactOutboxPayload(contactId: contact.id.uuidString),
+            dependencyKey: "contact:\(contact.id.uuidString.lowercased())"
         )
         await scheduleSyncIfPossible()
     }

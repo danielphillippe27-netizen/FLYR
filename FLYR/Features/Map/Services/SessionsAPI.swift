@@ -225,7 +225,7 @@ final class SessionsAPI {
             // end_time left null for active session
             _ = try await client
                 .from("sessions")
-                .insert(data)
+                .upsert(data, onConflict: "id")
                 .execute()
         } catch {
             if routeAssignmentId != nil, isMissingRouteAssignmentColumn(error) {
@@ -233,7 +233,7 @@ final class SessionsAPI {
                 data.removeValue(forKey: "route_assignment_id")
                 _ = try await client
                     .from("sessions")
-                    .insert(data)
+                    .upsert(data, onConflict: "id")
                     .execute()
                 return
             }
@@ -247,7 +247,7 @@ final class SessionsAPI {
             data.removeValue(forKey: "farm_touch_id")
             _ = try await client
                 .from("sessions")
-                .insert(data)
+                .upsert(data, onConflict: "id")
                 .execute()
         }
     }

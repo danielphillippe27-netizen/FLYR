@@ -151,9 +151,17 @@ final class BuildingLinkMapViewController: UIViewController {
             Exp(.gt) { Exp(.get) { "scans_total" }; 0 }
             UIColor(hex: "#8b5cf6")!
             
-            // Priority 2: Hot/Conversation (BLUE)
+            // Priority 2: Lead outcomes (GOLD)
             Exp(.eq) { Exp(.get) { "status" }; "hot" }
-            UIColor(hex: "#3b82f6")!
+            UIColor(hex: "#facc15")!
+
+            Exp(.match) {
+                Exp(.get) { "status" }
+                ["lead", "appointment", "future_seller", "hot_lead"]
+                true
+                false
+            }
+            UIColor(hex: "#facc15")!
             
             // Priority 3: Visited/Touched (GREEN)
             Exp(.eq) { Exp(.get) { "status" }; "visited" }

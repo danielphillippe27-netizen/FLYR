@@ -44,7 +44,9 @@ private struct SessionRouteReplayMapboxViewRepresentable: UIViewRepresentable {
         let mapView = MapView(frame: .zero)
         mapView.ornaments.options.scaleBar.visibility = .hidden
         mapView.ornaments.options.compass.visibility = .adaptive
-        mapView.mapboxMap?.loadStyle(StyleURI(rawValue: "mapbox://styles/fliper27/cml6z0dhg002301qo9xxc08k4")!)
+        if let map = mapView.mapboxMap {
+            MapTheme.loadBlueStandardLightStyle(on: map)
+        }
         _ = mapView.mapboxMap?.onMapLoaded.observeNext { _ in
             context.coordinator.setup(mapView: mapView)
             context.coordinator.updateRoute(with: self.coordinates)
@@ -145,6 +147,9 @@ private struct SessionRouteReplayMapboxViewRepresentable: UIViewRepresentable {
                 to: CameraOptions(center: center, zoom: zoom, bearing: 0, pitch: 0),
                 duration: 0.8
             )
+            if let map = mapView.mapboxMap {
+                MapTheme.applyLightModeShadowPolicy(to: map, pitch: 0)
+            }
         }
     }
 }

@@ -960,7 +960,6 @@ final class MapFeaturesService: ObservableObject {
     private func fetchSilverBuildingLinks(campaignId: String, requestId: UUID? = nil) async {
         do {
             let links = try await BuildingLinkService.shared.fetchLinks(campaignId: campaignId)
-            guard !links.isEmpty else { return }
             var dict: [String: [String]] = [:]
             for link in links {
                 let key = link.buildingId.lowercased()

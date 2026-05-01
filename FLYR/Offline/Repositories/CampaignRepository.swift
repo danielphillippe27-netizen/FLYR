@@ -441,7 +441,6 @@ final class CampaignRepository {
 
     func upsertBuildings(campaignId: String, features: [BuildingFeature]) async {
         let updatedAt = OfflineDateCodec.string(from: Date())
-        guard !features.isEmpty else { return }
         try? await dbQueue.write { db in
             try CachedBuildingRecord.filter(Column("campaign_id") == campaignId).deleteAll(db)
             for feature in features {
@@ -463,7 +462,6 @@ final class CampaignRepository {
 
     func upsertAddresses(campaignId: String, features: [AddressFeature]) async {
         let updatedAt = OfflineDateCodec.string(from: Date())
-        guard !features.isEmpty else { return }
         try? await dbQueue.write { db in
             try CachedAddressRecord.filter(Column("campaign_id") == campaignId).deleteAll(db)
             for feature in features {
@@ -491,7 +489,6 @@ final class CampaignRepository {
 
     func upsertBuildingAddressLinks(campaignId: String, links: [BuildingAddressLink]) async {
         let updatedAt = OfflineDateCodec.string(from: Date())
-        guard !links.isEmpty else { return }
         try? await dbQueue.write { db in
             try CachedBuildingAddressLinkRecord.filter(Column("campaign_id") == campaignId).deleteAll(db)
             for link in links {
@@ -505,6 +502,116 @@ final class CampaignRepository {
                     updatedAt: updatedAt
                 )
                 try record.save(db)
+            }
+        }
+    }
+
+    func moveAddressLocally(
+        campaignId: String,
+        addressId: String,
+        coordinate: CLLocationCoordinate2D
+    ) async {
+        let normalizedAddressId = addressId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalizedAddressId.isEmpty,
+              CLLocationCoordinate2DIsValid(coordinate) else {
+            return
+        }
+
+        let updatedAt = OfflineDateCodec.string(from: Date())
+        try? await dbQueue.write { db in
+            let records = try CachedAddressRecord
+                .filter(Column("campaign_id") == campaignId)
+                .fetchAll(db)
+
+            for record in records {
+                let feature = OfflineJSONCodec.decode(AddressFeature.self, from: record.payloadJSON)
+                let featureIds = [
+                    feature?.properties.id,
+                    feature?.id,
+                    record.id.replacingOccurrences(of: "\(campaignId.lowercased()):", with: "")
+                ]
+                .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+
+                guard featureIds.contains(normalizedAddressId) else { continue }
+
+                let movedFeature: AddressFeature?
+                if let feature,
+                   let geometry = Self.pointGeometry(for: coordinate) {
+                    movedFeature = AddressFeature(
+                        type: feature.type,
+                        id: feature.id,
+                        geometry: geometry,
+                        properties: feature.properties
+                    )
+                } else {
+                    movedFeature = nil
+                }
+
+                let updated = CachedAddressRecord(
+                    id: record.id,
+                    campaignId: record.campaignId,
+                    buildingId: record.buildingId,
+                    address: record.address,
+                    unit: record.unit,
+                    city: record.city,
+                    province: record.province,
+                    postalCode: record.postalCode,
+                    latitude: coordinate.latitude,
+                    longitude: coordinate.longitude,
+                    payloadJSON: movedFeature.flatMap { OfflineJSONCodec.encode($0) } ?? record.payloadJSON,
+                    updatedAt: updatedAt
+                )
+                try updated.save(db)
+            }
+        }
+    }
+
+    func moveBuildingLocally(
+        campaignId: String,
+        buildingId: String,
+        geometry: MapFeatureGeoJSONGeometry
+    ) async {
+        let normalizedBuildingId = buildingId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalizedBuildingId.isEmpty else { return }
+
+        let updatedAt = OfflineDateCodec.string(from: Date())
+        try? await dbQueue.write { db in
+            let records = try CachedBuildingRecord
+                .filter(Column("campaign_id") == campaignId)
+                .fetchAll(db)
+
+            for record in records {
+                let feature = OfflineJSONCodec.decode(BuildingFeature.self, from: record.payloadJSON)
+                let featureIds = Set(
+                    ([record.sourceId, record.externalId, feature?.id, feature?.properties.gersId, feature?.properties.buildingId, feature?.properties.id]
+                        .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() })
+                )
+
+                guard featureIds.contains(normalizedBuildingId) else { continue }
+
+                let movedFeature: BuildingFeature?
+                if let feature {
+                    movedFeature = BuildingFeature(
+                        type: feature.type,
+                        id: feature.id,
+                        geometry: geometry,
+                        properties: feature.properties
+                    )
+                } else {
+                    movedFeature = nil
+                }
+
+                let updated = CachedBuildingRecord(
+                    id: record.id,
+                    campaignId: record.campaignId,
+                    sourceId: record.sourceId,
+                    externalId: record.externalId,
+                    geometryGeoJSON: OfflineJSONCodec.encode(geometry) ?? record.geometryGeoJSON,
+                    propertiesJSON: record.propertiesJSON,
+                    payloadJSON: movedFeature.flatMap { OfflineJSONCodec.encode($0) } ?? record.payloadJSON,
+                    updatedAt: updatedAt
+                )
+                try updated.save(db)
             }
         }
     }
@@ -747,7 +854,6 @@ final class CampaignRepository {
 
     func upsertRoads(campaignId: String, corridors: [StreetCorridor]) async {
         let updatedAt = OfflineDateCodec.string(from: Date())
-        guard !corridors.isEmpty else { return }
         try? await dbQueue.write { db in
             try CachedRoadRecord.filter(Column("campaign_id") == campaignId).deleteAll(db)
             for (index, corridor) in corridors.enumerated() {
@@ -1088,6 +1194,18 @@ final class CampaignRepository {
 
     private func cacheScopedId(campaignId: String, entityId: String) -> String {
         "\(campaignId.lowercased()):\(entityId.lowercased())"
+    }
+
+    private static func pointGeometry(for coordinate: CLLocationCoordinate2D) -> MapFeatureGeoJSONGeometry? {
+        let payload: [String: Any] = [
+            "type": "Point",
+            "coordinates": [coordinate.longitude, coordinate.latitude]
+        ]
+        guard JSONSerialization.isValidJSONObject(payload),
+              let data = try? JSONSerialization.data(withJSONObject: payload) else {
+            return nil
+        }
+        return try? JSONDecoder().decode(MapFeatureGeoJSONGeometry.self, from: data)
     }
 }
 

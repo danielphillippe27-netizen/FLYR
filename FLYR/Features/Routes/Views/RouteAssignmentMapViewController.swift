@@ -239,6 +239,10 @@ final class RouteAssignmentMapViewController: UIViewController {
             if map.layerExists(withId: layerId) {
                 try map.removeLayer(withId: layerId)
             }
+            let glowLayerId = "\(layerId)-lead-glow"
+            if map.layerExists(withId: glowLayerId) {
+                try map.removeLayer(withId: glowLayerId)
+            }
             if map.sourceExists(withId: sourceId) {
                 try map.removeSource(withId: sourceId)
             }
@@ -250,6 +254,13 @@ final class RouteAssignmentMapViewController: UIViewController {
             layer.fillExtrusionOpacity = .constant(0.9)
             layer.fillExtrusionColor = .expression(colorExpression)
             try map.addLayer(layer)
+
+            var glow = LineLayer(id: glowLayerId, source: sourceId)
+            glow.lineColor = .constant(StyleColor(MapStatusColor.hotLead))
+            glow.lineWidth = .constant(8)
+            glow.lineBlur = .constant(6)
+            glow.lineOpacity = .expression(routeLeadGlowOpacityExpression())
+            try map.addLayer(glow)
         } catch {
             #if DEBUG
             print("⚠️ [RouteAssignmentMap] Layer error: \(error)")
@@ -264,6 +275,9 @@ final class RouteAssignmentMapViewController: UIViewController {
             ("route-assign-addr-extrusion", "route-assign-addr-source")
         ]
         for (layer, source) in pairs {
+            if map.layerExists(withId: "\(layer)-lead-glow") {
+                try? map.removeLayer(withId: "\(layer)-lead-glow")
+            }
             if map.layerExists(withId: layer) {
                 try? map.removeLayer(withId: layer)
             }
@@ -382,30 +396,74 @@ final class RouteAssignmentMapViewController: UIViewController {
     private func routeStatusColorExpression() -> Exp {
         Exp(.switchCase) {
             Exp(.eq) { Exp(.get) { "qr_scanned" }; true }
-            UIColor(hex: "#a855f7")!
+            MapStatusColor.qrScanned
 
             Exp(.gt) { Exp(.get) { "scans_total" }; 0 }
-            UIColor(hex: "#a855f7")!
+            MapStatusColor.qrScanned
+
+            Exp(.eq) { Exp(.get) { "status" }; "lead" }
+            MapStatusColor.lead
+
+            Exp(.eq) { Exp(.get) { "status" }; "hot_lead" }
+            MapStatusColor.hotLead
+
+            Exp(.eq) { Exp(.get) { "address_status" }; "appointment" }
+            MapStatusColor.hotLead
+
+            Exp(.eq) { Exp(.get) { "address_status" }; "future_seller" }
+            MapStatusColor.hotLead
+
+            Exp(.eq) { Exp(.get) { "address_status" }; "hot_lead" }
+            MapStatusColor.hotLead
 
             Exp(.eq) { Exp(.get) { "status" }; "hot" }
-            UIColor(hex: "#3b82f6")!
+            MapStatusColor.conversations
 
             Exp(.eq) { Exp(.get) { "address_status" }; "hot" }
-            UIColor(hex: "#3b82f6")!
+            MapStatusColor.conversations
+
+            Exp(.eq) { Exp(.get) { "status" }; "do_not_knock" }
+            MapStatusColor.doNotKnock
+
+            Exp(.eq) { Exp(.get) { "address_status" }; "do_not_knock" }
+            MapStatusColor.doNotKnock
+
+            Exp(.eq) { Exp(.get) { "status" }; "no_answer" }
+            MapStatusColor.noOneHome
+
+            Exp(.eq) { Exp(.get) { "address_status" }; "no_answer" }
+            MapStatusColor.noOneHome
 
             Exp(.eq) { Exp(.get) { "status" }; "visited" }
-            UIColor(hex: "#22c55e")!
+            MapStatusColor.touched
 
             Exp(.eq) { Exp(.get) { "status" }; "touched" }
-            UIColor(hex: "#22c55e")!
+            MapStatusColor.touched
 
             Exp(.eq) { Exp(.get) { "address_status" }; "visited" }
-            UIColor(hex: "#22c55e")!
+            MapStatusColor.touched
 
             Exp(.eq) { Exp(.get) { "address_status" }; "touched" }
-            UIColor(hex: "#22c55e")!
+            MapStatusColor.touched
 
-            UIColor(hex: "#ef4444")!
+            MapStatusColor.untouched
+        }
+    }
+
+    private func routeLeadGlowOpacityExpression() -> Exp {
+        Exp(.switchCase) {
+            Exp(.eq) { Exp(.get) { "status" }; "hot_lead" }
+            0.82
+
+            Exp(.match) {
+                Exp(.get) { "address_status" }
+                ["appointment", "future_seller", "hot_lead"]
+                true
+                false
+            }
+            0.82
+
+            0.0
         }
     }
 

@@ -16,6 +16,7 @@ class BuildingDataService: ObservableObject {
     private let supabase: SupabaseClient
     private var cache: [String: CachedBuildingData] = [:]
     private let cacheTTL: TimeInterval = 300  // 5 minutes
+    private var fetchGeneration = 0
 
     private struct AddressFeatureCandidate {
         let feature: AddressFeature
@@ -76,9 +77,13 @@ class BuildingDataService: ObservableObject {
     ///   - preferredAddressId: When multiple addresses exist, which one to show as primary (e.g. selected from list); nil = show first or list
     ///   - addressTextHint: Address text from the tapped map feature. Used only to disambiguate bad multi-link results.
     func fetchBuildingData(gersId: String, campaignId: UUID, addressId: UUID? = nil, preferredAddressId: UUID? = nil, addressTextHint: String? = nil) async {
+        fetchGeneration += 1
+        let requestGeneration = fetchGeneration
+
         // Check cache first (include addressId when present so direct lookups are cached)
         let cacheKey = addressId.map { "\(campaignId.uuidString):addr:\($0.uuidString)" } ?? "\(campaignId.uuidString):\(gersId)"
         if let cached = cache[cacheKey], cached.isValid(ttl: cacheTTL) {
+            guard requestGeneration == fetchGeneration else { return }
             if let preferred = preferredAddressId, !cached.data.addresses.isEmpty,
                let chosen = cached.data.addresses.first(where: { $0.id == preferred }) {
                 buildingData = BuildingData(
@@ -108,6 +113,7 @@ class BuildingDataService: ObservableObject {
             addressId: addressId,
             preferredAddressId: preferredAddressId
         )
+        guard requestGeneration == fetchGeneration else { return }
         if let localData {
             buildingData = localData
             cache[cacheKey] = CachedBuildingData(data: localData, timestamp: Date())
@@ -116,6 +122,7 @@ class BuildingDataService: ObservableObject {
         }
 
         if !NetworkMonitor.shared.isOnline {
+            guard requestGeneration == fetchGeneration else { return }
             if let localData {
                 buildingData = localData
                 cache[cacheKey] = CachedBuildingData(data: localData, timestamp: Date())
@@ -352,15 +359,18 @@ class BuildingDataService: ObservableObject {
                     addressId: addressId,
                     preferredAddressId: preferredAddressId
                ) {
+                guard requestGeneration == fetchGeneration else { return }
                 buildingData = localData
                 cache[cacheKey] = CachedBuildingData(data: localData, timestamp: Date())
                 return
             }
+            guard requestGeneration == fetchGeneration else { return }
             await CampaignRepository.shared.upsertAddressCaptureMetadata(
                 campaignId: campaignId,
                 responses: allAddressResponses,
                 dirty: false
             )
+            guard requestGeneration == fetchGeneration else { return }
             let resolvedAddresses = allAddressResponses.map { $0.toResolvedAddress(fallbackGersId: gersId) }
             let preferred = preferredAddressId ?? addressId
             let primaryAddress = preferred.flatMap { id in resolvedAddresses.first(where: { $0.id == id }) }
@@ -372,6 +382,7 @@ class BuildingDataService: ObservableObject {
                 let responseForPrimary = allAddressResponses.first(where: { $0.id == address.id }) ?? resolvedAddress
                 let qrStatus = responseForPrimary?.toQRStatus() ?? localData?.qrStatus ?? .empty
                 let residents = try await fetchContactsForAddress(addressId: address.id)
+                guard requestGeneration == fetchGeneration else { return }
                 let data = BuildingData(
                     isLoading: false,
                     error: nil,
@@ -416,9 +427,11 @@ class BuildingDataService: ObservableObject {
                 addressId: addressId,
                 preferredAddressId: preferredAddressId
             ) {
+                guard requestGeneration == fetchGeneration else { return }
                 buildingData = localData
                 cache[cacheKey] = CachedBuildingData(data: localData, timestamp: Date())
             } else {
+                guard requestGeneration == fetchGeneration else { return }
                 buildingData = BuildingData(
                     isLoading: false,
                     error: error,
@@ -716,13 +729,17 @@ class BuildingDataService: ObservableObject {
         }
 
         let matchedFeatures: [AddressFeature]
-        if !explicitMatches.isEmpty {
-            matchedFeatures = explicitMatches
-        } else if let buildingFeature {
-            matchedFeatures = inferSpatialAddressFeatures(
+        if let buildingFeature {
+            let spatialMatches = inferSpatialAddressFeatures(
                 for: buildingFeature,
                 in: bundle.addresses.features
             )
+            // Containment is the strongest local signal. Link metadata can be stale
+            // after relinking, but the screenshots show the address points sitting
+            // inside their own footprints, so prefer geometry whenever available.
+            matchedFeatures = spatialMatches.isEmpty ? explicitMatches : spatialMatches
+        } else if !explicitMatches.isEmpty {
+            matchedFeatures = explicitMatches
         } else {
             matchedFeatures = []
         }

@@ -89,9 +89,10 @@ final class AppRouteState: ObservableObject {
             let state = try? await AccessAPI.shared.getState()
             if let state {
                 WorkspaceContext.shared.update(from: state)
-                // If access state didn't include workspace (e.g. legacy response), resolve from DB so campaign creation etc. have a workspace.
+                // If access state didn't include workspace (e.g. legacy response), recover only an
+                // existing workspace. Route resolution must not create a workspace before onboarding.
                 if WorkspaceContext.shared.workspaceId == nil {
-                    _ = await RoutePlansAPI.shared.resolveWorkspaceId(preferred: nil)
+                    _ = await RoutePlansAPI.shared.existingWorkspaceIdForCurrentUser()
                 }
             }
 

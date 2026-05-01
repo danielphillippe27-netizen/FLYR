@@ -25,6 +25,10 @@ struct CampaignDBRow: Codable {
     let hasParcels: Bool?
     let buildingLinkConfidence: Double?
     let mapMode: CampaignMapMode?
+    let coverageScore: Int?
+    let dataQuality: CampaignDataQuality?
+    let standardModeRecommended: Bool?
+    let dataQualityReason: String?
     let dataConfidenceScore: Double?
     let dataConfidenceLabel: DataConfidenceLabel?
     let dataConfidenceReason: String?
@@ -45,6 +49,10 @@ struct CampaignDBRow: Codable {
         case hasParcels = "has_parcels"
         case buildingLinkConfidence = "building_link_confidence"
         case mapMode = "map_mode"
+        case coverageScore = "coverage_score"
+        case dataQuality = "data_quality"
+        case standardModeRecommended = "standard_mode_recommended"
+        case dataQualityReason = "data_quality_reason"
         case typeRaw = "type"
         case addressSourceRaw = "address_source"
         case dataConfidenceScore = "data_confidence_score"
@@ -199,7 +207,7 @@ enum AddressStatus: String, Codable, CaseIterable {
         switch self {
         case .none: return "None"
         case .untouched: return "Untouched"
-        case .noAnswer: return "No Answer"
+        case .noAnswer: return "Attempted"
         case .delivered: return "Delivered"
         case .talked: return "Talked"
         case .appointment: return "Appointment"
@@ -214,7 +222,7 @@ enum AddressStatus: String, Codable, CaseIterable {
         switch self {
         case .none: return "No status set"
         case .untouched: return "Not yet visited"
-        case .noAnswer: return "No one answered"
+        case .noAnswer: return "Attempted"
         case .delivered: return "Flyer delivered"
         case .talked: return "Spoke with resident"
         case .appointment: return "Appointment scheduled"
@@ -244,22 +252,25 @@ enum AddressStatus: String, Codable, CaseIterable {
         switch self {
         case .none: return .gray
         case .untouched: return .gray
-        case .noAnswer: return .flyrPrimary
+        case .noAnswer: return .red
         case .delivered: return .blue
         case .talked: return .green
-        case .appointment: return .purple
-        case .doNotKnock: return .red
+        case .appointment: return .yellow
+        case .doNotKnock: return .black
         case .futureSeller: return .yellow
-        case .hotLead: return .red
+        case .hotLead: return .yellow
         }
     }
 
-    /// Map status to the map layer's expected values: "hot" (blue), "visited" (green), "not_visited" (red).
+    /// Map status to the map layer's expected palette buckets.
     var mapLayerStatus: String {
         switch self {
-        case .talked, .appointment, .hotLead: return "hot"
-        case .delivered, .doNotKnock, .futureSeller: return "visited"
-        case .none, .untouched, .noAnswer: return "not_visited"
+        case .talked: return "hot"
+        case .appointment, .hotLead, .futureSeller: return "hot_lead"
+        case .doNotKnock: return "do_not_knock"
+        case .noAnswer: return "no_answer"
+        case .delivered: return "visited"
+        case .none, .untouched: return "not_visited"
         }
     }
 

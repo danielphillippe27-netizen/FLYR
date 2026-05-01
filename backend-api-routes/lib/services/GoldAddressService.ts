@@ -11,10 +11,9 @@ import { TileLambdaService, type LambdaSnapshotResponse } from './TileLambdaServ
 const DEFAULT_GOLD_ADDRESS_LIMIT = 5000;
 const GOLD_ADDRESS_RPC_FILTERED = 'get_gold_addresses_in_polygon_geojson_filtered';
 const GOLD_RPC_PAGE_SIZE = 1000;
-const LEGACY_GOLD_RPC_CAP = 2500;
 
 export interface GoldAddressResult {
-  source: 'gold' | 'silver' | 'lambda';
+  source: 'gold' | 'lambda';
   addresses: any[];
   buildings: any[];
   counts: {
@@ -22,7 +21,7 @@ export interface GoldAddressResult {
     lambda: number;
     total: number;
   };
-  /** When source is lambda/silver, the Lambda snapshot so callers can reuse for buildings (avoid duplicate Lambda call). */
+  /** When source is lambda, the Lambda snapshot so callers can reuse for buildings (avoid duplicate Lambda call). */
   snapshot?: LambdaSnapshotResponse | null;
 }
 
@@ -356,7 +355,7 @@ export class GoldAddressService {
     polygon: GeoJSON.Polygon,
     regionCode: string = 'ON'
   ): Promise<GoldAddressResult> {
-    console.log('[GoldAddressService] Starting hybrid address lookup...');
+    console.log('[GoldAddressService] Starting Gold-first address lookup...');
     
     const supabase = createAdminClient();
     
@@ -385,13 +384,11 @@ export class GoldAddressService {
 
     const goldCount = goldAddresses.length;
     console.log(`[GoldAddressService] Found ${goldCount} Gold Standard addresses`);
-    const shouldTopUpFromLambda =
-      goldCount >= LEGACY_GOLD_RPC_CAP && DEFAULT_GOLD_ADDRESS_LIMIT > goldCount;
     
     // =============================================================================
     // STEP 2: If Gold has good coverage, use it exclusively
     // =============================================================================
-    if (goldCount >= 10 && !shouldTopUpFromLambda) {
+    if (goldCount >= 10) {
       console.log('[GoldAddressService] Using Gold Standard exclusively');
       
       // Also get buildings from Gold if available (with GeoJSON)
@@ -417,13 +414,10 @@ export class GoldAddressService {
         }
       };
     }
-
-    if (shouldTopUpFromLambda) {
-      console.log('[GoldAddressService] Gold RPC appears capped at 2500 rows, topping up with Lambda...');
-    }
     
     // =============================================================================
-    // STEP 3: Fallback to Tile Lambda for areas not covered by Gold
+    // STEP 3: Fallback to Tile Lambda for areas not covered by Gold.
+    // Do not merge partial Gold rows with Lambda rows; campaigns should have a single source of truth.
     // =============================================================================
     console.log('[GoldAddressService] Gold coverage insufficient, falling back to Tile Lambda...');
     
@@ -447,54 +441,14 @@ export class GoldAddressService {
     
     console.log(`[GoldAddressService] Tile Lambda returned ${lambdaAddresses.length} addresses`);
     
-    // =============================================================================
-    // STEP 4: Merge Gold + Lambda (if we had some Gold addresses)
-    // =============================================================================
-    let finalAddresses = lambdaAddresses;
-    
-    if (goldCount > 0 && goldAddresses) {
-      // Convert Gold addresses to campaign format
-      const goldAsCampaign = goldAddresses.map((addr: any) => ({
-        campaign_id: campaignId,
-        formatted: `${addr.street_number} ${addr.street_name}${addr.unit ? ' ' + addr.unit : ''}, ${addr.city}`,
-        house_number: addr.street_number,
-        street_name: addr.street_name,
-        locality: addr.city,
-        region: this.normalizeProvince(addr.province) ?? normalizedRegion,
-        postal_code: addr.zip,
-        coordinate: { lat: addr.lat, lon: addr.lon },
-        geom: addr.geom_geojson, // GeoJSON string from RPC
-        source: 'gold' as const,
-        gers_id: null,
-      }));
-      
-      // Deduplicate: Prefer Gold over Lambda for same location
-      const addressMap = new Map();
-      
-      // Add Lambda addresses first
-      lambdaAddresses.forEach((addr: any) => {
-        const key = `${addr.house_number?.toLowerCase()}|${addr.street_name?.toLowerCase()}`;
-        addressMap.set(key, addr);
-      });
-      
-      // Overwrite with Gold addresses (higher priority)
-      goldAsCampaign.forEach((addr: any) => {
-        const key = `${addr.house_number?.toLowerCase()}|${addr.street_name?.toLowerCase()}`;
-        addressMap.set(key, addr);
-      });
-      
-      finalAddresses = Array.from(addressMap.values()).slice(0, DEFAULT_GOLD_ADDRESS_LIMIT);
-      console.log(`[GoldAddressService] Merged: ${goldCount} Gold + ${lambdaAddresses.length} Lambda = ${finalAddresses.length} total`);
-    }
-    
     return {
-      source: goldCount > 0 ? 'silver' : 'lambda',
-      addresses: finalAddresses,
+      source: 'lambda',
+      addresses: lambdaAddresses,
       buildings: [], // Buildings come from Lambda snapshot (use result.snapshot for BuildingAdapter)
       counts: {
         gold: goldCount,
         lambda: lambdaAddresses.length,
-        total: finalAddresses.length
+        total: lambdaAddresses.length
       },
       snapshot, // Reuse in provision so we don't call Lambda again for buildings
     };
@@ -516,9 +470,10 @@ export class GoldAddressService {
       { p_polygon_geojson: polygonGeoJSON }
     );
     
-    if (!error && goldBuildings && goldBuildings.length > 0) {
-      console.log(`[GoldAddressService] Using ${goldBuildings.length} Gold buildings`);
-      return { buildings: goldBuildings, source: 'gold' };
+    const parsedGoldBuildings = this.parseGoldBuildingRows(goldBuildings);
+    if (!error && parsedGoldBuildings.length > 0) {
+      console.log(`[GoldAddressService] Using ${parsedGoldBuildings.length} Gold buildings`);
+      return { buildings: parsedGoldBuildings, source: 'gold' };
     }
     
     // Fall back to Lambda buildings (returned separately)

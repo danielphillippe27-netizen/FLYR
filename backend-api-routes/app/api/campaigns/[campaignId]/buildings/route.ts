@@ -9,6 +9,9 @@ const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 
 const AWS_REGION = process.env.AWS_REGION ?? "us-east-1";
 
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 type RouteContext = { params: Promise<{ campaignId: string }> };
 
 function getAuthUser(request: Request): string | null {
@@ -49,6 +52,10 @@ async function ensureCampaignAccess(
 }
 
 const EMPTY_FEATURE_COLLECTION = { type: "FeatureCollection", features: [] };
+const JSON_NO_STORE_HEADERS = {
+  "Content-Type": "application/json",
+  "Cache-Control": "no-store, max-age=0",
+};
 const MANUAL_HOME_PROXY_HALF_SIDE_METERS = 2.3 * 3.0;
 
 type GeoJSONGeometry = {
@@ -88,6 +95,13 @@ type CampaignAddressRow = {
   building_id: string | null;
   visited: boolean | null;
   scans: number | null;
+};
+
+type BuildingAddressLinkRow = {
+  building_id: string;
+  address_id: string;
+  match_type?: string | null;
+  confidence?: number | null;
 };
 
 function normalizedString(value: unknown): string | null {
@@ -239,6 +253,94 @@ function filterHiddenBuildings(
   return features.filter((feature) =>
     !buildingIdentifierCandidates(feature).some((candidate) => hiddenBuildingIds.has(candidate))
   );
+}
+
+function linkRank(link: BuildingAddressLinkRow): number {
+  const matchType = normalizedString(link.match_type)?.toLowerCase() ?? "";
+  const methodScore =
+    matchType === "manual" ? 5 :
+    matchType === "containment_verified" ? 4 :
+    matchType === "point_on_surface" ? 3 :
+    matchType === "parcel_verified" ? 2 :
+    matchType === "proximity_fallback" ? 0 :
+    1;
+  return methodScore * 10 + (typeof link.confidence === "number" ? link.confidence : 0);
+}
+
+function dedupeLinksByAddress(links: BuildingAddressLinkRow[]): BuildingAddressLinkRow[] {
+  const bestByAddress = new Map<string, BuildingAddressLinkRow>();
+
+  for (const link of links) {
+    const addressId = normalizedString(link.address_id)?.toLowerCase();
+    const buildingId = normalizedString(link.building_id);
+    if (!addressId || !buildingId) continue;
+
+    const existing = bestByAddress.get(addressId);
+    if (!existing || linkRank(link) > linkRank(existing)) {
+      bestByAddress.set(addressId, link);
+    }
+  }
+
+  return Array.from(bestByAddress.values());
+}
+
+function featureAddressAssignmentRank(feature: GeoJSONFeature): number {
+  const props = feature.properties ?? {};
+  const source = normalizedString(props.source)?.toLowerCase() ?? "";
+  const matchMethod = normalizedString(props.match_method)?.toLowerCase() ?? "";
+  const featureStatus = normalizedString(props.feature_status)?.toLowerCase() ?? "";
+  const confidence = finiteNumber(props.confidence) ?? 0;
+
+  const sourceScore = source === "manual" ? 6 : source === "gold" ? 5 : source === "silver" ? 3 : 1;
+  const methodScore =
+    matchMethod === "manual" ? 5 :
+    matchMethod === "containment_verified" ? 4 :
+    matchMethod === "point_on_surface" ? 3 :
+    matchMethod === "parcel_verified" ? 2 :
+    matchMethod === "proximity_fallback" ? 0 :
+    featureStatus === "matched" ? 1 :
+    0;
+
+  return sourceScore * 100 + methodScore * 10 + confidence;
+}
+
+function clearAddressAssignment(feature: GeoJSONFeature): GeoJSONFeature {
+  const props = feature.properties ?? {};
+  return {
+    ...feature,
+    properties: {
+      ...props,
+      address_id: null,
+      address_text: null,
+      house_number: null,
+      street_name: null,
+      address_count: 0,
+      feature_status: props.feature_status ?? "orphan_building",
+    },
+  };
+}
+
+function enforceUniqueFeatureAddressAssignments(features: GeoJSONFeature[]): GeoJSONFeature[] {
+  const bestIndexByAddress = new Map<string, number>();
+
+  for (const [index, feature] of features.entries()) {
+    const addressId = normalizedString(feature.properties?.address_id)?.toLowerCase();
+    if (!addressId) continue;
+
+    const existingIndex = bestIndexByAddress.get(addressId);
+    if (
+      existingIndex == null ||
+      featureAddressAssignmentRank(feature) > featureAddressAssignmentRank(features[existingIndex])
+    ) {
+      bestIndexByAddress.set(addressId, index);
+    }
+  }
+
+  const winningIndexes = new Set(bestIndexByAddress.values());
+  return features.map((feature, index) => {
+    const addressId = normalizedString(feature.properties?.address_id);
+    return addressId && !winningIndexes.has(index) ? clearAddressAssignment(feature) : feature;
+  });
 }
 
 function parseGoldBuildingRows(raw: unknown): GoldBuildingRow[] {
@@ -565,6 +667,7 @@ export async function GET(request: Request, context: RouteContext): Promise<Resp
         polygonFeatures.filter((feature) => !isManualFeature(feature)),
         hiddenBuildingIds
       );
+      rpcBasePolygonFeatures = enforceUniqueFeatureAddressAssignments(rpcBasePolygonFeatures);
       rpcManualPolygonFeatures = filterHiddenBuildings(
         polygonFeatures.filter(isManualFeature),
         hiddenBuildingIds
@@ -584,7 +687,7 @@ export async function GET(request: Request, context: RouteContext): Promise<Resp
         );
         return NextResponse.json(
           { type: "FeatureCollection", features: mergedFeatures },
-          { headers: { "Content-Type": "application/json" } }
+          { headers: JSON_NO_STORE_HEADERS }
         );
       }
     } else if (rpcError) {
@@ -617,12 +720,13 @@ export async function GET(request: Request, context: RouteContext): Promise<Resp
         // allows the iOS tap resolver (resolveAddressForBuilding) to match buildings to addresses.
         const { data: links } = await supabase
           .from("building_address_links")
-          .select("building_id, address_id")
+          .select("building_id, address_id, match_type, confidence")
           .eq("campaign_id", campaignId);
 
         if (links && links.length > 0) {
+          const uniqueAddressLinks = dedupeLinksByAddress(links as BuildingAddressLinkRow[]);
           const buildingRowIds = Array.from(
-            new Set((links as Array<{ building_id: string; address_id: string }>).map((link) => link.building_id))
+            new Set(uniqueAddressLinks.map((link) => link.building_id))
           );
           const { data: buildings } = await supabase
             .from("buildings")
@@ -636,7 +740,7 @@ export async function GET(request: Request, context: RouteContext): Promise<Resp
 
           // Map: public building id (prefer gers_id, fallback buildings.id) → [address_id UUIDs]
           const linkMap = new Map<string, string[]>();
-          for (const link of links as Array<{ building_id: string; address_id: string }>) {
+          for (const link of uniqueAddressLinks) {
             const publicBuildingId =
               publicIdByRowId.get(link.building_id.toLowerCase()) ?? link.building_id.toLowerCase();
             const bucket = linkMap.get(publicBuildingId) ?? [];
@@ -666,7 +770,7 @@ export async function GET(request: Request, context: RouteContext): Promise<Resp
           });
 
           console.log(
-            `[buildings] S3 enriched ${enriched.length} features with building_address_links (${links.length} links)`
+            `[buildings] S3 enriched ${enriched.length} features with building_address_links (${uniqueAddressLinks.length}/${links.length} unique address links)`
           );
           const mergedFeatures = dedupeFeatures([
             ...enriched,
@@ -676,7 +780,7 @@ export async function GET(request: Request, context: RouteContext): Promise<Resp
 
           return NextResponse.json(
             { type: "FeatureCollection", features: mergedFeatures },
-            { headers: { "Content-Type": "application/json" } }
+            { headers: JSON_NO_STORE_HEADERS }
           );
         }
 
@@ -695,7 +799,7 @@ export async function GET(request: Request, context: RouteContext): Promise<Resp
           type: "FeatureCollection",
           features: mergedFeatures,
         }, {
-          headers: { "Content-Type": "application/json" },
+          headers: JSON_NO_STORE_HEADERS,
         });
       }
     }
@@ -718,7 +822,7 @@ export async function GET(request: Request, context: RouteContext): Promise<Resp
           console.log(`[buildings] Gold fallback returned ${mergedFeatures.length} polygon/proxy features`);
           return NextResponse.json(
             { type: 'FeatureCollection', features: mergedFeatures },
-            { headers: { 'Content-Type': 'application/json' } }
+            { headers: JSON_NO_STORE_HEADERS }
           );
         }
       }
@@ -734,7 +838,7 @@ export async function GET(request: Request, context: RouteContext): Promise<Resp
       );
       return NextResponse.json(
         { type: "FeatureCollection", features: mergedFeatures },
-        { headers: { "Content-Type": "application/json" } }
+        { headers: JSON_NO_STORE_HEADERS }
       );
     }
 
@@ -743,13 +847,13 @@ export async function GET(request: Request, context: RouteContext): Promise<Resp
     // -------------------------------------------------------------------------
     console.log(`[buildings] No buildings available for campaign ${campaignId}`);
     return NextResponse.json(EMPTY_FEATURE_COLLECTION, {
-      headers: { "Content-Type": "application/json" },
+      headers: JSON_NO_STORE_HEADERS,
     });
 
   } catch (err) {
     console.error("[buildings] GET error:", err);
     return NextResponse.json(EMPTY_FEATURE_COLLECTION, {
-      headers: { "Content-Type": "application/json" },
+      headers: JSON_NO_STORE_HEADERS,
     });
   }
 }

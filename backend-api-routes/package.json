@@ -7,7 +7,9 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test": "tsx --test app/lib/crm-sparse-enrich.test.ts",
+    "test": "tsx --test app/lib/crm-sparse-enrich.test.ts && tsx lib/services/__tests__/CampaignLinkQualityService.test.ts && tsx lib/services/__tests__/CampaignProvisionQuality.test.ts",
+    "test:campaign-quality": "tsx lib/services/__tests__/CampaignLinkQualityService.test.ts",
+    "test:campaign-provision-quality": "tsx lib/services/__tests__/CampaignProvisionQuality.test.ts",
     "test:stable-linker": "tsx lib/services/__tests__/StableLinkerService.test.ts"
   },
   "dependencies": {

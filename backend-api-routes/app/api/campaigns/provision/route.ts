@@ -14,6 +14,10 @@ import { fetchAllInPages } from '@/lib/supabase/fetchAllInPages';
 import { ParcelEnrichmentService } from '@/lib/services/ParcelEnrichmentService';
 import { CampaignLinkQualityService, type LinkQualityAssessment } from '@/lib/services/CampaignLinkQualityService';
 import { CampaignMapModeService, type CampaignMapModeAssessment } from '@/lib/services/CampaignMapModeService';
+import {
+  buildCampaignDataQualityResponse,
+  buildPendingCampaignDataQualityPatch,
+} from '@/lib/services/CampaignProvisionQuality';
 import { isParcelRegionSupported } from '@/lib/geo/parcelRegions';
 
 export const runtime = 'nodejs';
@@ -23,7 +27,7 @@ interface ProvisionRequest {
   campaign_id: string;
 }
 
-type ProvisionSource = 'gold' | 'silver' | 'lambda';
+type ProvisionSource = 'gold' | 'lambda';
 type ProvisionPhase =
   | 'created'
   | 'source_probed'
@@ -52,12 +56,14 @@ type ExistingSnapshotRow = {
   expires_at: string | null;
 };
 
-type ExistingCampaignAddressSignatureRow = {
+type ExistingCampaignAddressIdentityRow = {
   formatted: string | null;
   house_number: string | null;
   street_name: string | null;
   locality: string | null;
   postal_code: string | null;
+  source: string | null;
+  gers_id: string | null;
 };
 
 type OptimizedPathInfo = {
@@ -89,7 +95,6 @@ type CampaignPostProcessingResult = {
 
 const DEFAULT_GOLD_ADDRESS_LIMIT = 5000;
 const FALLBACK_INSERT_BATCH_SIZE = 500;
-const GOLD_HYDRATOR_RPC = 'hydrate_campaign_gold_addresses';
 const BULK_ADDRESS_RPC = 'add_campaign_addresses';
 
 class ProvisionError extends Error {
@@ -133,12 +138,6 @@ async function retryWithBackoff<T>(
   throw lastError ?? new Error('Retry failed');
 }
 
-function normalizeRegionCode(regionCode: string | null | undefined): string | null {
-  if (typeof regionCode !== 'string') return null;
-  const normalized = regionCode.trim().toUpperCase();
-  return normalized.length > 0 ? normalized : null;
-}
-
 function deduplicateAddresses(addresses: StandardCampaignAddress[]): StandardCampaignAddress[] {
   return Array.from(
     new Map(
@@ -154,6 +153,15 @@ function deduplicateAddresses(addresses: StandardCampaignAddress[]): StandardCam
 
 function normalizeAddressFragment(value: string | null | undefined): string {
   return typeof value === 'string' ? value.trim().toLowerCase() : '';
+}
+
+function normalizeSource(value: string | null | undefined): string {
+  const normalized = normalizeAddressFragment(value);
+  return normalized || 'unknown';
+}
+
+function normalizeGersId(value: string | null | undefined): string {
+  return typeof value === 'string' ? value.trim() : '';
 }
 
 function buildAddressSignature(address: {
@@ -176,41 +184,81 @@ function buildAddressSignature(address: {
   return `${formatted}|${postalCode}`;
 }
 
-async function fetchCampaignAddressSignatures(
+function buildAddressIdentity(address: {
+  campaign_id: string;
+  formatted?: string | null;
+  house_number?: string | null;
+  street_name?: string | null;
+  locality?: string | null;
+  postal_code?: string | null;
+  source?: string | null;
+  gers_id?: string | null;
+}): string {
+  const source = normalizeSource(address.source);
+  const gersId = normalizeGersId(address.gers_id);
+  if (gersId) {
+    return `${address.campaign_id}|${source}|gers|${gersId}`;
+  }
+
+  return `${address.campaign_id}|${source}|address|${buildAddressSignature(address)}`;
+}
+
+function deduplicateAddressesForProvision(addresses: StandardCampaignAddress[]): StandardCampaignAddress[] {
+  const deduped = new Map<string, StandardCampaignAddress>();
+
+  for (const address of addresses) {
+    deduped.set(buildAddressIdentity(address), {
+      ...address,
+      gers_id: normalizeGersId(address.gers_id) || null,
+    });
+  }
+
+  return [...deduped.values()];
+}
+
+async function fetchCampaignAddressIdentities(
   supabase: ReturnType<typeof createAdminClient>,
   campaignId: string
 ): Promise<Set<string>> {
   const { data, error } = await supabase
     .from('campaign_addresses')
-    .select('formatted, house_number, street_name, locality, postal_code')
+    .select('formatted, house_number, street_name, locality, postal_code, source, gers_id')
     .eq('campaign_id', campaignId);
 
   if (error) {
-    throw new Error(`Failed to fetch campaign address signatures: ${error.message}`);
+    throw new Error(`Failed to fetch campaign address identities: ${error.message}`);
   }
 
   return new Set(
-    ((data ?? []) as ExistingCampaignAddressSignatureRow[]).map((row) => buildAddressSignature(row))
+    ((data ?? []) as ExistingCampaignAddressIdentityRow[]).map((row) =>
+      buildAddressIdentity({
+        campaign_id: campaignId,
+        formatted: row.formatted,
+        house_number: row.house_number,
+        street_name: row.street_name,
+        locality: row.locality,
+        postal_code: row.postal_code,
+        source: row.source,
+        gers_id: row.gers_id,
+      })
+    )
   );
 }
 
 function filterAddressesAgainstExisting(
   addresses: StandardCampaignAddress[],
-  existingSignatures: Set<string>
+  existingIdentities: Set<string>
 ): StandardCampaignAddress[] {
-  const accepted: StandardCampaignAddress[] = [];
-  const seenThisBatch = new Set<string>();
+  return addresses.filter((address) => !existingIdentities.has(buildAddressIdentity(address)));
+}
 
-  for (const address of addresses) {
-    const signature = buildAddressSignature(address);
-    if (existingSignatures.has(signature) || seenThisBatch.has(signature)) {
-      continue;
-    }
-    seenThisBatch.add(signature);
-    accepted.push(address);
+function isUniqueConstraintError(error: { message?: string; code?: string; details?: string } | null): boolean {
+  if (!error) {
+    return false;
   }
 
-  return accepted;
+  const text = `${error.message ?? ''} ${error.details ?? ''}`.toLowerCase();
+  return error.code === '23505' || text.includes('unique') || text.includes('constraint') || text.includes('conflict');
 }
 
 function isSnapshotReusable(snapshot: ExistingSnapshotRow | null | undefined): snapshot is ExistingSnapshotRow {
@@ -274,13 +322,22 @@ async function bulkInsertAddresses(
   campaignId: string,
   addresses: StandardCampaignAddress[]
 ): Promise<number> {
-  if (addresses.length === 0) {
+  const uniqueAddresses = deduplicateAddressesForProvision(addresses);
+
+  if (uniqueAddresses.length === 0) {
+    return countCampaignAddresses(supabase, campaignId);
+  }
+
+  const existingIdentities = await fetchCampaignAddressIdentities(supabase, campaignId);
+  const addressesToWrite = filterAddressesAgainstExisting(uniqueAddresses, existingIdentities);
+
+  if (addressesToWrite.length === 0) {
     return countCampaignAddresses(supabase, campaignId);
   }
 
   const { error: rpcError } = await supabase.rpc(BULK_ADDRESS_RPC, {
     p_campaign_id: campaignId,
-    p_addresses: addresses,
+    p_addresses: addressesToWrite,
   });
 
   if (!rpcError) {
@@ -289,11 +346,9 @@ async function bulkInsertAddresses(
 
   console.warn('[Provision] add_campaign_addresses RPC failed, falling back to batched inserts:', rpcError.message);
 
-  for (let from = 0; from < addresses.length; from += FALLBACK_INSERT_BATCH_SIZE) {
-    const batch = addresses.slice(from, from + FALLBACK_INSERT_BATCH_SIZE);
-    const { error: insertError } = await supabase
-      .from('campaign_addresses')
-      .insert(batch);
+  for (let from = 0; from < addressesToWrite.length; from += FALLBACK_INSERT_BATCH_SIZE) {
+    const batch = addressesToWrite.slice(from, from + FALLBACK_INSERT_BATCH_SIZE);
+    const { error: insertError } = await upsertCampaignAddressBatch(supabase, batch);
 
     if (insertError) {
       throw new Error(`Fallback address insert failed: ${insertError.message}`);
@@ -303,24 +358,59 @@ async function bulkInsertAddresses(
   return countCampaignAddresses(supabase, campaignId);
 }
 
-async function hydrateGoldAddressesViaRpc(
+async function upsertCampaignAddressBatch(
   supabase: ReturnType<typeof createAdminClient>,
-  campaignId: string,
-  polygon: GeoJSON.Polygon,
-  regionCode: string
-): Promise<number> {
-  const { error } = await supabase.rpc(GOLD_HYDRATOR_RPC, {
-    p_campaign_id: campaignId,
-    p_polygon_geojson: JSON.stringify(polygon),
-    p_province: normalizeRegionCode(regionCode),
-    p_limit: DEFAULT_GOLD_ADDRESS_LIMIT,
-  });
+  batch: StandardCampaignAddress[]
+) {
+  const sourceAwareResult = await supabase
+    .from('campaign_addresses')
+    .upsert(batch, {
+      onConflict: 'campaign_id,source,gers_id',
+      ignoreDuplicates: false,
+    });
 
-  if (error) {
-    throw new Error(error.message);
+  if (!sourceAwareResult.error) {
+    return sourceAwareResult;
   }
 
-  return countCampaignAddresses(supabase, campaignId);
+  if (!isUniqueConstraintError(sourceAwareResult.error)) {
+    return sourceAwareResult;
+  }
+
+  console.warn(
+    '[Provision] Source-aware address upsert failed; retrying legacy campaign/gers conflict target:',
+    sourceAwareResult.error.message
+  );
+
+  const legacyResult = await supabase
+    .from('campaign_addresses')
+    .upsert(batch, {
+      onConflict: 'campaign_id,gers_id',
+      ignoreDuplicates: false,
+    });
+
+  if (!isUniqueConstraintError(legacyResult.error)) {
+    return legacyResult;
+  }
+
+  console.warn(
+    '[Provision] Legacy address upsert still hit a unique constraint; falling back to duplicate-tolerant row inserts:',
+    legacyResult.error.message
+  );
+
+  for (const address of batch) {
+    const { error } = await supabase
+      .from('campaign_addresses')
+      .insert(address);
+
+    if (!error || isUniqueConstraintError(error)) {
+      continue;
+    }
+
+    return { error };
+  }
+
+  return { error: null };
 }
 
 async function updateCampaignProvision(
@@ -395,57 +485,6 @@ async function runCampaignPostProcessing(params: {
   try {
     let effectiveSnapshot = snapshot;
     let effectiveInsertedCount = insertedCount;
-
-    if (source === 'silver' && !effectiveSnapshot) {
-      console.log('[Provision] Silver seeded from Gold; generating Lambda snapshot + address top-up in background...');
-
-      effectiveSnapshot = await TileLambdaService.generateSnapshots(
-        polygon,
-        regionCode,
-        campaignId,
-        {
-          limitBuildings: 10000,
-          limitAddresses: 10000,
-          includeRoads: false,
-        }
-      );
-
-      await upsertSnapshotMetadata(supabase, campaignId, effectiveSnapshot);
-
-      const addressData = await TileLambdaService.downloadAddresses(effectiveSnapshot.urls.addresses);
-      const lambdaAddresses = TileLambdaService.convertToCampaignAddresses(
-        addressData.features,
-        campaignId,
-        regionCode
-      );
-      const normalizedLambdaAddresses = AddressAdapter.normalizeArray(
-        lambdaAddresses,
-        campaignId,
-        regionCode
-      );
-      const dedupedLambdaAddresses = deduplicateAddresses(normalizedLambdaAddresses);
-      const existingSignatures = await fetchCampaignAddressSignatures(supabase, campaignId);
-      const lambdaTopUpAddresses = filterAddressesAgainstExisting(
-        dedupedLambdaAddresses,
-        existingSignatures
-      );
-
-      if (lambdaTopUpAddresses.length > 0) {
-        console.log(
-          `[Provision] Silver background top-up inserting ${lambdaTopUpAddresses.length} Lambda addresses after Gold seed`
-        );
-        effectiveInsertedCount = await bulkInsertAddresses(
-          supabase,
-          campaignId,
-          lambdaTopUpAddresses
-        );
-        await updateCampaignProvision(supabase, campaignId, {
-          addresses_ready_at: new Date().toISOString(),
-        });
-      } else {
-        effectiveInsertedCount = await countCampaignAddresses(supabase, campaignId);
-      }
-    }
 
     const goldBuildings =
       source === 'gold'
@@ -783,6 +822,7 @@ export async function POST(request: NextRequest) {
       link_quality_reason: null,
       link_quality_checked_at: null,
       link_quality_metrics: {},
+      ...buildPendingCampaignDataQualityPatch(),
     });
 
     const result = await retryWithBackoff(async () => {
@@ -845,28 +885,18 @@ export async function POST(request: NextRequest) {
 
       if (finalAddressCount === 0) {
         if (addressSource === 'gold') {
-          try {
-            finalAddressCount = await hydrateGoldAddressesViaRpc(
-              supabase,
-              campaignId!,
-              polygon as GeoJSON.Polygon,
-              regionCode
-            );
-          } catch (hydratorError) {
-            console.warn('[Provision] Gold hydrator RPC failed, falling back to backend bulk ingest:', hydratorError);
-            const fullGoldAddresses = await GoldAddressService.fetchAddressesInPolygon(
-              polygon as GeoJSON.Polygon,
-              regionCode,
-              DEFAULT_GOLD_ADDRESS_LIMIT
-            );
-            addressesToInsert = AddressAdapter.normalizeArray(
-              fullGoldAddresses,
-              campaignId!,
-              regionCode
-            );
-            addressesToInsert = deduplicateAddresses(addressesToInsert);
-            finalAddressCount = await bulkInsertAddresses(supabase, campaignId!, addressesToInsert);
-          }
+          const fullGoldAddresses = await GoldAddressService.fetchAddressesInPolygon(
+            polygon as GeoJSON.Polygon,
+            regionCode,
+            DEFAULT_GOLD_ADDRESS_LIMIT
+          );
+          addressesToInsert = AddressAdapter.normalizeArray(
+            fullGoldAddresses,
+            campaignId!,
+            regionCode
+          );
+          addressesToInsert = deduplicateAddresses(addressesToInsert);
+          finalAddressCount = await bulkInsertAddresses(supabase, campaignId!, addressesToInsert);
         } else {
           addressesToInsert = deduplicateAddresses(addressesToInsert);
           finalAddressCount = await bulkInsertAddresses(supabase, campaignId!, addressesToInsert);
@@ -905,6 +935,7 @@ export async function POST(request: NextRequest) {
         building_link_confidence: 0,
         map_mode: 'standard_pins',
         parcel_enrichment_status: parcelEnrichmentStatus,
+        ...buildPendingCampaignDataQualityPatch(),
       });
 
       let postProcessingResult: CampaignPostProcessingResult | null = null;
@@ -941,6 +972,7 @@ export async function POST(request: NextRequest) {
         postProcessingResult?.mapModeAssessment.totalAddresses ?? finalAddressCount;
       const responseParcelEnrichmentStatus =
         postProcessingResult?.parcelEnrichmentStatus ?? parcelEnrichmentStatus;
+      const responseDataQuality = buildCampaignDataQualityResponse(postProcessingResult?.linkQuality);
       const responseProvisionPhase: ProvisionPhase = postProcessingResult ? 'optimized' : 'map_ready';
       const responseOptimized = postProcessingResult !== null;
       const responseDeferred = postProcessingResult === null;
@@ -955,7 +987,7 @@ export async function POST(request: NextRequest) {
               ? ` Optimized walking loop: ${postProcessingResult.optimizedPathInfo.totalDistanceKm.toFixed(2)}km, ${postProcessingResult.optimizedPathInfo.totalTimeMinutes}min.`
               : ''
           )
-        : `${addressSource === 'gold' ? 'Gold' : addressSource === 'silver' ? 'Gold-seeded Silver' : 'Lambda'} campaign is map-ready: ` +
+        : `${addressSource === 'gold' ? 'Gold' : 'Lambda'} campaign is map-ready: ` +
           `${finalAddressCount} leads loaded. ` +
           `route optimization, building linking, townhouse splitting, and parcel enrichment will continue in the background.`;
 
@@ -970,6 +1002,7 @@ export async function POST(request: NextRequest) {
         spatial_join: postProcessingResult?.spatialJoinSummary,
         townhouse_split: postProcessingResult?.townhouseSummary,
         link_quality: postProcessingResult?.linkQuality,
+        ...responseDataQuality,
         has_parcels: responseHasParcels,
         parcel_count: responseParcelCount,
         building_link_confidence: responseBuildingLinkConfidence,
@@ -1001,7 +1034,7 @@ export async function POST(request: NextRequest) {
           : {
               bucket: null,
               prefix: null,
-              source: addressSource === 'gold' ? 'gold_standard' : 'gold_first_fallback',
+              source: addressSource === 'gold' ? 'gold_standard' : 'lambda',
             },
         warning: responseSnapshot?.warning ?? null,
         optimized_path: postProcessingResult?.optimizedPathInfo

@@ -2,6 +2,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import type { SpatialJoinSummary } from '@/lib/services/StableLinkerService';
 
 export type LinkQualityStatus = 'unknown' | 'healthy' | 'degraded' | 'repairing' | 'failed';
+export type CampaignDataQuality = 'strong' | 'usable' | 'weak';
 
 export interface LinkQualityMetrics {
   total_addresses: number;
@@ -22,6 +23,9 @@ export interface LinkQualityMetrics {
 export interface LinkQualityAssessment {
   status: LinkQualityStatus;
   score: number;
+  coverageScore: number;
+  dataQuality: CampaignDataQuality;
+  standardModeRecommended: boolean;
   reason: string | null;
   metrics: LinkQualityMetrics;
   repairRecommended: boolean;
@@ -29,6 +33,10 @@ export interface LinkQualityAssessment {
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
+}
+
+function roundScore(value: number): number {
+  return Math.round(clamp(value, 0, 100));
 }
 
 export class CampaignLinkQualityService {
@@ -46,18 +54,18 @@ export class CampaignLinkQualityService {
     const orphanRate = totalAddresses > 0 ? orphanCount / totalAddresses : 0;
     const suspectRate = totalAddresses > 0 ? suspectCount / totalAddresses : 0;
     const parcelBridgeRate = summary.matched > 0 ? parcelBridgeCount / summary.matched : 0;
+    const avgConfidence = Number.isFinite(summary.avgConfidence) ? summary.avgConfidence : 0;
+    const confidencePenalty = Math.max(0, 0.85 - avgConfidence) * 60;
 
-    const score = clamp(
-      Math.round(
+    const coverageScore = roundScore(
         coveragePercent
           - orphanRate * 40
           - suspectRate * 20
+          - confidencePenalty
           - conflictCount * 5
           - densityWarningCount * 5
-      ),
-      0,
-      100
     );
+    const score = coverageScore;
 
     let status: LinkQualityStatus = 'healthy';
     if (summary.matched === 0 && totalAddresses > 0) {
@@ -72,17 +80,52 @@ export class CampaignLinkQualityService {
       status = 'degraded';
     }
 
+    let dataQuality: CampaignDataQuality = 'strong';
+    if (summary.matched === 0 && totalAddresses > 0) {
+      dataQuality = 'weak';
+    } else if (
+      coverageScore < 60 ||
+      coveragePercent < 60 ||
+      avgConfidence < 0.6 ||
+      orphanRate > 0.25
+    ) {
+      dataQuality = 'weak';
+    } else if (
+      coverageScore < 90 ||
+      coveragePercent < 90 ||
+      avgConfidence < 0.8 ||
+      orphanRate > 0.1 ||
+      suspectRate > 0.15 ||
+      conflictCount > 0 ||
+      densityWarningCount > 0
+    ) {
+      dataQuality = 'usable';
+    }
+
     const reasons: string[] = [];
+    const primaryReasons: string[] = [];
+    if (summary.matched === 0 && totalAddresses > 0) primaryReasons.push('no building-address links');
     if (coveragePercent < 95) reasons.push(`coverage ${coveragePercent.toFixed(1)}%`);
+    if (coveragePercent < 90) primaryReasons.push('low building-address coverage');
+    if (avgConfidence < 0.8) primaryReasons.push('low building-address confidence');
     if (orphanRate > 0.05) reasons.push(`orphans ${(orphanRate * 100).toFixed(1)}%`);
+    if (orphanRate > 0.1) primaryReasons.push('high building-address orphan rate');
     if (suspectRate > 0.1) reasons.push(`suspect ${(suspectRate * 100).toFixed(1)}%`);
+    if (suspectRate > 0.15) primaryReasons.push('high suspect building-address matches');
     if (conflictCount > 0) reasons.push(`${conflictCount} conflicts`);
+    if (conflictCount > 0) primaryReasons.push('ambiguous building-address matches');
     if (densityWarningCount > 0) reasons.push(`${densityWarningCount} density warnings`);
+    if (densityWarningCount > 0) primaryReasons.push('dense building cluster warning');
+
+    const reason = primaryReasons[0] ?? (reasons.length > 0 ? reasons.join(', ') : null);
 
     return {
       status,
       score,
-      reason: reasons.length > 0 ? reasons.join(', ') : null,
+      coverageScore,
+      dataQuality,
+      standardModeRecommended: dataQuality === 'weak',
+      reason,
       repairRecommended: status === 'degraded' || status === 'failed',
       metrics: {
         total_addresses: totalAddresses,
@@ -93,7 +136,7 @@ export class CampaignLinkQualityService {
         suspect_rate: Math.round(suspectRate * 10000) / 10000,
         parcel_bridge_count: parcelBridgeCount,
         parcel_bridge_rate: Math.round(parcelBridgeRate * 10000) / 10000,
-        avg_confidence: summary.avgConfidence,
+        avg_confidence: avgConfidence,
         coverage_percent: Math.round(coveragePercent * 100) / 100,
         street_mismatch_count: streetMismatchCount,
         conflict_count: conflictCount,
@@ -111,6 +154,10 @@ export class CampaignLinkQualityService {
         link_quality_reason: assessment.reason,
         link_quality_checked_at: new Date().toISOString(),
         link_quality_metrics: assessment.metrics,
+        coverage_score: assessment.coverageScore,
+        data_quality: assessment.dataQuality,
+        standard_mode_recommended: assessment.standardModeRecommended,
+        data_quality_reason: assessment.reason,
       })
       .eq('id', campaignId);
 

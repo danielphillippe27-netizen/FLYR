@@ -4,6 +4,8 @@ import GRDB
 enum OutboxOperation: String, Codable, Sendable {
     case upsertAddressStatus = "upsert_address_status"
     case upsertAddressCaptureMetadata = "upsert_address_capture_metadata"
+    case logBuildingTouch = "log_building_touch"
+    case markAddressVisited = "mark_address_visited"
     case createSession = "create_session"
     case updateSessionProgress = "update_session_progress"
     case endSession = "end_session"
@@ -12,6 +14,8 @@ enum OutboxOperation: String, Codable, Sendable {
     case createContactActivity = "create_contact_activity"
     case deleteContact = "delete_contact"
     case deleteBuilding = "delete_building"
+    case moveAddress = "move_address"
+    case moveBuilding = "move_building"
 }
 
 struct OfflineFarmExecutionPayload: Codable, Sendable {
@@ -91,6 +95,20 @@ struct AddressStatusOutboxPayload: Codable, Sendable {
     let occurredAt: String
 }
 
+struct BuildingTouchOutboxPayload: Codable, Sendable {
+    let addressId: String
+    let campaignId: String
+    let buildingId: String?
+    let sessionId: String?
+    let userId: String?
+    let touchedAt: String
+}
+
+struct MarkAddressVisitedOutboxPayload: Codable, Sendable {
+    let addressId: String
+    let visited: Bool
+}
+
 struct SessionProgressOutboxPayload: Codable, Sendable {
     let id: String
     let campaignId: String?
@@ -157,42 +175,73 @@ struct DeleteBuildingOutboxPayload: Codable, Sendable {
     let buildingId: String
 }
 
+struct MoveAddressOutboxPayload: Codable, Sendable {
+    let campaignId: String
+    let addressId: String
+    let latitude: Double
+    let longitude: Double
+}
+
+struct MoveBuildingOutboxPayload: Codable, Sendable {
+    let campaignId: String
+    let buildingId: String
+    let geometryJSON: String
+}
+
 struct OutboxEntry: Codable, FetchableRecord, PersistableRecord, Sendable {
     let id: String
+    let clientMutationId: String?
     let entityType: String
     let entityId: String
     let operation: String
+    let operationVersion: Int
     let payloadJSON: String
+    let status: String?
+    let dependencyKey: String?
     let createdAt: String
     let attemptedAt: String?
     let syncedAt: String?
+    let retryAfter: String?
     let retryCount: Int
     let errorMessage: String?
+    let deadLetteredAt: String?
 
     enum Columns: String, ColumnExpression {
         case id
+        case clientMutationId = "client_mutation_id"
         case entityType = "entity_type"
         case entityId = "entity_id"
         case operation
+        case operationVersion = "operation_version"
         case payloadJSON = "payload_json"
+        case status
+        case dependencyKey = "dependency_key"
         case createdAt = "created_at"
         case attemptedAt = "attempted_at"
         case syncedAt = "synced_at"
+        case retryAfter = "retry_after"
         case retryCount = "retry_count"
         case errorMessage = "error_message"
+        case deadLetteredAt = "dead_lettered_at"
     }
 
     enum CodingKeys: String, CodingKey {
         case id
+        case clientMutationId = "client_mutation_id"
         case entityType = "entity_type"
         case entityId = "entity_id"
         case operation
+        case operationVersion = "operation_version"
         case payloadJSON = "payload_json"
+        case status
+        case dependencyKey = "dependency_key"
         case createdAt = "created_at"
         case attemptedAt = "attempted_at"
         case syncedAt = "synced_at"
+        case retryAfter = "retry_after"
         case retryCount = "retry_count"
         case errorMessage = "error_message"
+        case deadLetteredAt = "dead_lettered_at"
     }
 
     static let databaseTableName = "sync_outbox"
@@ -209,45 +258,107 @@ final class OutboxRepository {
 
     private init() {}
 
+    @discardableResult
     func enqueue<P: Encodable>(
         entityType: String,
         entityId: String,
         operation: OutboxOperation,
-        payload: P
-    ) async {
-        guard let payloadJSON = OfflineJSONCodec.encode(payload) else { return }
+        payload: P,
+        clientMutationId: String = UUID().uuidString,
+        operationVersion: Int = 1,
+        dependencyKey: String? = nil
+    ) async -> String? {
+        guard let payloadJSON = OfflineJSONCodec.encode(payload) else { return nil }
+        let resolvedDependencyKey = dependencyKey ?? "\(entityType):\(entityId)"
         let entry = OutboxEntry(
             id: UUID().uuidString,
+            clientMutationId: clientMutationId,
             entityType: entityType,
             entityId: entityId,
             operation: operation.rawValue,
+            operationVersion: operationVersion,
             payloadJSON: payloadJSON,
+            status: "pending",
+            dependencyKey: resolvedDependencyKey,
             createdAt: OfflineDateCodec.string(from: Date()),
             attemptedAt: nil,
             syncedAt: nil,
+            retryAfter: nil,
             retryCount: 0,
-            errorMessage: nil
+            errorMessage: nil,
+            deadLetteredAt: nil
         )
 
-        try? await dbQueue.write { db in
-            try entry.insert(db)
+        do {
+            try await dbQueue.write { db in
+                try entry.insert(db)
+            }
+            return entry.id
+        } catch {
+            debugLog("Failed to enqueue outbox entry \(operation.rawValue): \(error.localizedDescription)")
+            return nil
         }
     }
 
     func fetchPending(limit: Int = 50) async -> [OutboxEntry] {
-        (try? await dbQueue.read { db in
-            try OutboxEntry
-                .filter(Column("synced_at") == nil)
-                .order(Column("created_at").asc)
-                .limit(limit)
-                .fetchAll(db)
+        let now = OfflineDateCodec.string(from: Date())
+        return (try? await dbQueue.read { db in
+            try OutboxEntry.fetchAll(
+                db,
+                sql: """
+                SELECT o.*
+                FROM sync_outbox o
+                WHERE o.synced_at IS NULL
+                  AND COALESCE(o.status, 'pending') IN ('pending', 'failed')
+                  AND (o.retry_after IS NULL OR o.retry_after <= ?)
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM sync_outbox older
+                      WHERE older.synced_at IS NULL
+                        AND COALESCE(older.status, 'pending') != 'dead_letter'
+                        AND COALESCE(older.dependency_key, older.entity_type || ':' || older.entity_id)
+                            = COALESCE(o.dependency_key, o.entity_type || ':' || o.entity_id)
+                        AND older.rowid < o.rowid
+                  )
+                ORDER BY o.created_at ASC
+                LIMIT ?
+                """,
+                arguments: [now, limit]
+            )
         }) ?? []
     }
 
     func pendingCount() async -> Int {
         (try? await dbQueue.read { db in
-            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sync_outbox WHERE synced_at IS NULL")
+            try Int.fetchOne(
+                db,
+                sql: """
+                SELECT COUNT(*)
+                FROM sync_outbox
+                WHERE synced_at IS NULL
+                  AND COALESCE(status, 'pending') != 'dead_letter'
+                """
+            )
         }) ?? 0
+    }
+
+    func resetStaleProcessing(olderThan interval: TimeInterval = 300) async {
+        let cutoff = OfflineDateCodec.string(from: Date().addingTimeInterval(-interval))
+        try? await dbQueue.write { db in
+            try db.execute(
+                sql: """
+                UPDATE sync_outbox
+                SET status = 'failed',
+                    retry_after = NULL,
+                    error_message = COALESCE(error_message, 'Reset stale processing entry')
+                WHERE status = 'processing'
+                  AND attempted_at IS NOT NULL
+                  AND attempted_at <= ?
+                  AND synced_at IS NULL
+                """,
+                arguments: [cutoff]
+            )
+        }
     }
 
     func markAttempted(id: String, at date: Date = Date()) async {
@@ -256,7 +367,10 @@ final class OutboxRepository {
             try db.execute(
                 sql: """
                 UPDATE sync_outbox
-                SET attempted_at = ?, error_message = NULL
+                SET attempted_at = ?,
+                    status = 'processing',
+                    retry_after = NULL,
+                    error_message = NULL
                 WHERE id = ?
                 """,
                 arguments: [attemptedAt, id]
@@ -270,7 +384,10 @@ final class OutboxRepository {
             try db.execute(
                 sql: """
                 UPDATE sync_outbox
-                SET synced_at = ?, error_message = NULL
+                SET synced_at = ?,
+                    status = 'synced',
+                    retry_after = NULL,
+                    error_message = NULL
                 WHERE id = ?
                 """,
                 arguments: [syncedAt, id]
@@ -278,19 +395,37 @@ final class OutboxRepository {
         }
     }
 
-    func markFailed(id: String, errorMessage: String, at date: Date = Date()) async {
+    func markFailed(
+        id: String,
+        errorMessage: String,
+        retryAfter: Date?,
+        deadLetter: Bool = false,
+        at date: Date = Date()
+    ) async {
         let attemptedAt = OfflineDateCodec.string(from: date)
+        let retryAfterString = retryAfter.map(OfflineDateCodec.string(from:))
+        let deadLetteredAt = deadLetter ? attemptedAt : nil
+        let status = deadLetter ? "dead_letter" : "failed"
         try? await dbQueue.write { db in
             try db.execute(
                 sql: """
                 UPDATE sync_outbox
                 SET attempted_at = ?,
                     retry_count = retry_count + 1,
-                    error_message = ?
+                    status = ?,
+                    retry_after = ?,
+                    error_message = ?,
+                    dead_lettered_at = COALESCE(?, dead_lettered_at)
                 WHERE id = ?
                 """,
-                arguments: [attemptedAt, errorMessage, id]
+                arguments: [attemptedAt, status, retryAfterString, errorMessage, deadLetteredAt, id]
             )
         }
+    }
+
+    private func debugLog(_ message: @autoclosure () -> String) {
+        #if DEBUG
+        print("[OutboxRepository] \(message())")
+        #endif
     }
 }

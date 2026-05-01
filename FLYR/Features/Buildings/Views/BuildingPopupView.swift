@@ -227,7 +227,10 @@ final class BuildingPopupView: UIView {
             switch status {
             case "hot":
                 statusText = "🔥 Hot Lead"
-                statusColor = UIColor(hex: "#3b82f6")! // Blue
+                statusColor = UIColor(hex: "#facc15")! // Gold
+            case "lead", "appointment", "future_seller", "hot_lead":
+                statusText = "🔥 Lead"
+                statusColor = UIColor(hex: "#facc15")! // Gold
             case "visited":
                 statusText = "✅ Visited"
                 statusColor = UIColor(hex: "#22c55e")! // Green

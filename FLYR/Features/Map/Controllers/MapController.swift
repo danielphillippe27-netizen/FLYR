@@ -70,15 +70,14 @@ final class MapController {
         }
         
         // Apply camera settings
-        applyCamera(for: mode, to: mapView)
+        applyCamera(for: mode, to: mapView, preferLightStyle: preferLightStyle)
     }
     
     /// Load style JSON for a map mode (campaign3D uses light base when preferLightStyle is true)
     private func loadStyle(for mode: MapMode, to mapView: MapView, preferLightStyle: Bool = false) async {
         guard let map = mapView.mapboxMap else { return }
         
-        let styleURI = MapTheme.styleURI(for: mode, preferLightStyle: preferLightStyle)
-        map.loadStyle(styleURI)
+        MapTheme.loadStyle(for: mode, preferLightStyle: preferLightStyle, on: map)
         print("✅ [MapController] Loading style: \(mode.rawValue) preferLight: \(preferLightStyle)")
     }
     
@@ -103,7 +102,7 @@ final class MapController {
             // Check if current style is dark by checking the style URI
             let isDarkMode = map.styleURI == .dark
             let defaultBuildingColor: UIColor = isDarkMode ? .black : .white
-            let selectedColor: UIColor = .systemRed
+            let selectedColor: UIColor = .systemGray4
             
             // Expression: if feature-state("selected") is true, use red, otherwise use default color
             // Use match with boolean converted to string for matching
@@ -237,19 +236,20 @@ final class MapController {
             
             // Use feature-state to support building selection highlighting and status-based coloring
             // Color priority: selected (red) > status (color by status) > default (white)
-            let selectedColor: UIColor = .systemRed
+            let selectedColor: UIColor = .systemGray4
             let defaultColor: UIColor = .white // Campaign buildings default to white
             
-            // Status color mapping (knock → green, conversation → blue)
+            // Status color mapping (conversation -> green, lead/appointment/follow-up -> gold)
             let statusColors: [String: UIColor] = [
                 "none": .white,
-                "no_answer": .gray,
-                "delivered": .systemGreen,
-                "talked": .systemBlue,
-                "appointment": .systemBlue,
-                "do_not_knock": UIColor(hex: "#9ca3af") ?? .systemGray,
-                "future_seller": .systemOrange,
-                "hot_lead": .systemRed
+                "no_answer": MapStatusColor.noOneHome,
+                "delivered": MapStatusColor.touched,
+                "talked": MapStatusColor.conversations,
+                "lead": MapStatusColor.hotLead,
+                "appointment": MapStatusColor.hotLead,
+                "do_not_knock": MapStatusColor.doNotKnock,
+                "future_seller": MapStatusColor.hotLead,
+                "hot_lead": MapStatusColor.hotLead
             ]
             
             // Build color expression with priority: selected > status > default
@@ -275,6 +275,8 @@ final class MapController {
                         statusColors["delivered"] ?? defaultColor
                         "talked"
                         statusColors["talked"] ?? defaultColor
+                        "lead"
+                        statusColors["lead"] ?? defaultColor
                         "appointment"
                         statusColors["appointment"] ?? defaultColor
                         "do_not_knock"
@@ -391,7 +393,7 @@ final class MapController {
             layer.fillExtrusionBase = .expression(Exp(.get) { "min_height" })
             
             // Use feature-state to support building selection highlighting
-            let selectedColor: UIColor = .systemRed
+            let selectedColor: UIColor = .systemGray4
             let defaultColor: UIColor = .white
             
             // Expression: if feature-state("selected") is true, use red, otherwise use white
@@ -626,7 +628,7 @@ final class MapController {
             
             // Use feature-state to support building selection highlighting
             // Color priority: selected (red) > default (black for dimmed buildings)
-            let selectedColor: UIColor = .systemRed
+            let selectedColor: UIColor = .systemGray4
             let defaultColor: UIColor = .black // Non-campaign buildings are black and dimmed
             
             // Expression: if feature-state("selected") is true, use red, otherwise use black
@@ -655,7 +657,7 @@ final class MapController {
     }
     
     /// Apply camera settings for a map mode
-    func applyCamera(for mode: MapMode, to mapView: MapView) {
+    func applyCamera(for mode: MapMode, to mapView: MapView, preferLightStyle: Bool = false) {
         let pitch: CGFloat = mode.is3DMode ? 60 : 0
         
         let currentCamera = mapView.mapboxMap.cameraState
@@ -666,6 +668,9 @@ final class MapController {
         )
         
         mapView.mapboxMap.setCamera(to: cameraOptions)
+        if mode == .light || (mode == .campaign3D && preferLightStyle) {
+            MapTheme.applyLightModeShadowPolicy(to: mapView.mapboxMap, pitch: pitch)
+        }
         print("✅ [MapController] Applied camera: pitch=\(pitch)° for mode \(mode.rawValue)")
     }
     

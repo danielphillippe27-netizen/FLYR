@@ -46,6 +46,14 @@ async function ensureCampaignAccess(
     }
   }
 
+  const { data: campaignMember } = await supabase
+    .from("campaign_members")
+    .select("campaign_id")
+    .eq("campaign_id", campaignId)
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (campaignMember) return true;
+
   return false;
 }
 

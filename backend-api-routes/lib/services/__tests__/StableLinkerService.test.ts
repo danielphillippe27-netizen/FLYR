@@ -242,6 +242,22 @@ async function run() {
     assertEqual(match.buildingId, 'building-1');
   });
 
+  test('Gold street inference: missing building street is inferred from contained address', () => {
+    const service = new StableLinkerService({} as any);
+    const building = makeBuilding(
+      'building-infer',
+      rectangle(-79.0002, 43.0000, -78.9998, 43.0003)
+    );
+    const address = makeAddress('101', -79.0000, 43.00015, 'Maple Avenue');
+
+    (service as any).inferMissingBuildingStreets([address], [building]);
+    const match = (service as any).matchAddressToBuilding(address, [building], new Set(), []);
+
+    assertEqual(building.properties.primary_street, 'Maple Avenue');
+    assertEqual(match.matchType, 'containment_verified');
+    assertEqual(match.streetMatchScore, 1);
+  });
+
   test('Gold parcel bridge: address outside footprint still links via shared parcel', () => {
     const service = new StableLinkerService({} as any);
     const building = makeBuilding(
@@ -286,6 +302,94 @@ async function run() {
     const resolution = await (service as any).inferSourceId('campaign-unsupported');
     assertEqual(resolution.sourceId, null);
     assertEqual(resolution.unsupportedLocalities, ['burnaby', 'vancouver']);
+  });
+
+  await testAsync('Toronto parcel alias: locality "to" resolves to Toronto parcels', async () => {
+    const supabase = createMockSupabase({
+      campaignAddresses: [
+        { campaign_id: 'campaign-toronto', locality: 'to' },
+      ],
+    });
+    const service = new ParcelEnrichmentService(supabase as any);
+
+    const resolution = await (service as any).inferSourceId('campaign-toronto');
+    assertEqual(resolution.sourceId, 'toronto_parcels');
+    assertEqual(resolution.unsupportedLocalities, []);
+  });
+
+  await testAsync('Toronto parcel loading streams NDJSON and filters to campaign bbox', async () => {
+    const insideParcel = JSON.stringify({
+      type: 'Feature',
+      properties: { external_id: 'parcel-inside' },
+      geometry: {
+        type: 'Polygon',
+        coordinates: [rectangle(-79.00030, 42.99995, -78.99990, 43.00028)],
+      },
+    });
+    const outsideParcel = JSON.stringify({
+      type: 'Feature',
+      properties: { external_id: 'parcel-outside' },
+      geometry: {
+        type: 'Polygon',
+        coordinates: [rectangle(-80.00030, 42.99995, -79.99990, 43.00028)],
+      },
+    });
+    const ndjson = `${insideParcel}\n${outsideParcel}\n`;
+    const chunks = [
+      ndjson.slice(0, 37),
+      ndjson.slice(37, 113),
+      ndjson.slice(113),
+    ];
+    const body = {
+      async *[Symbol.asyncIterator]() {
+        for (const chunk of chunks) {
+          yield Buffer.from(chunk);
+        }
+      },
+      async transformToString() {
+        throw new Error('streaming parser must not materialize full parcel file');
+      },
+    };
+    const supabase = createMockSupabase({
+      campaignAddresses: [
+        { campaign_id: 'campaign-stream', locality: 'to' },
+      ],
+    });
+    const service = new ParcelEnrichmentService(supabase as any);
+    (service as any).s3 = {
+      async send(command: any) {
+        if (command.constructor.name === 'ListObjectsV2Command') {
+          return {
+            Contents: [
+              {
+                Key: 'gold-standard/canada/ontario/toronto_parcels/20260430/toronto_parcels_gold.ndjson',
+              },
+            ],
+            IsTruncated: false,
+          };
+        }
+
+        return { Body: body };
+      },
+    };
+
+    const result = await (service as any).loadCampaignParcels(
+      'campaign-stream',
+      {
+        id: 'campaign-stream',
+        bbox: [-79.001, 42.999, -78.999, 43.001],
+        territory_boundary: null,
+        region: 'ON',
+      }
+    );
+
+    assertEqual(result.status, 'ready');
+    assertEqual(result.sourceId, 'toronto_parcels');
+    assertEqual(result.parcelCount, 1);
+    assertEqual(result.parcels[0].externalId, 'parcel-inside');
+    assertEqual(result.debug.scanned_lines, 2);
+    assertEqual(result.debug.parsed_records, 2);
+    assertEqual(result.debug.bbox_candidates, 1);
   });
 
   test('Townhouse row: repeated building matches become multi-unit after post-processing', () => {

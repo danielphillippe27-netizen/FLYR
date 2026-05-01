@@ -46,6 +46,14 @@ async function ensureCampaignAccess(
     }
   }
 
+  const { data: campaignMember } = await supabase
+    .from("campaign_members")
+    .select("campaign_id")
+    .eq("campaign_id", campaignId)
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (campaignMember) return true;
+
   return false;
 }
 
@@ -69,6 +77,101 @@ async function resolveManualBuildingRow(
   const { data, error } = await builder.maybeSingle();
   if (error || !data) return null;
   return data as { id: string; gers_id: string | null; source: string };
+}
+
+async function resolveBuildingRow(
+  supabase: any,
+  campaignId: string,
+  buildingIdParam: string
+) {
+  const uuidMatch = buildingIdParam.match(
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+  );
+  const query = supabase
+    .from("buildings")
+    .select("id, gers_id, source")
+    .eq("campaign_id", campaignId)
+    .limit(1);
+  const builder = uuidMatch
+    ? query.or(`id.eq.${buildingIdParam},gers_id.eq.${buildingIdParam}`)
+    : query.eq("gers_id", buildingIdParam);
+  const { data, error } = await builder.maybeSingle();
+  if (error || !data) return null;
+  return data as { id: string; gers_id: string | null; source: string | null };
+}
+
+function isValidPolygonGeometry(geometry: unknown): boolean {
+  if (!geometry || typeof geometry !== "object") return false;
+  const candidate = geometry as { type?: unknown; coordinates?: unknown };
+  if (candidate.type !== "Polygon" && candidate.type !== "MultiPolygon") {
+    return false;
+  }
+  return Array.isArray(candidate.coordinates);
+}
+
+export async function PATCH(request: Request, context: RouteContext): Promise<Response> {
+  try {
+    const token = getAuthToken(request);
+    if (!token) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const body = await request.json().catch(() => null);
+    if (!body || typeof body !== "object") {
+      return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+    }
+
+    const geometry = (body as { geometry?: unknown }).geometry;
+    if (!isValidPolygonGeometry(geometry)) {
+      return NextResponse.json(
+        { error: "geometry must be a GeoJSON Polygon or MultiPolygon" },
+        { status: 400 }
+      );
+    }
+
+    const { campaignId, buildingId } = await context.params;
+    const supabaseAnon = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    const {
+      data: { user },
+      error: userError,
+    } = await supabaseAnon.auth.getUser(token);
+    if (userError || !user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+    const canAccess = await ensureCampaignAccess(supabase, campaignId, user.id);
+    if (!canAccess) {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
+
+    const row = await resolveBuildingRow(supabase, campaignId, buildingId);
+    if (!row) {
+      return NextResponse.json({ error: "Building not found" }, { status: 404 });
+    }
+
+    const { error: updateError } = await supabase
+      .from("buildings")
+      .update({ geom: JSON.stringify(geometry) })
+      .eq("campaign_id", campaignId)
+      .eq("id", row.id);
+
+    if (updateError) {
+      console.error("[manual-building] move error:", updateError);
+      return NextResponse.json(
+        { error: "Failed to move building" },
+        { status: 500 }
+      );
+    }
+
+    return NextResponse.json({ moved: true, building_id: row.gers_id ?? row.id });
+  } catch (error) {
+    console.error("[manual-building] PATCH error:", error);
+    return NextResponse.json(
+      { error: "Internal server error" },
+      { status: 500 }
+    );
+  }
 }
 
 export async function DELETE(request: Request, context: RouteContext): Promise<Response> {

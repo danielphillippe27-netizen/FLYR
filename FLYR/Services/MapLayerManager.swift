@@ -5,15 +5,19 @@ import CoreLocation
 
 // MARK: - Status Colors
 
-/// Map status color configuration. Purple = QR scanned (align with web).
+/// Shared campaign status palette. Mirrors the web map status config.
 enum MapStatusColor {
-    static let qrScanned = UIColor(hex: "#8b5cf6")!      // Purple (QR codes)
-    static let conversations = UIColor(hex: "#3b82f6")!   // Blue
-    static let pendingVisited = UIColor(hex: "#f59e0b")!   // Amber
-    static let touched = UIColor(hex: "#22c55e")!         // Green
+    static let untouched = UIColor(hex: "#475569")!       // Slate (unvisited)
+    static let flyerUntouched = UIColor(hex: "#ef4444")!  // Red (flyer unvisited)
+    static let touched = UIColor(hex: "#22c55e")!         // Green (visited)
+    static let conversations = UIColor(hex: "#22c55e")!   // Green (conversation)
+    static let lead = UIColor(hex: "#facc15")!            // Gold (lead / appointment / follow-up)
+    static let hotLead = UIColor(hex: "#facc15")!         // Gold (hot lead / appointment / follow-up)
+    static let qrScanned = UIColor(hex: "#8b5cf6")!       // Purple (QR scan)
+    static let noOneHome = UIColor(hex: "#f87171")!       // Coral / muted red
+    static let doNotKnock = UIColor(hex: "#000000")!      // Black
+    static let pendingVisited = UIColor(hex: "#f59e0b")!  // Amber
     static let teammateTouched = UIColor(hex: "#166534")! // Dark green
-    static let doNotKnock = UIColor(hex: "#9ca3af")!      // Gray (do not knock)
-    static let untouched = UIColor(hex: "#ef4444")!       // Red
     static let orphan = UIColor(hex: "#9ca3af")!          // Gray
     
     static let roadPrimary = UIColor(hex: "#64748b")!     // Slate
@@ -32,12 +36,15 @@ final class MapLayerManager {
     
     static let buildingsSourceId = "buildings-source"
     static let buildingsLayerId = "buildings-extrusion"
+    static let buildingsLeadGlowLayerId = "buildings-lead-glow"
     static let townhomeOverlaySourceId = "townhome-status-source"
     static let townhomeOverlayLayerId = "townhome-status-extrusion"
+    static let townhomeLeadGlowLayerId = "townhome-status-lead-glow"
     
     /// Web-aligned IDs (campaign-address-points, campaign-address-points-extrusion)
     static let addressesSourceId = "campaign-address-points"
     static let addressesLayerId = "campaign-address-points-extrusion"
+    static let addressesLeadGlowLayerId = "campaign-address-points-lead-glow"
     static let addressNumbersSourceId = "campaign-address-numbers"
     static let addressNumbersLayerId = "campaign-address-numbers-layer"
     static let manualAddressPreviewSourceId = "manual-address-preview-source"
@@ -90,6 +97,34 @@ final class MapLayerManager {
             0.9
             18.1
             1.0
+        }
+    }
+
+    private static func leadGlowOpacityExpression(statusKey: String = "status") -> Exp {
+        Exp(.switchCase) {
+            Exp(.eq) {
+                Exp(.coalesce) {
+                    Exp(.featureState) { statusKey }
+                    Exp(.get) { statusKey }
+                    "not_visited"
+                }
+                "hot_lead"
+            }
+            0.82
+
+            Exp(.match) {
+                Exp(.coalesce) {
+                    Exp(.featureState) { statusKey }
+                    Exp(.get) { statusKey }
+                    "none"
+                }
+                ["lead", "appointment", "future_seller", "hot_lead"]
+                true
+                false
+            }
+            0.82
+
+            0.0
         }
     }
     
@@ -174,6 +209,15 @@ final class MapLayerManager {
         // Priority: QR_SCANNED (purple) > CONVERSATIONS (blue) > TOUCHED (green) > UNTOUCHED (red)
         layer.fillExtrusionColor = .expression(
             Exp(.switchCase) {
+                Exp(.eq) {
+                    Exp(.coalesce) {
+                        Exp(.featureState) { "selected" }
+                        false
+                    }
+                    true
+                }
+                UIColor.systemGray4
+
                 // QR Scanned: scans_total > 0 (purple)
                 Exp(.gt) {
                     Exp(.coalesce) {
@@ -196,7 +240,56 @@ final class MapLayerManager {
                 }
                 MapStatusColor.conversations
                 
-                // Do not knock: gray (distinct from visited green)
+                Exp(.eq) {
+                    Exp(.coalesce) {
+                        Exp(.featureState) { "status" }
+                        Exp(.get) { "status" }
+                        "not_visited"
+                    }
+                    "lead"
+                }
+                MapStatusColor.lead
+
+                Exp(.eq) {
+                    Exp(.coalesce) {
+                        Exp(.featureState) { "status" }
+                        Exp(.get) { "status" }
+                        "not_visited"
+                    }
+                    "appointment"
+                }
+                MapStatusColor.hotLead
+
+                Exp(.eq) {
+                    Exp(.coalesce) {
+                        Exp(.featureState) { "status" }
+                        Exp(.get) { "status" }
+                        "not_visited"
+                    }
+                    "hot_lead"
+                }
+                MapStatusColor.hotLead
+
+                Exp(.eq) {
+                    Exp(.coalesce) {
+                        Exp(.featureState) { "status" }
+                        Exp(.get) { "status" }
+                        "not_visited"
+                    }
+                    "future_seller"
+                }
+                MapStatusColor.hotLead
+
+                Exp(.eq) {
+                    Exp(.coalesce) {
+                        Exp(.featureState) { "status" }
+                        Exp(.get) { "status" }
+                        "not_visited"
+                    }
+                    "flyer_unvisited"
+                }
+                MapStatusColor.flyerUntouched
+
                 Exp(.eq) {
                     Exp(.coalesce) {
                         Exp(.featureState) { "status" }
@@ -206,6 +299,16 @@ final class MapLayerManager {
                     "do_not_knock"
                 }
                 MapStatusColor.doNotKnock
+
+                Exp(.eq) {
+                    Exp(.coalesce) {
+                        Exp(.featureState) { "status" }
+                        Exp(.get) { "status" }
+                        "not_visited"
+                    }
+                    "no_answer"
+                }
+                MapStatusColor.noOneHome
 
                 // Pending local confirmation.
                 Exp(.eq) {
@@ -240,7 +343,7 @@ final class MapLayerManager {
                     MapStatusColor.touched
                 }
                 
-                // Default: Untouched (red)
+                // Default: unvisited slate
                 MapStatusColor.untouched
             }
         )
@@ -282,6 +385,21 @@ final class MapLayerManager {
         } catch {
             print("❌ [MapLayer] Error adding buildings layer: \(error)")
         }
+
+        var leadGlow = LineLayer(id: Self.buildingsLeadGlowLayerId, source: Self.buildingsSourceId)
+        leadGlow.lineColor = .constant(StyleColor(MapStatusColor.hotLead))
+        leadGlow.lineWidth = .constant(8)
+        leadGlow.lineBlur = .constant(6)
+        leadGlow.lineOpacity = .expression(Self.leadGlowOpacityExpression())
+        leadGlow.minZoom = 12
+        leadGlow.filter = layer.filter
+
+        do {
+            try mapView.mapboxMap.addLayer(leadGlow)
+            print("✅ [MapLayer] Added buildings lead glow layer")
+        } catch {
+            print("❌ [MapLayer] Error adding buildings lead glow layer: \(error)")
+        }
     }
 
     /// Set up a townhouse-only overlay layer that can render mixed per-unit statuses
@@ -310,9 +428,45 @@ final class MapLayerManager {
 
                 Exp(.eq) {
                     Exp(.get) { "segment_status" }
+                    "lead"
+                }
+                MapStatusColor.lead
+
+                Exp(.eq) {
+                    Exp(.get) { "segment_status" }
+                    "appointment"
+                }
+                MapStatusColor.hotLead
+
+                Exp(.eq) {
+                    Exp(.get) { "segment_status" }
+                    "hot_lead"
+                }
+                MapStatusColor.hotLead
+
+                Exp(.eq) {
+                    Exp(.get) { "segment_status" }
+                    "future_seller"
+                }
+                MapStatusColor.hotLead
+
+                Exp(.eq) {
+                    Exp(.get) { "segment_status" }
+                    "flyer_unvisited"
+                }
+                MapStatusColor.flyerUntouched
+
+                Exp(.eq) {
+                    Exp(.get) { "segment_status" }
                     "do_not_knock"
                 }
                 MapStatusColor.doNotKnock
+
+                Exp(.eq) {
+                    Exp(.get) { "segment_status" }
+                    "no_answer"
+                }
+                MapStatusColor.noOneHome
 
                 Exp(.eq) {
                     Exp(.get) { "segment_status" }
@@ -357,6 +511,21 @@ final class MapLayerManager {
             print("✅ [MapLayer] Added townhouse overlay layer")
         } catch {
             print("❌ [MapLayer] Error adding townhouse overlay layer: \(error)")
+        }
+
+        var leadGlow = LineLayer(id: Self.townhomeLeadGlowLayerId, source: Self.townhomeOverlaySourceId)
+        leadGlow.lineColor = .constant(StyleColor(MapStatusColor.hotLead))
+        leadGlow.lineWidth = .constant(8)
+        leadGlow.lineBlur = .constant(6)
+        leadGlow.lineOpacity = .expression(Self.leadGlowOpacityExpression(statusKey: "segment_status"))
+        leadGlow.minZoom = 12
+        leadGlow.filter = layer.filter
+
+        do {
+            try mapView.mapboxMap.addLayer(leadGlow)
+            print("✅ [MapLayer] Added townhouse lead glow layer")
+        } catch {
+            print("❌ [MapLayer] Error adding townhouse lead glow layer: \(error)")
         }
     }
     
@@ -456,6 +625,15 @@ final class MapLayerManager {
         var layer = FillExtrusionLayer(id: Self.addressesLayerId, source: Self.addressesSourceId)
         layer.fillExtrusionColor = .expression(
             Exp(.switchCase) {
+                Exp(.eq) {
+                    Exp(.coalesce) {
+                        Exp(.featureState) { "selected" }
+                        false
+                    }
+                    true
+                }
+                UIColor.systemGray4
+
                 Exp(.gt) {
                     Exp(.coalesce) {
                         Exp(.featureState) { "scans_total" }
@@ -465,7 +643,7 @@ final class MapLayerManager {
                     0
                 }
                 MapStatusColor.qrScanned
-                // Blue: conversation / talked / hot_lead (normalized "hot" or raw)
+                // Blue: conversation / talked (normalized "hot" or raw)
                 Exp(.eq) {
                     Exp(.coalesce) {
                         Exp(.featureState) { "status" }
@@ -475,6 +653,15 @@ final class MapLayerManager {
                     "hot"
                 }
                 MapStatusColor.conversations
+                Exp(.eq) {
+                    Exp(.coalesce) {
+                        Exp(.featureState) { "status" }
+                        Exp(.get) { "status" }
+                        "not_visited"
+                    }
+                    "lead"
+                }
+                MapStatusColor.lead
                 Exp(.eq) {
                     Exp(.coalesce) {
                         Exp(.featureState) { "status" }
@@ -492,7 +679,7 @@ final class MapLayerManager {
                     }
                     "appointment"
                 }
-                MapStatusColor.qrScanned
+                MapStatusColor.hotLead
                 Exp(.eq) {
                     Exp(.coalesce) {
                         Exp(.featureState) { "status" }
@@ -501,8 +688,17 @@ final class MapLayerManager {
                     }
                     "hot_lead"
                 }
-                MapStatusColor.conversations
+                MapStatusColor.hotLead
                 // Do not knock: gray (distinct from visited green)
+                Exp(.eq) {
+                    Exp(.coalesce) {
+                        Exp(.featureState) { "status" }
+                        Exp(.get) { "status" }
+                        "not_visited"
+                    }
+                    "flyer_unvisited"
+                }
+                MapStatusColor.flyerUntouched
                 Exp(.eq) {
                     Exp(.coalesce) {
                         Exp(.featureState) { "status" }
@@ -550,7 +746,7 @@ final class MapLayerManager {
                     }
                     "no_answer"
                 }
-                MapStatusColor.untouched
+                MapStatusColor.noOneHome
                 Exp(.eq) {
                     Exp(.coalesce) {
                         Exp(.featureState) { "status" }
@@ -579,7 +775,7 @@ final class MapLayerManager {
                     }
                     "future_seller"
                 }
-                UIColor(hex: "#facc15") ?? .systemYellow
+                MapStatusColor.hotLead
                 MapStatusColor.untouched
             }
         )
@@ -611,6 +807,25 @@ final class MapLayerManager {
             print("✅ [MapLayer] Added addresses fill-extrusion layer (\(Self.addressesLayerId))")
         } catch {
             print("❌ [MapLayer] Error adding addresses layer: \(error)")
+        }
+
+        var leadGlow = LineLayer(id: Self.addressesLeadGlowLayerId, source: Self.addressesSourceId)
+        leadGlow.lineColor = .constant(StyleColor(MapStatusColor.hotLead))
+        leadGlow.lineWidth = .constant(8)
+        leadGlow.lineBlur = .constant(6)
+        leadGlow.lineOpacity = .expression(Self.leadGlowOpacityExpression())
+        leadGlow.minZoom = Self.addressMarkersLayerMinZoom
+        leadGlow.filter = layer.filter
+
+        do {
+            if includeBuildingsLayer {
+                try mapView.mapboxMap.addLayer(leadGlow, layerPosition: .below(Self.buildingsLayerId))
+            } else {
+                try mapView.mapboxMap.addLayer(leadGlow)
+            }
+            print("✅ [MapLayer] Added address lead glow layer")
+        } catch {
+            print("❌ [MapLayer] Error adding address lead glow layer: \(error)")
         }
     }
 
@@ -1073,7 +1288,7 @@ final class MapLayerManager {
             if cachedAddressPointSignature == pointSignature, let cachedAddressPolygonData {
                 polygonData = cachedAddressPolygonData
             } else {
-                polygonData = try Self.convertAddressPointsToCirclePolygons(data, radiusMeters: 1.35, height: 10, segments: 20)
+                polygonData = try Self.convertAddressPointsToCirclePolygons(data, radiusMeters: 2.0, height: 10, segments: 20)
                 cachedAddressPointSignature = pointSignature
                 cachedAddressPolygonData = polygonData
             }
@@ -1114,7 +1329,7 @@ final class MapLayerManager {
                 )
                 let polygonData = try Self.convertAddressPointsToCirclePolygons(
                     pointData,
-                    radiusMeters: 1.35,
+                    radiusMeters: 2.0,
                     height: 11,
                     segments: 24
                 )
@@ -1756,6 +1971,28 @@ final class MapLayerManager {
             }
         }
     }
+
+    func updateBuildingSelection(gersId: String, isSelected: Bool) {
+        guard let mapView = mapView else { return }
+        mapView.mapboxMap.setFeatureState(
+            sourceId: Self.buildingsSourceId,
+            sourceLayerId: nil,
+            featureId: gersId.lowercased(),
+            state: ["selected": isSelected],
+            callback: { _ in }
+        )
+    }
+
+    func updateAddressSelection(addressId: String, isSelected: Bool) {
+        guard let mapView = mapView else { return }
+        mapView.mapboxMap.setFeatureState(
+            sourceId: Self.addressesSourceId,
+            sourceLayerId: nil,
+            featureId: addressId.lowercased(),
+            state: ["selected": isSelected],
+            callback: { _ in }
+        )
+    }
     
     // MARK: - Status Filters
     
@@ -1772,7 +2009,22 @@ final class MapLayerManager {
                     showUntouched: showUntouched
                 )
             }
+            try? mapView.mapboxMap.updateLayer(withId: Self.buildingsLeadGlowLayerId, type: LineLayer.self) { layer in
+                layer.filter = Self.buildingsStatusFilter(
+                    showQrScanned: showQrScanned,
+                    showConversations: showConversations,
+                    showTouched: showTouched,
+                    showUntouched: showUntouched
+                )
+            }
             try mapView.mapboxMap.updateLayer(withId: Self.townhomeOverlayLayerId, type: FillExtrusionLayer.self) { layer in
+                layer.filter = Self.townhomeOverlayFilter(
+                    showConversations: showConversations,
+                    showTouched: showTouched,
+                    showUntouched: showUntouched
+                )
+            }
+            try? mapView.mapboxMap.updateLayer(withId: Self.townhomeLeadGlowLayerId, type: LineLayer.self) { layer in
                 layer.filter = Self.townhomeOverlayFilter(
                     showConversations: showConversations,
                     showTouched: showTouched,
@@ -1822,8 +2074,12 @@ final class MapLayerManager {
                     showConversations
                     "appointment"
                     showConversations
+                    "lead"
+                    showConversations
                     "hot_lead"
                     showConversations
+                    "flyer_unvisited"
+                    showUntouched
                     "visited"
                     showTouched
                     "do_not_knock"
@@ -1833,7 +2089,7 @@ final class MapLayerManager {
                     "no_answer"
                     showTouched
                     "future_seller"
-                    showTouched
+                    showConversations
                     "not_visited"
                     showUntouched
                     false
@@ -1856,6 +2112,12 @@ final class MapLayerManager {
                 Exp(.get) { "segment_status" }
                 "hot"
                 showConversations
+                "lead"
+                showConversations
+                "hot_lead"
+                showConversations
+                "flyer_unvisited"
+                showUntouched
                 "visited"
                 showTouched
                 "do_not_knock"
@@ -2004,11 +2266,15 @@ final class MapLayerManager {
     private static func overlaySegmentStatus(for status: AddressStatus?) -> String {
         guard let status else { return "not_visited" }
         switch status {
-        case .talked, .appointment, .hotLead:
+        case .talked:
             return "hot"
+        case .appointment, .hotLead, .futureSeller:
+            return "hot_lead"
         case .doNotKnock:
             return "do_not_knock"
-        case .delivered, .noAnswer, .futureSeller:
+        case .noAnswer:
+            return "no_answer"
+        case .delivered:
             return "visited"
         case .none, .untouched:
             return "not_visited"
@@ -2044,7 +2310,7 @@ final class MapLayerManager {
     ) -> String {
         guard let row else { return "" }
         switch row.status {
-        case .delivered, .noAnswer, .futureSeller:
+        case .delivered:
             guard let actorUserId = row.lastActionBy else { return "" }
             if let currentUserId, actorUserId != currentUserId {
                 return "teammate"
@@ -2559,8 +2825,11 @@ final class MapLayerManager {
         
         // Remove layers
         try? mapView.mapboxMap.removeLayer(withId: Self.buildingsLayerId)
+        try? mapView.mapboxMap.removeLayer(withId: Self.buildingsLeadGlowLayerId)
         try? mapView.mapboxMap.removeLayer(withId: Self.townhomeOverlayLayerId)
+        try? mapView.mapboxMap.removeLayer(withId: Self.townhomeLeadGlowLayerId)
         try? mapView.mapboxMap.removeLayer(withId: Self.addressesLayerId)
+        try? mapView.mapboxMap.removeLayer(withId: Self.addressesLeadGlowLayerId)
         try? mapView.mapboxMap.removeLayer(withId: Self.manualAddressPreviewLayerId)
         try? mapView.mapboxMap.removeLayer(withId: Self.roadsLayerId)
         

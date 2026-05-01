@@ -46,7 +46,95 @@ async function ensureCampaignAccess(
     }
   }
 
+  const { data: campaignMember } = await supabase
+    .from("campaign_members")
+    .select("campaign_id")
+    .eq("campaign_id", campaignId)
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (campaignMember) return true;
+
   return false;
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function pointGeoJSON(longitude: number, latitude: number) {
+  return { type: "Point", coordinates: [longitude, latitude] as [number, number] };
+}
+
+export async function PATCH(request: Request, context: RouteContext): Promise<Response> {
+  try {
+    const token = getAuthToken(request);
+    if (!token) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const body = await request.json().catch(() => null);
+    if (!body || typeof body !== "object") {
+      return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+    }
+
+    const longitude = (body as { longitude?: unknown }).longitude;
+    const latitude = (body as { latitude?: unknown }).latitude;
+    if (!isFiniteNumber(longitude) || !isFiniteNumber(latitude)) {
+      return NextResponse.json(
+        { error: "longitude and latitude are required numbers" },
+        { status: 400 }
+      );
+    }
+
+    const { campaignId, addressId } = await context.params;
+    const supabaseAnon = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    const {
+      data: { user },
+      error: userError,
+    } = await supabaseAnon.auth.getUser(token);
+    if (userError || !user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+    const canAccess = await ensureCampaignAccess(supabase, campaignId, user.id);
+    if (!canAccess) {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
+
+    const { data: row, error: lookupError } = await supabase
+      .from("campaign_addresses")
+      .select("id")
+      .eq("campaign_id", campaignId)
+      .eq("id", addressId)
+      .maybeSingle();
+
+    if (lookupError || !row) {
+      return NextResponse.json({ error: "Address not found" }, { status: 404 });
+    }
+
+    const { error: updateError } = await supabase
+      .from("campaign_addresses")
+      .update({ geom: JSON.stringify(pointGeoJSON(longitude, latitude)) })
+      .eq("campaign_id", campaignId)
+      .eq("id", addressId);
+
+    if (updateError) {
+      console.error("[manual-address] move error:", updateError);
+      return NextResponse.json(
+        { error: "Failed to move address" },
+        { status: 500 }
+      );
+    }
+
+    return NextResponse.json({ moved: true, address_id: addressId });
+  } catch (error) {
+    console.error("[manual-address] PATCH error:", error);
+    return NextResponse.json(
+      { error: "Internal server error" },
+      { status: 500 }
+    );
+  }
 }
 
 export async function DELETE(request: Request, context: RouteContext): Promise<Response> {

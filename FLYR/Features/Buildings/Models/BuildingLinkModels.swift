@@ -164,7 +164,7 @@ struct BuildingProperties: Codable {
     var statusColor: String {
         if scansTotal > 0 || (qrScanned ?? false) { return "#8b5cf6" }
         switch status {
-        case "hot": return "#3b82f6"
+        case "hot", "lead", "appointment", "future_seller", "hot_lead": return "#facc15"
         case "visited": return "#22c55e"
         default: return "#ef4444"
         }

@@ -24,6 +24,7 @@ final class FlyerModeManager: ObservableObject {
     var automaticStatusForAddress: ((UUID) -> AddressStatus)?
 
     private var locationCancellable: AnyCancellable?
+    private var dwellTimerCancellable: AnyCancellable?
     private var dwellTracker: [UUID: Date] = [:]
 
     func load(campaignId _: UUID, featuresService: MapFeaturesService) async {
@@ -45,6 +46,7 @@ final class FlyerModeManager: ObservableObject {
     }
 
     func startObservingLocation() {
+        stopObservingLocation()
         locationCancellable = SessionManager.shared.$currentLocation
             .receive(on: RunLoop.main)
             .sink { [weak self] location in
@@ -53,10 +55,29 @@ final class FlyerModeManager: ObservableObject {
                     await self.checkProximity(location: location)
                 }
             }
+
+        dwellTimerCancellable = Timer.publish(every: 1.0, on: .main, in: .common)
+            .autoconnect()
+            .sink { [weak self] _ in
+                guard let self = self,
+                      SessionManager.shared.sessionId != nil,
+                      SessionManager.shared.sessionMode == .flyer,
+                      let location = SessionManager.shared.currentLocation else { return }
+                Task { @MainActor in
+                    await self.checkProximity(location: location)
+                }
+            }
+
+        if let location = SessionManager.shared.currentLocation {
+            Task { @MainActor in
+                await self.checkProximity(location: location)
+            }
+        }
     }
 
     func stopObservingLocation() {
         locationCancellable = nil
+        dwellTimerCancellable = nil
     }
 
     func reset() {

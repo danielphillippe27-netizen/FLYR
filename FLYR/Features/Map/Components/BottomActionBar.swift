@@ -4,9 +4,15 @@ import UIKit
 
 /// Session tools bar: Pause/Resume only. Stats and Finish are in the map overlay; Next targets removed for now.
 struct BottomActionBar: View {
+    enum MenuVariant {
+        case standard
+        case campaign
+    }
+
     @ObservedObject var sessionManager: SessionManager
     @Binding var showingTargets: Bool
     @Binding var statsExpanded: Bool
+    var menuVariant: MenuVariant = .campaign
     @StateObject private var beaconService = SessionSafetyBeaconService.shared
     @StateObject private var sharedLiveCanvassingService = SharedLiveCanvassingService.shared
     @State private var showingBeaconSheet = false
@@ -26,6 +32,10 @@ struct BottomActionBar: View {
 
     private var liveInviteUnavailable: Bool {
         liveInviteAvailability == .unavailable
+    }
+
+    private var showsCampaignSessionTools: Bool {
+        menuVariant == .campaign
     }
 
     private var liveSessionInviteSubtitle: String {
@@ -76,18 +86,20 @@ struct BottomActionBar: View {
 
             if isExpanded {
                 VStack(spacing: 0) {
-                    actionRow(
-                        title: "Invite Users to Live Session",
-                        subtitle: liveSessionInviteSubtitle,
-                        systemImage: "person.badge.plus",
-                        tint: liveInviteUnavailable ? .orange : (sharedLiveCanvassingService.isJoined ? .green : .white),
-                        trailingText: liveInviteUnavailable ? "Unavailable" : (sharedLiveCanvassingService.isJoined ? "Live" : "Invite"),
-                        isDisabled: liveInviteUnavailable,
-                        action: { inviteUsersToLiveSession() }
-                    )
+                    if showsCampaignSessionTools {
+                        actionRow(
+                            title: "Invite Users to Live Session",
+                            subtitle: liveSessionInviteSubtitle,
+                            systemImage: "person.badge.plus",
+                            tint: liveInviteUnavailable ? .orange : (sharedLiveCanvassingService.isJoined ? .green : .white),
+                            trailingText: liveInviteUnavailable ? "Unavailable" : (sharedLiveCanvassingService.isJoined ? "Live" : "Invite"),
+                            isDisabled: liveInviteUnavailable,
+                            action: { inviteUsersToLiveSession() }
+                        )
 
-                    Divider()
-                        .overlay(Color.white.opacity(0.08))
+                        Divider()
+                            .overlay(Color.white.opacity(0.08))
+                    }
 
                     actionRow(
                         title: "Information",
@@ -113,16 +125,18 @@ struct BottomActionBar: View {
                     Divider()
                         .overlay(Color.white.opacity(0.08))
 
-                    toggleRow(
-                        title: "GPS Proximity",
-                        subtitle: gpsProximitySubtitle,
-                        systemImage: "location.circle.fill",
-                        tint: .white,
-                        isOn: gpsProximityBinding
-                    )
+                    if showsCampaignSessionTools {
+                        toggleRow(
+                            title: "GPS Proximity",
+                            subtitle: gpsProximitySubtitle,
+                            systemImage: "location.circle.fill",
+                            tint: .white,
+                            isOn: gpsProximityBinding
+                        )
 
-                    Divider()
-                        .overlay(Color.white.opacity(0.08))
+                        Divider()
+                            .overlay(Color.white.opacity(0.08))
+                    }
 
                     gpsRow
                 }

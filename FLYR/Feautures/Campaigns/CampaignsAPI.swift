@@ -323,7 +323,11 @@ final class CampaignsAPI {
             optimizedAt: dbRow.optimizedAt,
             hasParcels: dbRow.hasParcels,
             buildingLinkConfidence: dbRow.buildingLinkConfidence,
-            mapMode: dbRow.mapMode
+            mapMode: dbRow.mapMode,
+            coverageScore: dbRow.coverageScore,
+            dataQuality: dbRow.dataQuality,
+            standardModeRecommended: dbRow.standardModeRecommended,
+            dataQualityReason: dbRow.dataQualityReason
         )
         
         print("✅ [API DEBUG] Campaign creation completed")
@@ -558,7 +562,11 @@ final class CampaignsAPI {
             optimizedAt: dbRow.optimizedAt,
             hasParcels: dbRow.hasParcels,
             buildingLinkConfidence: dbRow.buildingLinkConfidence,
-            mapMode: dbRow.mapMode
+            mapMode: dbRow.mapMode,
+            coverageScore: dbRow.coverageScore,
+            dataQuality: dbRow.dataQuality,
+            standardModeRecommended: dbRow.standardModeRecommended,
+            dataQualityReason: dbRow.dataQualityReason
         )
     }
 
@@ -723,7 +731,11 @@ final class CampaignsAPI {
             warning: "Provision request timed out on the client, but the server kept working.",
             hasParcels: nil,
             buildingLinkConfidence: nil,
-            mapMode: nil
+            mapMode: nil,
+            coverageScore: state.coverageScore,
+            dataQuality: state.dataQuality,
+            standardModeRecommended: state.standardModeRecommended,
+            dataQualityReason: state.dataQualityReason
         )
     }
 
@@ -1171,6 +1183,10 @@ struct CampaignProvisionResponse: Codable {
     var hasParcels: Bool?
     var buildingLinkConfidence: Double?
     var mapMode: CampaignMapMode?
+    var coverageScore: Int?
+    var dataQuality: CampaignDataQuality?
+    var standardModeRecommended: Bool?
+    var dataQualityReason: String?
 
     enum CodingKeys: String, CodingKey {
         case success
@@ -1195,6 +1211,10 @@ struct CampaignProvisionResponse: Codable {
         case hasParcels = "has_parcels"
         case buildingLinkConfidence = "building_link_confidence"
         case mapMode = "map_mode"
+        case coverageScore = "coverage_score"
+        case dataQuality = "data_quality"
+        case standardModeRecommended = "standard_mode_recommended"
+        case dataQualityReason = "reason"
     }
 }
 
@@ -1213,6 +1233,10 @@ struct CampaignProvisionState: Codable {
     let snapshotBuildingsURL: String?
     let snapshotRoadsURL: String?
     let addressSource: String?
+    let coverageScore: Int?
+    let dataQuality: CampaignDataQuality?
+    let standardModeRecommended: Bool?
+    let dataQualityReason: String?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -1228,6 +1252,10 @@ struct CampaignProvisionState: Codable {
         case snapshotBuildingsURL = "snapshot_buildings_url"
         case snapshotRoadsURL = "snapshot_roads_url"
         case addressSource = "address_source"
+        case coverageScore = "coverage_score"
+        case dataQuality = "data_quality"
+        case standardModeRecommended = "standard_mode_recommended"
+        case dataQualityReason = "data_quality_reason"
     }
 }
 
@@ -1317,7 +1345,11 @@ final class CampaignsV2APISupabase: CampaignsV2APIType {
             optimizedAt: dbRow.optimizedAt,
             hasParcels: dbRow.hasParcels,
             buildingLinkConfidence: dbRow.buildingLinkConfidence,
-            mapMode: dbRow.mapMode
+            mapMode: dbRow.mapMode,
+            coverageScore: dbRow.coverageScore,
+            dataQuality: dbRow.dataQuality,
+            standardModeRecommended: dbRow.standardModeRecommended,
+            dataQualityReason: dbRow.dataQualityReason
         )
     }
     

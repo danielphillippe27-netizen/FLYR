@@ -16,8 +16,13 @@ final class SessionEventsAPI {
         eventType: SessionEventType,
         lat: Double,
         lon: Double,
-        metadata: [String: Any] = [:]
+        metadata: [String: Any] = [:],
+        clientMutationId: String? = nil
     ) async throws {
+        var metadata = metadata
+        if let clientMutationId {
+            metadata["client_mutation_id"] = clientMutationId
+        }
         let metaWrapped = metadata.mapValues { AnyCodable($0) }
         let params: [String: AnyCodable] = [
             "p_session_id": AnyCodable(sessionId),
@@ -37,8 +42,13 @@ final class SessionEventsAPI {
         sessionId: UUID,
         eventType: SessionEventType,
         lat: Double? = nil,
-        lon: Double? = nil
+        lon: Double? = nil,
+        clientMutationId: String? = nil
     ) async throws {
+        var metadata: [String: AnyCodable] = [:]
+        if let clientMutationId {
+            metadata["client_mutation_id"] = AnyCodable(clientMutationId)
+        }
         // Use empty string for lifecycle events so PostgREST sends explicit TEXT (avoids uuid/text binding issues with null).
         let params: [String: AnyCodable] = [
             "p_session_id": AnyCodable(sessionId),
@@ -46,7 +56,7 @@ final class SessionEventsAPI {
             "p_event_type": AnyCodable(eventType.rawValue),
             "p_lat": AnyCodable(lat as Any),
             "p_lon": AnyCodable(lon as Any),
-            "p_metadata": AnyCodable([String: AnyCodable]()),
+            "p_metadata": AnyCodable(metadata),
         ]
         _ = try await client
             .rpc("rpc_complete_building_in_session", params: params)

@@ -41,15 +41,13 @@ private enum StandardCampaignMarkerIcon {
         case .none, .untouched:
             return MapStatusColor.untouched
         case .noAnswer:
-            return MapStatusColor.untouched
+            return MapStatusColor.noOneHome
         case .delivered:
             return MapStatusColor.touched
-        case .talked, .hotLead:
+        case .talked:
             return MapStatusColor.conversations
-        case .futureSeller:
-            return UIColor(hex: "#facc15") ?? .systemYellow
-        case .appointment:
-            return UIColor(hex: "#8b5cf6") ?? .systemPurple
+        case .appointment, .futureSeller, .hotLead:
+            return MapStatusColor.hotLead
         case .doNotKnock:
             return MapStatusColor.doNotKnock
         }
@@ -213,8 +211,20 @@ struct StandardCampaignGoogleMapView: UIViewRepresentable {
         }
 
         func syncTapCircle(on mapView: GMSMapView) {
-            tapCircle?.map = nil
-            tapCircle = nil
+            guard let center = parent.selectedCircleCenter, CLLocationCoordinate2DIsValid(center) else {
+                tapCircle?.map = nil
+                tapCircle = nil
+                return
+            }
+
+            let circle = tapCircle ?? GMSCircle(position: center, radius: 10)
+            circle.position = center
+            circle.radius = 10
+            circle.fillColor = UIColor.systemRed.withAlphaComponent(0.16)
+            circle.strokeColor = UIColor.systemRed.withAlphaComponent(0.9)
+            circle.strokeWidth = 2
+            circle.map = mapView
+            tapCircle = circle
         }
 
         func updateCameraIfNeeded(on mapView: GMSMapView) {

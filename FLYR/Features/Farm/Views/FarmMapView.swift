@@ -79,104 +79,132 @@ struct FarmMapView: View {
     }
 
     var body: some View {
+        farmMapContent
+            .task {
+                await viewModel.loadBuildings()
+                updateMapData()
+            }
+            .onChange(of: viewModel.renderVersion) { _, _ in
+                updateMapData()
+                refreshBuildingRenderMonitoring(reset: true)
+            }
+            .onChange(of: viewModel.isLoadingBuildings) { _, isLoading in
+                refreshBuildingRenderMonitoring(reset: isLoading)
+            }
+            .onChange(of: displayMode) { _, _ in
+                refreshBuildingRenderMonitoring(reset: false)
+            }
+            .onChange(of: addresses.map(\.id)) { _, _ in
+                deletedAddressIds = []
+                deletedBuildingIds = []
+                viewModel.updateAddresses(addresses)
+            }
+            .onDisappear {
+                buildingRenderCheckTask?.cancel()
+            }
+            .alert("Couldn't Delete Building", isPresented: .init(
+                get: { errorMessage != nil },
+                set: { if !$0 { errorMessage = nil } }
+            )) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(errorMessage ?? "Something went wrong.")
+            }
+    }
+
+    private var farmMapContent: some View {
         GeometryReader { geometry in
             ZStack(alignment: .top) {
-                CampaignMapboxMapViewRepresentable(
-                    preferredSize: geometry.size,
-                    useDarkStyle: colorScheme == .dark,
-                    sessionLocation: nil,
-                    sessionHeadingState: .unavailable,
-                    showSessionPuck: false,
-                    onMapReady: { map in
-                        if self.mapView !== map {
-                            self.mapView = map
-                            setupMap(map)
-                        }
-                    },
-                    onTap: { point in
-                        handleTap(at: point)
-                    },
-                    onLongPress: { _ in }
-                )
-                .ignoresSafeArea()
-
-                HStack(alignment: .top, spacing: 0) {
-                    BuildingCircleToggle(mode: $displayMode) { _ in
-                        updateMapData()
-                    }
-                    Spacer(minLength: 8)
-                    Button {
-                        HapticManager.light()
-                        dismiss()
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 30))
-                            .foregroundColor(.white)
-                            .padding(8)
-                            .background(Color.black.opacity(0.4))
-                            .clipShape(Circle())
-                    }
-                    .buttonStyle(.plain)
-                }
-                .padding(.top, 8)
-                .padding(.horizontal, 12)
-                .safeAreaPadding(.top, 48)
-                .safeAreaPadding(.leading, 4)
-                .safeAreaPadding(.trailing, 4)
-
-                VStack {
-                    Spacer()
-
-                    if showLocationCard {
-                        locationCardOverlay(bottomInset: 20)
-                            .padding(.horizontal, 12)
-                    } else if let defaultCampaignId = defaultCampaignId {
-                        openCampaignToolsButton(campaignId: defaultCampaignId, title: "Open Campaign Tools")
-                            .padding(.horizontal, 12)
-                            .padding(.bottom, 20)
-                    }
-                }
-
-                if showBuildingsOverlay {
-                    MapLoadingOverlayCard(
-                        title: nil,
-                        message: "This could take a minute.",
-                        usesCardBackground: false
-                    )
-                }
+                farmMap(preferredSize: geometry.size)
+                mapToolbar
+                bottomMapOverlay
+                buildingsLoadingOverlay
             }
             .background(Color(.systemBackground))
             .navigationBarHidden(true)
         }
-        .task {
-            await viewModel.loadBuildings()
-            updateMapData()
+    }
+
+    private func farmMap(preferredSize: CGSize) -> some View {
+        CampaignMapboxMapViewRepresentable(
+            preferredSize: preferredSize,
+            useDarkStyle: colorScheme == .dark,
+            sessionLocation: nil,
+            sessionHeadingState: .unavailable,
+            showSessionPuck: false,
+            onMapReady: { map in
+                if self.mapView !== map {
+                    self.mapView = map
+                    setupMap(map)
+                }
+            },
+            onTap: { point in
+                handleTap(at: point)
+            },
+            onLongPressBegan: { _ in },
+            onLongPressChanged: { _ in },
+            onLongPressEnded: { _ in },
+            onMovePanBegan: { _ in },
+            onMovePanChanged: { _ in },
+            onMovePanEnded: { _ in }
+        )
+        .ignoresSafeArea()
+    }
+
+    private var mapToolbar: some View {
+        HStack(alignment: .top, spacing: 0) {
+            BuildingCircleToggle(mode: $displayMode) { _ in
+                updateMapData()
+            }
+            Spacer(minLength: 8)
+            closeButton
         }
-        .onChange(of: viewModel.renderVersion) { _, _ in
-            updateMapData()
-            refreshBuildingRenderMonitoring(reset: true)
+        .padding(.top, 8)
+        .padding(.horizontal, 12)
+        .safeAreaPadding(.top, 48)
+        .safeAreaPadding(.leading, 4)
+        .safeAreaPadding(.trailing, 4)
+    }
+
+    private var closeButton: some View {
+        Button {
+            HapticManager.light()
+            dismiss()
+        } label: {
+            Image(systemName: "xmark.circle.fill")
+                .font(.system(size: 30))
+                .foregroundColor(.white)
+                .padding(8)
+                .background(Color.black.opacity(0.4))
+                .clipShape(Circle())
         }
-        .onChange(of: viewModel.isLoadingBuildings) { _, isLoading in
-            refreshBuildingRenderMonitoring(reset: isLoading)
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private var bottomMapOverlay: some View {
+        VStack {
+            Spacer()
+
+            if showLocationCard {
+                locationCardOverlay(bottomInset: 20)
+                    .padding(.horizontal, 12)
+            } else if let defaultCampaignId = defaultCampaignId {
+                openCampaignToolsButton(campaignId: defaultCampaignId, title: "Open Campaign Tools")
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 20)
+            }
         }
-        .onChange(of: displayMode) { _, _ in
-            refreshBuildingRenderMonitoring(reset: false)
-        }
-        .onChange(of: addresses.map(\.id)) { _, _ in
-            deletedAddressIds = []
-            deletedBuildingIds = []
-            viewModel.updateAddresses(addresses)
-        }
-        .onDisappear {
-            buildingRenderCheckTask?.cancel()
-        }
-        .alert("Couldn't Delete Building", isPresented: .init(
-            get: { errorMessage != nil },
-            set: { if !$0 { errorMessage = nil } }
-        )) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text(errorMessage ?? "Something went wrong.")
+    }
+
+    @ViewBuilder
+    private var buildingsLoadingOverlay: some View {
+        if showBuildingsOverlay {
+            MapLoadingOverlayCard(
+                title: nil,
+                message: "This could take a minute.",
+                usesCardBackground: false
+            )
         }
     }
 
@@ -847,20 +875,39 @@ struct FarmMapView: View {
 
         let allVisited = statuses.allSatisfy {
             switch $0 {
-            case .delivered, .noAnswer, .doNotKnock, .futureSeller:
+            case .delivered:
                 return true
             default:
                 return false
             }
         }
         if allVisited {
-            let allDoNotKnock = statuses.allSatisfy { $0 == .doNotKnock }
-            return allDoNotKnock ? "do_not_knock" : "visited"
+            return "visited"
+        }
+
+        if statuses.allSatisfy({ $0 == .doNotKnock }) {
+            return "do_not_knock"
+        }
+
+        if statuses.allSatisfy({ $0 == .noAnswer }) {
+            return "no_answer"
+        }
+
+        let anyLead = statuses.contains {
+            switch $0 {
+            case .appointment, .futureSeller, .hotLead:
+                return true
+            default:
+                return false
+            }
+        }
+        if anyLead {
+            return "hot_lead"
         }
 
         let anyHot = statuses.contains {
             switch $0 {
-            case .talked, .appointment, .hotLead:
+            case .talked:
                 return true
             default:
                 return false
@@ -870,7 +917,7 @@ struct FarmMapView: View {
 
         let anyVisited = statuses.contains {
             switch $0 {
-            case .delivered, .noAnswer, .doNotKnock, .futureSeller:
+            case .delivered:
                 return true
             default:
                 return false

@@ -73,7 +73,8 @@ struct SessionMapView: View {
                 BottomActionBar(
                     sessionManager: manager,
                     showingTargets: $showingTargets,
-                    statsExpanded: $statsExpanded
+                    statsExpanded: $statsExpanded,
+                    menuVariant: .standard
                 )
                 .padding(.bottom, 8) // keep it close to the home indicator without floating high above it
             }

@@ -212,6 +212,50 @@ enum OfflineMigrations {
             try db.create(index: "idx_cached_address_capture_campaign_address", on: "cached_address_capture_metadata", columns: ["campaign_id", "address_id"], ifNotExists: true)
         }
 
+        migrator.registerMigration("phase1_outbox_durability_v2") { db in
+            try db.alter(table: "sync_outbox") { t in
+                t.add(column: "client_mutation_id", .text)
+                t.add(column: "operation_version", .integer).notNull().defaults(to: 1)
+                t.add(column: "status", .text).notNull().defaults(to: "pending")
+                t.add(column: "retry_after", .text)
+                t.add(column: "dead_lettered_at", .text)
+            }
+
+            try db.execute(
+                sql: """
+                UPDATE sync_outbox
+                SET client_mutation_id = id,
+                    status = COALESCE(status, 'pending'),
+                    operation_version = COALESCE(operation_version, 1)
+                WHERE client_mutation_id IS NULL
+                   OR status IS NULL
+                   OR operation_version IS NULL
+                """
+            )
+
+            try db.create(index: "idx_sync_outbox_status_retry", on: "sync_outbox", columns: ["status", "retry_after", "created_at"], ifNotExists: true)
+            try db.create(index: "idx_sync_outbox_client_mutation", on: "sync_outbox", columns: ["client_mutation_id"], ifNotExists: true)
+        }
+
+        migrator.registerMigration("phase1_outbox_dependency_keys_v3") { db in
+            let columns = try db.columns(in: "sync_outbox").map(\.name)
+            if !columns.contains("dependency_key") {
+                try db.alter(table: "sync_outbox") { t in
+                    t.add(column: "dependency_key", .text)
+                }
+            }
+
+            try db.execute(
+                sql: """
+                UPDATE sync_outbox
+                SET dependency_key = entity_type || ':' || entity_id
+                WHERE dependency_key IS NULL
+                """
+            )
+
+            try db.create(index: "idx_sync_outbox_dependency", on: "sync_outbox", columns: ["dependency_key", "created_at"], ifNotExists: true)
+        }
+
         return migrator
     }
 }

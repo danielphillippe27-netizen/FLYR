@@ -118,10 +118,15 @@ const LOCALITY_TO_SOURCE_ID: Record<string, SupportedParcelSourceId> = {
   york: 'toronto_parcels',
 };
 
+const LOCALITY_ALIASES: Record<string, string> = {
+  to: 'toronto',
+};
+
 function normalizeLocality(value: string | null | undefined): string | null {
   if (!value) return null;
   const normalized = value.trim().toLowerCase();
-  return normalized || null;
+  if (!normalized) return null;
+  return LOCALITY_ALIASES[normalized] ?? normalized;
 }
 
 function getCampaignBbox(campaign: CampaignRow): number[] | null {
@@ -256,14 +261,114 @@ function normalizeParcelLine(raw: unknown): NormalizedParcelRecord | null {
   };
 }
 
-async function streamBodyToString(body: { transformToString?: () => Promise<string> } | undefined) {
-  if (!body?.transformToString) return '';
-  return body.transformToString();
-}
-
 async function streamBodyToBytes(body: { transformToByteArray?: () => Promise<Uint8Array> } | undefined) {
   if (!body?.transformToByteArray) return null;
   return body.transformToByteArray();
+}
+
+type S3ObjectBody =
+  | (AsyncIterable<Uint8Array | Buffer | string> & {
+      transformToByteArray?: () => Promise<Uint8Array>;
+      transformToString?: () => Promise<string>;
+      transformToWebStream?: () => ReadableStream<Uint8Array>;
+    })
+  | undefined;
+
+async function* iterateS3BodyChunks(body: S3ObjectBody): AsyncGenerator<Uint8Array | string> {
+  if (!body) return;
+
+  if (typeof body[Symbol.asyncIterator] === 'function') {
+    for await (const chunk of body) {
+      yield chunk;
+    }
+    return;
+  }
+
+  if (typeof body.transformToWebStream === 'function') {
+    const reader = body.transformToWebStream().getReader();
+    try {
+      while (true) {
+        const result = await reader.read();
+        if (result.done) break;
+        yield result.value;
+      }
+    } finally {
+      reader.releaseLock();
+    }
+    return;
+  }
+
+  if (typeof body.transformToByteArray === 'function') {
+    yield await body.transformToByteArray();
+    return;
+  }
+
+  if (typeof body.transformToString === 'function') {
+    yield await body.transformToString();
+  }
+}
+
+async function collectMatchingParcelsFromNdjson(
+  body: S3ObjectBody,
+  bbox: number[],
+  campaignPolygon: GeoJSONPolygon | null
+): Promise<{
+  parcels: NormalizedParcelRecord[];
+  scannedLines: number;
+  parsedRecords: number;
+  bboxCandidates: number;
+  polygonMatches: number;
+}> {
+  const deduped = new Map<string, NormalizedParcelRecord>();
+  const decoder = new TextDecoder();
+  let pending = '';
+  let scannedLines = 0;
+  let parsedRecords = 0;
+  let bboxCandidates = 0;
+  let polygonMatches = 0;
+
+  const processLine = (line: string) => {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    scannedLines += 1;
+
+    try {
+      const parsed = JSON.parse(trimmed);
+      const parcel = normalizeParcelLine(parsed);
+      if (!parcel) return;
+      parsedRecords += 1;
+      if (!intersectsBbox(parcel.geometry, bbox)) return;
+      bboxCandidates += 1;
+      if (campaignPolygon && !isWithinCampaignPolygon(parcel.geometry, campaignPolygon)) return;
+      polygonMatches += 1;
+      deduped.set(parcel.externalId, parcel);
+    } catch (error) {
+      console.warn('[ParcelEnrichment] Skipping malformed parcel line:', error);
+    }
+  };
+
+  for await (const chunk of iterateS3BodyChunks(body)) {
+    pending += typeof chunk === 'string'
+      ? chunk
+      : decoder.decode(chunk, { stream: true });
+
+    const lines = pending.split(/\r?\n/);
+    pending = lines.pop() ?? '';
+    for (const line of lines) {
+      processLine(line);
+    }
+  }
+
+  pending += decoder.decode();
+  processLine(pending);
+
+  return {
+    parcels: Array.from(deduped.values()),
+    scannedLines,
+    parsedRecords,
+    bboxCandidates,
+    polygonMatches,
+  };
 }
 
 export class ParcelEnrichmentService {
@@ -479,8 +584,12 @@ export class ParcelEnrichmentService {
         Key: key,
       })
     );
-    const body = await streamBodyToString(response.Body);
-    if (!body.trim()) {
+    const parcelScan = await collectMatchingParcelsFromNdjson(
+      response.Body as S3ObjectBody,
+      bbox,
+      campaignPolygon
+    );
+    if (parcelScan.scannedLines === 0) {
       return {
         status: 'failed',
         sourceId,
@@ -499,36 +608,11 @@ export class ParcelEnrichmentService {
       };
     }
 
-    const deduped = new Map<string, NormalizedParcelRecord>();
-    let scannedLines = 0;
-    let parsedRecords = 0;
-    let bboxCandidates = 0;
-    let polygonMatches = 0;
-    for (const line of body.split(/\r?\n/)) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      scannedLines += 1;
-
-      try {
-        const parsed = JSON.parse(trimmed);
-        const parcel = normalizeParcelLine(parsed);
-        if (!parcel) continue;
-        parsedRecords += 1;
-        if (!intersectsBbox(parcel.geometry, bbox)) continue;
-        bboxCandidates += 1;
-        if (campaignPolygon && !isWithinCampaignPolygon(parcel.geometry, campaignPolygon)) continue;
-        polygonMatches += 1;
-        deduped.set(parcel.externalId, parcel);
-      } catch (error) {
-        console.warn('[ParcelEnrichment] Skipping malformed parcel line:', error);
-      }
-    }
-
-    const parcels = Array.from(deduped.values());
-    debug.scanned_lines = scannedLines;
-    debug.parsed_records = parsedRecords;
-    debug.bbox_candidates = bboxCandidates;
-    debug.polygon_matches = polygonMatches;
+    const parcels = parcelScan.parcels;
+    debug.scanned_lines = parcelScan.scannedLines;
+    debug.parsed_records = parcelScan.parsedRecords;
+    debug.bbox_candidates = parcelScan.bboxCandidates;
+    debug.polygon_matches = parcelScan.polygonMatches;
     debug.inserted_count = parcels.length;
     debug.completed_at = new Date().toISOString();
 

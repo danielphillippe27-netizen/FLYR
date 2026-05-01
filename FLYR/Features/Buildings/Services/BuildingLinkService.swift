@@ -89,7 +89,7 @@ final class BuildingLinkService {
             }
         )
 
-        let links = rawLinks.map { link in
+        let links = Self.deduplicateLinksByAddress(rawLinks).map { link in
             let normalizedBuildingId =
                 publicIdsByRowId[link.buildingId.lowercased()] ?? link.buildingId
             return BuildingAddressLink(
@@ -103,8 +103,56 @@ final class BuildingLinkService {
             )
         }
 
-        print("✅ [BuildingLinkService] Fetched \(links.count) links")
+        if links.count < rawLinks.count {
+            print("✅ [BuildingLinkService] Fetched \(links.count) unique address links (collapsed \(rawLinks.count - links.count) duplicate building assignments)")
+        } else {
+            print("✅ [BuildingLinkService] Fetched \(links.count) links")
+        }
         return links
+    }
+
+    private static func deduplicateLinksByAddress(_ links: [RawBuildingAddressLink]) -> [RawBuildingAddressLink] {
+        guard links.count > 1 else { return links }
+
+        var orderedAddressIds: [String] = []
+        var bestByAddressId: [String: RawBuildingAddressLink] = [:]
+
+        for link in links {
+            let addressKey = link.addressId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard !addressKey.isEmpty else { continue }
+
+            if bestByAddressId[addressKey] == nil {
+                orderedAddressIds.append(addressKey)
+                bestByAddressId[addressKey] = link
+                continue
+            }
+
+            if linkRank(link) > linkRank(bestByAddressId[addressKey]!) {
+                bestByAddressId[addressKey] = link
+            }
+        }
+
+        return orderedAddressIds.compactMap { bestByAddressId[$0] }
+    }
+
+    private static func linkRank(_ link: RawBuildingAddressLink) -> Double {
+        let methodScore: Double
+        switch link.matchType.lowercased() {
+        case "manual":
+            methodScore = 5
+        case "containment_verified":
+            methodScore = 4
+        case "point_on_surface":
+            methodScore = 3
+        case "parcel_verified":
+            methodScore = 2
+        case "proximity_fallback":
+            methodScore = 0
+        default:
+            methodScore = 1
+        }
+
+        return methodScore * 10 + link.confidence
     }
     
     /// Get link for specific building
@@ -140,6 +188,26 @@ final class BuildingLinkService {
         decoder.dateDecodingStrategy = .iso8601
         let wrapper = try decoder.decode(BuildingAddressesAPIResponse.self, from: data)
         return wrapper.addresses
+    }
+
+    func linkAddressToBuilding(
+        campaignId: String,
+        buildingId: String,
+        addressId: UUID,
+        coordinate: CLLocationCoordinate2D? = nil
+    ) async throws {
+        guard let url = URL(string: "\(baseURL)/api/campaigns/\(campaignId)/buildings/\(buildingId)/addresses") else {
+            throw BuildingLinkError.invalidURL
+        }
+
+        var payload: [String: Any] = ["address_id": addressId.uuidString]
+        if let coordinate {
+            payload["longitude"] = coordinate.longitude
+            payload["latitude"] = coordinate.latitude
+        }
+        let data = try JSONSerialization.data(withJSONObject: payload)
+        let (responseData, response) = try await authorizedDataRequest(url: url, method: "POST", body: data)
+        try ensureSuccessfulResponse(response, data: responseData)
     }
 
     // MARK: - Manual Map Shapes
@@ -218,33 +286,197 @@ final class BuildingLinkService {
         try ensureSuccessfulResponse(response, data: data)
     }
 
-    func deleteBuildingAndAddresses(campaignId: String, buildingId: String) async throws {
+    func moveAddress(
+        campaignId: String,
+        addressId: UUID,
+        coordinate: CLLocationCoordinate2D
+    ) async throws {
+        guard CLLocationCoordinate2DIsValid(coordinate) else {
+            throw BuildingLinkError.fetchFailed
+        }
+
+        await campaignRepository.moveAddressLocally(
+            campaignId: campaignId,
+            addressId: addressId.uuidString,
+            coordinate: coordinate
+        )
+
+        if !NetworkMonitor.shared.isOnline {
+            try await enqueueMoveAddress(campaignId: campaignId, addressId: addressId, coordinate: coordinate)
+            return
+        }
+
+        do {
+            try await performRemoteMoveAddress(
+                campaignId: campaignId,
+                addressId: addressId,
+                coordinate: coordinate
+            )
+            await CampaignDownloadService.shared.recordSuccessfulSync(campaignId: campaignId)
+        } catch {
+            try await enqueueMoveAddress(campaignId: campaignId, addressId: addressId, coordinate: coordinate)
+        }
+    }
+
+    func moveBuilding(
+        campaignId: String,
+        buildingId: String,
+        geometry: MapFeatureGeoJSONGeometry
+    ) async throws {
         let normalizedBuildingId = buildingId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalizedBuildingId.isEmpty else {
             throw BuildingLinkError.fetchFailed
         }
 
+        await campaignRepository.moveBuildingLocally(
+            campaignId: campaignId,
+            buildingId: normalizedBuildingId,
+            geometry: geometry
+        )
+
         if !NetworkMonitor.shared.isOnline {
-            _ = await campaignRepository.deleteBuildingLocally(
-                campaignId: campaignId,
-                buildingId: normalizedBuildingId
-            )
-            await outboxRepository.enqueue(
-                entityType: "building",
-                entityId: "\(campaignId.lowercased()):\(normalizedBuildingId.lowercased())",
-                operation: .deleteBuilding,
-                payload: DeleteBuildingOutboxPayload(
-                    campaignId: campaignId,
-                    buildingId: normalizedBuildingId
-                )
-            )
-            await OfflineSyncCoordinator.shared.refreshPendingCount()
+            try await enqueueMoveBuilding(campaignId: campaignId, buildingId: normalizedBuildingId, geometry: geometry)
             return
         }
 
-        guard let url = URL(string: "\(baseURL)/api/campaigns/\(campaignId)/buildings/\(buildingId)") else {
+        do {
+            try await performRemoteMoveBuilding(
+                campaignId: campaignId,
+                buildingId: normalizedBuildingId,
+                geometry: geometry
+            )
+            await CampaignDownloadService.shared.recordSuccessfulSync(campaignId: campaignId)
+        } catch {
+            try await enqueueMoveBuilding(campaignId: campaignId, buildingId: normalizedBuildingId, geometry: geometry)
+        }
+    }
+
+    func performRemoteMoveAddress(
+        campaignId: String,
+        addressId: UUID,
+        coordinate: CLLocationCoordinate2D
+    ) async throws {
+        guard let url = URL(string: "\(baseURL)/api/campaigns/\(campaignId)/addresses/\(addressId.uuidString)/manual") else {
             throw BuildingLinkError.invalidURL
         }
+        let payload: [String: Any] = [
+            "longitude": coordinate.longitude,
+            "latitude": coordinate.latitude
+        ]
+        let data = try JSONSerialization.data(withJSONObject: payload)
+        let (responseData, response) = try await authorizedDataRequest(url: url, method: "PATCH", body: data)
+        try ensureSuccessfulResponse(response, data: responseData)
+    }
+
+    func performRemoteMoveBuilding(
+        campaignId: String,
+        buildingId: String,
+        geometry: MapFeatureGeoJSONGeometry
+    ) async throws {
+        guard let url = URL(string: "\(baseURL)/api/campaigns/\(campaignId)/buildings/\(buildingId)/manual") else {
+            throw BuildingLinkError.invalidURL
+        }
+        guard let geometryObject = Self.geoJSONDictionary(from: geometry) else {
+            throw BuildingLinkError.decodingFailed
+        }
+        let payload: [String: Any] = ["geometry": geometryObject]
+        let data = try JSONSerialization.data(withJSONObject: payload)
+        let (responseData, response) = try await authorizedDataRequest(url: url, method: "PATCH", body: data)
+        try ensureSuccessfulResponse(response, data: responseData)
+    }
+
+    private func enqueueMoveAddress(
+        campaignId: String,
+        addressId: UUID,
+        coordinate: CLLocationCoordinate2D
+    ) async throws {
+        let outboxId = await outboxRepository.enqueue(
+            entityType: "address",
+            entityId: "\(campaignId.lowercased()):\(addressId.uuidString.lowercased())",
+            operation: .moveAddress,
+            payload: MoveAddressOutboxPayload(
+                campaignId: campaignId,
+                addressId: addressId.uuidString,
+                latitude: coordinate.latitude,
+                longitude: coordinate.longitude
+            ),
+            dependencyKey: "address:\(campaignId.lowercased()):\(addressId.uuidString.lowercased())"
+        )
+        guard outboxId != nil else {
+            throw BuildingLinkError.fetchFailed
+        }
+        await OfflineSyncCoordinator.shared.refreshPendingCount()
+        if NetworkMonitor.shared.isOnline {
+            await MainActor.run {
+                OfflineSyncCoordinator.shared.scheduleProcessOutbox()
+            }
+        }
+    }
+
+    private func enqueueMoveBuilding(
+        campaignId: String,
+        buildingId: String,
+        geometry: MapFeatureGeoJSONGeometry
+    ) async throws {
+        guard let geometryJSON = OfflineJSONCodec.encode(geometry) else {
+            throw BuildingLinkError.decodingFailed
+        }
+        let outboxId = await outboxRepository.enqueue(
+            entityType: "building",
+            entityId: "\(campaignId.lowercased()):\(buildingId.lowercased())",
+            operation: .moveBuilding,
+            payload: MoveBuildingOutboxPayload(
+                campaignId: campaignId,
+                buildingId: buildingId,
+                geometryJSON: geometryJSON
+            ),
+            dependencyKey: "building:\(campaignId.lowercased()):\(buildingId.lowercased())"
+        )
+        guard outboxId != nil else {
+            throw BuildingLinkError.fetchFailed
+        }
+        await OfflineSyncCoordinator.shared.refreshPendingCount()
+        if NetworkMonitor.shared.isOnline {
+            await MainActor.run {
+                OfflineSyncCoordinator.shared.scheduleProcessOutbox()
+            }
+        }
+    }
+
+    private func enqueueDeleteBuilding(
+        campaignId: String,
+        buildingId: String
+    ) async throws {
+        let outboxId = await outboxRepository.enqueue(
+            entityType: "building",
+            entityId: "\(campaignId.lowercased()):\(buildingId.lowercased())",
+            operation: .deleteBuilding,
+            payload: DeleteBuildingOutboxPayload(
+                campaignId: campaignId,
+                buildingId: buildingId
+            ),
+            dependencyKey: "building:\(campaignId.lowercased()):\(buildingId.lowercased())"
+        )
+        guard outboxId != nil else {
+            throw BuildingLinkError.fetchFailed
+        }
+        await OfflineSyncCoordinator.shared.refreshPendingCount()
+        if NetworkMonitor.shared.isOnline {
+            await MainActor.run {
+                OfflineSyncCoordinator.shared.scheduleProcessOutbox()
+            }
+        }
+    }
+
+    func performRemoteDeleteBuildingAndAddresses(campaignId: String, buildingId: String) async throws {
+        let normalizedBuildingId = buildingId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedBuildingId.isEmpty else {
+            throw BuildingLinkError.fetchFailed
+        }
+        guard let url = URL(string: "\(baseURL)/api/campaigns/\(campaignId)/buildings/\(normalizedBuildingId)") else {
+            throw BuildingLinkError.invalidURL
+        }
+
         let (data, response) = try await authorizedDataRequest(url: url, method: "DELETE")
         do {
             try ensureSuccessfulResponse(response, data: data)
@@ -255,13 +487,32 @@ final class BuildingLinkService {
             }
 
             print("⚠️ [BuildingLinkService] Building delete API unavailable, falling back to direct Supabase cleanup")
-            try await deleteBuildingAndAddressesFallback(campaignId: campaignId, buildingId: buildingId)
+            try await deleteBuildingAndAddressesFallback(campaignId: campaignId, buildingId: normalizedBuildingId)
+        }
+    }
+
+    func deleteBuildingAndAddresses(campaignId: String, buildingId: String) async throws {
+        let normalizedBuildingId = buildingId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedBuildingId.isEmpty else {
+            throw BuildingLinkError.fetchFailed
         }
 
         _ = await campaignRepository.deleteBuildingLocally(
             campaignId: campaignId,
             buildingId: normalizedBuildingId
         )
+
+        if !NetworkMonitor.shared.isOnline {
+            try await enqueueDeleteBuilding(campaignId: campaignId, buildingId: normalizedBuildingId)
+            return
+        }
+
+        do {
+            try await performRemoteDeleteBuildingAndAddresses(campaignId: campaignId, buildingId: normalizedBuildingId)
+            await CampaignDownloadService.shared.recordSuccessfulSync(campaignId: campaignId)
+        } catch {
+            try await enqueueDeleteBuilding(campaignId: campaignId, buildingId: normalizedBuildingId)
+        }
     }
     
     // MARK: - Fetch Addresses
@@ -572,6 +823,15 @@ final class BuildingLinkService {
         if trimmed.hasPrefix("<html") { return true }
         if text.contains("/_next/static/") { return true }
         return false
+    }
+
+    private static func geoJSONDictionary(from geometry: MapFeatureGeoJSONGeometry) -> [String: Any]? {
+        guard let data = try? JSONEncoder().encode(geometry),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              JSONSerialization.isValidJSONObject(object) else {
+            return nil
+        }
+        return object
     }
 }
 

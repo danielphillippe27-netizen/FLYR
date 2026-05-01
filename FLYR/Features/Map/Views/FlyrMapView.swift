@@ -68,8 +68,7 @@ struct FlyrMapView: View {
         
         // Load initial style immediately (use default Mapbox style based on current mode)
         if let map = newMapView.mapboxMap {
-            let initialStyle = MapTheme.styleURI(for: mode)
-            map.loadStyle(initialStyle)
+            MapTheme.loadStyle(for: mode, on: map)
         }
         
         // Set initial camera position

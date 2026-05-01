@@ -710,7 +710,8 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
             entityType: "session",
             entityId: sessionId.uuidString,
             operation: operation,
-            payload: payload
+            payload: payload,
+            dependencyKey: "session:\(sessionId.uuidString.lowercased())"
         )
         if NetworkMonitor.shared.isOnline {
             OfflineSyncCoordinator.shared.scheduleProcessOutbox()
@@ -750,7 +751,8 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
             entityType: "session_event",
             entityId: payload.localEventId,
             operation: .createSessionEvent,
-            payload: payload
+            payload: payload,
+            dependencyKey: "session:\(sessionId.uuidString.lowercased())"
         )
         if NetworkMonitor.shared.isOnline {
             OfflineSyncCoordinator.shared.scheduleProcessOutbox()
@@ -931,13 +933,15 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         addressIdsByTargetId: [String: [UUID]],
         buildingIdsByTargetId: [String: String]
     ) {
-        targetAddressIdsByTargetId = Dictionary(uniqueKeysWithValues: addressIdsByTargetId.map { key, ids in
-            let normalizedIds = Array(Set(ids))
-            return (normalizeVisitKey(key), normalizedIds)
-        })
-        targetBuildingIdsByTargetId = Dictionary(uniqueKeysWithValues: buildingIdsByTargetId.map { key, value in
-            (normalizeVisitKey(key), value)
-        })
+        targetAddressIdsByTargetId = addressIdsByTargetId.reduce(into: [String: [UUID]]()) { result, entry in
+            let key = normalizeVisitKey(entry.key)
+            let normalizedIds = Array(Set(entry.value))
+            result[key] = Array(Set((result[key] ?? []) + normalizedIds))
+        }
+        targetBuildingIdsByTargetId = buildingIdsByTargetId.reduce(into: [String: String]()) { result, entry in
+            let key = normalizeVisitKey(entry.key)
+            result[key] = result[key] ?? entry.value
+        }
     }
 
     private func resolvedAddressIds(for targetId: String) -> [UUID] {
@@ -1316,7 +1320,8 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
                     entityType: "session",
                     entityId: newSessionId.uuidString,
                     operation: .createSession,
-                    payload: offlinePayload
+                    payload: offlinePayload,
+                    dependencyKey: "session:\(newSessionId.uuidString.lowercased())"
                 )
             }
         } else {
@@ -1324,7 +1329,8 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
                 entityType: "session",
                 entityId: newSessionId.uuidString,
                 operation: .createSession,
-                payload: offlinePayload
+                payload: offlinePayload,
+                dependencyKey: "session:\(newSessionId.uuidString.lowercased())"
             )
             logSessionStart(.createSession, "queued for offline sync session=\(newSessionId.uuidString)")
         }
@@ -1713,6 +1719,9 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         let nextCount = anonymousDoorHitCount + trackedVisitedAddressIds.count
         guard nextCount != addressesMarkedDelivered else { return }
         addressesMarkedDelivered = nextCount
+        if sessionMode == .flyer {
+            flyersDelivered = nextCount
+        }
         Task {
             await queueProgressSync(force: true)
             await syncLiveActivity(forceStart: false)
@@ -2520,6 +2529,9 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
                 refreshHeadingPresentation(using: location)
                 await safetyBeaconService.recordHeartbeat(location: location, isPaused: isPaused)
                 await sharedLiveCanvassingService.publishPresence(location: location, isPaused: isPaused)
+                if autoCompleteEnabled, sessionMode == .doorKnocking {
+                    await checkAutoComplete(location: location)
+                }
             }
             return
         }

@@ -58,8 +58,9 @@ struct SessionMapboxViewRepresentable: UIViewRepresentable {
         mapView.ornaments.options.scaleBar.visibility = .hidden
         mapView.ornaments.options.compass.visibility = .adaptive
         
-        // Load custom light style
-        mapView.mapboxMap?.loadStyle(StyleURI(rawValue: "mapbox://styles/fliper27/cml6z0dhg002301qo9xxc08k4")!)
+        if let map = mapView.mapboxMap {
+            MapTheme.loadBlueStandardLightStyle(on: map)
+        }
         
         // Wait for map to load before adding layers
         _ = mapView.mapboxMap?.onMapLoaded.observeNext { _ in
@@ -314,6 +315,9 @@ struct SessionMapboxViewRepresentable: UIViewRepresentable {
                 )
             } else {
                 mapView.mapboxMap?.setCamera(to: cameraOptions)
+            }
+            if let map = mapView.mapboxMap {
+                MapTheme.applyLightModeShadowPolicy(to: map, pitch: 60.0)
             }
         }
 

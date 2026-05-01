@@ -54,11 +54,20 @@ final class VisitsAPI {
     ) {
         // Fire and forget - non-blocking async call
         Task {
+            let touchedAt = Date()
             do {
                 debugLog("🏗️ [VisitsAPI] Logging building touch")
 
                 guard let user = try? await client.auth.session.user else {
                     debugLog("⚠️ [VisitsAPI] No authenticated user for building touch logging")
+                    await enqueueBuildingTouchRetry(
+                        addressId: addressId,
+                        campaignId: campaignId,
+                        buildingId: buildingId,
+                        sessionId: sessionId,
+                        userId: nil,
+                        touchedAt: touchedAt
+                    )
                     return
                 }
 
@@ -66,7 +75,7 @@ final class VisitsAPI {
                     "user_id": AnyCodable(user.id.uuidString),
                     "address_id": AnyCodable(addressId.uuidString),
                     "campaign_id": AnyCodable(campaignId.uuidString),
-                    "touched_at": AnyCodable(ISO8601DateFormatter().string(from: Date()))
+                    "touched_at": AnyCodable(ISO8601DateFormatter().string(from: touchedAt))
                 ]
 
                 touchData["building_id"] = AnyCodable(buildingIdCodableValue(buildingId))
@@ -84,8 +93,15 @@ final class VisitsAPI {
 
                 debugLog("✅ [VisitsAPI] Building touch logged to database")
             } catch {
-                // Log error but don't block user interaction
-                enqueuePendingTouch(addressId: addressId, campaignId: campaignId, buildingId: buildingId, sessionId: sessionId)
+                let queuedUserId = try? await client.auth.session.user.id
+                await enqueueBuildingTouchRetry(
+                    addressId: addressId,
+                    campaignId: campaignId,
+                    buildingId: buildingId,
+                    sessionId: sessionId,
+                    userId: queuedUserId,
+                    touchedAt: touchedAt
+                )
                 debugLog("⚠️ [VisitsAPI] Error logging building touch: \(error.localizedDescription)")
             }
         }
@@ -112,10 +128,72 @@ final class VisitsAPI {
                 
                 debugLog("✅ [VisitsAPI] Address marked as visited")
             } catch {
-                // Log error but don't block user interaction
-                enqueuePendingVisitedMark(addressId)
+                await outboxRepository.enqueue(
+                    entityType: "campaign_address",
+                    entityId: addressId.uuidString,
+                    operation: .markAddressVisited,
+                    payload: MarkAddressVisitedOutboxPayload(
+                        addressId: addressId.uuidString,
+                        visited: true
+                    ),
+                    dependencyKey: "campaign_address:\(addressId.uuidString.lowercased())"
+                )
+                await MainActor.run {
+                    OfflineSyncCoordinator.shared.scheduleProcessOutbox()
+                }
                 debugLog("⚠️ [VisitsAPI] Error marking address as visited: \(error.localizedDescription)")
             }
+        }
+    }
+
+    func performRemoteLogBuildingTouch(
+        addressId: UUID,
+        campaignId: UUID,
+        buildingId: String?,
+        sessionId: UUID?,
+        userId: UUID? = nil,
+        touchedAt: Date? = nil,
+        clientMutationId: String? = nil
+    ) async throws {
+        try await insertTouch(
+            addressId: addressId,
+            campaignId: campaignId,
+            buildingId: buildingId,
+            sessionId: sessionId,
+            userId: userId,
+            touchedAt: touchedAt,
+            clientMutationId: clientMutationId
+        )
+    }
+
+    func performRemoteMarkAddressVisited(addressId: UUID, visited: Bool) async throws {
+        try await updateVisited(addressId: addressId, visited: visited)
+    }
+
+    private func enqueueBuildingTouchRetry(
+        addressId: UUID,
+        campaignId: UUID,
+        buildingId: String?,
+        sessionId: UUID?,
+        userId: UUID?,
+        touchedAt: Date
+    ) async {
+        await outboxRepository.enqueue(
+            entityType: "building_touch",
+            entityId: "\(campaignId.uuidString.lowercased()):\(addressId.uuidString.lowercased())",
+            operation: .logBuildingTouch,
+            payload: BuildingTouchOutboxPayload(
+                addressId: addressId.uuidString,
+                campaignId: campaignId.uuidString,
+                buildingId: buildingId,
+                sessionId: sessionId?.uuidString,
+                userId: userId?.uuidString,
+                touchedAt: OfflineDateCodec.string(from: touchedAt)
+            ),
+            dependencyKey: "building_touch:\(campaignId.uuidString.lowercased()):\(addressId.uuidString.lowercased())"
+        )
+        await MainActor.run {
+            OfflineSyncCoordinator.shared.scheduleProcessOutbox()
         }
     }
     
@@ -137,15 +215,13 @@ final class VisitsAPI {
             return try await inFlight.value
         }
 
-        if !shouldBypassCooldownCache {
+        if !NetworkMonitor.shared.isOnline {
             let localStatuses = await campaignRepository.getStatuses(campaignId: campaignId)
-            if !localStatuses.isEmpty {
-                synchronizedStatusState {
-                    cachedStatuses[scope] = localStatuses
-                    lastStatusFetchAt[scope] = Date()
-                }
-                return localStatuses
+            synchronizedStatusState {
+                cachedStatuses[scope] = localStatuses
+                lastStatusFetchAt[scope] = Date()
             }
+            return localStatuses
         }
 
         if !shouldBypassCooldownCache,
@@ -243,7 +319,8 @@ final class VisitsAPI {
                 rawTranscript: nil,
                 aiSummary: nil,
                 clearAll: true
-            )
+            ),
+            dependencyKey: "address_capture_metadata:\(campaignId.uuidString.lowercased()):\(addressId.uuidString.lowercased())"
         )
         if NetworkMonitor.shared.isOnline {
             await MainActor.run {
@@ -348,11 +425,41 @@ final class VisitsAPI {
                 longitude: location?.coordinate.longitude,
                 occurredAt: OfflineDateCodec.string(from: now)
             )
+
+            if NetworkMonitor.shared.isOnline {
+                do {
+                    let remoteRows = try await performRemoteTargetStatusUpdate(
+                        addressIds: uniqueAddressIds,
+                        campaignId: campaignId,
+                        status: status,
+                        notes: notes,
+                        sessionId: sessionId,
+                        sessionTargetId: sessionTargetId,
+                        sessionEventType: sessionEventType,
+                        location: location,
+                        occurredAt: now
+                    )
+                    let rows = remoteRows.isEmpty ? localRows : remoteRows
+                    if remoteRows.isEmpty {
+                        await campaignRepository.markStatusRowsSynced(
+                            campaignId: campaignId,
+                            addressIds: uniqueAddressIds
+                        )
+                    }
+                    cacheStatuses(rows, scope: StatusFetchScope(campaignId: campaignId, farmCycleNumber: nil))
+                    debugLog("✅ [VisitsAPI] Pushed target status update to \(status.rawValue)")
+                    return rows
+                } catch {
+                    debugLog("⚠️ [VisitsAPI] Immediate status sync failed, queueing offline retry: \(error.localizedDescription)")
+                }
+            }
+
             await outboxRepository.enqueue(
                 entityType: "address_status",
                 entityId: uniqueAddressIds.map(\.uuidString).joined(separator: ","),
                 operation: .upsertAddressStatus,
-                payload: payload
+                payload: payload,
+                dependencyKey: "address_status:\(campaignId.uuidString.lowercased()):\(uniqueAddressIds.map { $0.uuidString.lowercased() }.joined(separator: ","))"
             )
 
             if NetworkMonitor.shared.isOnline {
@@ -593,18 +700,29 @@ final class VisitsAPI {
         addressId: UUID,
         campaignId: UUID,
         buildingId: String?,
-        sessionId: UUID?
+        sessionId: UUID?,
+        userId: UUID? = nil,
+        touchedAt: Date? = nil,
+        clientMutationId: String? = nil
     ) async throws {
-        guard let user = try? await client.auth.session.user else {
+        let resolvedUserId: UUID
+        if let userId {
+            resolvedUserId = userId
+        } else if let user = try? await client.auth.session.user {
+            resolvedUserId = user.id
+        } else {
             throw NSError(domain: "VisitsAPI", code: 1, userInfo: [NSLocalizedDescriptionKey: "No authenticated user for building touch logging"])
         }
 
         var touchData: [String: AnyCodable] = [
-            "user_id": AnyCodable(user.id.uuidString),
+            "user_id": AnyCodable(resolvedUserId.uuidString),
             "address_id": AnyCodable(addressId.uuidString),
             "campaign_id": AnyCodable(campaignId.uuidString),
-            "touched_at": AnyCodable(ISO8601DateFormatter().string(from: Date()))
+            "touched_at": AnyCodable(ISO8601DateFormatter().string(from: touchedAt ?? Date()))
         ]
+        if let clientMutationId {
+            touchData["client_mutation_id"] = AnyCodable(clientMutationId)
+        }
 
         touchData["building_id"] = AnyCodable(buildingIdCodableValue(buildingId))
 
@@ -614,15 +732,22 @@ final class VisitsAPI {
             touchData["session_id"] = AnyCodable(NSNull())
         }
 
-        _ = try await client
-            .from("building_touches")
-            .insert(touchData)
-            .execute()
+        do {
+            _ = try await client
+                .from("building_touches")
+                .insert(touchData)
+                .execute()
+        } catch {
+            if clientMutationId != nil, Self.isDuplicateClientMutation(error) {
+                return
+            }
+            throw error
+        }
     }
 
-    private func updateVisited(addressId: UUID) async throws {
+    private func updateVisited(addressId: UUID, visited: Bool = true) async throws {
         let updateData: [String: AnyCodable] = [
-            "visited": AnyCodable(true)
+            "visited": AnyCodable(visited)
         ]
 
         _ = try await client
@@ -717,6 +842,11 @@ final class VisitsAPI {
     private func isMissingFunction(_ error: Error, functionName: String) -> Bool {
         let message = error.localizedDescription.lowercased()
         return message.contains(functionName.lowercased()) && message.contains("does not exist")
+    }
+
+    private static func isDuplicateClientMutation(_ error: Error) -> Bool {
+        let message = error.localizedDescription.lowercased()
+        return message.contains("duplicate") && message.contains("client_mutation")
     }
 
     private func isCampaignIDNotNullViolation(_ error: Error) -> Bool {

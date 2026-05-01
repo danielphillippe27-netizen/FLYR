@@ -228,6 +228,7 @@ export class StableLinkerService {
 
       // 2. Filter valid buildings (exclude sheds, garages)
       const validBuildings = this.filterValidBuildings(buildingsGeoJSON.features);
+      this.inferMissingBuildingStreets(addresses, validBuildings);
       console.log(`[StableLinker] Valid buildings after filtering: ${validBuildings.length}`);
 
       const preparedParcels = options.parcels?.length
@@ -359,6 +360,42 @@ export class StableLinkerService {
     });
     console.log(`[StableLinker] Filtered: ${filtered.length}/${buildings.length} buildings (excluded < 5 m² noise, < 30 m² sheds)`);
     return filtered;
+  }
+
+  private inferMissingBuildingStreets(addresses: CampaignAddress[], buildings: BuildingFeature[]): void {
+    let inferredCount = 0;
+
+    for (const building of buildings) {
+      if (this.getBuildingStreet(building)) continue;
+
+      const streetCounts = new Map<string, { label: string; count: number }>();
+      for (const address of addresses) {
+        const street = address.street_name?.trim();
+        if (!street || !this.isPointInPolygon(address.geom.coordinates, building.geometry.coordinates[0])) {
+          continue;
+        }
+
+        const key = this.normalizeStreetName(street);
+        if (!key) continue;
+        const existing = streetCounts.get(key);
+        streetCounts.set(key, {
+          label: existing?.label ?? street,
+          count: (existing?.count ?? 0) + 1,
+        });
+      }
+
+      const ranked = Array.from(streetCounts.values()).sort((a, b) => b.count - a.count);
+      const best = ranked[0];
+      const second = ranked[1];
+      if (!best || (second && best.count === second.count)) continue;
+
+      building.properties.primary_street = best.label;
+      inferredCount += 1;
+    }
+
+    if (inferredCount > 0) {
+      console.log(`[StableLinker] Inferred missing street names for ${inferredCount} buildings from contained addresses`);
+    }
   }
 
   /**

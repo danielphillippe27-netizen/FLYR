@@ -76,6 +76,12 @@ enum CampaignMapMode: String, Codable, Equatable {
     }
 }
 
+enum CampaignDataQuality: String, Codable, Equatable {
+    case strong
+    case usable
+    case weak
+}
+
 enum DataConfidenceLabel: String, Codable, Equatable {
     case low
     case medium
@@ -308,6 +314,10 @@ struct CampaignV2: Identifiable, Codable, Equatable {
     var hasParcels: Bool?
     var buildingLinkConfidence: Double?
     var mapMode: CampaignMapMode?
+    var coverageScore: Int?
+    var dataQuality: CampaignDataQuality?
+    var standardModeRecommended: Bool?
+    var dataQualityReason: String?
 
     var presentationMapMode: CampaignMapMode {
         CampaignMapMode.resolvedForPresentation(
@@ -350,6 +360,10 @@ struct CampaignV2: Identifiable, Codable, Equatable {
         hasParcels = try container.decodeIfPresent(Bool.self, forKey: .hasParcels)
         buildingLinkConfidence = try container.decodeIfPresent(Double.self, forKey: .buildingLinkConfidence)
         mapMode = try container.decodeIfPresent(CampaignMapMode.self, forKey: .mapMode)
+        coverageScore = try container.decodeIfPresent(Int.self, forKey: .coverageScore)
+        dataQuality = try container.decodeIfPresent(CampaignDataQuality.self, forKey: .dataQuality)
+        standardModeRecommended = try container.decodeIfPresent(Bool.self, forKey: .standardModeRecommended)
+        dataQualityReason = try container.decodeIfPresent(String.self, forKey: .dataQualityReason)
         
         // New fields with defaults for backward compatibility
         totalFlyers = try container.decodeIfPresent(Int.self, forKey: .totalFlyers) ?? 0
@@ -388,6 +402,7 @@ struct CampaignV2: Identifiable, Codable, Equatable {
         case provisionStatus, provisionSource, provisionPhase
         case addressesReadyAt, mapReadyAt, optimizedAt
         case hasParcels, buildingLinkConfidence, mapMode
+        case coverageScore, dataQuality, standardModeRecommended, dataQualityReason
         case progress // For backward compatibility only
     }
     
@@ -415,6 +430,10 @@ struct CampaignV2: Identifiable, Codable, Equatable {
         try container.encodeIfPresent(hasParcels, forKey: .hasParcels)
         try container.encodeIfPresent(buildingLinkConfidence, forKey: .buildingLinkConfidence)
         try container.encodeIfPresent(mapMode, forKey: .mapMode)
+        try container.encodeIfPresent(coverageScore, forKey: .coverageScore)
+        try container.encodeIfPresent(dataQuality, forKey: .dataQuality)
+        try container.encodeIfPresent(standardModeRecommended, forKey: .standardModeRecommended)
+        try container.encodeIfPresent(dataQualityReason, forKey: .dataQualityReason)
     }
     
     init(
@@ -438,7 +457,11 @@ struct CampaignV2: Identifiable, Codable, Equatable {
         optimizedAt: Date? = nil,
         hasParcels: Bool? = nil,
         buildingLinkConfidence: Double? = nil,
-        mapMode: CampaignMapMode? = nil
+        mapMode: CampaignMapMode? = nil,
+        coverageScore: Int? = nil,
+        dataQuality: CampaignDataQuality? = nil,
+        standardModeRecommended: Bool? = nil,
+        dataQualityReason: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -461,6 +484,10 @@ struct CampaignV2: Identifiable, Codable, Equatable {
         self.hasParcels = hasParcels
         self.buildingLinkConfidence = buildingLinkConfidence
         self.mapMode = mapMode
+        self.coverageScore = coverageScore
+        self.dataQuality = dataQuality
+        self.standardModeRecommended = standardModeRecommended
+        self.dataQualityReason = dataQualityReason
     }
     
     static func == (lhs: CampaignV2, rhs: CampaignV2) -> Bool {
