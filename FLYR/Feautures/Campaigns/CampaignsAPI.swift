@@ -627,13 +627,31 @@ final class CampaignsAPI {
     // Fetch addresses for a campaign - REAL SUPABASE INTEGRATION
     func fetchAddresses(campaignId: UUID) async throws -> [CampaignAddressRow] {
         print("🌐 [API DEBUG] Fetching addresses for campaign: \(campaignId)")
+
+        if !NetworkMonitor.shared.isOnline {
+            let cachedRows = await CampaignRepository.shared.getCachedAddressRows(campaignId: campaignId)
+            if !cachedRows.isEmpty {
+                print("📴 [API DEBUG] Loaded \(cachedRows.count) cached addresses for offline campaign: \(campaignId)")
+                return cachedRows
+            }
+        }
         
         // Use view campaign_addresses_v which includes geom_json (pre-computed GeoJSON)
-        let res: PostgrestResponse<[CampaignAddressViewRow]> = try await client
-            .from("campaign_addresses_v")
-            .select("id,campaign_id,formatted,postal_code,source,seq,visited,geom_json,created_at")
-            .eq("campaign_id", value: campaignId.uuidString)
-            .execute()
+        let res: PostgrestResponse<[CampaignAddressViewRow]>
+        do {
+            res = try await client
+                .from("campaign_addresses_v")
+                .select("id,campaign_id,formatted,postal_code,source,seq,visited,geom_json,created_at")
+                .eq("campaign_id", value: campaignId.uuidString)
+                .execute()
+        } catch {
+            let cachedRows = await CampaignRepository.shared.getCachedAddressRows(campaignId: campaignId)
+            if !cachedRows.isEmpty {
+                print("⚠️ [API DEBUG] Address fetch failed, using \(cachedRows.count) cached rows: \(error.localizedDescription)")
+                return cachedRows
+            }
+            throw error
+        }
         
         let dbRows = res.value
         print("✅ [API DEBUG] Fetched \(dbRows.count) addresses from DB")
@@ -827,7 +845,12 @@ final class CampaignsAPI {
         if let session = try? await client.auth.session {
             request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
         }
-        request.httpBody = try JSONSerialization.data(withJSONObject: ["campaign_id": campaignId.uuidString])
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "campaign_id": campaignId.uuidString,
+            "geometry_tier": "diamond",
+            "allow_gold": true,
+            "linker_mode": "stable"
+        ])
 
         let data: Data
         let response: URLResponse
@@ -880,16 +903,8 @@ final class CampaignsAPI {
             throw NSError(domain: "CampaignsAPI", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: "Provision failed: \(displayMessage.prefix(300))"])
         }
         if var provisionResponse = try? JSONDecoder().decode(CampaignProvisionResponse.self, from: data) {
-            if (provisionResponse.addressesSaved ?? 0) == 0 {
-                let backfilled = await backfillGoldAddressesIfNeeded(campaignId: campaignId)
-                if backfilled > 0 {
-                    provisionResponse.addressesSaved = backfilled
-                    if let existingMessage = provisionResponse.message, !existingMessage.isEmpty {
-                        provisionResponse.message = "\(existingMessage) Gold backfill inserted \(backfilled) addresses."
-                    } else {
-                        provisionResponse.message = "Gold backfill inserted \(backfilled) addresses."
-                    }
-                }
+            if provisionResponse.provisionSource == .gold {
+                print("✅ [API] Diamond request resolved through White Gold stable linker")
             }
             let roadsLogged = provisionResponse.roadsCount ?? provisionResponse.roadsSaved ?? 0
             print("✅ [API] Provision completed for campaign \(campaignId): addresses=\(provisionResponse.addressesSaved ?? 0), buildings=\(provisionResponse.buildingsSaved ?? 0), roads=\(roadsLogged)")
@@ -1311,8 +1326,23 @@ final class CampaignsV2APISupabase: CampaignsV2APIType {
     }
     
     func fetchCampaign(id: UUID) async throws -> CampaignV2 {
+        if !NetworkMonitor.shared.isOnline,
+           let cachedCampaign = await CampaignRepository.shared.getCachedCampaign(campaignId: id) {
+            print("📴 [API DEBUG] Loaded cached campaign V2 for offline detail: \(id)")
+            return cachedCampaign
+        }
+
         // Fetch campaign from DB using the shared API instance
-        let dbRow = try await CampaignsAPI.shared.fetchCampaignDBRow(id: id)
+        let dbRow: CampaignDBRow
+        do {
+            dbRow = try await CampaignsAPI.shared.fetchCampaignDBRow(id: id)
+        } catch {
+            if let cachedCampaign = await CampaignRepository.shared.getCachedCampaign(campaignId: id) {
+                print("⚠️ [API DEBUG] Campaign fetch failed, using cached campaign: \(error.localizedDescription)")
+                return cachedCampaign
+            }
+            throw error
+        }
         
         // Fetch addresses using the shared API instance
         let addresses = try await CampaignsAPI.shared.fetchAddresses(campaignId: id)

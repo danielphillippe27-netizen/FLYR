@@ -1,12 +1,11 @@
 import { createClient } from "@supabase/supabase-js";
 import { GetObjectCommand, S3Client } from "@aws-sdk/client-s3";
-import zlib from "zlib";
 import { NextResponse } from "next/server";
+import zlib from "zlib";
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY!;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-
 const AWS_REGION = process.env.AWS_REGION ?? "us-east-1";
 
 export const dynamic = "force-dynamic";
@@ -97,13 +96,6 @@ type CampaignAddressRow = {
   scans: number | null;
 };
 
-type BuildingAddressLinkRow = {
-  building_id: string;
-  address_id: string;
-  match_type?: string | null;
-  confidence?: number | null;
-};
-
 function normalizedString(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
@@ -122,6 +114,16 @@ function isPolygonFeature(feature: GeoJSONFeature): boolean {
 function isManualFeature(feature: GeoJSONFeature): boolean {
   const source = normalizedString(feature.properties?.source)?.toLowerCase();
   return source === "manual";
+}
+
+function isGoldFeature(feature: GeoJSONFeature): boolean {
+  const source = normalizedString(feature.properties?.source)?.toLowerCase();
+  return source === "gold";
+}
+
+function isSilverFeature(feature: GeoJSONFeature): boolean {
+  const source = normalizedString(feature.properties?.source)?.toLowerCase();
+  return source === "silver" || source === "lambda" || source === "snapshot";
 }
 
 function isManualAddressPointFeature(feature: GeoJSONFeature): boolean {
@@ -255,35 +257,6 @@ function filterHiddenBuildings(
   );
 }
 
-function linkRank(link: BuildingAddressLinkRow): number {
-  const matchType = normalizedString(link.match_type)?.toLowerCase() ?? "";
-  const methodScore =
-    matchType === "manual" ? 5 :
-    matchType === "containment_verified" ? 4 :
-    matchType === "point_on_surface" ? 3 :
-    matchType === "parcel_verified" ? 2 :
-    matchType === "proximity_fallback" ? 0 :
-    1;
-  return methodScore * 10 + (typeof link.confidence === "number" ? link.confidence : 0);
-}
-
-function dedupeLinksByAddress(links: BuildingAddressLinkRow[]): BuildingAddressLinkRow[] {
-  const bestByAddress = new Map<string, BuildingAddressLinkRow>();
-
-  for (const link of links) {
-    const addressId = normalizedString(link.address_id)?.toLowerCase();
-    const buildingId = normalizedString(link.building_id);
-    if (!addressId || !buildingId) continue;
-
-    const existing = bestByAddress.get(addressId);
-    if (!existing || linkRank(link) > linkRank(existing)) {
-      bestByAddress.set(addressId, link);
-    }
-  }
-
-  return Array.from(bestByAddress.values());
-}
-
 function featureAddressAssignmentRank(feature: GeoJSONFeature): number {
   const props = feature.properties ?? {};
   const source = normalizedString(props.source)?.toLowerCase() ?? "";
@@ -291,7 +264,7 @@ function featureAddressAssignmentRank(feature: GeoJSONFeature): number {
   const featureStatus = normalizedString(props.feature_status)?.toLowerCase() ?? "";
   const confidence = finiteNumber(props.confidence) ?? 0;
 
-  const sourceScore = source === "manual" ? 6 : source === "gold" ? 5 : source === "silver" ? 3 : 1;
+  const sourceScore = source === "manual" ? 6 : source === "gold" ? 5 : source === "silver" ? 4 : 1;
   const methodScore =
     matchMethod === "manual" ? 5 :
     matchMethod === "containment_verified" ? 4 :
@@ -553,21 +526,25 @@ async function fetchGoldFallbackFeatures(
 }
 
 /**
- * Fetch building GeoJSON from S3 using bucket + key from campaign_snapshots.
- * Returns null if the object cannot be fetched (caller falls back to empty).
+ * Fetch Silver building GeoJSON from S3 using bucket + key from campaign_snapshots.
+ * Only used when the campaign has no Gold buildings, so Gold/Silver never mix.
  */
-async function fetchFromS3(bucket: string, key: string): Promise<unknown | null> {
+async function fetchSilverSnapshotFeatures(
+  bucket: string,
+  key: string,
+  hiddenBuildingIds: Set<string>
+): Promise<GeoJSONFeature[] | null> {
   const hasCredentials =
     process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY;
   if (!hasCredentials) {
-    console.warn("[buildings] S3 credentials not set; skipping S3 fetch");
+    console.warn("[buildings] S3 credentials not set; skipping Silver snapshot fetch");
     return null;
   }
 
   const s3 = new S3Client({
     region: AWS_REGION,
     credentials: {
-      accessKeyId:     process.env.AWS_ACCESS_KEY_ID!,
+      accessKeyId: process.env.AWS_ACCESS_KEY_ID!,
       secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY!,
     },
   });
@@ -582,31 +559,55 @@ async function fetchFromS3(bucket: string, key: string): Promise<unknown | null>
       }
     }
     const raw = Buffer.concat(chunks);
-
-    let text: string;
-    if (key.endsWith(".gz")) {
-      text = zlib.gunzipSync(raw).toString("utf8");
-    } else {
-      text = raw.toString("utf8");
-    }
-
-    return JSON.parse(text);
+    const text = key.endsWith(".gz")
+      ? zlib.gunzipSync(raw).toString("utf8")
+      : raw.toString("utf8");
+    const geojson = JSON.parse(text) as { features?: unknown[] };
+    return filterHiddenBuildings(
+      ((geojson.features ?? []) as GeoJSONFeature[]).filter(isPolygonFeature),
+      hiddenBuildingIds
+    ).map((feature) => ({
+      ...feature,
+      properties: {
+        ...(feature.properties ?? {}),
+        source: normalizedString(feature.properties?.source) ?? "silver",
+      },
+    }));
   } catch (err) {
-    console.error(`[buildings] S3 fetch failed bucket=${bucket} key=${key}:`, err);
+    console.error(`[buildings] Silver snapshot fetch failed bucket=${bucket} key=${key}:`, err);
     return null;
   }
+}
+
+function responseForSelectedSource(
+  campaignId: string,
+  sourceName: "Gold" | "Silver",
+  baseFeatures: GeoJSONFeature[],
+  manualPolygonFeatures: GeoJSONFeature[],
+  manualAddressProxyFeatures: GeoJSONFeature[]
+): Response {
+  const mergedFeatures = dedupeFeatures([
+    ...enforceUniqueFeatureAddressAssignments(baseFeatures),
+    ...manualPolygonFeatures,
+    ...manualAddressProxyFeatures,
+  ]);
+  console.log(
+    `[buildings] ${sourceName} selected for ${campaignId}; returned ${mergedFeatures.length} polygon/proxy features`
+  );
+  return NextResponse.json(
+    { type: "FeatureCollection", features: mergedFeatures },
+    { headers: JSON_NO_STORE_HEADERS }
+  );
 }
 
 /**
  * GET /api/campaigns/[campaignId]/buildings
  *
  * Priority:
- *   1. rpc_get_campaign_full_features — Gold path or Silver path via DB.
- *      Returns Polygon/MultiPolygon features; iOS MapFeaturesService uses these for 3D extrusion.
- *   2. S3 fallback — reads campaign_snapshots (bucket + buildings_key), fetches + gunzips from S3.
- *      Used for Silver/Lambda campaigns where building polygons live in S3, not the buildings table.
- *   3. Gold DB fallback — reads ref_buildings_gold when the campaign is map-ready but linking is still pending.
- *   4. Empty FeatureCollection — campaign has no buildings yet (e.g. not provisioned).
+ *   1. Gold polygons from rpc_get_campaign_full_features / ref_buildings_gold.
+ *   2. Silver polygons from rpc_get_campaign_full_features / campaign_snapshots, only when Gold is absent.
+ *   3. Manual user-created polygons/proxies can accompany the selected source.
+ *   4. Empty FeatureCollection — campaign has neither Gold nor Silver buildings yet.
  */
 export async function GET(request: Request, context: RouteContext): Promise<Response> {
   try {
@@ -648,13 +649,14 @@ export async function GET(request: Request, context: RouteContext): Promise<Resp
     );
 
     // -------------------------------------------------------------------------
-    // Step 1: unified RPC (Gold → Silver → address_point)
+    // Step 1: unified RPC, with Gold and Silver kept in separate buckets.
     // -------------------------------------------------------------------------
     const { data: rpcResult, error: rpcError } = await supabase
       .rpc("rpc_get_campaign_full_features", { p_campaign_id: campaignId })
       .single();
 
-    let rpcBasePolygonFeatures: GeoJSONFeature[] = [];
+    let rpcGoldPolygonFeatures: GeoJSONFeature[] = [];
+    let rpcSilverPolygonFeatures: GeoJSONFeature[] = [];
     let rpcManualPolygonFeatures: GeoJSONFeature[] = [];
     let rpcManualAddressProxyFeatures: GeoJSONFeature[] = [];
 
@@ -663,11 +665,14 @@ export async function GET(request: Request, context: RouteContext): Promise<Resp
       const features = (fc?.features ?? []) as GeoJSONFeature[];
       const polygonFeatures = features.filter(isPolygonFeature);
 
-      rpcBasePolygonFeatures = filterHiddenBuildings(
-        polygonFeatures.filter((feature) => !isManualFeature(feature)),
+      rpcGoldPolygonFeatures = filterHiddenBuildings(
+        polygonFeatures.filter(isGoldFeature),
         hiddenBuildingIds
       );
-      rpcBasePolygonFeatures = enforceUniqueFeatureAddressAssignments(rpcBasePolygonFeatures);
+      rpcSilverPolygonFeatures = filterHiddenBuildings(
+        polygonFeatures.filter(isSilverFeature),
+        hiddenBuildingIds
+      );
       rpcManualPolygonFeatures = filterHiddenBuildings(
         polygonFeatures.filter(isManualFeature),
         hiddenBuildingIds
@@ -676,27 +681,47 @@ export async function GET(request: Request, context: RouteContext): Promise<Resp
         .map(buildManualAddressProxyFeature)
         .filter((feature): feature is GeoJSONFeature => feature !== null);
 
-      if (rpcBasePolygonFeatures.length > 0) {
-        const mergedFeatures = dedupeFeatures([
-          ...rpcBasePolygonFeatures,
-          ...rpcManualPolygonFeatures,
-          ...rpcManualAddressProxyFeatures,
-        ]);
-        console.log(
-          `[buildings] RPC returned ${mergedFeatures.length} merged polygon/proxy features for ${campaignId}`
-        );
-        return NextResponse.json(
-          { type: "FeatureCollection", features: mergedFeatures },
-          { headers: JSON_NO_STORE_HEADERS }
+      if (rpcGoldPolygonFeatures.length > 0) {
+        return responseForSelectedSource(
+          campaignId,
+          "Gold",
+          rpcGoldPolygonFeatures,
+          rpcManualPolygonFeatures,
+          rpcManualAddressProxyFeatures
         );
       }
     } else if (rpcError) {
       console.warn("[buildings] RPC error:", rpcError);
     }
 
-    // -------------------------------------------------------------------------
-    // Step 2: S3 snapshot fallback
-    // -------------------------------------------------------------------------
+    const goldFallback = campaignRow?.provision_source === "gold"
+      ? await fetchGoldFallbackFeatures(
+          supabase,
+          campaignId,
+          campaignRow?.territory_boundary ?? null
+        )
+      : null;
+
+    if (goldFallback) {
+      return responseForSelectedSource(
+        campaignId,
+        "Gold",
+        filterHiddenBuildings(goldFallback.features as GeoJSONFeature[], hiddenBuildingIds),
+        rpcManualPolygonFeatures,
+        rpcManualAddressProxyFeatures
+      );
+    }
+
+    if (rpcSilverPolygonFeatures.length > 0) {
+      return responseForSelectedSource(
+        campaignId,
+        "Silver",
+        rpcSilverPolygonFeatures,
+        rpcManualPolygonFeatures,
+        rpcManualAddressProxyFeatures
+      );
+    }
+
     const { data: snapshot } = await supabase
       .from("campaign_snapshots")
       .select("bucket, buildings_key")
@@ -704,127 +729,20 @@ export async function GET(request: Request, context: RouteContext): Promise<Resp
       .maybeSingle();
 
     const snap = snapshot as { bucket: string; buildings_key: string | null } | null;
-
     if (snap?.buildings_key) {
-      console.log(
-        `[buildings] S3 fallback: bucket=${snap.bucket} key=${snap.buildings_key}`
+      const silverSnapshotFeatures = await fetchSilverSnapshotFeatures(
+        snap.bucket,
+        snap.buildings_key,
+        hiddenBuildingIds
       );
-      const geojson = await fetchFromS3(snap.bucket, snap.buildings_key) as {
-        type: string;
-        features: Array<{ id?: unknown; properties?: Record<string, unknown>; geometry?: unknown }>;
-      } | null;
-
-      if (geojson) {
-        // Enrich S3 buildings with address_id + address_count from building_address_links.
-        // This mirrors what the Gold RPC does automatically via the building_id FK, and
-        // allows the iOS tap resolver (resolveAddressForBuilding) to match buildings to addresses.
-        const { data: links } = await supabase
-          .from("building_address_links")
-          .select("building_id, address_id, match_type, confidence")
-          .eq("campaign_id", campaignId);
-
-        if (links && links.length > 0) {
-          const uniqueAddressLinks = dedupeLinksByAddress(links as BuildingAddressLinkRow[]);
-          const buildingRowIds = Array.from(
-            new Set(uniqueAddressLinks.map((link) => link.building_id))
-          );
-          const { data: buildings } = await supabase
-            .from("buildings")
-            .select("id, gers_id")
-            .in("id", buildingRowIds);
-
-          const publicIdByRowId = new Map<string, string>();
-          for (const building of (buildings ?? []) as Array<{ id: string; gers_id: string | null }>) {
-            publicIdByRowId.set(building.id.toLowerCase(), (building.gers_id ?? building.id).toLowerCase());
-          }
-
-          // Map: public building id (prefer gers_id, fallback buildings.id) → [address_id UUIDs]
-          const linkMap = new Map<string, string[]>();
-          for (const link of uniqueAddressLinks) {
-            const publicBuildingId =
-              publicIdByRowId.get(link.building_id.toLowerCase()) ?? link.building_id.toLowerCase();
-            const bucket = linkMap.get(publicBuildingId) ?? [];
-            bucket.push(link.address_id);
-            linkMap.set(publicBuildingId, bucket);
-          }
-
-          const enriched = filterHiddenBuildings(geojson.features as GeoJSONFeature[], hiddenBuildingIds).map((f) => {
-            const props = f.properties ?? {};
-            // Match the same ID resolution used by StableLinkerService when it wrote the links
-            const gersId =
-              (props.gers_id as string | null) ??
-              (props.id as string | null) ??
-              (f.id != null ? String(f.id) : null);
-
-            const linked = gersId ? (linkMap.get(gersId.toLowerCase()) ?? []) : [];
-            return {
-              ...f,
-              properties: {
-                ...props,
-                // Follow the same Gold RPC convention: address_id only when exactly one linked address
-                address_id:    linked.length === 1 ? linked[0] : null,
-                address_count: linked.length,
-                source:        props.source ?? "silver",
-              },
-            };
-          });
-
-          console.log(
-            `[buildings] S3 enriched ${enriched.length} features with building_address_links (${uniqueAddressLinks.length}/${links.length} unique address links)`
-          );
-          const mergedFeatures = dedupeFeatures([
-            ...enriched,
-            ...rpcManualPolygonFeatures,
-            ...rpcManualAddressProxyFeatures,
-          ]);
-
-          return NextResponse.json(
-            { type: "FeatureCollection", features: mergedFeatures },
-            { headers: JSON_NO_STORE_HEADERS }
-          );
-        }
-
-        // No links yet — return raw S3 data as-is (e.g. campaign just created, links still writing)
-        const polygonFeatures = filterHiddenBuildings(
-          (geojson.features ?? []).filter((feature) => isPolygonFeature(feature as GeoJSONFeature)) as GeoJSONFeature[],
-          hiddenBuildingIds
+      if (silverSnapshotFeatures && silverSnapshotFeatures.length > 0) {
+        return responseForSelectedSource(
+          campaignId,
+          "Silver",
+          silverSnapshotFeatures,
+          rpcManualPolygonFeatures,
+          rpcManualAddressProxyFeatures
         );
-        const mergedFeatures = dedupeFeatures([
-          ...(polygonFeatures as GeoJSONFeature[]),
-          ...rpcManualPolygonFeatures,
-          ...rpcManualAddressProxyFeatures,
-        ]);
-
-        return NextResponse.json({
-          type: "FeatureCollection",
-          features: mergedFeatures,
-        }, {
-          headers: JSON_NO_STORE_HEADERS,
-        });
-      }
-    }
-
-    if (campaignRow?.provision_source === 'gold') {
-      const goldFallback = await fetchGoldFallbackFeatures(
-        supabase,
-        campaignId,
-        campaignRow.territory_boundary
-      );
-
-      if (goldFallback) {
-        const mergedFeatures = dedupeFeatures([
-          ...filterHiddenBuildings(goldFallback.features as GeoJSONFeature[], hiddenBuildingIds),
-          ...rpcManualPolygonFeatures,
-          ...rpcManualAddressProxyFeatures,
-        ]);
-
-        if (mergedFeatures.length > 0) {
-          console.log(`[buildings] Gold fallback returned ${mergedFeatures.length} polygon/proxy features`);
-          return NextResponse.json(
-            { type: 'FeatureCollection', features: mergedFeatures },
-            { headers: JSON_NO_STORE_HEADERS }
-          );
-        }
       }
     }
 

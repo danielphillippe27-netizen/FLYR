@@ -107,6 +107,9 @@ const LOCALITY_TO_SOURCE_ID: Record<string, SupportedParcelSourceId> = {
   bowmanville: 'clarington_parcels',
   clarington: 'clarington_parcels',
   courtice: 'clarington_parcels',
+  'city of ajax': 'ajax_parcels',
+  'city of oshawa': 'oshawa_parcels',
+  'city of pickering': 'pickering_parcels',
   'east york': 'toronto_parcels',
   etobicoke: 'toronto_parcels',
   newcastle: 'clarington_parcels',
@@ -118,15 +121,62 @@ const LOCALITY_TO_SOURCE_ID: Record<string, SupportedParcelSourceId> = {
   york: 'toronto_parcels',
 };
 
+const SOURCE_BOUNDS: Record<SupportedParcelSourceId, [number, number, number, number]> = {
+  ajax_parcels: [-79.095, 43.79, -78.94, 43.93],
+  clarington_parcels: [-78.86, 43.79, -78.42, 44.12],
+  oshawa_parcels: [-78.99, 43.78, -78.74, 44.05],
+  pickering_parcels: [-79.22, 43.75, -78.95, 44.02],
+  toronto_parcels: [-79.65, 43.56, -79.10, 43.88],
+};
+
 const LOCALITY_ALIASES: Record<string, string> = {
   to: 'toronto',
+  'the corporation of the city of ajax': 'ajax',
+  'the corporation of the city of oshawa': 'oshawa',
+  'the corporation of the city of pickering': 'pickering',
+  'the corporation of the municipality of clarington': 'clarington',
+  'municipality of clarington': 'clarington',
+  'town of ajax': 'ajax',
+  'town of pickering': 'pickering',
 };
 
 function normalizeLocality(value: string | null | undefined): string | null {
   if (!value) return null;
-  const normalized = value.trim().toLowerCase();
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[.,]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
   if (!normalized) return null;
-  return LOCALITY_ALIASES[normalized] ?? normalized;
+  const aliased = LOCALITY_ALIASES[normalized] ?? normalized;
+  return aliased
+    .replace(/^the corporation of the city of\s+/, '')
+    .replace(/^the corporation of the town of\s+/, '')
+    .replace(/^the corporation of the municipality of\s+/, '')
+    .replace(/^city of\s+/, '')
+    .replace(/^town of\s+/, '')
+    .replace(/^municipality of\s+/, '')
+    .trim();
+}
+
+function inferSourceIdFromBbox(bbox: number[] | null): SupportedParcelSourceId | null {
+  if (!bbox || bbox.length !== 4) return null;
+  const [minLon, minLat, maxLon, maxLat] = bbox;
+  const lon = (minLon + maxLon) / 2;
+  const lat = (minLat + maxLat) / 2;
+
+  const matches = Object.entries(SOURCE_BOUNDS)
+    .filter(([, [west, south, east, north]]) =>
+      lon >= west && lon <= east && lat >= south && lat <= north
+    )
+    .map(([sourceId, [west, south, east, north]]) => ({
+      sourceId: sourceId as SupportedParcelSourceId,
+      area: Math.abs((east - west) * (north - south)),
+    }))
+    .sort((a, b) => a.area - b.area);
+
+  return matches[0]?.sourceId ?? null;
 }
 
 function getCampaignBbox(campaign: CampaignRow): number[] | null {
@@ -540,7 +590,7 @@ export class ParcelEnrichmentService {
       ...debugOverride,
     };
 
-    const sourceResolution = await this.inferSourceId(campaignId);
+    const sourceResolution = await this.inferSourceId(campaignId, campaign);
     debug.unsupported_localities = sourceResolution.unsupportedLocalities;
     debug.locality_counts = sourceResolution.localityCounts;
     const sourceId = sourceResolution.sourceId;
@@ -654,7 +704,7 @@ export class ParcelEnrichmentService {
     }
   }
 
-  private async inferSourceId(campaignId: string): Promise<{
+  private async inferSourceId(campaignId: string, campaign?: CampaignRow): Promise<{
     sourceId: SupportedParcelSourceId | null;
     unsupportedLocalities: string[];
     localityCounts: Array<{ source_id: SupportedParcelSourceId; count: number }>;
@@ -684,6 +734,15 @@ export class ParcelEnrichmentService {
     const ranked = Array.from(localityCounts.entries()).sort((a, b) => b[1] - a[1]);
     const localitySummary = ranked.map(([source_id, count]) => ({ source_id, count }));
     if (ranked.length === 0) {
+      const bboxSourceId = inferSourceIdFromBbox(campaign ? getCampaignBbox(campaign) : null);
+      if (bboxSourceId) {
+        return {
+          sourceId: bboxSourceId,
+          unsupportedLocalities: Array.from(unsupportedLocalities).sort(),
+          localityCounts: [{ source_id: bboxSourceId, count: 0 }],
+        };
+      }
+
       if (unsupportedLocalities.size > 0) {
         console.warn('[ParcelEnrichment] Unsupported localities:', Array.from(unsupportedLocalities));
       }

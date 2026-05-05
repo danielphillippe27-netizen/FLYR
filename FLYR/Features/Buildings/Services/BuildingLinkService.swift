@@ -56,6 +56,51 @@ final class BuildingLinkService {
         print("✅ [BuildingLinkService] Fetched \(featureCollection.features.count) buildings")
         return featureCollection.features
     }
+
+    /// Fetches campaign address GeoJSON from the backend. The backend returns DB/RPC addresses first,
+    /// and falls back to the Silver snapshot only for non-Gold campaigns with no DB rows.
+    func fetchCampaignAddresses(campaignId: String) async throws -> AddressFeatureCollection {
+        guard let url = URL(string: "\(baseURL)/api/campaigns/\(campaignId)/addresses") else {
+            throw BuildingLinkError.invalidURL
+        }
+
+        print("🔗 [BuildingLinkService] Fetching addresses from: \(url)")
+
+        var request = URLRequest(url: url)
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+
+        if let session = try? await supabaseClient.auth.session {
+            request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
+        }
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse,
+              httpResponse.statusCode == 200 else {
+            throw BuildingLinkError.fetchFailed
+        }
+
+        let featureCollection = try Self.decodeAddressFeatureCollection(from: data)
+        if featureCollection.features.isEmpty, let body = String(data: data, encoding: .utf8) {
+            print("⚠️ [BuildingLinkService] GET addresses returned 0 features (status=200). Response preview: \(body.prefix(400))...")
+        }
+        print("✅ [BuildingLinkService] Fetched \(featureCollection.features.count) addresses")
+        return featureCollection
+    }
+
+    private static func decodeAddressFeatureCollection(from data: Data) throws -> AddressFeatureCollection {
+        let decoder = JSONDecoder()
+        let firstNonWhitespaceByte = data.first { byte in
+            byte != 32 && byte != 10 && byte != 9 && byte != 13
+        }
+
+        if firstNonWhitespaceByte == 91 { // [
+            let features = try decoder.decode([AddressFeature].self, from: data)
+            return AddressFeatureCollection(type: "FeatureCollection", features: features)
+        }
+
+        return try decoder.decode(AddressFeatureCollection.self, from: data)
+    }
     
     // MARK: - Fetch Links (from Supabase)
 
@@ -168,28 +213,6 @@ final class BuildingLinkService {
         return links.first
     }
     
-    /// Get all addresses linked to a building (multiple addresses per building).
-    /// Uses GET /api/campaigns/[campaignId]/buildings/[buildingId]/addresses.
-    func fetchAddressesForBuilding(campaignId: String, buildingId: String) async throws -> [CampaignAddressResponse] {
-        guard let url = URL(string: "\(baseURL)/api/campaigns/\(campaignId)/buildings/\(buildingId)/addresses") else {
-            throw BuildingLinkError.invalidURL
-        }
-        let (data, response) = try await authorizedDataRequest(url: url)
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw BuildingLinkError.fetchFailed
-        }
-        if httpResponse.statusCode == 404 {
-            return []
-        }
-        guard httpResponse.statusCode == 200 else {
-            throw BuildingLinkError.fetchFailed
-        }
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        let wrapper = try decoder.decode(BuildingAddressesAPIResponse.self, from: data)
-        return wrapper.addresses
-    }
-
     func linkAddressToBuilding(
         campaignId: String,
         buildingId: String,
@@ -953,11 +976,6 @@ enum ManualShapeServiceError: LocalizedError {
 }
 
 // MARK: - Supporting Types
-
-/// Response from GET /api/campaigns/[id]/buildings/[id]/addresses
-private struct BuildingAddressesAPIResponse: Codable {
-    let addresses: [CampaignAddressResponse]
-}
 
 enum BuildingLinkError: LocalizedError {
     case invalidURL

@@ -493,7 +493,13 @@ export class StableLinkerService {
         if (Math.abs(a.distance - b.distance) >= 0.5) return a.distance - b.distance;
         return b.area - a.area;
       });
-      const best = this.pickBestProximityOrThrow(address.id, withStreet, 0.7);
+      // Proximity alone is not enough evidence to make a detached footprint multi-address.
+      // Reusing already matched buildings here caused neighboring homes on the same street
+      // to inherit each other's address lists.
+      const unusedWithStreet = withStreet.filter(c =>
+        !matchedBuildingIds.has(c.building.properties.gers_id)
+      );
+      const best = this.pickBestProximityOrThrow(address.id, unusedWithStreet, 0.7);
       if (best) {
         const streetScore = this.calculateStreetMatchScore(
           address.street_name ?? '',

@@ -18,12 +18,12 @@ struct CampaignOfflineReadiness: Equatable, Sendable {
 
     var summary: String {
         if isVerified {
-            return "Local data ready: \(addressesCount) homes, \(contactsCount) contacts, \(activitiesCount) activity items, and map tiles are stored on this device."
+            return "\(addressesCount) homes + map tiles saved on this device."
         }
         if missingComponents.isEmpty {
-            return "Local data is still being verified."
+            return "Offline data is still being verified."
         }
-        return "Local data needs attention: missing \(missingComponents.joined(separator: ", "))."
+        return "Offline data needs attention: missing \(missingComponents.joined(separator: ", "))."
     }
 }
 
@@ -122,9 +122,6 @@ final class CampaignDownloadService: ObservableObject {
                 dirty: false
             )
 
-            let links = try await BuildingLinkService.shared.fetchLinks(campaignId: campaignId)
-            await campaignRepository.upsertBuildingAddressLinks(campaignId: campaignId, links: links)
-
             let statuses = try await VisitsAPI.shared.fetchStatuses(campaignId: campaignUUID, forceRefresh: true)
             await campaignRepository.upsertStatuses(rows: Array(statuses.values))
             await campaignRepository.updateDownloadState(campaignId: campaignId, status: "downloading", progress: 0.80, startedAt: startedAt)
@@ -151,13 +148,15 @@ final class CampaignDownloadService: ObservableObject {
                 boundaryGeoJSON: metadata.boundaryGeoJSON,
                 addresses: addresses.features,
                 onProgress: { [weak self] progress in
-                    self?.setTransientState(
-                        campaignId: campaignId,
-                        status: "downloading",
-                        progress: min(max(0.82 + (progress * 0.18), 0.82), 0.99),
-                        startedAt: startedAt,
-                        errorMessage: nil
-                    )
+                    Task { @MainActor [weak self] in
+                        self?.setTransientState(
+                            campaignId: campaignId,
+                            status: "downloading",
+                            progress: min(max(0.82 + (progress * 0.18), 0.82), 0.99),
+                            startedAt: startedAt,
+                            errorMessage: nil
+                        )
+                    }
                 }
             )
 
@@ -166,7 +165,7 @@ final class CampaignDownloadService: ObservableObject {
                 expected: OfflineExpectedCounts(
                     buildings: buildings.count,
                     addresses: addresses.features.count,
-                    buildingLinks: links.count,
+                    buildingLinks: 0,
                     statuses: statuses.count,
                     roads: corridors.count,
                     metadata: addressMetadata.count,
@@ -339,7 +338,7 @@ final class CampaignDownloadService: ObservableObject {
     private func fetchCampaignMetadata(campaignId: UUID) async throws -> (name: String?, mode: String?, boundaryGeoJSON: String?, payloadJSON: String?) {
         let response = try await SupabaseManager.shared.client
             .from("campaigns")
-            .select("id,title,status,territory_boundary")
+            .select()
             .eq("id", value: campaignId.uuidString)
             .single()
             .execute()

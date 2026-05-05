@@ -271,6 +271,7 @@ struct NewCampaignScreen: View {
     }
     
     /// If polygonFromSheet is non-nil, use it for the map flow (avoids relying on state when coming from sheet).
+    @MainActor
     private func createCampaignTapped(polygonFromSheet: [CLLocationCoordinate2D]? = nil) async {
         defer { isSubmittingCampaign = false }
         guard await canCreateCampaignInCurrentPlan() else {
@@ -413,12 +414,26 @@ struct NewCampaignScreen: View {
                             if addressesSaved == 0 && buildingsSaved == 0 {
                                 createHook.error = "Campaign was created, but no addresses/buildings were found in this area. Try drawing a larger polygon or a different location."
                                 shouldNavigateToDetails = false
+                            } else {
+                                MapFeaturesService.shared.beginDiamondManifestPrewarm(
+                                    campaignId: created.id.uuidString,
+                                    timeoutSeconds: 90
+                                )
+                                print("💎 [CAMPAIGN DEBUG] Diamond/White Gold geometry will warm in the background")
                             }
                         }
                     } catch {
-                        print("❌ [CAMPAIGN DEBUG] Provision failed: \(error)")
-                        createHook.error = "Campaign created but provisioning failed: \(error.localizedDescription). You can retry from campaign details."
-                        shouldNavigateToDetails = false
+                        if isDiamondGeometryReadinessError(error) {
+                            print("💎 [CAMPAIGN DEBUG] Diamond/White Gold geometry not ready yet; opening map and warming in the background")
+                            MapFeaturesService.shared.beginDiamondManifestPrewarm(
+                                campaignId: created.id.uuidString,
+                                timeoutSeconds: 90
+                            )
+                        } else {
+                            print("❌ [CAMPAIGN DEBUG] Provision failed: \(error)")
+                            createHook.error = "Campaign created but provisioning failed: \(error.localizedDescription). You can retry from campaign details."
+                            shouldNavigateToDetails = false
+                        }
                     }
                     guard shouldNavigateToDetails else { return }
                     await routeToCampaignMap(createdCampaign, boundaryCoordinates: polygon)
@@ -478,6 +493,21 @@ struct NewCampaignScreen: View {
             maxLon = max(maxLon, coord.longitude)
         }
         return "lat[\(minLat), \(maxLat)] lon[\(minLon), \(maxLon)]"
+    }
+
+    private func isDiamondGeometryReadinessError(_ error: Error) -> Bool {
+        if let diamondError = error as? DiamondManifestAPIError {
+            switch diamondError {
+            case .httpStatus(let status):
+                return status == 202 || status == 404
+            case .notReady:
+                return true
+            case .invalidResponse:
+                return false
+            }
+        }
+
+        return error.localizedDescription.localizedCaseInsensitiveContains("Diamond geometry was not ready")
     }
 
     @MainActor

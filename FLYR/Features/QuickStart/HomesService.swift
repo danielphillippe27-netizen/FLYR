@@ -15,12 +15,6 @@ final class HomesService {
         limitHomes: Int,
         workspaceId: UUID
     ) async throws -> CampaignV2 {
-        if let existing = try await CampaignsAPI.shared.fetchQuickStartMapCampaign(workspaceId: workspaceId) {
-            print("🌐 [QuickStart] Reusing Quick Start map campaign: \(existing.id)")
-            try await updateQuickStartBoundary(campaignId: existing.id, center: center, radiusMeters: radiusMeters)
-            return existing
-        }
-
         let name = quickStartCampaignName(radiusMeters: radiusMeters)
         let description = String(
             format: "source=quick_start radius_m=%d center_lat=%.6f center_lng=%.6f",
@@ -101,19 +95,23 @@ final class HomesService {
         do {
             let byCampaign = try await BuildingsAPI.shared.fetchBuildingPolygons(campaignId: campaignId)
             if !byCampaign.features.isEmpty {
-                MapFeaturesService.shared.primeBuildingPolygons(
-                    campaignId: campaignId.uuidString,
-                    features: byCampaign.features
-                )
+                await MainActor.run {
+                    MapFeaturesService.shared.primeBuildingPolygons(
+                        campaignId: campaignId.uuidString,
+                        features: byCampaign.features
+                    )
+                }
                 print("✅ [QuickStart] Campaign building fetch loaded \(byCampaign.features.count) features")
             } else {
                 print("⚠️ [QuickStart] Campaign building fetch empty, trying address-id fallback")
                 let byAddress = try await BuildingsAPI.shared.fetchBuildingPolygons(addressIds: campaignAddresses.map(\.id))
                 if !byAddress.features.isEmpty {
-                    MapFeaturesService.shared.primeBuildingPolygons(
-                        campaignId: campaignId.uuidString,
-                        features: byAddress.features
-                    )
+                    await MainActor.run {
+                        MapFeaturesService.shared.primeBuildingPolygons(
+                            campaignId: campaignId.uuidString,
+                            features: byAddress.features
+                        )
+                    }
                 }
                 print("✅ [QuickStart] Address-id building fallback loaded \(byAddress.features.count) features")
             }

@@ -204,6 +204,10 @@ struct QuickStartMapView: View {
                     limitHomes: limitHomes,
                     workspaceId: workspaceId
                 )
+                try await HomesService.shared.prepareQuickStartCampaignData(
+                    campaignId: campaign.id,
+                    radiusMeters: radiusMeters
+                )
 
                 await MainActor.run {
                     print("✅ [QuickStart] Campaign created: \(campaign.id)")

@@ -45,7 +45,6 @@ enum CampaignMapMode: String, Codable, Equatable {
             buildingLinkConfidence: buildingLinkConfidence
         )
 
-        // Campaigns/farms should stay on the original building-based renderer.
         return resolvedMode == .standardPins ? .hybrid : resolvedMode
     }
 

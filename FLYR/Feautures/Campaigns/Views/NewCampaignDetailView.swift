@@ -778,69 +778,124 @@ struct NewCampaignDetailView: View {
     private var offlineAvailabilitySection: some View {
         let campaignIdString = campaignID.uuidString
         let downloadState = campaignDownloadService.state(for: campaignIdString)
-        let readiness = campaignDownloadService.readiness(for: campaignIdString)
         let isOfflineAvailable = downloadState?.isAvailableOffline == true
         let isDownloading = downloadState?.status == "downloading"
+        let isFailed = downloadState?.status == "failed"
+        let statusTitle = offlineStatusTitle(isReady: isOfflineAvailable, isDownloading: isDownloading, isFailed: isFailed)
+        let statusIcon = offlineStatusIcon(isReady: isOfflineAvailable, isDownloading: isDownloading, isFailed: isFailed)
+        let statusColor = offlineStatusColor(isReady: isOfflineAvailable, isDownloading: isDownloading, isFailed: isFailed)
 
-        return VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                offlinePill(
-                    title: "LOCAL DATA",
-                    systemImage: isOfflineAvailable ? "checkmark.circle.fill" : "xmark.circle.fill",
-                    background: isOfflineAvailable ? Color.green.opacity(0.14) : Color.red.opacity(0.16),
-                    foreground: isOfflineAvailable ? Color.green : Color.red
-                )
-                Spacer(minLength: 0)
-            }
+        return HStack(spacing: 12) {
+            Image(systemName: statusIcon)
+                .font(.subheadline)
+                .foregroundColor(statusColor)
+                .frame(width: 24, height: 24)
 
-            Text(localDataSummary(readiness: readiness, isReady: isOfflineAvailable))
-                .font(.system(size: 14, weight: .medium))
-                .foregroundColor(.muted)
+            Text(statusTitle)
+                .font(.subheading)
+                .foregroundColor(.text)
+                .lineLimit(1)
+                .minimumScaleFactor(0.82)
+
+            Spacer(minLength: 12)
 
             if let downloadState, isDownloading {
-                ProgressView(value: downloadState.progress)
-                    .progressViewStyle(.linear)
-            }
-
-            Button(isOfflineAvailable ? "Refresh Local Data" : "Download Local Data") {
-                Task {
-                    await campaignDownloadService.makeAvailableOffline(campaignId: campaignIdString)
-                    await campaignDownloadService.refreshState(campaignId: campaignIdString)
+                Text("\(Int(downloadState.progress * 100))%")
+                    .font(.label)
+                    .foregroundColor(.muted)
+                    .lineLimit(1)
+            } else {
+                Button(isOfflineAvailable ? "Update" : (isFailed ? "Retry" : "Download")) {
+                    Task {
+                        await campaignDownloadService.makeAvailableOffline(campaignId: campaignIdString)
+                        await campaignDownloadService.refreshState(campaignId: campaignIdString)
+                    }
                 }
+                .font(.label)
+                .fontWeight(.medium)
+                .foregroundColor(isFailed ? Color.error : Color.text)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .background(Color.bgTertiary)
+                .clipShape(Capsule())
+                .buttonStyle(.plain)
             }
-            .font(.label)
-            .foregroundColor(.white)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 12)
-            .background(Color.accent)
-            .cornerRadius(10)
-            .buttonStyle(.plain)
-            .disabled(isDownloading)
-            .opacity(isDownloading ? 0.6 : 1)
         }
         .padding(16)
         .background(Color.bgSecondary)
         .cornerRadius(12)
     }
 
-    private func localDataSummary(readiness: CampaignOfflineReadiness?, isReady: Bool) -> String {
+    private func localDataSummary(readiness: CampaignOfflineReadiness?, isReady: Bool, isDownloading: Bool, isFailed: Bool) -> String {
+        if isDownloading {
+            return "Downloading homes and map tiles..."
+        }
+        if isFailed {
+            return "Some data could not be saved."
+        }
         if let readiness {
+            if readiness.isVerified {
+                return "\(readiness.addressesCount) homes + map tiles saved on this device."
+            }
             return readiness.summary
         }
         if isReady {
-            return "This campaign is stored on your device for field use. Session activity still saves locally first and syncs in the background."
+            return "Homes + map tiles saved on this device."
         }
-        return "FLYR prepares campaign data automatically when you open or start a session. You can also refresh the local cache here."
+        return "Save homes and map tiles on this device."
     }
 
-    private func offlinePill(title: String, systemImage: String, background: Color, foreground: Color) -> some View {
-        Label(title, systemImage: systemImage)
-            .font(.label)
-            .foregroundColor(foreground)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(background)
-            .clipShape(Capsule())
+    private func offlineStatusTitle(isReady: Bool, isDownloading: Bool, isFailed: Bool) -> String {
+        if isDownloading {
+            return "Preparing Offline"
+        }
+        if isFailed {
+            return "Offline Download Failed"
+        }
+        return isReady ? "Ready Offline" : "Offline Not Ready"
+    }
+
+    private func offlineStatusIcon(isReady: Bool, isDownloading: Bool, isFailed: Bool) -> String {
+        if isDownloading {
+            return "arrow.down.circle.fill"
+        }
+        if isFailed {
+            return "exclamationmark.triangle.fill"
+        }
+        return isReady ? "checkmark.circle.fill" : "arrow.down.circle.fill"
+    }
+
+    private func offlineStatusColor(isReady: Bool, isDownloading: Bool, isFailed: Bool) -> Color {
+        if isDownloading {
+            return .info
+        }
+        if isFailed {
+            return .error
+        }
+        return isReady ? .success : .muted
+    }
+
+    private func offlineFooterText(isReady: Bool, isDownloading: Bool, isFailed: Bool) -> String {
+        if isDownloading {
+            return "Saving homes and map tiles now."
+        }
+        if isFailed {
+            return "Check your connection, then retry."
+        }
+        return isReady ? "Use this campaign without service." : "Save this campaign before heading out."
+    }
+
+    private func offlineUpdatedText(for downloadState: CampaignDownloadState?) -> String? {
+        let date = downloadState?.lastSyncedAt ?? downloadState?.completedAt
+        guard let date else { return nil }
+
+        if abs(date.timeIntervalSinceNow) < 60 {
+            return "Updated just now"
+        }
+
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .short
+        return "Updated \(formatter.localizedString(for: date, relativeTo: Date()))"
     }
     
     private func updateMapCenter(for campaign: CampaignV2) {

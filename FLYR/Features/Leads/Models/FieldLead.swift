@@ -21,7 +21,7 @@ enum FieldLeadStatus: String, Codable, CaseIterable {
     var color: Color {
         switch self {
         case .notHome: return .flyrPrimary
-        case .interested: return .green
+        case .interested: return .blue
         case .qrScanned: return .blue
         case .noAnswer: return .gray
         }

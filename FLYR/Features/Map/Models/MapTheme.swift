@@ -143,7 +143,7 @@ struct MapTheme {
     }
 
     static func hideBaseMapAddressNumberLayers(on map: MapboxMap) {
-        for layer in map.allLayerIdentifiers where isBaseMapAddressNumberLayer(layer) {
+        for layer in map.allLayerIdentifiers where isBaseMapAddressNumberLayer(layer, on: map) {
             do {
                 try map.setLayerProperty(for: layer.id, property: "visibility", value: "none")
             } catch {
@@ -170,19 +170,49 @@ struct MapTheme {
         return !appLayerPrefixes.contains { lowercasedId.hasPrefix($0) }
     }
 
-    private static func isBaseMapAddressNumberLayer(_ layer: LayerInfo) -> Bool {
+    private static func isBaseMapAddressNumberLayer(_ layer: LayerInfo, on map: MapboxMap) -> Bool {
         guard layer.type == .symbol else { return false }
 
         let lowercasedId = layer.id.lowercased()
         guard !isAppOwnedLayerId(lowercasedId) else { return false }
 
-        return lowercasedId.contains("housenum")
-            || lowercasedId.contains("house-number")
-            || lowercasedId.contains("house_number")
-            || lowercasedId.contains("address-number")
-            || lowercasedId.contains("address_number")
-            || lowercasedId.contains("building-number")
-            || lowercasedId.contains("building_number")
+        if isAddressNumberToken(lowercasedId) {
+            return true
+        }
+
+        guard let properties = try? map.layerProperties(for: layer.id) else { return false }
+        let propertyText = flattenStyleValue(properties).lowercased()
+        return isAddressNumberToken(propertyText)
+    }
+
+    private static func isAddressNumberToken(_ value: String) -> Bool {
+        value.contains("housenum")
+            || value.contains("house-num")
+            || value.contains("house_num")
+            || value.contains("house-number")
+            || value.contains("house_number")
+            || value.contains("house number")
+            || value.contains("address-number")
+            || value.contains("address_number")
+            || value.contains("address number")
+            || value.contains("building-number")
+            || value.contains("building_number")
+            || value.contains("building number")
+    }
+
+    private static func flattenStyleValue(_ value: Any) -> String {
+        if let string = value as? String {
+            return string
+        }
+        if let array = value as? [Any] {
+            return array.map(flattenStyleValue).joined(separator: " ")
+        }
+        if let dictionary = value as? [String: Any] {
+            return dictionary
+                .map { "\($0.key) \(flattenStyleValue($0.value))" }
+                .joined(separator: " ")
+        }
+        return String(describing: value)
     }
 
     private static func isAppOwnedLayerId(_ lowercasedId: String) -> Bool {

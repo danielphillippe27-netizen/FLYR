@@ -260,58 +260,9 @@ class BuildingDataService: ObservableObject {
                 }
             }
             
-            // Step 2: If still no match, get all addresses linked to this building from Supabase.
-            // building_address_links.building_id is buildings.id (UUID), so resolve building first by gers_id or id.
-            var supabaseLinkAddresses: [CampaignAddressResponse] = []
-            let buildingIdCandidates = (try? await resolveBuildingLinkCandidates(gersId: gersId)) ?? []
-            if !buildingIdCandidates.isEmpty {
-                let linkQuery = supabase
-                    .from("building_address_links")
-                    .select("""
-                        address_id,
-                        match_type,
-                        confidence,
-                        distance_meters,
-                        campaign_addresses!inner (
-                            id,
-                            house_number,
-                            street_name,
-                            formatted,
-                            locality,
-                            region,
-                            postal_code,
-                            gers_id,
-                            building_gers_id,
-                            scans,
-                            last_scanned_at,
-                            qr_code_base64,
-                            contact_name,
-                            lead_status,
-                            product_interest,
-                            follow_up_date,
-                            raw_transcript,
-                            ai_summary
-                        )
-                    """)
-                    .eq("campaign_id", value: campaignId.uuidString)
-                    .in("building_id", values: buildingIdCandidates)
-                let linkResponse = try await linkQuery.execute()
-                let links = try decoder.decode([BuildingAddressLinkResponse].self, from: linkResponse.data)
-                supabaseLinkAddresses = Self.chooseAddressLinksForDisplay(links).compactMap(\.campaignAddress)
-                if resolvedAddress == nil, let first = supabaseLinkAddresses.first {
-                    resolvedAddress = first
-                    buildingExists = true
-                }
-            }
-            
-            // Step 3: Fetch all addresses for this building (multiple units): API first, then Supabase fallback
+            // Step 2: Build the card from direct/gold/local geometry only. Do not hydrate
+            // from building_address_links; legacy Silver links can attach neighboring homes.
             var allAddressResponses: [CampaignAddressResponse] = []
-            if let apiAddresses = try? await BuildingLinkService.shared.fetchAddressesForBuilding(campaignId: campaignId.uuidString, buildingId: gersId) {
-                allAddressResponses = apiAddresses
-            }
-            if allAddressResponses.isEmpty, !supabaseLinkAddresses.isEmpty {
-                allAddressResponses = supabaseLinkAddresses
-            }
             if allAddressResponses.isEmpty, !goldPathAddresses.isEmpty {
                 allAddressResponses = goldPathAddresses
             }
@@ -451,25 +402,6 @@ class BuildingDataService: ObservableObject {
         }
     }
 
-    private static func chooseAddressLinksForDisplay(_ links: [BuildingAddressLinkResponse]) -> [BuildingAddressLinkResponse] {
-        guard links.count > 1 else { return links }
-
-        let strongLinks = links.filter { link in
-            let matchType = (link.matchType ?? "").lowercased()
-            if matchType == "manual" { return true }
-            if matchType == "containment_verified" { return true }
-            if matchType == "point_on_surface" { return true }
-            if matchType == "parcel_verified" { return true }
-            return (link.confidence ?? 0) >= 0.9 && matchType != "proximity_fallback"
-        }
-
-        if !strongLinks.isEmpty, strongLinks.count < links.count {
-            return strongLinks
-        }
-
-        return links
-    }
-
     static func deduplicatedAddressesForDisplay(
         _ addresses: [CampaignAddressResponse],
         preferredAddressId: UUID? = nil,
@@ -514,54 +446,6 @@ class BuildingDataService: ObservableObject {
         let exactMatches = addresses.filter { normalizedAddressIdentity(for: $0) == hintIdentity }
         return exactMatches.count == 1 ? exactMatches : addresses
     }
-    
-    /// Resolves a tapped building identifier into possible link keys.
-    /// Some environments store building_address_links.building_id as buildings.id (UUID row id),
-    /// while others behave like the public building/GERS id. Query both so Silver campaigns remain readable.
-    private func resolveBuildingLinkCandidates(gersId: String) async throws -> [String] {
-        let trimmed = gersId.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty else { return [] }
-
-        // Try both original case and lowercased (Overture GERS IDs are UUIDs but may have different casing)
-        let lower = trimmed.lowercased()
-        var candidates = Set([trimmed, lower])
-
-        // Only query the buildings table if at least one candidate looks like a UUID.
-        guard candidates.contains(where: { UUID(uuidString: $0) != nil }) else {
-            return Array(candidates)
-        }
-
-        let orParts = candidates.flatMap { c in ["id.eq.\(c)", "gers_id.eq.\(c)"] }
-        let response = try await supabase
-            .from("buildings")
-            .select("id, gers_id")
-            .or(orParts.joined(separator: ","))
-            .limit(1)
-            .execute()
-
-        struct Row: Decodable {
-            let id: UUID
-            let gersId: String?
-
-            enum CodingKeys: String, CodingKey {
-                case id
-                case gersId = "gers_id"
-            }
-        }
-
-        let rows = try JSONDecoder().decode([Row].self, from: response.data)
-        if let row = rows.first {
-            candidates.insert(row.id.uuidString)
-            candidates.insert(row.id.uuidString.lowercased())
-            if let resolvedGersId = row.gersId?.trimmingCharacters(in: .whitespacesAndNewlines), !resolvedGersId.isEmpty {
-                candidates.insert(resolvedGersId)
-                candidates.insert(resolvedGersId.lowercased())
-            }
-        }
-
-        return Array(candidates)
-    }
-    
     /// Fetches contacts for a given address ID
     /// - Parameter addressId: The address ID to fetch contacts for
     /// - Returns: Array of contacts
@@ -707,9 +591,6 @@ class BuildingDataService: ObservableObject {
         }
 
         var explicitAddressIds = Set<String>()
-        for candidate in buildingCandidates {
-            explicitAddressIds.formUnion(bundle.silverBuildingLinks[candidate]?.map { $0.lowercased() } ?? [])
-        }
         if let directAddressId = buildingFeature?.properties.addressId?.lowercased() {
             explicitAddressIds.insert(directAddressId)
         }
@@ -722,21 +603,18 @@ class BuildingDataService: ObservableObject {
             if let featureAddressId, explicitAddressIds.contains(featureAddressId) {
                 return true
             }
-            if let buildingGersId = feature.properties.buildingGersId?.lowercased(), buildingCandidates.contains(buildingGersId) {
-                return true
-            }
             return false
         }
 
         let matchedFeatures: [AddressFeature]
-        if let buildingFeature {
+        if addressId != nil, !explicitMatches.isEmpty {
+            matchedFeatures = explicitMatches
+        } else if let buildingFeature {
             let spatialMatches = inferSpatialAddressFeatures(
                 for: buildingFeature,
                 in: bundle.addresses.features
             )
-            // Containment is the strongest local signal. Link metadata can be stale
-            // after relinking, but the screenshots show the address points sitting
-            // inside their own footprints, so prefer geometry whenever available.
+            // Containment is the strongest local signal; direct IDs are only a fallback.
             matchedFeatures = spatialMatches.isEmpty ? explicitMatches : spatialMatches
         } else if !explicitMatches.isEmpty {
             matchedFeatures = explicitMatches

@@ -20,7 +20,6 @@ struct OfflineCampaignMapBundle: Sendable {
     let buildings: BuildingFeatureCollection
     let addresses: AddressFeatureCollection
     let roads: RoadFeatureCollection
-    let silverBuildingLinks: [String: [String]]
 }
 
 struct CampaignOfflineAssetCounts: Sendable {
@@ -437,6 +436,69 @@ final class CampaignRepository {
 
             return coordinates.isEmpty ? nil : coordinates
         }
+    }
+
+    func getCachedCampaign(campaignId: UUID) async -> CampaignV2? {
+        let campaignIdString = campaignId.uuidString
+        return try? await dbQueue.read { db in
+            let campaignRecord = try CachedCampaignRecord
+                .filter(Column("id") == campaignIdString)
+                .fetchOne(db)
+            let addressRecords = try CachedAddressRecord
+                .filter(Column("campaign_id") == campaignIdString)
+                .fetchAll(db)
+
+            guard campaignRecord != nil || !addressRecords.isEmpty else {
+                return nil
+            }
+
+            let payload = Self.jsonObject(from: campaignRecord?.payloadJSON)
+            let addresses = Self.campaignAddresses(from: addressRecords, campaignId: campaignIdString)
+            let createdAt = Self.dateValue(payload["created_at"])
+                ?? OfflineDateCodec.date(from: campaignRecord?.downloadedAt)
+                ?? OfflineDateCodec.date(from: campaignRecord?.updatedAt)
+                ?? Date()
+
+            return CampaignV2(
+                id: campaignId,
+                name: Self.stringValue(payload["title"]) ?? campaignRecord?.name ?? "Campaign",
+                type: Self.stringValue(payload["type"]).flatMap(CampaignType.init(dbValue:)) ?? .flyer,
+                addressSource: Self.stringValue(payload["address_source"]).flatMap(AddressSource.init(rawValue:)) ?? .closestHome,
+                addresses: addresses,
+                totalFlyers: addresses.count,
+                scans: Self.intValue(payload["scans"]) ?? 0,
+                conversions: Self.intValue(payload["conversions"]) ?? 0,
+                createdAt: createdAt,
+                status: Self.stringValue(payload["status"]).flatMap(CampaignStatus.init(rawValue:))
+                    ?? campaignRecord?.mode.flatMap(CampaignStatus.init(rawValue:))
+                    ?? .draft,
+                seedQuery: Self.stringValue(payload["region"]),
+                dataConfidence: Self.codableValue(CampaignDataConfidenceSummary.self, from: payload["data_confidence_summary"]),
+                provisionStatus: Self.stringValue(payload["provision_status"]).flatMap(CampaignProvisionStatus.init(rawValue:)),
+                provisionSource: Self.stringValue(payload["provision_source"]).flatMap(CampaignProvisionSource.init(rawValue:)),
+                provisionPhase: Self.stringValue(payload["provision_phase"]).flatMap(CampaignProvisionPhase.init(rawValue:)),
+                addressesReadyAt: Self.dateValue(payload["addresses_ready_at"]),
+                mapReadyAt: Self.dateValue(payload["map_ready_at"]),
+                optimizedAt: Self.dateValue(payload["optimized_at"]),
+                hasParcels: Self.boolValue(payload["has_parcels"]),
+                buildingLinkConfidence: Self.doubleValue(payload["building_link_confidence"]),
+                mapMode: Self.stringValue(payload["map_mode"]).flatMap(CampaignMapMode.init(rawValue:)),
+                coverageScore: Self.intValue(payload["coverage_score"]),
+                dataQuality: Self.stringValue(payload["data_quality"]).flatMap(CampaignDataQuality.init(rawValue:)),
+                standardModeRecommended: Self.boolValue(payload["standard_mode_recommended"]),
+                dataQualityReason: Self.stringValue(payload["data_quality_reason"])
+            )
+        }
+    }
+
+    func getCachedAddressRows(campaignId: UUID) async -> [CampaignAddressRow] {
+        let campaignIdString = campaignId.uuidString
+        return (try? await dbQueue.read { db in
+            let records = try CachedAddressRecord
+                .filter(Column("campaign_id") == campaignIdString)
+                .fetchAll(db)
+            return Self.addressRows(from: records, campaignId: campaignIdString)
+        }) ?? []
     }
 
     func upsertBuildings(campaignId: String, features: [BuildingFeature]) async {
@@ -887,11 +949,8 @@ final class CampaignRepository {
             let roadRecords = try CachedRoadRecord
                 .filter(Column("campaign_id") == campaignId)
                 .fetchAll(db)
-            let linkRecords = try CachedBuildingAddressLinkRecord
-                .filter(Column("campaign_id") == campaignId)
-                .fetchAll(db)
 
-            guard !buildingRecords.isEmpty || !addressRecords.isEmpty || !roadRecords.isEmpty || !linkRecords.isEmpty else {
+            guard !buildingRecords.isEmpty || !addressRecords.isEmpty || !roadRecords.isEmpty else {
                 return nil
             }
 
@@ -914,16 +973,10 @@ final class CampaignRepository {
                 )
             }
 
-            var links: [String: [String]] = [:]
-            for link in linkRecords {
-                links[link.buildingId.lowercased(), default: []].append(link.addressId)
-            }
-
             return OfflineCampaignMapBundle(
                 buildings: BuildingFeatureCollection(type: "FeatureCollection", features: buildings),
                 addresses: AddressFeatureCollection(type: "FeatureCollection", features: addresses),
-                roads: RoadFeatureCollection(type: "FeatureCollection", features: roads),
-                silverBuildingLinks: links
+                roads: RoadFeatureCollection(type: "FeatureCollection", features: roads)
             )
         }
     }
@@ -1194,6 +1247,159 @@ final class CampaignRepository {
 
     private func cacheScopedId(campaignId: String, entityId: String) -> String {
         "\(campaignId.lowercased()):\(entityId.lowercased())"
+    }
+
+    private static func campaignAddresses(
+        from records: [CachedAddressRecord],
+        campaignId: String
+    ) -> [CampaignAddress] {
+        records.compactMap { record in
+            guard let addressId = uuidValue(from: record, campaignId: campaignId) else { return nil }
+            let feature = OfflineJSONCodec.decode(AddressFeature.self, from: record.payloadJSON)
+            let coordinate = coordinateValue(from: record, feature: feature)
+            let label = feature?.properties.formatted?.trimmingCharacters(in: .whitespacesAndNewlines)
+                ?? record.address?.trimmingCharacters(in: .whitespacesAndNewlines)
+                ?? "Address"
+
+            return CampaignAddress(
+                id: addressId,
+                address: label.isEmpty ? "Address" : label,
+                coordinate: coordinate
+            )
+        }
+    }
+
+    private static func addressRows(
+        from records: [CachedAddressRecord],
+        campaignId: String
+    ) -> [CampaignAddressRow] {
+        records.compactMap { record in
+            guard let addressId = uuidValue(from: record, campaignId: campaignId) else { return nil }
+            let feature = OfflineJSONCodec.decode(AddressFeature.self, from: record.payloadJSON)
+            guard let coordinate = coordinateValue(from: record, feature: feature) else { return nil }
+            let label = feature?.properties.formatted?.trimmingCharacters(in: .whitespacesAndNewlines)
+                ?? record.address?.trimmingCharacters(in: .whitespacesAndNewlines)
+                ?? "Address"
+
+            return CampaignAddressRow(
+                id: addressId,
+                formatted: label.isEmpty ? "Address" : label,
+                lat: coordinate.latitude,
+                lon: coordinate.longitude
+            )
+        }
+    }
+
+    private static func uuidValue(from record: CachedAddressRecord, campaignId: String) -> UUID? {
+        let feature = OfflineJSONCodec.decode(AddressFeature.self, from: record.payloadJSON)
+        let scopedPrefix = "\(campaignId.lowercased()):"
+        let unscopedRecordId = record.id.lowercased().hasPrefix(scopedPrefix)
+            ? String(record.id.dropFirst(scopedPrefix.count))
+            : record.id
+
+        return [
+            feature?.properties.id,
+            feature?.id,
+            unscopedRecordId
+        ]
+        .compactMap { $0 }
+        .lazy
+        .compactMap(UUID.init(uuidString:))
+        .first
+    }
+
+    private static func coordinateValue(
+        from record: CachedAddressRecord,
+        feature: AddressFeature?
+    ) -> CLLocationCoordinate2D? {
+        if let latitude = record.latitude,
+           let longitude = record.longitude {
+            let coordinate = CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+            return CLLocationCoordinate2DIsValid(coordinate) ? coordinate : nil
+        }
+
+        if let point = feature?.geometry.asPoint,
+           point.count >= 2 {
+            let coordinate = CLLocationCoordinate2D(latitude: point[1], longitude: point[0])
+            return CLLocationCoordinate2DIsValid(coordinate) ? coordinate : nil
+        }
+
+        return nil
+    }
+
+    private static func jsonObject(from string: String?) -> [String: Any] {
+        guard let string,
+              let data = string.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return [:]
+        }
+        return object
+    }
+
+    private static func codableValue<T: Decodable>(_ type: T.Type, from value: Any?) -> T? {
+        guard let value,
+              JSONSerialization.isValidJSONObject(value),
+              let data = try? JSONSerialization.data(withJSONObject: value) else {
+            return nil
+        }
+        return try? JSONDecoder.supabaseDates.decode(type, from: data)
+    }
+
+    private static func stringValue(_ value: Any?) -> String? {
+        switch value {
+        case let value as String:
+            return value
+        case let value as NSNumber:
+            return value.stringValue
+        default:
+            return nil
+        }
+    }
+
+    private static func intValue(_ value: Any?) -> Int? {
+        switch value {
+        case let value as Int:
+            return value
+        case let value as NSNumber:
+            return value.intValue
+        case let value as String:
+            return Int(value)
+        default:
+            return nil
+        }
+    }
+
+    private static func doubleValue(_ value: Any?) -> Double? {
+        switch value {
+        case let value as Double:
+            return value
+        case let value as NSNumber:
+            return value.doubleValue
+        case let value as String:
+            return Double(value)
+        default:
+            return nil
+        }
+    }
+
+    private static func boolValue(_ value: Any?) -> Bool? {
+        switch value {
+        case let value as Bool:
+            return value
+        case let value as NSNumber:
+            return value.boolValue
+        case let value as String:
+            return Bool(value)
+        default:
+            return nil
+        }
+    }
+
+    private static func dateValue(_ value: Any?) -> Date? {
+        if let value = value as? String {
+            return OfflineDateCodec.date(from: value) ?? ISO8601DateFormatter().date(from: value)
+        }
+        return nil
     }
 
     private static func pointGeometry(for coordinate: CLLocationCoordinate2D) -> MapFeatureGeoJSONGeometry? {

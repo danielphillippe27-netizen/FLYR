@@ -472,6 +472,12 @@ final class BuildingDataServiceTests: XCTestCase {
             .appointment
         )
     }
+
+    func testLeadAndFollowUpStatusesMapToDistinctColorBuckets() {
+        XCTAssertEqual(AddressStatus.hotLead.mapLayerStatus, "lead")
+        XCTAssertEqual(AddressStatus.appointment.mapLayerStatus, "hot_lead")
+        XCTAssertEqual(AddressStatus.futureSeller.mapLayerStatus, "hot_lead")
+    }
     
     // MARK: - Color Priority Tests
     

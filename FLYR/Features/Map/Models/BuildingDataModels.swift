@@ -180,7 +180,7 @@ struct BuildingData: Sendable {
         address != nil && addressLinked
     }
     
-    /// Returns true when this building has more than one address (multi-address Gold/Silver)
+    /// Returns true when this building has more than one Gold-linked address.
     var isMultiAddress: Bool {
         addresses.count > 1
     }
@@ -418,25 +418,6 @@ struct CampaignAddressResponse: Codable {
             totalScans: scans ?? 0,
             lastScannedAt: lastScannedAt
         )
-    }
-}
-
-// MARK: - Building Address Link Response (for Supabase queries)
-
-/// Response model for building_address_links with nested campaign_addresses
-struct BuildingAddressLinkResponse: Codable {
-    let addressId: UUID
-    let campaignAddress: CampaignAddressResponse?
-    let matchType: String?
-    let confidence: Double?
-    let distanceMeters: Double?
-    
-    enum CodingKeys: String, CodingKey {
-        case addressId = "address_id"
-        case campaignAddress = "campaign_addresses"
-        case matchType = "match_type"
-        case confidence
-        case distanceMeters = "distance_meters"
     }
 }
 

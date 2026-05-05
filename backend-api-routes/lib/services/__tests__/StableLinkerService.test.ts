@@ -317,6 +317,99 @@ async function run() {
     assertEqual(resolution.unsupportedLocalities, []);
   });
 
+  await testAsync('Oshawa parcel aliases: municipal locality names resolve to Oshawa parcels', async () => {
+    const supabase = createMockSupabase({
+      campaignAddresses: [
+        { campaign_id: 'campaign-oshawa', locality: 'City of Oshawa' },
+        { campaign_id: 'campaign-oshawa', locality: 'The Corporation of the City of Oshawa' },
+      ],
+    });
+    const service = new ParcelEnrichmentService(supabase as any);
+
+    const resolution = await (service as any).inferSourceId('campaign-oshawa');
+    assertEqual(resolution.sourceId, 'oshawa_parcels');
+    assertEqual(resolution.unsupportedLocalities, []);
+    assertEqual(resolution.localityCounts, [{ source_id: 'oshawa_parcels', count: 2 }]);
+  });
+
+  await testAsync('Oshawa parcel source falls back to campaign bbox when locality is absent', async () => {
+    const supabase = createMockSupabase({
+      campaignAddresses: [
+        { campaign_id: 'campaign-oshawa-bbox', locality: null },
+      ],
+    });
+    const service = new ParcelEnrichmentService(supabase as any);
+
+    const resolution = await (service as any).inferSourceId('campaign-oshawa-bbox', {
+      id: 'campaign-oshawa-bbox',
+      bbox: [-78.91, 43.88, -78.84, 43.93],
+      territory_boundary: null,
+      region: 'ON',
+    });
+    assertEqual(resolution.sourceId, 'oshawa_parcels');
+    assertEqual(resolution.unsupportedLocalities, []);
+    assertEqual(resolution.localityCounts, [{ source_id: 'oshawa_parcels', count: 0 }]);
+  });
+
+  await testAsync('Oshawa parcel loading parses EWKT geom and filters to campaign bbox', async () => {
+    const insideParcel = JSON.stringify({
+      external_id: 'oshawa-parcel-inside',
+      geom: 'SRID=4326;MULTIPOLYGON (((-78.86630 43.89708, -78.86597 43.89715, -78.86613 43.89750, -78.86643 43.89743, -78.86630 43.89708)))',
+    });
+    const outsideParcel = JSON.stringify({
+      external_id: 'oshawa-parcel-outside',
+      geom: 'SRID=4326;MULTIPOLYGON (((-79.50030 43.89708, -79.49997 43.89715, -79.50013 43.89750, -79.50043 43.89743, -79.50030 43.89708)))',
+    });
+    const body = {
+      async *[Symbol.asyncIterator]() {
+        yield Buffer.from(`${insideParcel}\n${outsideParcel}\n`);
+      },
+      async transformToString() {
+        throw new Error('streaming parser must not materialize full parcel file');
+      },
+    };
+    const supabase = createMockSupabase({
+      campaignAddresses: [
+        { campaign_id: 'campaign-oshawa-ewkt', locality: 'City of Oshawa' },
+      ],
+    });
+    const service = new ParcelEnrichmentService(supabase as any);
+    (service as any).s3 = {
+      async send(command: any) {
+        if (command.constructor.name === 'ListObjectsV2Command') {
+          return {
+            Contents: [
+              {
+                Key: 'gold-standard/canada/ontario/oshawa_parcels/20260424/oshawa_parcels_gold.ndjson',
+              },
+            ],
+            IsTruncated: false,
+          };
+        }
+
+        return { Body: body };
+      },
+    };
+
+    const result = await (service as any).loadCampaignParcels(
+      'campaign-oshawa-ewkt',
+      {
+        id: 'campaign-oshawa-ewkt',
+        bbox: [-78.87, 43.89, -78.86, 43.90],
+        territory_boundary: null,
+        region: 'ON',
+      }
+    );
+
+    assertEqual(result.status, 'ready');
+    assertEqual(result.sourceId, 'oshawa_parcels');
+    assertEqual(result.parcelCount, 1);
+    assertEqual(result.parcels[0].externalId, 'oshawa-parcel-inside');
+    assertEqual(result.debug.scanned_lines, 2);
+    assertEqual(result.debug.parsed_records, 2);
+    assertEqual(result.debug.bbox_candidates, 1);
+  });
+
   await testAsync('Toronto parcel loading streams NDJSON and filters to campaign bbox', async () => {
     const insideParcel = JSON.stringify({
       type: 'Feature',
@@ -410,6 +503,72 @@ async function run() {
 
     assertTrue(matches.every((match: any) => match.isMultiUnit), 'Expected all matches to be multi-unit');
     assertTrue(matches.every((match: any) => match.unitCount === 3), 'Expected unitCount=3 for townhouse row');
+  });
+
+  test('Detached fallback: weak proximity does not reuse an already matched building', () => {
+    const service = new StableLinkerService({} as any);
+    const alreadyMatched = makeBuilding(
+      'detached-a',
+      rectangle(-79.00420, 43.00400, -79.00405, 43.00415)
+    );
+    const unusedNeighbor = makeBuilding(
+      'detached-b',
+      rectangle(-79.00455, 43.00400, -79.00440, 43.00415)
+    );
+    const address = makeAddress('41', -79.00418, 43.00430, 'Moyse Drive');
+
+    const match = (service as any).matchAddressToBuilding(
+      address,
+      [alreadyMatched, unusedNeighbor],
+      new Set(['detached-a']),
+      []
+    );
+
+    assertEqual(match.matchType, 'proximity_fallback');
+    assertEqual(match.buildingId, 'detached-b');
+  });
+
+  test('Detached proximity: same-street proximity does not reuse an already matched building', () => {
+    const service = new StableLinkerService({} as any);
+    const alreadyMatched = makeBuilding(
+      'detached-a',
+      rectangle(-79.00420, 43.00400, -79.00405, 43.00415),
+      { primaryStreet: 'Moyse Drive' }
+    );
+    const unusedNeighbor = makeBuilding(
+      'detached-b',
+      rectangle(-79.00455, 43.00400, -79.00440, 43.00415),
+      { primaryStreet: 'Moyse Drive' }
+    );
+    const address = makeAddress('43', -79.00418, 43.00430, 'Moyse Drive');
+
+    const match = (service as any).matchAddressToBuilding(
+      address,
+      [alreadyMatched, unusedNeighbor],
+      new Set(['detached-a']),
+      []
+    );
+
+    assertEqual(match.matchType, 'proximity_verified');
+    assertEqual(match.buildingId, 'detached-b');
+  });
+
+  test('Detached fallback: weak proximity becomes orphan when every candidate is already matched', () => {
+    const service = new StableLinkerService({} as any);
+    const alreadyMatched = makeBuilding(
+      'detached-only',
+      rectangle(-79.00420, 43.00400, -79.00405, 43.00415)
+    );
+    const address = makeAddress('43', -79.00418, 43.00430, 'Moyse Drive');
+
+    const match = (service as any).matchAddressToBuilding(
+      address,
+      [alreadyMatched],
+      new Set(['detached-only']),
+      []
+    );
+
+    assertEqual(match.matchType, 'orphan');
   });
 
   test('Dense ambiguity: equal-distance buildings raise DataIntegrityError instead of guessing', () => {

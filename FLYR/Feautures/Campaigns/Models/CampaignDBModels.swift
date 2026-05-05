@@ -213,7 +213,7 @@ enum AddressStatus: String, Codable, CaseIterable {
         case .appointment: return "Appointment"
         case .doNotKnock: return "Do Not Knock"
         case .futureSeller: return "Follow Up"
-        case .hotLead: return "Hot Lead"
+        case .hotLead: return "Lead"
         }
     }
 
@@ -228,7 +228,7 @@ enum AddressStatus: String, Codable, CaseIterable {
         case .appointment: return "Appointment scheduled"
         case .doNotKnock: return "Do not knock"
         case .futureSeller: return "Follow up"
-        case .hotLead: return "Hot lead"
+        case .hotLead: return "Lead"
         }
     }
 
@@ -258,7 +258,7 @@ enum AddressStatus: String, Codable, CaseIterable {
         case .appointment: return .yellow
         case .doNotKnock: return .black
         case .futureSeller: return .yellow
-        case .hotLead: return .yellow
+        case .hotLead: return .blue
         }
     }
 
@@ -266,7 +266,8 @@ enum AddressStatus: String, Codable, CaseIterable {
     var mapLayerStatus: String {
         switch self {
         case .talked: return "hot"
-        case .appointment, .hotLead, .futureSeller: return "hot_lead"
+        case .hotLead: return "lead"
+        case .appointment, .futureSeller: return "hot_lead"
         case .doNotKnock: return "do_not_knock"
         case .noAnswer: return "no_answer"
         case .delivered: return "visited"

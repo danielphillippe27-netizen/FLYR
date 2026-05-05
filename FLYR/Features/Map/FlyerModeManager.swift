@@ -22,10 +22,12 @@ final class FlyerModeManager: ObservableObject {
 
     var onAddressCompleted: ((UUID, AddressStatus) -> Void)?
     var automaticStatusForAddress: ((UUID) -> AddressStatus)?
+    var renderedTargetProvider: ((CLLocation, Double) async -> FlyerAddress?)?
 
     private var locationCancellable: AnyCancellable?
     private var dwellTimerCancellable: AnyCancellable?
     private var dwellTracker: [UUID: Date] = [:]
+    private var completedAddressIds = Set<UUID>()
 
     func load(campaignId _: UUID, featuresService: MapFeaturesService) async {
         addresses = []
@@ -36,12 +38,14 @@ final class FlyerModeManager: ObservableObject {
         addresses = addressesFromFlyerTargets(
             CampaignTargetResolver.flyerTargets(buildings: buildingFeatures, addresses: addressFeatures)
         )
+        addresses.removeAll { completedAddressIds.contains($0.id) }
 
         currentAddress = nearestAddress(to: SessionManager.shared.currentLocation)
     }
 
     func load(targets: [ResolvedCampaignTarget]) {
         addresses = addressesFromFlyerTargets(targets)
+        addresses.removeAll { completedAddressIds.contains($0.id) }
         currentAddress = nearestAddress(to: SessionManager.shared.currentLocation)
     }
 
@@ -85,6 +89,7 @@ final class FlyerModeManager: ObservableObject {
         addresses = []
         currentAddress = nil
         dwellTracker = [:]
+        completedAddressIds = []
     }
 
     private func addressesFromFlyerTargets(_ targets: [ResolvedCampaignTarget]) -> [FlyerAddress] {
@@ -116,7 +121,16 @@ final class FlyerModeManager: ObservableObject {
     }
 
     private func checkProximity(location: CLLocation) async {
-        guard !addresses.isEmpty else {
+        let threshold = adaptiveThresholdMeters(for: location)
+        let renderedAddress = await renderedTargetProvider?(location, threshold)
+        var candidateAddresses = addresses
+        if let renderedAddress,
+           !completedAddressIds.contains(renderedAddress.id),
+           !candidateAddresses.contains(where: { $0.id == renderedAddress.id }) {
+            candidateAddresses.insert(renderedAddress, at: 0)
+        }
+
+        guard !candidateAddresses.isEmpty else {
             currentAddress = nil
             dwellTracker = [:]
             return
@@ -124,26 +138,30 @@ final class FlyerModeManager: ObservableObject {
 
         // Drive-by guard: don't auto-complete while moving too fast.
         if location.speed >= 0, location.speed > Self.maxCompletionSpeedMPS {
-            currentAddress = nearestAddress(to: location)
+            currentAddress = nearestAddress(to: location, within: candidateAddresses)
             return
         }
 
-        let threshold = adaptiveThresholdMeters(for: location)
-        currentAddress = nearestAddress(to: location)
+        currentAddress = nearestAddress(to: location, within: candidateAddresses)
 
         // Keep dwell state only for addresses still within proximity.
         dwellTracker = dwellTracker.filter { addressId, _ in
-            guard let address = addresses.first(where: { $0.id == addressId }) else { return false }
+            guard let address = candidateAddresses.first(where: { $0.id == addressId }) else { return false }
             let addrLocation = CLLocation(latitude: address.coordinate.latitude, longitude: address.coordinate.longitude)
             return location.distance(from: addrLocation) <= threshold
         }
 
-        guard let matchedIndex = addresses.firstIndex(where: { addr in
+        let matchedAddress = renderedAddress.flatMap { rendered -> FlyerAddress? in
+            guard !completedAddressIds.contains(rendered.id) else { return nil }
+            return rendered
+        } ?? candidateAddresses.first(where: { addr in
             let addrLocation = CLLocation(latitude: addr.coordinate.latitude, longitude: addr.coordinate.longitude)
             return location.distance(from: addrLocation) <= threshold
-        }) else { return }
+        })
 
-        let addressId = addresses[matchedIndex].id
+        guard let matchedAddress else { return }
+
+        let addressId = matchedAddress.id
         let now = Date()
         let enteredAt = dwellTracker[addressId] ?? now
         if dwellTracker[addressId] == nil {
@@ -174,8 +192,9 @@ final class FlyerModeManager: ObservableObject {
         }
 
         onAddressCompleted?(addressId, completionStatus)
+        completedAddressIds.insert(addressId)
 
-        addresses.remove(at: matchedIndex)
+        addresses.removeAll { $0.id == addressId }
         dwellTracker[addressId] = nil
         currentAddress = nearestAddress(to: location)
     }
@@ -184,5 +203,15 @@ final class FlyerModeManager: ObservableObject {
         guard location.horizontalAccuracy > 0 else { return Self.proximityThresholdMeters }
         let scaled = location.horizontalAccuracy * 1.2
         return min(Self.maxProximityThresholdMeters, max(Self.proximityThresholdMeters, scaled))
+    }
+
+    private func nearestAddress(to location: CLLocation?, within candidates: [FlyerAddress]) -> FlyerAddress? {
+        guard !candidates.isEmpty else { return nil }
+        guard let location else { return candidates.first }
+        return candidates.min(by: { lhs, rhs in
+            let l = location.distance(from: CLLocation(latitude: lhs.coordinate.latitude, longitude: lhs.coordinate.longitude))
+            let r = location.distance(from: CLLocation(latitude: rhs.coordinate.latitude, longitude: rhs.coordinate.longitude))
+            return l < r
+        })
     }
 }

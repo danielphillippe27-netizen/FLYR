@@ -46,8 +46,10 @@ private enum StandardCampaignMarkerIcon {
             return MapStatusColor.touched
         case .talked:
             return MapStatusColor.conversations
-        case .appointment, .futureSeller, .hotLead:
+        case .appointment, .futureSeller:
             return MapStatusColor.hotLead
+        case .hotLead:
+            return MapStatusColor.lead
         case .doNotKnock:
             return MapStatusColor.doNotKnock
         }

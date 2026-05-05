@@ -162,6 +162,13 @@ final class UseCampaignV2: ObservableObject {
             } else {
                 if needsRefresh && !isOnline {
                     print("📴 [HOOK DEBUG] Offline - using store campaign without refresh")
+                    if let cachedCampaign = try? await api.fetchCampaign(id: id) {
+                        store.update(cachedCampaign)
+                        item = cachedCampaign
+                        print("📴 [HOOK DEBUG] Hydrated campaign from offline cache: \(cachedCampaign.addresses.count) addresses")
+                        isLoading = false
+                        return
+                    }
                 }
                 item = campaign
             }
@@ -172,7 +179,15 @@ final class UseCampaignV2: ObservableObject {
 
         if !isOnline {
             print("📴 [HOOK DEBUG] Offline with no cached campaign in store")
-            error = "Campaign details are unavailable offline until this campaign has been opened online."
+            if let cachedCampaign = try? await api.fetchCampaign(id: id) {
+                if let store = store {
+                    store.update(cachedCampaign)
+                }
+                item = cachedCampaign
+                print("📴 [HOOK DEBUG] Loaded campaign detail from offline cache: \(cachedCampaign.addresses.count) addresses")
+            } else {
+                error = "Campaign details are unavailable offline until this campaign has been opened online."
+            }
             isLoading = false
             return
         }

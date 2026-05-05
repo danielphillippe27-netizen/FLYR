@@ -405,6 +405,9 @@ final class RouteAssignmentMapViewController: UIViewController {
             MapStatusColor.lead
 
             Exp(.eq) { Exp(.get) { "status" }; "hot_lead" }
+            MapStatusColor.lead
+            
+            Exp(.eq) { Exp(.get) { "status" }; "follow_up" }
             MapStatusColor.hotLead
 
             Exp(.eq) { Exp(.get) { "address_status" }; "appointment" }
@@ -412,9 +415,12 @@ final class RouteAssignmentMapViewController: UIViewController {
 
             Exp(.eq) { Exp(.get) { "address_status" }; "future_seller" }
             MapStatusColor.hotLead
+            
+            Exp(.eq) { Exp(.get) { "address_status" }; "follow_up" }
+            MapStatusColor.hotLead
 
             Exp(.eq) { Exp(.get) { "address_status" }; "hot_lead" }
-            MapStatusColor.hotLead
+            MapStatusColor.lead
 
             Exp(.eq) { Exp(.get) { "status" }; "hot" }
             MapStatusColor.conversations
@@ -452,12 +458,9 @@ final class RouteAssignmentMapViewController: UIViewController {
 
     private func routeLeadGlowOpacityExpression() -> Exp {
         Exp(.switchCase) {
-            Exp(.eq) { Exp(.get) { "status" }; "hot_lead" }
-            0.82
-
             Exp(.match) {
                 Exp(.get) { "address_status" }
-                ["appointment", "future_seller", "hot_lead"]
+                ["appointment", "future_seller", "follow_up"]
                 true
                 false
             }

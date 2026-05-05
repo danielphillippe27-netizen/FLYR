@@ -5,6 +5,7 @@ import Combine
 @MainActor
 final class CampaignV2Store: ObservableObject {
     @Published private(set) var campaigns: [CampaignV2] = []
+    private let logCampaignLookups = false
     
     var routeToV2Detail: ((UUID) -> Void)?
     
@@ -74,11 +75,13 @@ final class CampaignV2Store: ObservableObject {
     
     /// Get campaign by ID
     func campaign(id: UUID) -> CampaignV2? {
-        print("📦 [STORE DEBUG] Looking up campaign with ID: \(id)")
+        if logCampaignLookups {
+            print("📦 [STORE DEBUG] Looking up campaign with ID: \(id)")
+        }
         let found = campaigns.first { $0.id == id }
-        if let campaign = found {
+        if logCampaignLookups, let campaign = found {
             print("📦 [STORE DEBUG] Found campaign: '\(campaign.name)'")
-        } else {
+        } else if found == nil {
             print("❌ [STORE DEBUG] Campaign with ID \(id) not found")
         }
         return found

@@ -131,7 +131,7 @@ export class BuildingAdapter {
       };
     }
 
-    // Silver path: use pre-fetched GeoJSON or download from S3
+    // Raw snapshot path: use pre-fetched GeoJSON or download from S3
     if (snapshot) {
       let geojson: any;
       if (preFetchedBuildingsGeo != null) {

@@ -12,11 +12,9 @@ type ResolvedBuilding = {
   publicId: string;
 };
 
-type BuildingAddressLinkRow = {
+type LinkedAddressRow = {
   address_id: string;
   match_type: string | null;
-  confidence: number | null;
-  distance_meters: number | null;
 };
 
 const ADDRESS_SELECT =
@@ -94,6 +92,45 @@ async function fetchGoldAddresses(
     .select(ADDRESS_SELECT)
     .eq("campaign_id", campaignId)
     .in("building_id", candidates);
+}
+
+async function fetchLinkedAddresses(
+  supabase: any,
+  campaignId: string,
+  buildingRowId: string,
+  allowedMatchTypes?: Set<string>
+) {
+  const { data: links, error: linksError } = await supabase
+    .from("building_address_links")
+    .select("address_id, match_type")
+    .eq("campaign_id", campaignId)
+    .eq("building_id", buildingRowId);
+
+  if (linksError) {
+    return { data: null, error: linksError };
+  }
+
+  const addressIds = Array.from(
+    new Set(
+      ((links ?? []) as LinkedAddressRow[])
+        .filter((row) => {
+          if (!allowedMatchTypes) return true;
+          return allowedMatchTypes.has((row.match_type ?? "").toLowerCase());
+        })
+        .map((row) => row.address_id)
+        .filter(Boolean)
+    )
+  );
+
+  if (addressIds.length === 0) {
+    return { data: [], error: null };
+  }
+
+  return supabase
+    .from("campaign_addresses")
+    .select(ADDRESS_SELECT)
+    .eq("campaign_id", campaignId)
+    .in("id", addressIds);
 }
 
 function getAuthUser(request: Request) {
@@ -181,9 +218,6 @@ export async function GET(request: Request, context: RouteContext) {
       )
     );
 
-    // Gold assignments are authoritative when present. Older/stale Silver
-    // building_address_links can otherwise make a nearby house appear under
-    // the wrong building in the location card.
     const { data: goldAddresses, error: goldError } = await fetchGoldAddresses(
       supabase,
       campaignId,
@@ -199,54 +233,29 @@ export async function GET(request: Request, context: RouteContext) {
     }
 
     const goldAddressRows = (goldAddresses ?? []) as Array<{ id: string }>;
-    let linkedAddressRows: Array<{ id: string }> = [];
-
-    if (resolvedBuilding) {
-      const { data: links, error: linksError } = await supabase
-        .from("building_address_links")
-        .select("address_id, match_type, confidence, distance_meters")
-        .eq("campaign_id", campaignId)
-        .in("building_id", buildingIdCandidates);
-
-      if (linksError) {
-        console.error("[buildings/addresses] links error:", linksError);
-        return NextResponse.json(
-          { error: "Failed to fetch links", addresses: [] },
-          { status: 500 }
-        );
+    if (goldAddressRows.length > 0) {
+      if (!resolvedBuilding) {
+        return NextResponse.json({ addresses: goldAddressRows });
       }
 
-      const allLinks = (links ?? []) as BuildingAddressLinkRow[];
-      const linksForDisplay =
-        goldAddressRows.length > 0
-          ? allLinks.filter((link) => (link.match_type ?? "").toLowerCase() === "manual")
-          : allLinks;
-      const addressIds = linksForDisplay
-        .map((r) => r.address_id)
-        .filter(Boolean);
+      const { data: manualLinkedAddresses, error: manualLinkedError } = await fetchLinkedAddresses(
+        supabase,
+        campaignId,
+        resolvedBuilding.rowId,
+        new Set(["manual"])
+      );
 
-      if (addressIds.length > 0) {
-        const { data: addresses, error: addrError } = await supabase
-          .from("campaign_addresses")
-          .select(ADDRESS_SELECT)
-          .eq("campaign_id", campaignId)
-          .in("id", addressIds);
-
-        if (addrError) {
-          console.error("[buildings/addresses] campaign_addresses error:", addrError);
-          return NextResponse.json(
-            { error: "Failed to fetch addresses", addresses: [] },
-            { status: 500 }
-          );
-        }
-
-        linkedAddressRows = (addresses ?? []) as Array<{ id: string }>;
+      if (manualLinkedError) {
+        console.warn("[buildings/addresses] manual link fallback warning:", manualLinkedError);
+        return NextResponse.json({ addresses: goldAddressRows });
       }
-    }
 
-    const mergedAddresses = mergeAddressesById([goldAddressRows, linkedAddressRows]);
-    if (mergedAddresses.length > 0) {
-      return NextResponse.json({ addresses: mergedAddresses });
+      return NextResponse.json({
+        addresses: mergeAddressesById([
+          goldAddressRows,
+          (manualLinkedAddresses ?? []) as Array<{ id: string }>,
+        ]),
+      });
     }
 
     if (!resolvedBuilding) {
@@ -256,7 +265,21 @@ export async function GET(request: Request, context: RouteContext) {
       );
     }
 
-    return NextResponse.json({ addresses: [] });
+    const { data: linkedAddresses, error: linkedError } = await fetchLinkedAddresses(
+      supabase,
+      campaignId,
+      resolvedBuilding.rowId
+    );
+
+    if (linkedError) {
+      console.error("[buildings/addresses] link fallback error:", linkedError);
+      return NextResponse.json(
+        { error: "Failed to fetch addresses", addresses: [] },
+        { status: 500 }
+      );
+    }
+
+    return NextResponse.json({ addresses: linkedAddresses ?? [] });
   } catch (err) {
     console.error("[buildings/addresses] GET", err);
     return NextResponse.json(
@@ -326,6 +349,19 @@ export async function POST(request: Request, context: RouteContext) {
       return NextResponse.json({ error: "Building not found" }, { status: 404 });
     }
 
+    const { data: previousLinks } = await supabase
+      .from("building_address_links")
+      .select("building_id")
+      .eq("campaign_id", campaignId)
+      .eq("address_id", addressId);
+    const previousBuildingIds = Array.from(
+      new Set(
+        ((previousLinks ?? []) as Array<{ building_id: string }>)
+          .map((row) => row.building_id)
+          .filter(Boolean)
+      )
+    );
+
     const { error: insertError } = await supabase
       .from("building_address_links")
       .upsert({
@@ -336,7 +372,7 @@ export async function POST(request: Request, context: RouteContext) {
         confidence: 1,
         is_multi_unit: false,
         unit_count: 1,
-      }, { onConflict: "building_id,address_id,campaign_id" });
+      }, { onConflict: "campaign_id,address_id" });
 
     if (insertError) {
       console.error("[buildings/addresses] POST insert error:", insertError);
@@ -373,6 +409,39 @@ export async function POST(request: Request, context: RouteContext) {
 
       if (multiUnitSyncError) {
         console.warn("[buildings/addresses] multi-unit sync warning:", multiUnitSyncError);
+      }
+    }
+
+    for (const previousBuildingId of previousBuildingIds) {
+      if (previousBuildingId === resolvedBuilding.rowId) continue;
+      const { data: staleRows, error: staleRowsError } = await supabase
+        .from("building_address_links")
+        .select("address_id")
+        .eq("campaign_id", campaignId)
+        .eq("building_id", previousBuildingId);
+
+      if (staleRowsError) {
+        console.warn("[buildings/addresses] previous building count warning:", staleRowsError);
+        continue;
+      }
+
+      const staleUnitCount = Math.max(
+        new Set(((staleRows ?? []) as Array<{ address_id: string }>).map((row) => row.address_id)).size,
+        1
+      );
+      if (staleUnitCount <= 0) continue;
+
+      const { error: previousSyncError } = await supabase
+        .from("building_address_links")
+        .update({
+          is_multi_unit: staleUnitCount > 1,
+          unit_count: staleUnitCount,
+        })
+        .eq("campaign_id", campaignId)
+        .eq("building_id", previousBuildingId);
+
+      if (previousSyncError) {
+        console.warn("[buildings/addresses] previous building multi-unit sync warning:", previousSyncError);
       }
     }
 

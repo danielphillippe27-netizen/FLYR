@@ -25,6 +25,9 @@ export const dynamic = 'force-dynamic';
 
 interface ProvisionRequest {
   campaign_id: string;
+  geometry_tier?: string;
+  allow_gold?: boolean;
+  linker_mode?: string;
 }
 
 type ProvisionSource = 'gold' | 'lambda';
@@ -738,6 +741,14 @@ export async function POST(request: NextRequest) {
 
     const body: ProvisionRequest = await request.json();
     campaignId = body.campaign_id;
+    const requestedGeometryTier =
+      typeof body.geometry_tier === 'string' ? body.geometry_tier.trim().toLowerCase() : null;
+    const requestedLinkerMode =
+      typeof body.linker_mode === 'string' ? body.linker_mode.trim().toLowerCase() : null;
+    const forceStableLinking =
+      requestedGeometryTier === 'diamond' ||
+      requestedLinkerMode === 'stable' ||
+      body.allow_gold === true;
 
     if (!campaignId) {
       return NextResponse.json({ error: 'Campaign ID required' }, { status: 400 });
@@ -917,7 +928,7 @@ export async function POST(request: NextRequest) {
 
       await upsertSnapshotMetadata(supabase, campaignId!, snapshot);
 
-      const shouldDeferPostProcessing = addressSource !== 'gold';
+      const shouldDeferPostProcessing = addressSource !== 'gold' && !forceStableLinking;
       const parcelEnrichmentStatus = isParcelRegionSupported(regionCode)
         ? (shouldDeferPostProcessing ? 'queued' : 'processing')
         : 'skipped';

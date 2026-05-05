@@ -425,16 +425,15 @@ final class MapFeaturesService: ObservableObject {
     @Published var buildings: BuildingFeatureCollection?
     @Published var addresses: AddressFeatureCollection?
     @Published var roads: RoadFeatureCollection?
+    @Published var diamondManifest: DiamondManifest?
     @Published var isLoading = false
     @Published var error: Error?
 
-    /// Silver linking table: gers_id (lowercase) → [address_id UUIDs].
-    /// Populated from building_address_links whenever buildings are fetched.
-    /// Used by resolveAddressForBuilding as the primary strategy for Silver S3 buildings.
-    @Published var silverBuildingLinks: [String: [String]] = [:]
-
     // Campaign-scoped prewarmed building polygons (e.g. Quick Start ensure response before DB links are ready).
     private var prewarmedBuildingsByCampaign: [String: BuildingFeatureCollection] = [:]
+    // Campaign-scoped Diamond manifests already proven ready by the creation flow.
+    private var prewarmedDiamondManifestsByCampaign: [String: DiamondManifest] = [:]
+    private var diamondManifestPrewarmTasks: [String: Task<Void, Never>] = [:]
     /// Tracks latest campaign fetch so stale async responses are ignored.
     private var activeCampaignRequestId: UUID?
     private var activeCampaignIdLower: String?
@@ -469,6 +468,50 @@ final class MapFeaturesService: ObservableObject {
         guard !collection.features.isEmpty else { return }
         prewarmedBuildingsByCampaign[campaignId.lowercased()] = collection
         print("✅ [MapFeatures] Primed \(collection.features.count) prewarmed building polygons for campaign \(campaignId)")
+    }
+
+    func primeDiamondManifest(campaignId: String, manifest: DiamondManifest) {
+        guard manifest.hasRenderablePMTilesGeometry else { return }
+
+        let campaignKey = campaignId.lowercased()
+        prewarmedDiamondManifestsByCampaign[campaignKey] = manifest
+
+        if isScopedToCampaign(campaignId) {
+            self.diamondManifest = manifest
+            self.buildings = BuildingFeatureCollection(type: "FeatureCollection", features: [])
+        }
+
+        print("💎 [DIAMOND] Primed ready PMTiles manifest for campaign \(campaignId)")
+    }
+
+    func beginDiamondManifestPrewarm(campaignId: String, timeoutSeconds: TimeInterval = 90) {
+        let campaignKey = campaignId.lowercased()
+        guard diamondManifestPrewarmTasks[campaignKey] == nil,
+              let campaignUUID = UUID(uuidString: campaignId) else {
+            return
+        }
+
+        diamondManifestPrewarmTasks[campaignKey] = Task { [weak self] in
+            do {
+                let manifest = try await DiamondManifestAPI.shared.waitForReadyManifest(
+                    campaignId: campaignUUID,
+                    timeoutSeconds: timeoutSeconds,
+                    pollIntervalSeconds: 2
+                )
+                guard !Task.isCancelled else { return }
+                self?.finishDiamondManifestPrewarm(campaignId: campaignId, manifest: manifest)
+            } catch {
+                guard !Task.isCancelled else { return }
+                self?.finishDiamondManifestPrewarm(campaignId: campaignId, manifest: nil)
+                print("💎 [DIAMOND] Background manifest prewarm ended without ready geometry: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func finishDiamondManifestPrewarm(campaignId: String, manifest: DiamondManifest?) {
+        diamondManifestPrewarmTasks[campaignId.lowercased()] = nil
+        guard let manifest else { return }
+        primeDiamondManifest(campaignId: campaignId, manifest: manifest)
     }
     
     // MARK: - Campaign Full Features (Fetch Once, Render Forever)
@@ -610,18 +653,14 @@ final class MapFeaturesService: ObservableObject {
     
     // MARK: - Campaign All Features (Buildings + Addresses + Roads)
     
-    /// Max addresses to use for closest-home building fallback.
-    /// Set high enough to cover large Silver campaigns (e.g. Texas 832) when S3 snapshot is unavailable.
-    private static let fallbackAddressCap = 400
-    
     /// Fetch all map features for a campaign (buildings, addresses, roads).
     ///
     /// Building source priority (handled server-side by /api/campaigns/{id}/buildings):
-    ///   1. Gold  — rpc_get_campaign_full_features (building_id FK set)
-    ///   2. Silver DB — rpc_get_campaign_full_features (building_address_links + buildings table)
-    ///   3. S3 snapshot — Lambda-generated buildings.geojson.gz (always present for Lambda campaigns)
+    ///   1. Gold, if any Gold buildings exist
+    ///   2. Silver, only when no Gold buildings exist
     ///
-    /// Addresses always come from rpc_get_campaign_addresses (enriched with building links + status IDs).
+    /// Addresses come from the backend map address endpoint, which returns DB/RPC rows first
+    /// and falls back to the Silver snapshot for non-Gold campaigns with no DB rows.
     func fetchAllCampaignFeatures(campaignId: String) async {
         let campaignIdLower = campaignId.lowercased()
         let isRefreshingSameCampaign = activeCampaignIdLower == campaignIdLower
@@ -638,7 +677,7 @@ final class MapFeaturesService: ObservableObject {
             self.buildings = BuildingFeatureCollection(type: "FeatureCollection", features: [])
             self.addresses = AddressFeatureCollection(type: "FeatureCollection", features: [])
             self.roads = RoadFeatureCollection(type: "FeatureCollection", features: [])
-            self.silverBuildingLinks = [:]
+            self.diamondManifest = nil
         }
 
         if let cachedBundle = await campaignRepository.getCampaignMapBundle(campaignId: campaignId),
@@ -646,7 +685,6 @@ final class MapFeaturesService: ObservableObject {
             self.buildings = filteredRenderableBuildingCollection(cachedBundle.buildings)
             self.addresses = cachedBundle.addresses
             self.roads = cachedBundle.roads
-            self.silverBuildingLinks = cachedBundle.silverBuildingLinks
             isLoading = false
         } else {
             self.roads = RoadFeatureCollection(type: "FeatureCollection", features: [])
@@ -663,21 +701,35 @@ final class MapFeaturesService: ObservableObject {
             isLoading = false
             return
         }
-        
+
+        let usesDiamondGeometry = await loadDiamondManifestIfAvailable(
+            campaignId: campaignId,
+            requestId: requestId
+        )
+        guard isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else { return }
+        let usesDiamondAddresses = diamondManifest?.hasRenderablePMTilesAddressCylinders == true
+        self.buildings = BuildingFeatureCollection(type: "FeatureCollection", features: [])
+        if !usesDiamondGeometry {
+            print("💎 [DIAMOND] No renderable PMTiles manifest for campaign \(campaignId); loading stable linked GeoJSON buildings")
+        }
+        if usesDiamondAddresses {
+            print("💎 [DIAMOND] Using PMTiles address rendering; loading Supabase address points for GPS/session logic")
+        } else {
+            print("💎 [DIAMOND] PMTiles address cylinders not ready; loading Supabase address points for GPS/session logic only")
+        }
+
         // Fetch the core campaign map data in parallel.
-        // Buildings go through the backend API which routes Gold → Silver DB → S3 automatically.
-        // Addresses come from DB (enriched with building link IDs and status metadata).
-        // Silver links (building_address_links) are fetched directly — used by the iOS tap resolver
-        // when Gold address_id is absent (i.e. Silver S3 buildings whose features don't carry address_id).
+        // Building geometry is PMTiles-first, with the stable linked GeoJSON API as fallback.
+        // Address points are always loaded for GPS proximity/session targeting; the map renderer
+        // decides separately whether PMTiles or GeoJSON draws them.
         await withTaskGroup(of: Void.self) { group in
-            group.addTask {
-                await self.fetchBuildingsFromAPI(campaignId: campaignId, requestId: requestId)
+            if !usesDiamondGeometry {
+                group.addTask {
+                    await self.fetchCampaignBuildings(campaignId: campaignId, requestId: requestId)
+                }
             }
             group.addTask {
                 await self.fetchCampaignAddresses(campaignId: campaignId, requestId: requestId)
-            }
-            group.addTask {
-                await self.fetchSilverBuildingLinks(campaignId: campaignId, requestId: requestId)
             }
             group.addTask {
                 await self.fetchCampaignRoads(campaignId: campaignId, requestId: requestId)
@@ -686,27 +738,79 @@ final class MapFeaturesService: ObservableObject {
 
         guard isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else { return }
         
-        // Use prewarmed polygons (from Quick Start ensureBuildingPolygons) if API returned nothing.
-        // This covers the window between campaign creation and when the S3 snapshot is available.
-        if (self.buildings?.features.isEmpty ?? true),
-           let prewarmed = prewarmedBuildingsByCampaign[campaignId.lowercased()],
-           !prewarmed.features.isEmpty {
-            self.buildings = prewarmed
-            print("✅ [MapFeatures] Using prewarmed building polygons (\(prewarmed.features.count)) for campaign \(campaignId)")
-        }
-        
-        // Last resort: Edge Function per-address lookup when S3 snapshot is also unavailable.
-        if (self.buildings?.features.isEmpty ?? true) && (addresses?.features.isEmpty == false) {
-            await fetchBuildingsForAddressesFallback(campaignId: campaignId, requestId: requestId)
+        isLoading = false
+    }
+
+    private func loadDiamondManifestIfAvailable(campaignId: String, requestId: UUID? = nil) async -> Bool {
+        guard let campaignUUID = UUID(uuidString: campaignId) else {
+            self.diamondManifest = nil
+            return false
         }
 
-        // If the campaign still has no buildings or addresses, replay the same polygon-backed
-        // create flow used by NewCampaignScreen: provision -> reload.
-        if (self.buildings?.features.isEmpty ?? true) && (self.addresses?.features.isEmpty ?? true) {
-            await replayCampaignCreationPathIfNeeded(campaignId: campaignId, requestId: requestId)
+        let campaignKey = campaignId.lowercased()
+        if let prewarmedManifest = prewarmedDiamondManifestsByCampaign.removeValue(forKey: campaignKey),
+           prewarmedManifest.hasRenderablePMTilesGeometry {
+            guard isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else { return false }
+            self.diamondManifest = prewarmedManifest
+            print("💎 [DIAMOND] Using primed PMTiles manifest for campaign \(campaignId)")
+            return true
         }
-        
-        isLoading = false
+
+        do {
+            let manifest = try await DiamondManifestAPI.shared.fetchManifest(campaignId: campaignUUID)
+            guard isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else { return false }
+
+            guard manifest.hasRenderablePMTilesGeometry else {
+                self.diamondManifest = nil
+                print(
+                    "💎 [DIAMOND] Manifest unavailable or unsupported " +
+                    "(provider=\(manifest.geometryProvider ?? "nil"), hasTileTemplate=\(manifest.vectorTileUrlTemplate != nil), buildingsLayer=\(manifest.sourceLayers?.buildings ?? "nil"), addressCirclesLayer=\(manifest.sourceLayers?.addressCircles ?? "nil"), addressesLayer=\(manifest.sourceLayers?.addresses ?? "nil")); PMTiles geometry unavailable"
+                )
+                return false
+            }
+
+            self.diamondManifest = manifest
+            print("💎 [DIAMOND] Loaded PMTiles manifest for campaign \(campaignId)")
+            if !manifest.hasRenderablePMTilesAddressCylinders {
+                beginDiamondManifestPrewarm(campaignId: campaignId, timeoutSeconds: 90)
+                print("💎 [DIAMOND] Manifest has point addresses only; waiting for PMTiles address_circles cylinder layer")
+            }
+            return true
+        } catch {
+            guard isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else { return false }
+
+            self.diamondManifest = nil
+            if shouldRetryDiamondManifest(error) {
+                beginDiamondManifestPrewarm(campaignId: campaignId, timeoutSeconds: 90)
+                print("💎 [DIAMOND] Manifest pending (\(error.localizedDescription)); continuing while it warms in the background")
+            } else {
+                print("💎 [DIAMOND] Manifest request failed (\(error.localizedDescription)); PMTiles geometry unavailable")
+            }
+            return false
+        }
+    }
+
+    private func shouldRetryDiamondManifest(_ error: Error) -> Bool {
+        guard let manifestError = error as? DiamondManifestAPIError else { return false }
+        return manifestError.statusCode == 202 || manifestError.statusCode == 404
+    }
+
+    private func fetchCampaignBuildings(campaignId: String, requestId: UUID? = nil) async {
+        do {
+            let features = try await BuildingLinkService.shared.fetchBuildings(campaignId: campaignId)
+            guard isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else { return }
+
+            let collection = BuildingFeatureCollection(type: "FeatureCollection", features: features)
+            let filtered = filteredRenderableBuildingCollection(collection)
+            self.buildings = filtered
+            await campaignRepository.upsertBuildings(campaignId: campaignId, features: filtered.features)
+            print("✅ [MapFeatures] Loaded \(filtered.features.count) stable linked campaign buildings")
+        } catch {
+            guard isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else { return }
+
+            print("❌ [MapFeatures] Error fetching stable linked campaign buildings: \(error)")
+            self.buildings = BuildingFeatureCollection(type: "FeatureCollection", features: [])
+        }
     }
 
     /// Fetch route-scoped features from the backend assignment map endpoint.
@@ -764,6 +868,7 @@ final class MapFeaturesService: ObservableObject {
         self.buildings = filteredRenderableBuildingCollection(payload.buildings)
         self.addresses = payload.addresses
         self.roads = RoadFeatureCollection(type: "FeatureCollection", features: [])
+        self.diamondManifest = nil
 
         print(
             "✅ [MapFeatures] Loaded route-scoped map for assignment \(assignmentId.uuidString) " +
@@ -772,32 +877,6 @@ final class MapFeaturesService: ObservableObject {
 
     }
     
-    /// Fetch building polygons from the backend API.
-    /// The server handles routing: Gold (RPC) → Silver DB (RPC) → S3 snapshot.
-    /// This is always the authoritative source — no client-side Silver fallback needed.
-    private func fetchBuildingsFromAPI(campaignId: String, requestId: UUID? = nil) async {
-        do {
-            let features = try await BuildingLinkService.shared.fetchBuildings(campaignId: campaignId)
-            guard isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else { return }
-            let filtered = filteredRenderableBuildingFeatures(features)
-            self.buildings = BuildingFeatureCollection(type: "FeatureCollection", features: filtered)
-            await campaignRepository.upsertBuildings(campaignId: campaignId, features: filtered)
-            print("✅ [MapFeatures] Loaded \(filtered.count) building features from API (Gold/Silver/S3)")
-        } catch {
-            if isCancellationError(error) {
-                print("ℹ️ [MapFeatures] Buildings API request cancelled")
-                return
-            }
-            guard isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else { return }
-            if self.buildings?.features.isEmpty == false {
-                print("⚠️ [MapFeatures] API buildings fetch failed (\(error)); keeping existing buildings")
-            } else {
-                print("⚠️ [MapFeatures] API buildings fetch failed (\(error)); buildings will be empty")
-                self.buildings = BuildingFeatureCollection(type: "FeatureCollection", features: [])
-            }
-        }
-    }
-
     private func filteredRenderableBuildingCollection(_ collection: BuildingFeatureCollection) -> BuildingFeatureCollection {
         BuildingFeatureCollection(
             type: collection.type,
@@ -922,23 +1001,6 @@ final class MapFeaturesService: ObservableObject {
         }
 
         guard isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else { return }
-
-        await withTaskGroup(of: Void.self) { group in
-            group.addTask {
-                await self.fetchBuildingsFromAPI(campaignId: campaignId, requestId: requestId)
-            }
-            group.addTask {
-                await self.fetchCampaignAddresses(campaignId: campaignId, requestId: requestId)
-            }
-            group.addTask {
-                await self.fetchSilverBuildingLinks(campaignId: campaignId, requestId: requestId)
-            }
-        }
-
-        // If provision still has not yielded polygons, try the address-driven building fallback once more.
-        if (self.buildings?.features.isEmpty ?? true) && (addresses?.features.isEmpty == false) {
-            await fetchBuildingsForAddressesFallback(campaignId: campaignId, requestId: requestId)
-        }
     }
 
     private func polygonGeoJSONString(from polygon: [CLLocationCoordinate2D]) -> String? {
@@ -952,26 +1014,6 @@ final class MapFeaturesService: ObservableObject {
         let geoJSON = GeoJSONPolygon(type: "Polygon", coordinates: [ring])
         guard let data = try? JSONEncoder().encode(geoJSON) else { return nil }
         return String(data: data, encoding: .utf8)
-    }
-    
-    /// Fetch building_address_links for the campaign and build a gers_id → [address_id] lookup.
-    /// Used by resolveAddressForBuilding as the authoritative source for Silver S3 campaigns
-    /// where buildings arrive without address_id embedded in their GeoJSON properties.
-    private func fetchSilverBuildingLinks(campaignId: String, requestId: UUID? = nil) async {
-        do {
-            let links = try await BuildingLinkService.shared.fetchLinks(campaignId: campaignId)
-            var dict: [String: [String]] = [:]
-            for link in links {
-                let key = link.buildingId.lowercased()
-                dict[key, default: []].append(link.addressId)
-            }
-            guard isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else { return }
-            self.silverBuildingLinks = dict
-            await campaignRepository.upsertBuildingAddressLinks(campaignId: campaignId, links: links)
-            print("✅ [MapFeatures] Loaded \(links.count) Silver building links (\(dict.count) unique buildings)")
-        } catch {
-            print("⚠️ [MapFeatures] Silver links fetch failed (\(error))")
-        }
     }
     
     /// Partition RPC full-features by geometry: Polygon/MultiPolygon -> buildings, Point -> address fallback.
@@ -1033,83 +1075,7 @@ final class MapFeaturesService: ObservableObject {
         return result
     }
     
-    /// Fetch building polygons for campaigns that have addresses but no buildings (e.g. closest-home).
-    /// Calls Edge Function to ensure building_polygons, then RPC to load them, and merges into buildings layer.
-    private func fetchBuildingsForAddressesFallback(campaignId: String, requestId: UUID? = nil) async {
-        guard let addresses = addresses, !addresses.features.isEmpty else { return }
-        
-        let addressRows = campaignAddressRowsFromAddressFeatures(addresses.features, cap: Self.fallbackAddressCap)
-        guard !addressRows.isEmpty else { return }
-        
-        do {
-            print("🗺️ [MapFeatures] Closest-home fallback: ensuring building polygons for \(addressRows.count) addresses")
-            let ensureResponse = try await BuildingsAPI.shared.ensureBuildingPolygons(addresses: addressRows)
-            var immediateCollection: BuildingFeatureCollection?
-
-            // If edge function returned features directly, render those immediately.
-            if let ensureFeatures = ensureResponse.features, !ensureFeatures.isEmpty {
-                let immediate = filteredRenderableBuildingCollection(
-                    buildingFeatureCollectionFromGeoJSON(GeoJSONFeatureCollection(features: ensureFeatures))
-                )
-                if !immediate.features.isEmpty {
-                    immediateCollection = immediate
-                    guard isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else { return }
-                    self.buildings = immediate
-                    prewarmedBuildingsByCampaign[campaignId.lowercased()] = immediate
-                    print("✅ [MapFeatures] Immediate ensure render loaded \(immediate.features.count) building features")
-                }
-            }
-
-            // Prefer address-id fetch first (works immediately after ensureBuildingPolygons),
-            // then fallback to campaign fetch/snapshot path.
-            let addressIds = addressRows.map(\.id)
-            var collection = try await BuildingsAPI.shared.fetchBuildingPolygons(addressIds: addressIds)
-            if collection.features.isEmpty, let campaignUUID = UUID(uuidString: campaignId) {
-                collection = try await BuildingsAPI.shared.fetchBuildingPolygons(campaignId: campaignUUID)
-            }
-            
-            let buildingCollection = filteredRenderableBuildingCollection(
-                buildingFeatureCollectionFromGeoJSON(collection)
-            )
-            guard isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else { return }
-            if !buildingCollection.features.isEmpty {
-                self.buildings = buildingCollection
-            } else if let immediateCollection, !immediateCollection.features.isEmpty {
-                self.buildings = immediateCollection
-            } else {
-                self.buildings = buildingCollection
-            }
-            print("✅ [MapFeatures] Fallback loaded \(buildingCollection.features.count) building features")
-
-            if !buildingCollection.features.isEmpty {
-                prewarmedBuildingsByCampaign[campaignId.lowercased()] = buildingCollection
-            }
-        } catch {
-            if isCancellationError(error) {
-                print("ℹ️ [MapFeatures] Fallback buildings fetch cancelled")
-                return
-            }
-            print("❌ [MapFeatures] Fallback buildings fetch failed: \(error)")
-            // Leave buildings empty; map still shows addresses
-        }
-    }
-    
-    /// Convert address features (from rpc_get_campaign_addresses) to CampaignAddressRow for BuildingsAPI.
-    private func campaignAddressRowsFromAddressFeatures(_ features: [AddressFeature], cap: Int) -> [CampaignAddressRow] {
-        var rows: [CampaignAddressRow] = []
-        for feature in features.prefix(cap) {
-            guard let point = feature.geometry.asPoint, point.count >= 2 else { continue }
-            let idString = feature.id ?? feature.properties.id ?? ""
-            guard let id = UUID(uuidString: idString) else { continue }
-            let lon = point[0]
-            let lat = point[1]
-            let formatted = feature.properties.formatted ?? ""
-            rows.append(CampaignAddressRow(id: id, formatted: formatted, lat: lat, lon: lon))
-        }
-        return rows
-    }
-    
-    /// Convert GeoJSON feature collection from get_buildings_by_address_ids to BuildingFeatureCollection for the map layer.
+    /// Convert GeoJSON feature collection to BuildingFeatureCollection for the map layer.
     private func buildingFeatureCollectionFromGeoJSON(_ collection: GeoJSONFeatureCollection) -> BuildingFeatureCollection {
         let features = collection.features.compactMap { geoFeature -> BuildingFeature? in
             guard let geometry = mapFeatureGeometryFromGeoJSON(geoFeature.geometry) else { return nil }
@@ -1177,7 +1143,7 @@ final class MapFeaturesService: ObservableObject {
         )
     }
     
-    /// Fetch addresses for a campaign
+    /// Fetch Supabase campaign address points when the Diamond manifest has no address tile layer.
     private func fetchCampaignAddresses(campaignId: String, requestId: UUID? = nil) async {
         do {
             guard let campaignUUID = UUID(uuidString: campaignId) else {
@@ -1192,12 +1158,12 @@ final class MapFeaturesService: ObservableObject {
             guard isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else { return }
             self.addresses = result
             await campaignRepository.upsertAddresses(campaignId: campaignId, features: result.features)
-            print("✅ [MapFeatures] Loaded \(result.features.count) addresses for campaign")
+            print("✅ [MapFeatures] Loaded \(result.features.count) Supabase campaign address points")
         } catch {
             print("❌ [MapFeatures] Error fetching campaign addresses: \(error)")
         }
     }
-    
+
     /// Load roads from local cache first, then refresh from the existing campaign road service.
     func fetchCampaignRoads(campaignId: String, requestId: UUID? = nil) async {
         if let cachedBundle = await campaignRepository.getCampaignMapBundle(campaignId: campaignId),
