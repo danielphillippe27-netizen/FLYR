@@ -279,6 +279,10 @@ function isGeometryWriteError(error: { code?: string; message?: string } | null)
   );
 }
 
+function pointEWKT(coordinate: [number, number]): string {
+  return `SRID=4326;POINT(${coordinate[0]} ${coordinate[1]})`;
+}
+
 function manualLinkRpc(client: SupabaseClient): ManualLinkRpc | null {
   const rpc = (client as SupabaseClient & { rpc?: unknown }).rpc;
   return typeof rpc === 'function' ? (rpc.bind(client) as ManualLinkRpc) : null;
@@ -2185,7 +2189,7 @@ export class StableLinkerService {
       confidence,
     };
     if (coordinate) {
-      addressUpdate.geom = JSON.stringify({ type: 'Point', coordinates: coordinate });
+      addressUpdate.geom = pointEWKT(coordinate);
     }
 
     await this.updateCampaignAddressAssignment({
@@ -2221,7 +2225,7 @@ export class StableLinkerService {
       confidence,
     };
     if (coordinate) {
-      addressUpdate.geom = JSON.stringify({ type: 'Point', coordinates: coordinate });
+      addressUpdate.geom = pointEWKT(coordinate);
     }
 
     await this.updateCampaignAddressAssignment({
@@ -2277,7 +2281,7 @@ export class StableLinkerService {
       confidence,
     };
     if (coordinate) {
-      addressUpdate.geom = JSON.stringify({ type: 'Point', coordinates: coordinate });
+      addressUpdate.geom = pointEWKT(coordinate);
     }
 
     await this.updateCampaignAddressAssignment({

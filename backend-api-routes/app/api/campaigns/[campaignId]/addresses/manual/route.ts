@@ -71,15 +71,23 @@ function optionalUUID(value: unknown): string | null {
     : null;
 }
 
-function pointGeoJSON(longitude: number, latitude: number) {
-  return { type: "Point", coordinates: [longitude, latitude] as [number, number] };
+function pointEWKT(longitude: number, latitude: number): string {
+  return `SRID=4326;POINT(${longitude} ${latitude})`;
 }
 
 function isMissingColumnError(error: { code?: string; message?: string } | null, column: string): boolean {
   const message = error?.message?.toLowerCase() ?? "";
   return (
-    error?.code === "PGRST204" &&
-    message.includes(`'${column.toLowerCase()}' column`)
+    (error?.code === "PGRST204" || error?.code === "42703") &&
+    message.includes(column.toLowerCase())
+  );
+}
+
+function isMatchSourceConstraintError(error: { code?: string; message?: string } | null): boolean {
+  const message = error?.message?.toLowerCase() ?? "";
+  return (
+    error?.code === "23514" &&
+    (message.includes("match_source") || message.includes("campaign_addresses_match_source_check"))
   );
 }
 
@@ -188,7 +196,7 @@ export async function POST(request: Request, context: RouteContext): Promise<Res
       source: "manual",
       building_gers_id: null,
       ...(isReverseGeocodeConfirmed ? { confidence } : {}),
-      geom: JSON.stringify(pointGeoJSON(longitude, latitude)),
+      geom: pointEWKT(longitude, latitude),
     };
     const { data: insertedAddress, error: insertError } = requestedAddressId
       ? await writeManualAddress(supabase, addressInsert, "upsert")
@@ -203,6 +211,7 @@ export async function POST(request: Request, context: RouteContext): Promise<Res
     }
 
     let responseAddress = insertedAddress;
+    let linkWarning: string | null = null;
 
     if (linkTarget) {
       try {
@@ -244,16 +253,63 @@ export async function POST(request: Request, context: RouteContext): Promise<Res
         }
       } catch (linkError) {
         console.error("[manual-address] link error:", linkError);
-        return NextResponse.json(
-          { error: "Address created but failed to link it to the building" },
-          { status: 500 }
-        );
+        const linkPatch: Record<string, unknown> = {
+          building_gers_id: linkTarget.publicId,
+          match_source: "manual",
+          confidence,
+        };
+        if (linkTarget.rowId) {
+          linkPatch.building_id = linkTarget.rowId;
+        }
+
+        let patchResult = await supabase
+          .from("campaign_addresses")
+          .update(linkPatch)
+          .eq("campaign_id", campaignId)
+          .eq("id", (insertedAddress as { id: string }).id)
+          .select(ADDRESS_SELECT)
+          .maybeSingle();
+
+        if (
+          patchResult.error &&
+          (isMissingColumnError(patchResult.error, "match_source") ||
+            isMatchSourceConstraintError(patchResult.error))
+        ) {
+          delete linkPatch.match_source;
+          patchResult = await supabase
+            .from("campaign_addresses")
+            .update(linkPatch)
+            .eq("campaign_id", campaignId)
+            .eq("id", (insertedAddress as { id: string }).id)
+            .select(ADDRESS_SELECT)
+            .maybeSingle();
+        }
+
+        if (patchResult.error && isMissingColumnError(patchResult.error, "confidence")) {
+          delete linkPatch.confidence;
+          patchResult = await supabase
+            .from("campaign_addresses")
+            .update(linkPatch)
+            .eq("campaign_id", campaignId)
+            .eq("id", (insertedAddress as { id: string }).id)
+            .select(ADDRESS_SELECT)
+            .maybeSingle();
+        }
+
+        if (patchResult.error) {
+          linkWarning = "link_not_confirmed";
+          console.warn("[manual-address] fallback link patch warning:", patchResult.error);
+        } else if (patchResult.data) {
+          responseAddress = patchResult.data;
+          linkWarning = "link_table_not_confirmed";
+        }
       }
     }
 
     return NextResponse.json({
       address: responseAddress,
       linked_building_id: linkTarget?.publicId ?? null,
+      link_warning: linkWarning,
     });
   } catch (error) {
     console.error("[manual-address] POST error:", error);

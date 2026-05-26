@@ -61,8 +61,8 @@ function isFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
 }
 
-function pointGeoJSON(longitude: number, latitude: number) {
-  return { type: "Point", coordinates: [longitude, latitude] as [number, number] };
+function pointEWKT(longitude: number, latitude: number): string {
+  return `SRID=4326;POINT(${longitude} ${latitude})`;
 }
 
 export async function PATCH(request: Request, context: RouteContext): Promise<Response> {
@@ -115,7 +115,7 @@ export async function PATCH(request: Request, context: RouteContext): Promise<Re
 
     const { error: updateError } = await supabase
       .from("campaign_addresses")
-      .update({ geom: JSON.stringify(pointGeoJSON(longitude, latitude)) })
+      .update({ geom: pointEWKT(longitude, latitude) })
       .eq("campaign_id", campaignId)
       .eq("id", addressId);
 

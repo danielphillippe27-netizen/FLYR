@@ -52,7 +52,7 @@ type ExistingCampaignAddressSignatureRow = {
   gers_id: string | null;
 };
 
-const DEFAULT_STATIC_GEOMETRY_ADDRESS_HYDRATION_LIMIT = 2000;
+const DEFAULT_STATIC_GEOMETRY_ADDRESS_HYDRATION_LIMIT = 5000;
 const FALLBACK_INSERT_BATCH_SIZE = 500;
 const BULK_ADDRESS_RPC = 'add_campaign_addresses';
 const POLISHED_BUILDING_GEOMETRY_VERSION = 7;
