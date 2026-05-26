@@ -136,7 +136,8 @@ class BuildingDataService: ObservableObject {
             campaignId: campaignId,
             addressId: addressId,
             preferredAddressId: preferredAddressId,
-            buildingIdentifiers: buildingIdentifiers
+            buildingIdentifiers: buildingIdentifiers,
+            linkedAddressIds: linkedAddressIds
         )
         guard requestGeneration == fetchGeneration else { return }
         if let localData {
@@ -242,15 +243,6 @@ class BuildingDataService: ObservableObject {
             if allAddressResponses.isEmpty, !persistedLinkedAddresses.isEmpty {
                 allAddressResponses = persistedLinkedAddresses
             }
-            if allAddressResponses.isEmpty, !linkedPathAddresses.isEmpty {
-                allAddressResponses = linkedPathAddresses
-            }
-            if allAddressResponses.isEmpty, !goldPathAddresses.isEmpty {
-                allAddressResponses = goldPathAddresses
-            }
-            if allAddressResponses.isEmpty, let single = resolvedAddress {
-                allAddressResponses = [single]
-            }
             if allAddressResponses.isEmpty, !linkedAddressIds.isEmpty {
                 let linkedIdStrings = linkedAddressIds.map(\.uuidString)
                 let linkedAddressesResponse = try await supabase
@@ -261,11 +253,21 @@ class BuildingDataService: ObservableObject {
                     .execute()
                 allAddressResponses = try decoder.decode([CampaignAddressResponse].self, from: linkedAddressesResponse.data)
             }
+            if allAddressResponses.isEmpty, !linkedPathAddresses.isEmpty {
+                allAddressResponses = linkedPathAddresses
+            }
+            if allAddressResponses.isEmpty, !goldPathAddresses.isEmpty {
+                allAddressResponses = goldPathAddresses
+            }
+            if allAddressResponses.isEmpty, let single = resolvedAddress {
+                allAddressResponses = [single]
+            }
             if let localResolution = await resolveLocalAddressResolution(
                 gersId: gersId,
                 campaignId: campaignId,
                 addressId: addressId,
-                buildingIdentifiers: buildingIdentifiers
+                buildingIdentifiers: buildingIdentifiers,
+                linkedAddressIds: linkedAddressIds
             ),
                !allAddressResponses.isEmpty,
                !localResolution.matchedAddressIDs.isEmpty {
@@ -289,12 +291,14 @@ class BuildingDataService: ObservableObject {
                 preferredAddressId: preferredAddressId,
                 requestedAddressId: addressId
             )
-            allAddressResponses = Self.addressesMatchingHintIfUnambiguous(
-                allAddressResponses,
-                addressTextHint: addressTextHint,
-                preferredAddressId: preferredAddressId,
-                requestedAddressId: addressId
-            )
+            if Set(linkedAddressIds).count <= 1 {
+                allAddressResponses = Self.addressesMatchingHintIfUnambiguous(
+                    allAddressResponses,
+                    addressTextHint: addressTextHint,
+                    preferredAddressId: preferredAddressId,
+                    requestedAddressId: addressId
+                )
+            }
             allAddressResponses = Self.enforceOneAddressPerBuilding(
                 allAddressResponses,
                 linkedAddressIds: linkedAddressIds,
@@ -308,7 +312,8 @@ class BuildingDataService: ObservableObject {
                     campaignId: campaignId,
                     addressId: addressId,
                     preferredAddressId: preferredAddressId,
-                    buildingIdentifiers: buildingIdentifiers
+                    buildingIdentifiers: buildingIdentifiers,
+                    linkedAddressIds: linkedAddressIds
                ) {
                 guard requestGeneration == fetchGeneration else { return }
                 buildingData = localData
@@ -377,7 +382,8 @@ class BuildingDataService: ObservableObject {
                 campaignId: campaignId,
                 addressId: addressId,
                 preferredAddressId: preferredAddressId,
-                buildingIdentifiers: buildingIdentifiers
+                buildingIdentifiers: buildingIdentifiers,
+                linkedAddressIds: linkedAddressIds
             ) {
                 guard requestGeneration == fetchGeneration else { return }
                 buildingData = localData
@@ -533,7 +539,7 @@ class BuildingDataService: ObservableObject {
     private static func normalizedAddressIdentity(for address: CampaignAddressResponse) -> String {
         let house = normalizedHouseNumberIdentity(for: address)
         let street = normalizedStreetName(for: address)
-        let primary = [house, normalizedAddressPart(street)]
+        let primary = [house, normalizedStreetIdentityPart(street)]
             .filter { !$0.isEmpty }
             .joined(separator: " ")
 
@@ -543,7 +549,7 @@ class BuildingDataService: ObservableObject {
 
         let formatted = (address.formatted ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let streetOnly = formatted.split(separator: ",", maxSplits: 1, omittingEmptySubsequences: true).first.map(String.init) ?? formatted
-        let fallback = normalizedAddressPart(streetOnly)
+        let fallback = normalizedStreetIdentityPart(streetOnly)
         return fallback.isEmpty ? address.id.uuidString.lowercased() : fallback
     }
 
@@ -556,7 +562,7 @@ class BuildingDataService: ObservableObject {
         guard let first = parts.first else { return normalizedAddressPart(streetOnly) }
 
         let house = normalizedAddressPart(String(first))
-        let street = parts.count > 1 ? normalizedAddressPart(String(parts[1])) : ""
+        let street = parts.count > 1 ? normalizedStreetIdentityPart(String(parts[1])) : ""
         let identity = [house, street].filter { !$0.isEmpty }.joined(separator: " ")
         return identity.isEmpty ? nil : identity
     }
@@ -578,6 +584,29 @@ class BuildingDataService: ObservableObject {
             .lowercased()
             .replacingOccurrences(of: #"[^a-z0-9]+"#, with: " ", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func normalizedStreetIdentityPart(_ value: String?) -> String {
+        normalizedAddressPart(value)
+            .split(separator: " ")
+            .map { word -> String in
+                switch word {
+                case "st", "str": return "street"
+                case "rd": return "road"
+                case "ave", "av": return "avenue"
+                case "blvd": return "boulevard"
+                case "dr": return "drive"
+                case "ct", "crt": return "court"
+                case "cres": return "crescent"
+                case "ln": return "lane"
+                case "pl": return "place"
+                case "trl": return "trail"
+                case "pkwy": return "parkway"
+                case "hwy": return "highway"
+                default: return String(word)
+                }
+            }
+            .joined(separator: " ")
     }
 
     private static func houseNumberSortParts(for address: CampaignAddressResponse) -> (number: Int?, suffix: String, raw: String) {
@@ -732,7 +761,8 @@ class BuildingDataService: ObservableObject {
         gersId: String,
         campaignId: UUID,
         addressId: UUID?,
-        buildingIdentifiers: [String] = []
+        buildingIdentifiers: [String] = [],
+        linkedAddressIds: [UUID] = []
     ) async -> LocalAddressResolution? {
         guard let bundle = await CampaignRepository.shared.getCampaignMapBundle(campaignId: campaignId.uuidString) else {
             return nil
@@ -758,6 +788,7 @@ class BuildingDataService: ObservableObject {
         if let requestedAddressId = addressId?.uuidString.lowercased() {
             explicitAddressIds.insert(requestedAddressId)
         }
+        explicitAddressIds.formUnion(linkedAddressIds.map { $0.uuidString.lowercased() })
 
         let explicitMatches = bundle.addresses.features.filter { feature in
             let featureAddressId = (feature.properties.id ?? feature.id)?.lowercased()
@@ -818,13 +849,15 @@ class BuildingDataService: ObservableObject {
         campaignId: UUID,
         addressId: UUID?,
         preferredAddressId: UUID?,
-        buildingIdentifiers: [String] = []
+        buildingIdentifiers: [String] = [],
+        linkedAddressIds: [UUID] = []
     ) async -> BuildingData? {
         guard let localResolution = await resolveLocalAddressResolution(
             gersId: gersId,
             campaignId: campaignId,
             addressId: addressId,
-            buildingIdentifiers: buildingIdentifiers
+            buildingIdentifiers: buildingIdentifiers,
+            linkedAddressIds: linkedAddressIds
         ) else {
             return nil
         }

@@ -17,6 +17,7 @@ struct MapTheme {
     /// Hosted style URIs cached by `MapboxOfflineService` for campaign field use (must stay in sync).
     static let campaignOfflineLightStyleURI = StyleURI(rawValue: "mapbox://styles/mapbox/light-v11")!
     static let campaignOfflineDarkStyleURI = StyleURI(rawValue: "mapbox://styles/mapbox/dark-v11")!
+    static let campaignSatelliteStyleURI = StyleURI(rawValue: "mapbox://styles/mapbox/satellite-streets-v12")!
 
     static var campaignOfflineStyleURIs: [StyleURI] {
         [campaignOfflineLightStyleURI, campaignOfflineDarkStyleURI]
@@ -26,18 +27,22 @@ struct MapTheme {
     /// local-style experiment, so roads and basemap features remain visible.
     static func loadCampaignMapStyle(
         useDarkStyle: Bool,
+        useSatelliteStyle: Bool = false,
         preferOfflineStylePacks: Bool,
         on map: MapboxMap
     ) {
-        MapStatusColor.useLightMapBuildingDefault = !useDarkStyle
+        MapStatusColor.useLightMapBuildingDefault = !useDarkStyle || useSatelliteStyle
 
-        if useDarkStyle {
+        if useSatelliteStyle {
+            map.loadStyle(campaignSatelliteStyleURI)
+            hideBaseMapAddressNumberLayersWhenStyleLoads(on: map)
+        } else if useDarkStyle {
             map.loadStyle(campaignOfflineDarkStyleURI)
             hideBaseMapAddressNumberLayersWhenStyleLoads(on: map)
         } else {
             loadBlueStandardLightStyle(on: map)
         }
-        print("📴 [MapTheme] Loaded campaign Mapbox style useDarkStyle=\(useDarkStyle) preferOfflineStylePacks=\(preferOfflineStylePacks)")
+        print("📴 [MapTheme] Loaded campaign Mapbox style useDarkStyle=\(useDarkStyle) useSatelliteStyle=\(useSatelliteStyle) preferOfflineStylePacks=\(preferOfflineStylePacks)")
     }
 
     static func loadBlueStandardLightStyle(on map: MapboxMap) {

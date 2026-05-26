@@ -162,6 +162,15 @@ type RouteHandlerConfig<Route extends AppRouteHandlerRoutes = AppRouteHandlerRou
   type __Unused = __Check
 }
 
+// Validate ../../app/api/campaigns/[campaignId]/client-links/route.ts
+{
+  type __IsExpected<Specific extends RouteHandlerConfig<"/api/campaigns/[campaignId]/client-links">> = Specific
+  const handler = {} as typeof import("../../app/api/campaigns/[campaignId]/client-links/route.js")
+  type __Check = __IsExpected<typeof handler>
+  // @ts-ignore
+  type __Unused = __Check
+}
+
 // Validate ../../app/api/campaigns/[campaignId]/diamond-manifest/route.ts
 {
   type __IsExpected<Specific extends RouteHandlerConfig<"/api/campaigns/[campaignId]/diamond-manifest">> = Specific

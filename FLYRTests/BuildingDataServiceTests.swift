@@ -33,8 +33,27 @@ final class BuildingDataServiceTests: XCTestCase {
     private func makeBuildingFeature(
         gersId: String,
         width: Double = 20,
-        depth: Double = 6
+        depth: Double = 6,
+        isTownhome: Bool = true,
+        unitsCount: Int = 3,
+        addressCount: Int? = 3
     ) throws -> BuildingFeature {
+        var properties: [String: Any] = [
+            "id": gersId,
+            "gers_id": gersId,
+            "height": 10,
+            "height_m": 10,
+            "min_height": 0,
+            "is_townhome": isTownhome,
+            "units_count": unitsCount,
+            "status": "not_visited",
+            "scans_today": 0,
+            "scans_total": 0
+        ]
+        if let addressCount {
+            properties["address_count"] = addressCount
+        }
+
         let payload: [String: Any] = [
             "type": "Feature",
             "id": gersId,
@@ -48,19 +67,7 @@ final class BuildingDataServiceTests: XCTestCase {
                     [-79.0, 43.0]
                 ]]
             ],
-            "properties": [
-                "id": gersId,
-                "gers_id": gersId,
-                "height": 10,
-                "height_m": 10,
-                "min_height": 0,
-                "is_townhome": true,
-                "units_count": 3,
-                "status": "not_visited",
-                "scans_today": 0,
-                "scans_total": 0,
-                "address_count": 3
-            ]
+            "properties": properties
         ]
         let data = try JSONSerialization.data(withJSONObject: payload, options: [])
         return try JSONDecoder().decode(BuildingFeature.self, from: data)
@@ -89,6 +96,20 @@ final class BuildingDataServiceTests: XCTestCase {
         ]
         let data = try JSONSerialization.data(withJSONObject: payload, options: [])
         return try JSONDecoder().decode(AddressFeature.self, from: data)
+    }
+
+    private func firstPointCoordinates(from data: Data) throws -> (longitude: Double, latitude: Double) {
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let features = try XCTUnwrap(object["features"] as? [[String: Any]])
+        let feature = try XCTUnwrap(features.first)
+        return try pointCoordinates(from: feature)
+    }
+
+    private func pointCoordinates(from feature: [String: Any]) throws -> (longitude: Double, latitude: Double) {
+        let geometry = try XCTUnwrap(feature["geometry"] as? [String: Any])
+        let coordinates = try XCTUnwrap(geometry["coordinates"] as? [Double])
+        XCTAssertEqual(coordinates.count, 2)
+        return (coordinates[0], coordinates[1])
     }
 
     private func makeBuildingGeoJSONFeature(properties: [String: AnyCodable]) -> GeoJSONFeature {
@@ -442,6 +463,34 @@ final class BuildingDataServiceTests: XCTestCase {
         XCTAssertEqual(deduped.first?.id, firstId)
     }
 
+    func testDeduplicatedAddressesForDisplayCollapsesStreetTypeVariants() throws {
+        let firstId = UUID()
+        let duplicateId = UUID()
+        let addresses = try [
+            makeCampaignAddressResponse(id: firstId, houseNumber: "83", streetName: "Post Rd", formatted: "83 Post Rd, Toronto, ON"),
+            makeCampaignAddressResponse(id: duplicateId, houseNumber: "83", streetName: "POST ROAD", formatted: "83 POST ROAD, Toronto, ON")
+        ]
+
+        let deduped = BuildingDataService.deduplicatedAddressesForDisplay(addresses)
+
+        XCTAssertEqual(deduped.count, 1)
+        XCTAssertEqual(deduped.first?.id, firstId)
+    }
+
+    func testDeduplicatedAddressesForDisplayCollapsesCourtVariantsWithCitySuffixes() throws {
+        let firstId = UUID()
+        let duplicateId = UUID()
+        let addresses = try [
+            makeCampaignAddressResponse(id: firstId, houseNumber: "5311", streetName: "Green Velvet Ct", formatted: "5311 Green Velvet Ct"),
+            makeCampaignAddressResponse(id: duplicateId, houseNumber: "5311", streetName: "Green Velvet Court", formatted: "5311 Green Velvet Court, Orlando, FL")
+        ]
+
+        let deduped = BuildingDataService.deduplicatedAddressesForDisplay(addresses)
+
+        XCTAssertEqual(deduped.count, 1)
+        XCTAssertEqual(deduped.first?.id, firstId)
+    }
+
     func testDeduplicatedAddressesForDisplayPreservesRequestedDuplicate() throws {
         let firstId = UUID()
         let requestedId = UUID()
@@ -465,6 +514,56 @@ final class BuildingDataServiceTests: XCTestCase {
         let deduped = BuildingDataService.deduplicatedAddressesForDisplay(addresses)
 
         XCTAssertEqual(deduped.map(\.houseNumber), ["83", "85"])
+    }
+
+    func testAddressNumberLabelUsesBuildingCentroidForSingleLinkedHome() throws {
+        let building = try makeBuildingFeature(
+            gersId: "single-home-1",
+            isTownhome: false,
+            unitsCount: 1,
+            addressCount: 1
+        )
+        let addressId = UUID()
+        let address = try makeAddressFeature(
+            id: addressId,
+            buildingGersId: "single-home-1",
+            houseNumber: "18",
+            formatted: "18 Merino Street, Christchurch"
+        )
+
+        let data = try MapLayerManager.buildAddressNumberLabelPointGeoJSON(
+            addresses: [address],
+            buildings: [building],
+            orderedAddressIdsByBuilding: ["single-home-1": [addressId]]
+        )
+        let coordinates = try firstPointCoordinates(from: data)
+
+        XCTAssertEqual(coordinates.longitude, -78.9992, accuracy: 0.0000001)
+        XCTAssertEqual(coordinates.latitude, 43.00024, accuracy: 0.0000001)
+    }
+
+    func testAddressNumberLabelsRemainDistributedForMultiUnitBuilding() throws {
+        let building = try makeBuildingFeature(gersId: "multi-home-1", unitsCount: 2, addressCount: 2)
+        let firstId = UUID()
+        let secondId = UUID()
+        let addresses = try [
+            makeAddressFeature(id: firstId, buildingGersId: "multi-home-1", houseNumber: "18", formatted: "18 Merino Street"),
+            makeAddressFeature(id: secondId, buildingGersId: "multi-home-1", houseNumber: "20", formatted: "20 Merino Street")
+        ]
+
+        let data = try MapLayerManager.buildAddressNumberLabelPointGeoJSON(
+            addresses: addresses,
+            buildings: [building],
+            orderedAddressIdsByBuilding: ["multi-home-1": [firstId, secondId]]
+        )
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let features = try XCTUnwrap(object["features"] as? [[String: Any]])
+        let coordinates = try features.map { try pointCoordinates(from: $0) }
+
+        XCTAssertEqual(coordinates.count, 2)
+        let delta = abs(coordinates[0].longitude - coordinates[1].longitude)
+            + abs(coordinates[0].latitude - coordinates[1].latitude)
+        XCTAssertGreaterThan(delta, 0.0000001)
     }
 
     func testTownhomeOverlayBuildsMixedRedGreenBlueSegments() throws {

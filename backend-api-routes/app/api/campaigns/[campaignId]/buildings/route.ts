@@ -11,7 +11,7 @@ const SUPABASE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABAS
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 const AWS_REGION = process.env.AWS_REGION ?? "us-east-1";
-const POLISHED_BUILDING_GEOMETRY_VERSION = 6;
+const POLISHED_BUILDING_GEOMETRY_VERSION = 7;
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -386,6 +386,9 @@ function buildManualAddressProxyFeature(feature: GeoJSONFeature): GeoJSONFeature
       id: addressId,
       gers_id: normalizedString(props.gers_id) ?? addressId,
       building_id: normalizedString(props.building_id) ?? addressId,
+      public_building_id: normalizedString(props.public_building_id) ?? addressId,
+      canonical_building_id: normalizedString(props.canonical_building_id) ?? addressId,
+      building_identifier_source: normalizedString(props.building_identifier_source) ?? "manual",
       address_id: addressId,
       address_text: addressText,
       house_number: houseNumber,
@@ -430,6 +433,9 @@ function buildOfficialAddressProxyFeature(address: CampaignAddressRow): GeoJSONF
       id: `address-proxy-${address.id}`,
       gers_id: `address-proxy-${address.id}`,
       building_id: `address-proxy-${address.id}`,
+      public_building_id: `address-proxy-${address.id}`,
+      canonical_building_id: `address-proxy-${address.id}`,
+      building_identifier_source: "address_proxy",
       address_id: address.id,
       address_ids: [address.id],
       address_text: addressText,
@@ -472,6 +478,8 @@ function dedupeFeatures(features: GeoJSONFeature[]): GeoJSONFeature[] {
 
 function buildingIdentifierCandidates(feature: GeoJSONFeature): string[] {
   const identifiers = [
+    normalizedString(feature.properties?.public_building_id),
+    normalizedString(feature.properties?.canonical_building_id),
     normalizedString(feature.properties?.gers_id),
     normalizedString(feature.properties?.building_id),
     normalizedString(feature.properties?.id),
@@ -485,11 +493,43 @@ function buildingIdentifierCandidates(feature: GeoJSONFeature): string[] {
 
 function primaryBuildingIdentifier(feature: GeoJSONFeature): string | null {
   return (
+    normalizedString(feature.properties?.public_building_id) ??
+    normalizedString(feature.properties?.canonical_building_id) ??
     normalizedString(feature.properties?.gers_id) ??
     normalizedString(feature.properties?.building_id) ??
     normalizedString(feature.properties?.id) ??
     normalizedString(feature.id)
   );
+}
+
+function normalizeBuildingIdentityFeature(feature: GeoJSONFeature): GeoJSONFeature {
+  const props = feature.properties ?? {};
+  const publicId = primaryBuildingIdentifier(feature);
+  if (!publicId) return feature;
+
+  const existingGersId = normalizedString(props.gers_id);
+  const existingBuildingId = normalizedString(props.building_id);
+  const featureSource = normalizedString(props.source)?.toLowerCase() ?? "";
+  const identifierSource =
+    normalizedString(props.building_identifier_source) ??
+    (featureSource.includes("diamond") || featureSource.startsWith("bedrock") ? "diamond" : null) ??
+    (existingGersId ? "gers" : existingBuildingId ? "diamond" : "feature");
+
+  return {
+    ...feature,
+    id: normalizedString(feature.id) ?? publicId,
+    properties: {
+      ...props,
+      id: normalizedString(props.id) ?? publicId,
+      building_id: existingBuildingId ?? publicId,
+      // Mapbox promoteId and older iOS paths still read `gers_id`. Treat it as
+      // our public building id, not strictly an Overture/GERS-only identifier.
+      gers_id: existingGersId ?? publicId,
+      public_building_id: normalizedString(props.public_building_id) ?? publicId,
+      canonical_building_id: normalizedString(props.canonical_building_id) ?? publicId,
+      building_identifier_source: identifierSource,
+    },
+  };
 }
 
 function filterHiddenBuildings(
@@ -866,7 +906,7 @@ async function readPolishedBuildingCache(
     );
   }
   const renderableFeatures = filterLinkableBuildingFeatures(
-    polygonFeatures,
+    polygonFeatures.map(normalizeBuildingIdentityFeature),
     "polished-cache"
   );
 
@@ -907,9 +947,10 @@ async function writePolishedBuildingCache(
 ): Promise<void> {
   if (features.length === 0) return;
 
+  const normalizedFeatures = features.map(normalizeBuildingIdentityFeature);
   const featureCollection = {
     type: "FeatureCollection",
-    features: features.map((feature) => ({
+    features: normalizedFeatures.map((feature) => ({
       ...feature,
       properties: {
         ...(feature.properties ?? {}),
@@ -1091,6 +1132,9 @@ function buildGoldFallbackFeatureCollection(
         id: building.id,
         building_id: building.id,
         gers_id: building.id,
+        public_building_id: building.id,
+        canonical_building_id: building.id,
+        building_identifier_source: 'gold',
         source: 'gold',
         address_count: linkedAddresses.length,
         address_id: linkedAddresses.length === 1 ? firstAddress?.id ?? null : null,
@@ -1222,13 +1266,16 @@ async function fetchSilverSnapshotFeatures(
     return filterLinkableBuildingFeatures(filterHiddenBuildings(
       ((geojson.features ?? []) as GeoJSONFeature[]).filter(isPolygonFeature),
       hiddenBuildingIds
-    ).map((feature) => ({
-      ...feature,
-      properties: {
-        ...(feature.properties ?? {}),
-        source: normalizedString(feature.properties?.source) ?? "silver",
-      },
-    })), "silver-snapshot");
+    ).map((feature) => {
+      const normalized = normalizeBuildingIdentityFeature(feature);
+      return {
+        ...normalized,
+        properties: {
+          ...(normalized.properties ?? {}),
+          source: normalizedString(feature.properties?.source) ?? "silver",
+        },
+      };
+    }), "silver-snapshot");
   } catch (err) {
     console.error(`[buildings] Silver snapshot fetch failed bucket=${bucket} key=${key}:`, err);
     return null;
@@ -1244,11 +1291,11 @@ async function responseForSelectedSource(
   manualAddressProxyFeatures: GeoJSONFeature[]
 ): Promise<Response> {
   const linkableBaseFeatures = enforceUniqueFeatureAddressAssignments(filterLinkableBuildingFeatures(
-    baseFeatures,
+    baseFeatures.map(normalizeBuildingIdentityFeature),
     `${sourceName.toLowerCase()}-base`
   ));
   const linkableManualFeatures = filterLinkableBuildingFeatures(
-    manualPolygonFeatures,
+    manualPolygonFeatures.map(normalizeBuildingIdentityFeature),
     "manual-polygons"
   );
   const mergedFeatures = dedupeFeatures([
@@ -1507,12 +1554,12 @@ export async function GET(request: Request, context: RouteContext): Promise<Resp
 
     if (rpcManualPolygonFeatures.length > 0 || rpcManualAddressProxyFeatures.length > 0) {
       const linkableManualFeatures = filterLinkableBuildingFeatures(
-        rpcManualPolygonFeatures,
+        rpcManualPolygonFeatures.map(normalizeBuildingIdentityFeature),
         "manual-only-polygons"
       );
       const mergedFeatures = dedupeFeatures([
         ...linkableManualFeatures,
-        ...rpcManualAddressProxyFeatures,
+        ...rpcManualAddressProxyFeatures.map(normalizeBuildingIdentityFeature),
       ]);
       await writePolishedBuildingCache(dataSupabase, campaignId, "manual", mergedFeatures);
       console.log(

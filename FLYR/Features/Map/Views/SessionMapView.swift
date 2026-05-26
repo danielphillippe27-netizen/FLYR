@@ -76,6 +76,7 @@ struct SessionMapView: View {
                     showingTargets: $showingTargets,
                     statsExpanded: $statsExpanded,
                     isExpanded: $sessionToolsExpanded,
+                    satelliteMapEnabled: .constant(false),
                     menuVariant: .standard
                 )
                 .padding(.bottom, 8) // keep it close to the home indicator without floating high above it

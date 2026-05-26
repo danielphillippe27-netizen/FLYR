@@ -117,6 +117,7 @@ type MockState = {
   campaignAddresses?: Array<Record<string, unknown>>;
   addressOrphans?: Array<Record<string, unknown>>;
   buildingAddressLinks?: Array<Record<string, unknown>>;
+  campaignAddressUpdateErrors?: Array<{ code?: string; message: string }>;
 };
 
 class MockQueryBuilder implements PromiseLike<{ data: any; error: null }> {
@@ -202,6 +203,11 @@ class MockQueryBuilder implements PromiseLike<{ data: any; error: null }> {
   }
 
   private executeUpdate() {
+    if (this.table === 'campaign_addresses' && this.state.campaignAddressUpdateErrors?.length) {
+      const error = this.state.campaignAddressUpdateErrors.shift() ?? null;
+      return Promise.resolve({ data: null, error });
+    }
+
     const rows = this.getRows();
     const filtered = rows.filter((row) =>
       Array.from(this.filters.entries()).every(([column, value]) => row[column] === value)
@@ -1084,6 +1090,41 @@ async function run() {
     assertEqual(state.campaignAddresses?.[0].match_source, 'manual');
     assertEqual(state.addressOrphans?.[0].status, 'assigned');
     assertEqual(state.addressOrphans?.[0].assigned_building_id, null);
+    assertEqual(result.linkedAddressIds, ['address-1']);
+  });
+
+  await testAsync('External manual assignment: older match_source constraints do not block building_gers_id persistence', async () => {
+    const state: MockState = {
+      campaignAddresses: [
+        {
+          id: 'address-1',
+          campaign_id: 'campaign-1',
+          building_id: null,
+          building_gers_id: null,
+          match_source: null,
+          confidence: null,
+        },
+      ],
+      addressOrphans: [],
+      buildingAddressLinks: [],
+      campaignAddressUpdateErrors: [
+        {
+          code: '23514',
+          message: 'new row for relation "campaign_addresses" violates check constraint "campaign_addresses_match_source_check"',
+        },
+      ],
+    };
+    const service = new StableLinkerService(createMockSupabase(state) as any);
+
+    const result = await service.assignAddressToExternalBuilding({
+      campaignId: 'campaign-1',
+      addressId: 'address-1',
+      buildingPublicId: 'durham_buildings:170280',
+      assignedBy: 'user-1',
+    });
+
+    assertEqual(state.campaignAddresses?.[0].building_gers_id, 'durham_buildings:170280');
+    assertEqual(state.campaignAddresses?.[0].match_source, null);
     assertEqual(result.linkedAddressIds, ['address-1']);
   });
 

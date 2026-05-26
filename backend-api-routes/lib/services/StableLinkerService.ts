@@ -117,6 +117,15 @@ export interface BuildingFeature {
   };
 }
 
+type CampaignAddressUpdateOptions = {
+  campaignId: string;
+  addressId: string;
+  buildingPublicId: string;
+  values: Record<string, unknown>;
+  allowDroppingPublicBuildingId?: boolean;
+  errorPrefix: string;
+};
+
 interface ParcelFeature {
   externalId: string;
   geometry: {
@@ -237,6 +246,37 @@ const UUID_RE =
 
 function isUuid(value: string): boolean {
   return UUID_RE.test(value);
+}
+
+function isUuidColumnTextIdError(error: { code?: string; message?: string } | null): boolean {
+  const message = error?.message?.toLowerCase() ?? '';
+  return error?.code === '22P02' || (
+    message.includes('invalid input syntax') &&
+    message.includes('uuid')
+  );
+}
+
+function isMissingColumnError(error: { code?: string; message?: string } | null, column: string): boolean {
+  const message = error?.message?.toLowerCase() ?? '';
+  return error?.code === '42703' && message.includes(column.toLowerCase());
+}
+
+function isMatchSourceConstraintError(error: { code?: string; message?: string } | null): boolean {
+  const message = error?.message?.toLowerCase() ?? '';
+  return (
+    error?.code === '23514' &&
+    (message.includes('match_source') || message.includes('campaign_addresses_match_source_check'))
+  );
+}
+
+function isGeometryWriteError(error: { code?: string; message?: string } | null): boolean {
+  const message = error?.message?.toLowerCase() ?? '';
+  return (
+    message.includes('geom') ||
+    message.includes('geometry') ||
+    message.includes('parse error') ||
+    message.includes('invalid input syntax')
+  );
 }
 
 function manualLinkRpc(client: SupabaseClient): ManualLinkRpc | null {
@@ -1963,6 +2003,70 @@ export class StableLinkerService {
    * This is intentionally scoped to one address so edit-mode fixes do not rerun the full
    * campaign join or overwrite other manual corrections.
    */
+  private async updateCampaignAddressAssignment(
+    options: CampaignAddressUpdateOptions
+  ): Promise<void> {
+    const updateValues = { ...options.values };
+
+    while (true) {
+      const { error } = await this.supabase
+        .from('campaign_addresses')
+        .update(updateValues)
+        .eq('campaign_id', options.campaignId)
+        .eq('id', options.addressId);
+
+      if (!error) return;
+
+      if (
+        Object.prototype.hasOwnProperty.call(updateValues, 'building_gers_id') &&
+        !isUuid(options.buildingPublicId) &&
+        isUuidColumnTextIdError(error)
+      ) {
+        if (options.allowDroppingPublicBuildingId) {
+          delete updateValues.building_gers_id;
+          console.warn(
+            '[StableLinker] campaign_addresses.building_gers_id rejected text ids; retrying without public building id'
+          );
+          continue;
+        }
+
+        throw new Error(
+          `${options.errorPrefix}: database migration required for external building ids. ` +
+          `Apply supabase/migrations/20260521153000_external_building_ids_text.sql. (${error.message})`
+        );
+      }
+
+      if (
+        Object.prototype.hasOwnProperty.call(updateValues, 'geom') &&
+        isGeometryWriteError(error)
+      ) {
+        delete updateValues.geom;
+        console.warn('[StableLinker] campaign_addresses.geom rejected manual coordinate; retrying link without moving point');
+        continue;
+      }
+
+      if (
+        Object.prototype.hasOwnProperty.call(updateValues, 'match_source') &&
+        (isMissingColumnError(error, 'match_source') || isMatchSourceConstraintError(error))
+      ) {
+        delete updateValues.match_source;
+        console.warn('[StableLinker] campaign_addresses.match_source rejected manual value; retrying without match_source');
+        continue;
+      }
+
+      if (
+        Object.prototype.hasOwnProperty.call(updateValues, 'confidence') &&
+        isMissingColumnError(error, 'confidence')
+      ) {
+        delete updateValues.confidence;
+        console.warn('[StableLinker] campaign_addresses.confidence missing; retrying without confidence');
+        continue;
+      }
+
+      throw new Error(`${options.errorPrefix}: ${error.message}`);
+    }
+  }
+
   async assignAddressToBuilding(input: {
     campaignId: string;
     addressId: string;
@@ -2084,15 +2188,14 @@ export class StableLinkerService {
       addressUpdate.geom = JSON.stringify({ type: 'Point', coordinates: coordinate });
     }
 
-    const { error: addressError } = await this.supabase
-      .from('campaign_addresses')
-      .update(addressUpdate)
-      .eq('campaign_id', campaignId)
-      .eq('id', addressId);
-
-    if (addressError) {
-      throw new Error(`Failed to sync linked address: ${addressError.message}`);
-    }
+    await this.updateCampaignAddressAssignment({
+      campaignId,
+      addressId,
+      buildingPublicId,
+      values: addressUpdate,
+      allowDroppingPublicBuildingId: true,
+      errorPrefix: 'Failed to sync linked address',
+    });
 
     return {
       linkedAddressIds,
@@ -2121,15 +2224,13 @@ export class StableLinkerService {
       addressUpdate.geom = JSON.stringify({ type: 'Point', coordinates: coordinate });
     }
 
-    const { error: addressError } = await this.supabase
-      .from('campaign_addresses')
-      .update(addressUpdate)
-      .eq('campaign_id', campaignId)
-      .eq('id', addressId);
-
-    if (addressError) {
-      throw new Error(`Failed to sync Gold linked address: ${addressError.message}`);
-    }
+    await this.updateCampaignAddressAssignment({
+      campaignId,
+      addressId,
+      buildingPublicId,
+      values: addressUpdate,
+      errorPrefix: 'Failed to sync Gold linked address',
+    });
 
     const orphanUpdate: Record<string, unknown> = {
       status: 'assigned',
@@ -2179,15 +2280,13 @@ export class StableLinkerService {
       addressUpdate.geom = JSON.stringify({ type: 'Point', coordinates: coordinate });
     }
 
-    const { error: addressError } = await this.supabase
-      .from('campaign_addresses')
-      .update(addressUpdate)
-      .eq('campaign_id', campaignId)
-      .eq('id', addressId);
-
-    if (addressError) {
-      throw new Error(`Failed to sync external linked address: ${addressError.message}`);
-    }
+    await this.updateCampaignAddressAssignment({
+      campaignId,
+      addressId,
+      buildingPublicId,
+      values: addressUpdate,
+      errorPrefix: 'Failed to sync external linked address',
+    });
 
     const orphanUpdate: Record<string, unknown> = {
       status: 'assigned',

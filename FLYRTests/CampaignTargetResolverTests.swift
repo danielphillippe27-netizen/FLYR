@@ -239,6 +239,69 @@ final class CampaignTargetResolverTests: XCTestCase {
         XCTAssertEqual(targets.first?.buildingId, goldBuildingId)
     }
 
+    func testAddressFeatureDisplayDedupeCollapsesSameMiltonAddress() throws {
+        let duplicateA = UUID().uuidString.lowercased()
+        let duplicateB = UUID().uuidString.lowercased()
+        let nextHouse = UUID().uuidString.lowercased()
+
+        let addresses = try decodeAddresses("""
+        [
+          {
+            "type": "Feature",
+            "id": "\(duplicateA)",
+            "geometry": {
+              "type": "Point",
+              "coordinates": [-79.86000, 43.52000]
+            },
+            "properties": {
+              "id": "\(duplicateA)",
+              "house_number": "1102",
+              "street_name": "Bonin Cres",
+              "locality": "Milton",
+              "formatted": "1102 Bonin Cres, Milton"
+            }
+          },
+          {
+            "type": "Feature",
+            "id": "\(duplicateB)",
+            "geometry": {
+              "type": "Point",
+              "coordinates": [-79.86002, 43.52002]
+            },
+            "properties": {
+              "id": "\(duplicateB)",
+              "building_gers_id": "building-1102",
+              "house_number": "1102",
+              "street_name": "Bonin Crescent",
+              "locality": "Milton",
+              "formatted": "1102 Bonin Crescent, Milton"
+            }
+          },
+          {
+            "type": "Feature",
+            "id": "\(nextHouse)",
+            "geometry": {
+              "type": "Point",
+              "coordinates": [-79.86100, 43.52100]
+            },
+            "properties": {
+              "id": "\(nextHouse)",
+              "house_number": "1104",
+              "street_name": "Bonin Crescent",
+              "locality": "Milton",
+              "formatted": "1104 Bonin Crescent, Milton"
+            }
+          }
+        ]
+        """)
+
+        let deduped = CampaignTargetResolver.deduplicatedAddressFeaturesForClientDisplay(addresses)
+
+        XCTAssertEqual(deduped.count, 2)
+        XCTAssertEqual(deduped.first?.properties.id, duplicateB)
+        XCTAssertEqual(Set(deduped.compactMap { $0.properties.id }), Set([duplicateB, nextHouse]))
+    }
+
     private func decodeBuildings(_ json: String) throws -> [BuildingFeature] {
         try JSONDecoder().decode([BuildingFeature].self, from: Data(json.utf8))
     }

@@ -102,6 +102,7 @@ struct StandardCampaignGoogleMapView: UIViewRepresentable {
     let fallbackCenter: CLLocationCoordinate2D?
     let selectedCircleCenter: CLLocationCoordinate2D?
     let showUserLocation: Bool
+    let useSatelliteMap: Bool
     let contentInsets: UIEdgeInsets
     let onReady: (() -> Void)?
     let onMarkerTap: (MapLayerManager.AddressTapResult) -> Void
@@ -119,7 +120,7 @@ struct StandardCampaignGoogleMapView: UIViewRepresentable {
 
         let mapView = GMSMapView(options: options)
         mapView.delegate = context.coordinator
-        mapView.mapType = .normal
+        mapView.mapType = useSatelliteMap ? .hybrid : .normal
         mapView.isBuildingsEnabled = true
         mapView.isTrafficEnabled = false
         mapView.isIndoorEnabled = false
@@ -146,6 +147,7 @@ struct StandardCampaignGoogleMapView: UIViewRepresentable {
     func updateUIView(_ uiView: GMSMapView, context: Context) {
         context.coordinator.parent = self
         uiView.padding = contentInsets
+        uiView.mapType = useSatelliteMap ? .hybrid : .normal
         uiView.isMyLocationEnabled = showUserLocation
         context.coordinator.syncMarkers(on: uiView)
         context.coordinator.syncPath(on: uiView)

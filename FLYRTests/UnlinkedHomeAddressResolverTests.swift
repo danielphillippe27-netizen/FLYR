@@ -101,10 +101,14 @@ final class UnlinkedHomeAddressResolverTests: XCTestCase {
             formatted: "5311 Green Velvet Court, Orlando, Florida 32808, United States",
             houseNumber: "5311",
             streetName: "Green Velvet Court",
+            locality: "Orlando",
+            region: "Florida",
             postalCode: "32808"
         )
 
         XCTAssertEqual(candidate.displayAddress, "5311 Green Velvet Court")
+        XCTAssertEqual(candidate.locality, "Orlando")
+        XCTAssertEqual(candidate.region, "Florida")
     }
 
     func testReverseGeocodeDisplayFallsBackToFirstFormattedLine() {
@@ -128,6 +132,8 @@ final class UnlinkedHomeAddressResolverTests: XCTestCase {
         formatted: String,
         houseNumber: String?,
         streetName: String?,
+        locality: String? = nil,
+        region: String? = nil,
         postalCode: String?
     ) -> BuildingAddressCandidate {
         BuildingAddressCandidate(
@@ -137,6 +143,8 @@ final class UnlinkedHomeAddressResolverTests: XCTestCase {
             formatted: formatted,
             houseNumber: houseNumber,
             streetName: streetName,
+            locality: locality,
+            region: region,
             postalCode: postalCode,
             source: "test",
             coordinate: CandidateCoordinate(longitude: 172.65, latitude: -43.53),

@@ -1142,6 +1142,7 @@ struct CampaignMapView: View {
     @State private var showTargetsSheet = false
     @State private var statsExpanded = false
     @State private var sessionToolsExpanded = false
+    @AppStorage("campaign_map_uses_satellite") private var satelliteMapEnabled = false
     @State private var dragOffset: CGFloat = 0
     @State private var focusBuildingId: String?
     @StateObject private var demoSessionSimulator = DemoSessionSimulator()
@@ -1431,7 +1432,9 @@ struct CampaignMapView: View {
     private var visibleAddressFeatures: [AddressFeature] {
         let allAddresses = (featuresService.addresses?.features ?? [])
             .filter { featureIntersectsCampaignTerritory($0.geometry) }
-        guard let activeRouteWorkContext else { return allAddresses }
+        guard let activeRouteWorkContext else {
+            return CampaignTargetResolver.deduplicatedAddressFeaturesForClientDisplay(allAddresses)
+        }
 
         let addressIds = activeRouteWorkContext.normalizedAddressIdSet
         let buildingOnlyIds = activeRouteWorkContext.normalizedBuildingOnlyIdentifierSet
@@ -1450,38 +1453,9 @@ struct CampaignMapView: View {
             return buildingCandidates.contains { buildingOnlyIds.contains($0) }
         }
 
-        return filtered.sortedByRouteScope(activeRouteWorkContext)
-    }
-
-    private var buildingModeFallbackAddressFeatures: [AddressFeature] {
-        guard !visibleAddressFeatures.isEmpty else { return [] }
-        guard !visibleBuildingFeatures.isEmpty else { return visibleAddressFeatures }
-
-        let representedAddressIds = Set(
-            visibleBuildingFeatures.flatMap { feature in
-                feature.properties.addressIds + [feature.properties.addressId].compactMap { $0 }
-            }
-            .compactMap { normalizedMapFeatureIdentifier($0) }
-        )
-        let representedBuildingIds = Set(
-            visibleBuildingFeatures.flatMap { $0.properties.buildingIdentifierCandidates }
-                .compactMap { normalizedMapFeatureIdentifier($0) }
-        )
-
-        return visibleAddressFeatures.filter { feature in
-            if let addressId = normalizedMapFeatureIdentifier(feature.properties.id ?? feature.id),
-               representedAddressIds.contains(addressId) {
-                return false
-            }
-
-            let buildingCandidates = [
-                feature.properties.buildingGersId,
-                feature.properties.gersId
-            ]
-            .compactMap(normalizedMapFeatureIdentifier)
-
-            return !buildingCandidates.contains { representedBuildingIds.contains($0) }
-        }
+        return CampaignTargetResolver
+            .deduplicatedAddressFeaturesForClientDisplay(filtered)
+            .sortedByRouteScope(activeRouteWorkContext)
     }
 
     private func addressFeaturesForCurrentDisplayMode() -> [AddressFeature] {
@@ -1490,7 +1464,7 @@ struct CampaignMapView: View {
             return visibleAddressFeatures
         case .buildings:
             guard !usesStandardPinsRenderer else { return [] }
-            return isMapEditMode ? visibleAddressFeatures : buildingModeFallbackAddressFeatures
+            return isMapEditMode ? visibleAddressFeatures : []
         }
     }
 
@@ -1929,6 +1903,7 @@ struct CampaignMapView: View {
                 hasRenderedVisibleBuildings = false
                 MapTheme.loadCampaignMapStyle(
                     useDarkStyle: colorScheme == .dark,
+                    useSatelliteStyle: satelliteMapEnabled,
                     preferOfflineStylePacks: !isOnline,
                     on: mapView!.mapboxMap
                 )
@@ -2402,7 +2377,8 @@ struct CampaignMapView: View {
                         sessionManager: sessionManager,
                         showingTargets: $showTargetsSheet,
                         statsExpanded: $statsExpanded,
-                        isExpanded: $sessionToolsExpanded
+                        isExpanded: $sessionToolsExpanded,
+                        satelliteMapEnabled: $satelliteMapEnabled
                     )
                     .padding(.bottom, 8)
                 }
@@ -2460,6 +2436,7 @@ struct CampaignMapView: View {
                     fallbackCenter: fallbackMapCenter,
                     selectedCircleCenter: standardMapTapCircleCoordinate,
                     showUserLocation: sessionManager.sessionId != nil && !sessionManager.isDemoSession,
+                    useSatelliteMap: satelliteMapEnabled,
                     contentInsets: standardPinsMapInsets,
                     onReady: {
                         mapView = nil
@@ -2479,6 +2456,7 @@ struct CampaignMapView: View {
                 CampaignMapboxMapViewRepresentable(
                     preferredSize: size,
                     useDarkStyle: colorScheme == .dark,
+                    useSatelliteStyle: satelliteMapEnabled,
                     preferOfflineStylePacks: !networkMonitor.isOnline,
                     sessionLocation: sessionManager.sessionId != nil ? sessionManager.currentLocation : nil,
                     sessionHeadingState: sessionManager.sessionId != nil ? sessionManager.headingPresentationState : .unavailable,
@@ -4291,10 +4269,7 @@ struct CampaignMapView: View {
         let hasAddressNumbersLayer = map.allLayerIdentifiers.contains(where: { $0.id == MapLayerManager.addressNumbersLayerId })
         let hasDiamondBuildings = !usesStandardPinsRenderer && featuresService.diamondManifest?.hasRenderablePMTilesGeometry == true
         let hasDiamondAddresses = !usesStandardPinsRenderer && featuresService.diamondManifest?.hasRenderablePMTilesAddresses == true
-        let buildingModeFallbackAddressCount = (!usesStandardPinsRenderer && !hasDiamondAddresses)
-            ? buildingModeFallbackAddressFeatures.count
-            : 0
-        let showAddressLayerWithBuildings = editModeShowsBuildingsAndAddresses || buildingModeFallbackAddressCount > 0
+        let showAddressLayerWithBuildings = editModeShowsBuildingsAndAddresses
         if !hasBuildingsLayer || !hasAddressesLayer {
             print("🔍 [CampaignMap] Layers not in style yet (buildings=\(hasBuildingsLayer) townhouseOverlay=\(hasTownhomeOverlayLayer) addresses=\(hasAddressesLayer)); visibility will apply after style load")
         }
@@ -4319,7 +4294,6 @@ struct CampaignMapView: View {
             shouldShowDiamondBuildings ? "diamond-buildings-visible" : "diamond-buildings-hidden",
             shouldShowGeoJSONBuildings ? "geojson-buildings-visible" : "geojson-buildings-hidden",
             visibleBuildingFeatures.isEmpty ? "townhomes-hidden" : "townhomes-visible",
-            "building-fallback-addresses-\(buildingModeFallbackAddressCount)",
             (effectiveMode == .addresses || showAddressLayerWithBuildings) ? "addresses-visible" : "addresses-hidden",
             shouldShowAddressNumbers ? "numbers-visible" : "numbers-hidden"
         ].joined(separator: "|")
@@ -9033,20 +9007,28 @@ struct CampaignMapView: View {
     private func resolvedAddressResolutionForBuildingCard(_ building: BuildingProperties) -> BuildingAddressResolution {
         let building = enrichedBuildingSelection(building)
         let identifiers = normalizedBuildingIdentifiers(for: building)
+        let footprintResolution = addressIdsInsideTappedBuildingFootprint(for: building)
+        if footprintResolution.ids.count > 1, footprintResolution.source == .provisionalContained {
+            return footprintResolution
+        }
+
+        let persistedResolution: BuildingAddressResolution
         if let cachedLinkedAddressIds = cachedLinkedAddressIds(for: identifiers) {
-            return BuildingAddressResolution(ids: cachedLinkedAddressIds, source: .persisted)
+            persistedResolution = BuildingAddressResolution(ids: cachedLinkedAddressIds, source: .persisted)
+        } else if !building.addressUUIDs.isEmpty {
+            persistedResolution = BuildingAddressResolution(ids: deduplicatedAddressIds(building.addressUUIDs), source: .persisted)
+        } else {
+            let mappedIds = deduplicatedAddressIds(identifiers.flatMap { addressIdsForBuilding(gersId: $0) })
+            persistedResolution = mappedIds.isEmpty
+                ? .empty
+                : BuildingAddressResolution(ids: mappedIds, source: .persisted)
         }
 
-        if !building.addressUUIDs.isEmpty {
-            return BuildingAddressResolution(ids: deduplicatedAddressIds(building.addressUUIDs), source: .persisted)
+        if !persistedResolution.ids.isEmpty {
+            return persistedResolution
         }
 
-        let mappedIds = deduplicatedAddressIds(identifiers.flatMap { addressIdsForBuilding(gersId: $0) })
-        if !mappedIds.isEmpty {
-            return BuildingAddressResolution(ids: mappedIds, source: .persisted)
-        }
-
-        return addressIdsInsideTappedBuildingFootprint(for: building)
+        return footprintResolution
     }
 
     private func setSelectedAddressForCard(_ addressId: UUID?) {
@@ -10479,6 +10461,7 @@ private enum CampaignSessionMapLayerIds {
 struct CampaignMapboxMapViewRepresentable: UIViewRepresentable {
     var preferredSize: CGSize = CGSize(width: 320, height: 260)
     var useDarkStyle: Bool = false
+    var useSatelliteStyle: Bool = false
     var preferOfflineStylePacks: Bool = false
     var sessionLocation: CLLocation?
     var sessionHeadingState: MapHeadingPresentationState = .unavailable
@@ -10514,11 +10497,13 @@ struct CampaignMapboxMapViewRepresentable: UIViewRepresentable {
 
         MapTheme.loadCampaignMapStyle(
             useDarkStyle: useDarkStyle,
+            useSatelliteStyle: useSatelliteStyle,
             preferOfflineStylePacks: preferOfflineStylePacks,
             on: mapView.mapboxMap
         )
         context.coordinator.lastStyleSignature = styleSignature(
             useDarkStyle: useDarkStyle,
+            useSatelliteStyle: useSatelliteStyle,
             preferOfflineStylePacks: preferOfflineStylePacks
         )
 
@@ -10558,12 +10543,14 @@ struct CampaignMapboxMapViewRepresentable: UIViewRepresentable {
     func updateUIView(_ uiView: MapView, context: Context) {
         let nextStyleSignature = styleSignature(
             useDarkStyle: useDarkStyle,
+            useSatelliteStyle: useSatelliteStyle,
             preferOfflineStylePacks: preferOfflineStylePacks
         )
         if context.coordinator.lastStyleSignature != nextStyleSignature {
             context.coordinator.lastStyleSignature = nextStyleSignature
             MapTheme.loadCampaignMapStyle(
                 useDarkStyle: useDarkStyle,
+                useSatelliteStyle: useSatelliteStyle,
                 preferOfflineStylePacks: preferOfflineStylePacks,
                 on: uiView.mapboxMap
             )
@@ -10592,8 +10579,8 @@ struct CampaignMapboxMapViewRepresentable: UIViewRepresentable {
         }
     }
 
-    private func styleSignature(useDarkStyle: Bool, preferOfflineStylePacks: Bool) -> String {
-        "\(useDarkStyle)-\(preferOfflineStylePacks)"
+    private func styleSignature(useDarkStyle: Bool, useSatelliteStyle: Bool, preferOfflineStylePacks: Bool) -> String {
+        "\(useDarkStyle)-\(useSatelliteStyle)-\(preferOfflineStylePacks)"
     }
 
     func makeCoordinator() -> Coordinator {
@@ -11500,57 +11487,68 @@ struct LocationCardView: View {
 
     /// Street number and name only (e.g. "9 LIVING N, CLARINGTON, ON, CA" or "74 MADDEN PL , BOWMANVILLE, ON" -> "9 LIVING N" / "74 MADDEN PL")
     private func streetOnly(from full: String) -> String {
-        if let idx = full.range(of: " , ")?.lowerBound {
-            return String(full[..<idx]).trimmingCharacters(in: .whitespaces)
+        let trimmed = full
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: #"\s+,\s*"#, with: ", ", options: .regularExpression)
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+        if let idx = trimmed.range(of: ",")?.lowerBound {
+            return String(trimmed[..<idx]).trimmingCharacters(in: .whitespacesAndNewlines)
         }
-        if let idx = full.range(of: ",")?.lowerBound {
-            return String(full[..<idx]).trimmingCharacters(in: .whitespaces)
-        }
-        return full.trimmingCharacters(in: .whitespaces)
+        return trimmed
     }
 
-    private func multiAddressRowLabel(for address: ResolvedAddress) -> String {
-        let combined = [address.houseNumber, address.streetName]
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private func streetLineLabel(
+        houseNumber: String?,
+        streetName: String?,
+        formatted: String?,
+        fallback: String? = nil
+    ) -> String {
+        let combined = [houseNumber, streetName]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
             .joined(separator: " ")
-
         if combined.range(of: "[A-Za-z]", options: .regularExpression) != nil {
             return streetOnly(from: combined)
         }
 
-        let formatted = address.formatted.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !formatted.isEmpty {
-            let formattedStreet = streetOnly(from: formatted)
-            if formattedStreet.range(of: "[A-Za-z]", options: .regularExpression) != nil {
-                return formattedStreet
+        for value in [formatted, fallback] {
+            let streetLine = streetOnly(from: value ?? "")
+            if !streetLine.isEmpty {
+                return streetLine
             }
         }
 
-        let displayStreet = streetOnly(from: address.displayStreet)
-        if !displayStreet.isEmpty {
-            return displayStreet
-        }
+        return combined.isEmpty ? "Address" : combined
+    }
 
-        let houseNumber = address.houseNumber.trimmingCharacters(in: .whitespacesAndNewlines)
-        return houseNumber.isEmpty ? "Address" : houseNumber
+    private func streetLineLabel(for address: ResolvedAddress) -> String {
+        streetLineLabel(
+            houseNumber: address.houseNumber,
+            streetName: address.streetName,
+            formatted: address.formatted,
+            fallback: address.displayStreet
+        )
+    }
+
+    private func multiAddressRowLabel(for address: ResolvedAddress) -> String {
+        streetLineLabel(for: address)
     }
 
     private var preferredHeaderAddressText: String? {
         if let address = dataService.buildingData.address {
-            let fullAddress = address.displayFull.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !fullAddress.isEmpty {
-                return isManualShape ? fullAddress : streetOnly(from: fullAddress)
+            let streetLine = streetLineLabel(for: address)
+            if !streetLine.isEmpty && streetLine != "Address" {
+                return streetLine
             }
             let displayStreet = address.displayStreet.trimmingCharacters(in: .whitespacesAndNewlines)
             if !displayStreet.isEmpty {
-                return isManualShape ? displayStreet : streetOnly(from: displayStreet)
+                return streetOnly(from: displayStreet)
             }
         }
 
         let fallbackAddress = addressText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if !fallbackAddress.isEmpty {
-            return isManualShape ? fallbackAddress : streetOnly(from: fallbackAddress)
+            return streetOnly(from: fallbackAddress)
         }
 
         return nil
@@ -12415,13 +12413,14 @@ struct LocationCardView: View {
             } label: {
                 HStack(spacing: 8) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(multiAddressRowLabel(for: address))
+                        let rowLabel = multiAddressRowLabel(for: address)
+                        Text(rowLabel)
                             .font(.system(size: 14, weight: .semibold))
                             .foregroundColor(.white)
                             .lineLimit(1)
-                        let full = address.displayFull.trimmingCharacters(in: .whitespacesAndNewlines)
-                        if !full.isEmpty && full != multiAddressRowLabel(for: address) {
-                            Text(full)
+                        let secondary = streetOnly(from: address.displayFull)
+                        if !secondary.isEmpty && secondary != rowLabel {
+                            Text(secondary)
                                 .font(.system(size: 11, weight: .medium))
                                 .foregroundColor(.white.opacity(0.52))
                                 .lineLimit(1)
@@ -15031,6 +15030,17 @@ private struct BuildingAddressPickerSheet: View {
         .buttonStyle(.plain)
     }
 
+    private func streetOnly(from full: String) -> String {
+        let trimmed = full
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: #"\s+,\s*"#, with: ", ", options: .regularExpression)
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+        if let idx = trimmed.range(of: ",")?.lowerBound {
+            return String(trimmed[..<idx]).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return trimmed
+    }
+
     private func candidateButton(_ candidate: BuildingAddressCandidate) -> some View {
         Button {
             link(candidate)
@@ -15046,7 +15056,7 @@ private struct BuildingAddressPickerSheet: View {
                 }
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(candidate.displayAddress)
+                    Text(streetOnly(from: candidate.displayAddress))
                         .font(.system(size: 15, weight: .semibold))
                         .foregroundColor(cardText)
                     Text(candidateSubtitle(candidate))

@@ -483,13 +483,7 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
             selected.fillExtrusionColor = .constant(StyleColor(MapStatusColor.selectedHome))
             selected.fillExtrusionOpacity = .expression(
                 Exp(.switchCase) {
-                    Exp(.eq) {
-                        Exp(.coalesce) {
-                            Exp(.featureState) { "selected" }
-                            false
-                        }
-                        true
-                    }
+                    isSelectedUnvisitedStatusExpression()
                     1.0
                     0.0
                 }
@@ -550,13 +544,7 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
             )
             selected.circleOpacity = .expression(
                 Exp(.switchCase) {
-                    Exp(.eq) {
-                        Exp(.coalesce) {
-                            Exp(.featureState) { "selected" }
-                            false
-                        }
-                        true
-                    }
+                    isSelectedUnvisitedStatusExpression()
                     1.0
                     0.0
                 }
@@ -759,7 +747,7 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
 
     private func statusFillColorExpression(defaultColor: UIColor) -> Exp {
         Exp(.switchCase) {
-            isSelectedExpression()
+            isSelectedUnvisitedStatusExpression()
             MapStatusColor.selectedHome
 
             Exp(.match) {
@@ -810,6 +798,30 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
                 false
             }
             true
+        }
+    }
+
+    private func scansTotalExpression() -> Exp {
+        Exp(.coalesce) {
+            Exp(.featureState) { "scans_total" }
+            Exp(.get) { "scans_total" }
+            0
+        }
+    }
+
+    private func isSelectedUnvisitedStatusExpression() -> Exp {
+        Exp(.all) {
+            isSelectedExpression()
+            Exp(.lte) {
+                scansTotalExpression()
+                0
+            }
+            Exp(.match) {
+                statusValueExpression()
+                ["none", "not_visited", "unvisited", "flyer_unvisited"]
+                true
+                false
+            }
         }
     }
 

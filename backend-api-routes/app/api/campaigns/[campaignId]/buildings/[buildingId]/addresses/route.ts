@@ -377,6 +377,12 @@ export async function POST(request: Request, context: RouteContext) {
     });
   } catch (err) {
     console.error("[buildings/addresses] POST", err);
+    if (err instanceof Error && err.message.includes("database migration required for external building ids")) {
+      return NextResponse.json(
+        { error: err.message },
+        { status: 409 }
+      );
+    }
     return NextResponse.json(
       { error: "Internal server error" },
       { status: 500 }

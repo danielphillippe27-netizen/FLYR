@@ -427,6 +427,32 @@ enum CampaignTargetResolver {
         return combined.isEmpty ? nil : combined
     }
 
+    static func deduplicatedAddressFeaturesForClientDisplay(_ features: [AddressFeature]) -> [AddressFeature] {
+        guard features.count > 1 else { return features }
+
+        var orderedKeys: [String] = []
+        var featuresByKey: [String: AddressFeature] = [:]
+
+        for feature in features {
+            let key = normalizedAddressFeatureIdentity(feature)
+                ?? normalizedUUIDString(feature.properties.id ?? feature.id)
+                ?? feature.id?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                ?? UUID().uuidString
+
+            guard let existing = featuresByKey[key] else {
+                orderedKeys.append(key)
+                featuresByKey[key] = feature
+                continue
+            }
+
+            if addressFeatureDisplayPriority(feature) > addressFeatureDisplayPriority(existing) {
+                featuresByKey[key] = feature
+            }
+        }
+
+        return orderedKeys.compactMap { featuresByKey[$0] }
+    }
+
     private static func centroidCoordinate(fromPolygonCoordinates polygon: [[[Double]]]) -> CLLocationCoordinate2D? {
         var sumLat = 0.0
         var sumLon = 0.0
@@ -458,6 +484,67 @@ enum CampaignTargetResolver {
             return nil
         }
         return uuid.uuidString.lowercased()
+    }
+
+    private static func normalizedAddressFeatureIdentity(_ feature: AddressFeature) -> String? {
+        let house = normalizedAddressPart(feature.properties.houseNumber)
+        let street = normalizedStreetIdentityPart(feature.properties.streetName)
+        let locality = normalizedAddressPart(feature.properties.locality)
+        let postalCode = normalizedAddressPart(feature.properties.postalCode)
+
+        if !house.isEmpty || !street.isEmpty {
+            let identity = [house, street, locality, postalCode]
+                .filter { !$0.isEmpty }
+                .joined(separator: "|")
+            return identity.isEmpty ? nil : identity
+        }
+
+        let formatted = normalizedAddressPart(feature.properties.formatted)
+        guard !formatted.isEmpty else { return nil }
+
+        let identity = [formatted, locality, postalCode]
+            .filter { !$0.isEmpty }
+            .joined(separator: "|")
+        return identity.isEmpty ? nil : identity
+    }
+
+    private static func normalizedAddressPart(_ value: String?) -> String {
+        (value ?? "")
+            .lowercased()
+            .replacingOccurrences(of: #"[^a-z0-9]+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func normalizedStreetIdentityPart(_ value: String?) -> String {
+        normalizedAddressPart(value)
+            .split(separator: " ")
+            .map { word -> String in
+                switch word {
+                case "st", "str": return "street"
+                case "rd": return "road"
+                case "ave", "av": return "avenue"
+                case "blvd": return "boulevard"
+                case "dr": return "drive"
+                case "ct", "crt": return "court"
+                case "cres": return "crescent"
+                case "ln": return "lane"
+                case "pl": return "place"
+                case "trl": return "trail"
+                case "pkwy": return "parkway"
+                case "hwy": return "highway"
+                default: return String(word)
+                }
+            }
+            .joined(separator: " ")
+    }
+
+    private static func addressFeatureDisplayPriority(_ feature: AddressFeature) -> Int {
+        var score = 0
+        if feature.properties.buildingGersId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false { score += 4 }
+        if feature.properties.gersId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false { score += 2 }
+        if feature.properties.formatted?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false { score += 1 }
+        if CampaignTargetResolver.coordinate(for: feature.geometry) != nil { score += 1 }
+        return score
     }
 }
 
@@ -1432,13 +1519,22 @@ final class MapFeaturesService: ObservableObject {
             return []
         }
         let fallbackId = (str("building_id") ?? str("gers_id") ?? feature.id ?? UUID().uuidString).lowercased()
-        let rawGersId = str("gers_id") ?? str("building_id") ?? feature.id ?? UUID().uuidString
+        let rawPublicId = str("public_building_id")
+            ?? str("canonical_building_id")
+            ?? str("gers_id")
+            ?? str("building_id")
+            ?? feature.id
+            ?? UUID().uuidString
+        let rawGersId = str("gers_id") ?? rawPublicId
         return BuildingProperties(
             id: str("building_id") ?? str("id") ?? fallbackId,
             buildingId: str("building_id"),
             addressId: str("address_id"),
             addressIds: stringArray("address_ids"),
             gersId: rawGersId.lowercased(),
+            publicBuildingId: rawPublicId.lowercased(),
+            canonicalBuildingId: (str("canonical_building_id") ?? rawPublicId).lowercased(),
+            buildingIdentifierSource: str("building_identifier_source"),
             height: double("height") > 0 ? double("height") : 10,
             heightM: (p["height_m"]?.value as? Double).flatMap { $0 > 0 ? $0 : nil } ?? 10,
             minHeight: double("min_height"),
@@ -1660,6 +1756,14 @@ final class MapFeaturesService: ObservableObject {
         return String(hash, radix: 16)
     }
 
+    private static func unlinkedAddressCount(_ addresses: AddressFeatureCollection) -> Int {
+        addresses.features.filter { feature in
+            let buildingId = feature.properties.buildingGersId?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return buildingId?.isEmpty != false
+        }.count
+    }
+
     private func scheduleClientLinkingIfReady(campaignId: String, requestId: UUID? = nil) {
         guard isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else { return }
         guard let buildings, let addresses else { return }
@@ -1689,6 +1793,7 @@ final class MapFeaturesService: ObservableObject {
         let snapshotBuildings = buildings
         let snapshotAddresses = addresses
         let snapshotParcels = parcels
+        let unlinkedAddressCount = Self.unlinkedAddressCount(snapshotAddresses)
 
         clientLinkingTask = Task { [weak self] in
             guard let self else { return }
@@ -1696,17 +1801,25 @@ final class MapFeaturesService: ObservableObject {
                 campaignId: campaignId,
                 assetSignature: signature
             ) {
-                await MainActor.run {
-                    guard self.isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else { return }
-                    self.applyClientLinks(cachedBatch.summary.links, toCampaignId: campaignId)
-                    self.clientLinkingProgress = cachedBatch.summary.progress
-                    self.clientLinkingTask = nil
+                let cachedLinks = cachedBatch.summary.links
+                if cachedLinks.isEmpty, unlinkedAddressCount > 0, !snapshotBuildings.features.isEmpty {
                     print(
-                        "🧪 [MAP_DEBUG] client_linking_cache_hit campaign=\(campaignId) " +
-                        "links=\(cachedBatch.summary.links.count) signature=\(cachedBatch.assetSignature)"
+                        "🧪 [MAP_DEBUG] client_linking_cache_ignored campaign=\(campaignId) " +
+                        "reason=zero_links_with_unlinked_addresses unlinked=\(unlinkedAddressCount) signature=\(cachedBatch.assetSignature)"
                     )
+                } else {
+                    await MainActor.run {
+                        guard self.isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else { return }
+                        self.applyClientLinks(cachedLinks, toCampaignId: campaignId)
+                        self.clientLinkingProgress = cachedBatch.summary.progress
+                        self.clientLinkingTask = nil
+                        print(
+                            "🧪 [MAP_DEBUG] client_linking_cache_hit campaign=\(campaignId) " +
+                            "links=\(cachedLinks.count) signature=\(cachedBatch.assetSignature)"
+                        )
+                    }
+                    return
                 }
-                return
             }
 
             let summary = await ClientMapLinkerService.shared.link(
@@ -1721,14 +1834,21 @@ final class MapFeaturesService: ObservableObject {
                 }
             )
             guard !Task.isCancelled else { return }
-            await self.campaignRepository.upsertClientGeneratedBuildingAddressLinks(
-                campaignId: campaignId,
-                links: summary.links,
-                assetSignature: signature,
-                buildingCount: snapshotBuildings.features.count,
-                addressCount: snapshotAddresses.features.count,
-                parcelCount: snapshotParcels?.features.count ?? 0
-            )
+            if !summary.links.isEmpty || unlinkedAddressCount == 0 {
+                await self.campaignRepository.upsertClientGeneratedBuildingAddressLinks(
+                    campaignId: campaignId,
+                    links: summary.links,
+                    assetSignature: signature,
+                    buildingCount: snapshotBuildings.features.count,
+                    addressCount: snapshotAddresses.features.count,
+                    parcelCount: snapshotParcels?.features.count ?? 0
+                )
+            } else {
+                print(
+                    "🧪 [MAP_DEBUG] client_linking_zero_not_cached campaign=\(campaignId) " +
+                    "unlinked=\(unlinkedAddressCount) buildings=\(snapshotBuildings.features.count)"
+                )
+            }
             await MainActor.run {
                 guard self.isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else { return }
                 self.applyClientLinks(summary.links, toCampaignId: campaignId)

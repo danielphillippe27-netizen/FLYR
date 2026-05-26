@@ -83,6 +83,44 @@ final class ClientMapLinkerServiceTests: XCTestCase {
         XCTAssertEqual(summary.links.first?.matchType, "proximity_fallback")
     }
 
+    func testSingleUnitBuildingsAreNotReusedForAdjacentHomes() async throws {
+        let buildings = BuildingFeatureCollection(type: "FeatureCollection", features: [
+            building(id: "building-16", ring: square(lon: -79.0004, lat: 43.0000, size: 0.00008), street: "Bowsprit Ave", house: "16"),
+            building(id: "building-18", ring: square(lon: -79.0002, lat: 43.0000, size: 0.00008), street: "Bowsprit Ave", house: "18"),
+            building(id: "building-20", ring: square(lon: -79.0000, lat: 43.0000, size: 0.00008), street: "Bowsprit Ave", house: "20"),
+            building(id: "building-22", ring: square(lon: -78.9998, lat: 43.0000, size: 0.00008), street: "Bowsprit Ave", house: "22"),
+            building(id: "building-24", ring: square(lon: -78.9996, lat: 43.0000, size: 0.00008), street: "Bowsprit Ave", house: "24")
+        ])
+        let addresses = AddressFeatureCollection(type: "FeatureCollection", features: [
+            address(id: "16161616-1616-1616-1616-161616161616", lon: -79.0004, lat: 42.9998, street: "Bowsprit Ave", house: "16"),
+            address(id: "18181818-1818-1818-1818-181818181818", lon: -79.0002, lat: 42.9998, street: "Bowsprit Ave", house: "18"),
+            address(id: "20202020-2020-2020-2020-202020202020", lon: -79.0000, lat: 42.9998, street: "Bowsprit Ave", house: "20"),
+            address(id: "22222222-2222-2222-2222-222222222222", lon: -78.9998, lat: 42.9998, street: "Bowsprit Ave", house: "22"),
+            address(id: "24242424-2424-2424-2424-242424242424", lon: -78.9996, lat: 42.9998, street: "Bowsprit Ave", house: "24")
+        ])
+
+        let summary = await ClientMapLinkerService.shared.link(
+            buildings: buildings,
+            addresses: addresses,
+            parcels: nil
+        )
+
+        XCTAssertEqual(summary.links.count, 5)
+        XCTAssertEqual(Set(summary.links.map(\.buildingId)).count, 5)
+        XCTAssertEqual(
+            Dictionary(uniqueKeysWithValues: summary.links.map { ($0.addressId, $0.buildingId) })[
+                "20202020-2020-2020-2020-202020202020"
+            ],
+            "building-20"
+        )
+        XCTAssertEqual(
+            Dictionary(uniqueKeysWithValues: summary.links.map { ($0.addressId, $0.buildingId) })[
+                "22222222-2222-2222-2222-222222222222"
+            ],
+            "building-22"
+        )
+    }
+
     func testEmptyAddressCampaignReportsCompleteProgress() async throws {
         let buildings = BuildingFeatureCollection(type: "FeatureCollection", features: [
             building(id: "building-empty", ring: square(lon: -79.0, lat: 43.0, size: 0.001), street: "Main Street", house: "10")

@@ -94,7 +94,7 @@ final class MapLayerManager {
     private static let townhomeOverlayHeightLift: Double = 0.08
     private static let townhomeOverlayPlateThickness: Double = 0.045
     private static let townhomeDividerLineLift: Double = 0.04
-    private static let townhomeOverlayMinimumUnitCount = 4
+    private static let townhomeOverlayMinimumUnitCount = 2
     private static let addressMarkerExtrusionHeight: Double = 5.5
     private static let addressNumberRoofClearance: Double = 1.35
     private static let interactionBuildingExtrusionHeight: Double = 1.25
@@ -176,6 +176,56 @@ final class MapLayerManager {
         }
     }
 
+    private static var layerStatusExpression: Exp {
+        Exp(.coalesce) {
+            Exp(.featureState) { "status" }
+            Exp(.get) { "status" }
+            Exp(.get) { "address_status" }
+            Exp(.get) { "building_status" }
+            Exp(.get) { "home_status" }
+            "not_visited"
+        }
+    }
+
+    private static var scansTotalExpression: Exp {
+        Exp(.coalesce) {
+            Exp(.featureState) { "scans_total" }
+            Exp(.get) { "scans_total" }
+            0
+        }
+    }
+
+    private static var isSelectedUnvisitedExpression: Exp {
+        Exp(.all) {
+            Self.isSelectedExpression
+            Exp(.lte) {
+                Self.scansTotalExpression
+                0
+            }
+            Exp(.match) {
+                Self.layerStatusExpression
+                ["none", "not_visited", "unvisited", "flyer_unvisited"]
+                true
+                false
+            }
+        }
+    }
+
+    private static var isSelectedUnvisitedSegmentExpression: Exp {
+        Exp(.all) {
+            Self.isSelectedExpression
+            Exp(.match) {
+                Exp(.coalesce) {
+                    Exp(.get) { "segment_status" }
+                    "not_visited"
+                }
+                ["none", "not_visited", "unvisited", "flyer_unvisited"]
+                true
+                false
+            }
+        }
+    }
+
     static var selectedBuildingExtrusionHeightExpression: Exp {
         Exp(.switchCase) {
             Self.isSelectedExpression
@@ -219,7 +269,7 @@ final class MapLayerManager {
 
     private static var townhomeSegmentColorExpression: Exp {
         Exp(.switchCase) {
-            Self.isSelectedExpression
+            Self.isSelectedUnvisitedSegmentExpression
             MapStatusColor.selectedHomeGlow
 
             Exp(.eq) {
@@ -365,26 +415,17 @@ final class MapLayerManager {
 
     private static var parcelLinkedAddressColorExpression: Exp {
         Exp(.switchCase) {
-            Self.isSelectedExpression
+            Self.isSelectedUnvisitedExpression
             MapStatusColor.selectedHome
 
             Exp(.gt) {
-                Exp(.coalesce) {
-                    Exp(.featureState) { "scans_total" }
-                    Exp(.get) { "scans_total" }
-                    0
-                }
+                Self.scansTotalExpression
                 0
             }
             MapStatusColor.qrScanned
 
             Exp(.match) {
-                Exp(.coalesce) {
-                    Exp(.featureState) { "status" }
-                    Exp(.get) { "status" }
-                    Exp(.get) { "address_status" }
-                    "not_visited"
-                }
+                Self.layerStatusExpression
                 ["hot", "talked", "conversation"]
                 MapStatusColor.conversations
                 ["lead", "hot_lead"]
@@ -608,134 +649,83 @@ final class MapLayerManager {
         // Create fill-extrusion layer
         var layer = FillExtrusionLayer(id: Self.buildingsLayerId, source: Self.buildingsSourceId)
         
-        // Color expression based on status priority
-        // Selection takes over the whole extrusion so the tapped home reads clearly.
-        // Priority: QR_SCANNED (purple) > CONVERSATIONS (blue) > TOUCHED (green) > UNTOUCHED (red)
+        // Color expression based on status priority. Selection only tints truly
+        // unvisited homes so status writes are visible immediately while selected.
+        // Priority: QR_SCANNED (purple) > CONVERSATIONS (green) > TOUCHED (green) > UNTOUCHED (slate)
         layer.fillExtrusionColor = .expression(
             Exp(.switchCase) {
-                Self.isSelectedExpression
-                MapStatusColor.selectedHome
-
                 // QR code: scans_total > 0 (purple)
                 Exp(.gt) {
-                    Exp(.coalesce) {
-                        Exp(.featureState) { "scans_total" }
-                        Exp(.get) { "scans_total" }
-                        0
-                    }
+                    Self.scansTotalExpression
                     0
                 }
                 MapStatusColor.qrScanned
                 
                 // Talked: status == "hot"
                 Exp(.eq) {
-                    Exp(.coalesce) {
-                        Exp(.featureState) { "status" }
-                        Exp(.get) { "status" }
-                        "not_visited"
-                    }
+                    Self.layerStatusExpression
                     "hot"
                 }
                 MapStatusColor.conversations
                 
                 Exp(.eq) {
-                    Exp(.coalesce) {
-                        Exp(.featureState) { "status" }
-                        Exp(.get) { "status" }
-                        "not_visited"
-                    }
+                    Self.layerStatusExpression
                     "lead"
                 }
                 MapStatusColor.lead
 
                 Exp(.eq) {
-                    Exp(.coalesce) {
-                        Exp(.featureState) { "status" }
-                        Exp(.get) { "status" }
-                        "not_visited"
-                    }
+                    Self.layerStatusExpression
                     "appointment"
                 }
                 MapStatusColor.hotLead
 
                 Exp(.eq) {
-                    Exp(.coalesce) {
-                        Exp(.featureState) { "status" }
-                        Exp(.get) { "status" }
-                        "not_visited"
-                    }
+                    Self.layerStatusExpression
                     "hot_lead"
                 }
                 MapStatusColor.lead
 
                 Exp(.eq) {
-                    Exp(.coalesce) {
-                        Exp(.featureState) { "status" }
-                        Exp(.get) { "status" }
-                        "not_visited"
-                    }
+                    Self.layerStatusExpression
                     "future_seller"
                 }
                 MapStatusColor.hotLead
 
                 Exp(.eq) {
-                    Exp(.coalesce) {
-                        Exp(.featureState) { "status" }
-                        Exp(.get) { "status" }
-                        "not_visited"
-                    }
+                    Self.layerStatusExpression
                     "follow_up"
                 }
                 MapStatusColor.hotLead
 
                 Exp(.eq) {
-                    Exp(.coalesce) {
-                        Exp(.featureState) { "status" }
-                        Exp(.get) { "status" }
-                        "not_visited"
-                    }
+                    Self.layerStatusExpression
                     "flyer_unvisited"
                 }
                 MapStatusColor.flyerUntouched
 
                 Exp(.eq) {
-                    Exp(.coalesce) {
-                        Exp(.featureState) { "status" }
-                        Exp(.get) { "status" }
-                        "not_visited"
-                    }
+                    Self.layerStatusExpression
                     "do_not_knock"
                 }
                 MapStatusColor.doNotKnock
 
                 Exp(.eq) {
-                    Exp(.coalesce) {
-                        Exp(.featureState) { "status" }
-                        Exp(.get) { "status" }
-                        "not_visited"
-                    }
+                    Self.layerStatusExpression
                     "no_answer"
                 }
                 MapStatusColor.noOneHome
 
                 // Pending local confirmation.
                 Exp(.eq) {
-                    Exp(.coalesce) {
-                        Exp(.featureState) { "status" }
-                        Exp(.get) { "status" }
-                        "not_visited"
-                    }
+                    Self.layerStatusExpression
                     "pending_visited"
                 }
                 MapStatusColor.pendingVisited
 
                 // Touched: status == "visited"
                 Exp(.eq) {
-                    Exp(.coalesce) {
-                        Exp(.featureState) { "status" }
-                        Exp(.get) { "status" }
-                        "not_visited"
-                    }
+                    Self.layerStatusExpression
                     "visited"
                 }
                 Exp(.switchCase) {
@@ -750,6 +740,9 @@ final class MapLayerManager {
                     MapStatusColor.teammateTouched
                     MapStatusColor.touched
                 }
+
+                Self.isSelectedUnvisitedExpression
+                MapStatusColor.selectedHome
                 
                 // Default: unvisited slate
                 MapStatusColor.untouched
@@ -1366,27 +1359,7 @@ final class MapLayerManager {
         var selectedLayer = FillExtrusionLayer(id: Self.selectedAddressesLayerId, source: Self.addressesSourceId)
         selectedLayer.fillExtrusionColor = .expression(
             Exp(.switchCase) {
-                Exp(.all) {
-                    Self.isSelectedExpression
-                    Exp(.lte) {
-                        Exp(.coalesce) {
-                            Exp(.featureState) { "scans_total" }
-                            Exp(.get) { "scans_total" }
-                            0
-                        }
-                        0
-                    }
-                    Exp(.match) {
-                        Exp(.coalesce) {
-                            Exp(.featureState) { "status" }
-                            Exp(.get) { "status" }
-                            "not_visited"
-                        }
-                        ["none", "not_visited", "unvisited", "flyer_unvisited"]
-                        true
-                        false
-                    }
-                }
+                Self.isSelectedUnvisitedExpression
                 MapStatusColor.selectedHome
                 UIColor.clear
             }
@@ -2621,7 +2594,7 @@ final class MapLayerManager {
             buildingByIdentifier: buildingByIdentifier,
             buildingByAddressId: buildingByAddressId,
             requireHouseNumberLabel: true,
-            keepSingleAddressCoordinate: true
+            keepSingleAddressCoordinate: false
         )
 
         let existingFeatureIds = Set(addressPointFeatures.compactMap { feature -> String? in
@@ -2639,6 +2612,18 @@ final class MapLayerManager {
             "type": "FeatureCollection",
             "features": pointFeatures
         ])
+    }
+
+    static func buildAddressNumberLabelPointGeoJSON(
+        addresses: [AddressFeature],
+        buildings: [BuildingFeature],
+        orderedAddressIdsByBuilding: [String: [UUID]]
+    ) throws -> Data {
+        try smartAddressLabelPointCollection(
+            addresses: addresses,
+            buildings: buildings,
+            orderedAddressIdsByBuilding: orderedAddressIdsByBuilding
+        )
     }
 
     private static func smartAddressMarkerPointCollection(
@@ -2695,6 +2680,8 @@ final class MapLayerManager {
                 "formatted": feature.properties.formatted as Any,
                 "gers_id": feature.properties.gersId as Any,
                 "building_gers_id": feature.properties.buildingGersId as Any,
+                "public_building_id": (feature.properties.buildingGersId ?? feature.properties.gersId) as Any,
+                "canonical_building_id": (feature.properties.buildingGersId ?? feature.properties.gersId) as Any,
                 "source": feature.properties.source as Any
             ]
 
@@ -2855,6 +2842,10 @@ final class MapLayerManager {
             if let gersId = properties.gersId { labelProperties["gers_id"] = gersId }
             if let buildingId = properties.buildingId ?? properties.gersId ?? properties.canonicalBuildingIdentifier {
                 labelProperties["building_gers_id"] = buildingId
+            }
+            if let publicBuildingId = properties.canonicalBuildingIdentifier {
+                labelProperties["public_building_id"] = publicBuildingId
+                labelProperties["canonical_building_id"] = publicBuildingId
             }
             if let source = properties.source { labelProperties["source"] = source }
 

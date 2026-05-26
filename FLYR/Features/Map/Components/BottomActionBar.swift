@@ -13,6 +13,7 @@ struct BottomActionBar: View {
     @Binding var showingTargets: Bool
     @Binding var statsExpanded: Bool
     @Binding var isExpanded: Bool
+    @Binding var satelliteMapEnabled: Bool
     var menuVariant: MenuVariant = .campaign
     @Environment(\.colorScheme) private var colorScheme
     @StateObject private var beaconService = SessionSafetyBeaconService.shared
@@ -143,6 +144,17 @@ struct BottomActionBar: View {
                             systemImage: "location.circle.fill",
                             tint: defaultIconTint,
                             isOn: gpsProximityBinding
+                        )
+
+                        Divider()
+                            .overlay(dividerColor)
+
+                        toggleRow(
+                            title: "Satellite Map",
+                            subtitle: "Show aerial imagery with streets and labels.",
+                            systemImage: "map.fill",
+                            tint: defaultIconTint,
+                            isOn: $satelliteMapEnabled
                         )
 
                         Divider()

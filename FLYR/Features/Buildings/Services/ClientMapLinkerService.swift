@@ -61,6 +61,16 @@ final class ClientMapLinkerService: Sendable {
         }
 
         var links: [ClientBuildingAddressLink] = []
+        let prelinkedBuildingIds = Set(
+            preparedAddresses
+                .compactMap(\.existingBuildingId)
+                .map { $0.lowercased() }
+        )
+        var claimedSingleUnitBuildingIds = Set(
+            preparedBuildings
+                .filter { !$0.canAcceptMultipleAddresses && $0.identifierCandidates.contains(where: prelinkedBuildingIds.contains) }
+                .flatMap(\.identifierCandidates)
+        )
         let prelinkedCount = preparedAddresses.filter { $0.existingBuildingId != nil }.count
         var processed = 0
         await progress?(ClientLinkingProgress(processed: 0, total: total, linked: prelinkedCount))
@@ -68,7 +78,12 @@ final class ClientMapLinkerService: Sendable {
         for address in preparedAddresses {
             if Task.isCancelled { break }
             if address.existingBuildingId == nil,
-               let match = bestMatch(for: address, buildings: preparedBuildings, parcels: preparedParcels) {
+               let match = bestMatch(
+                    for: address,
+                    buildings: preparedBuildings,
+                    parcels: preparedParcels,
+                    claimedSingleUnitBuildingIds: claimedSingleUnitBuildingIds
+               ) {
                 links.append(ClientBuildingAddressLink(
                     id: "\(match.building.id.lowercased()):\(address.id.lowercased())",
                     buildingId: match.building.id,
@@ -77,6 +92,9 @@ final class ClientMapLinkerService: Sendable {
                     confidence: match.confidence,
                     distanceMeters: match.distance
                 ))
+                if !match.building.canAcceptMultipleAddresses {
+                    claimedSingleUnitBuildingIds.formUnion(match.building.identifierCandidates)
+                }
             }
             processed += 1
             if processed == total || processed % 25 == 0 {
@@ -92,9 +110,13 @@ final class ClientMapLinkerService: Sendable {
     private func bestMatch(
         for address: PreparedAddress,
         buildings: [PreparedBuilding],
-        parcels: [PreparedParcel]
+        parcels: [PreparedParcel],
+        claimedSingleUnitBuildingIds: Set<String>
     ) -> MatchCandidate? {
         let nearby = buildings
+            .filter { building in
+                building.canAcceptMultipleAddresses || building.identifierCandidates.isDisjoint(with: claimedSingleUnitBuildingIds)
+            }
             .filter { $0.expandedBbox(meters: fallbackRadiusMeters).contains(address.coordinate) }
             .map { building in
                 MatchCandidate(
@@ -259,24 +281,31 @@ private struct PreparedAddress {
 
 private struct PreparedBuilding {
     let id: String
+    let identifierCandidates: Set<String>
     let rings: [[CLLocationCoordinate2D]]
     let bbox: CoordinateBbox
     let centroid: CLLocationCoordinate2D
     let streetName: String?
     let houseNumber: String?
     let addressText: String?
+    let canAcceptMultipleAddresses: Bool
 
     init?(feature: BuildingFeature) {
         guard let id = feature.properties.canonicalBuildingIdentifier ?? feature.id else { return nil }
         let rings = Self.rings(from: feature.geometry)
         guard !rings.isEmpty else { return nil }
         self.id = id
+        identifierCandidates = Set(([id] + feature.properties.buildingIdentifierCandidates).map { $0.lowercased() })
         self.rings = rings
         bbox = CoordinateBbox(coordinates: rings.flatMap { $0 })
         centroid = Self.centroid(for: rings[0]) ?? bbox.center
         streetName = feature.properties.streetName
         houseNumber = feature.properties.houseNumber
         addressText = feature.properties.addressText
+        let addressCount = feature.properties.addressCount ?? feature.properties.addressIds.count
+        canAcceptMultipleAddresses = feature.properties.isTownhome ||
+            feature.properties.unitsCount > 1 ||
+            addressCount > 1
     }
 
     func contains(_ coordinate: CLLocationCoordinate2D) -> Bool {

@@ -75,6 +75,39 @@ function pointGeoJSON(longitude: number, latitude: number) {
   return { type: "Point", coordinates: [longitude, latitude] as [number, number] };
 }
 
+function isMissingColumnError(error: { code?: string; message?: string } | null, column: string): boolean {
+  const message = error?.message?.toLowerCase() ?? "";
+  return (
+    error?.code === "PGRST204" &&
+    message.includes(`'${column.toLowerCase()}' column`)
+  );
+}
+
+async function writeManualAddress(
+  supabase: any,
+  values: Record<string, unknown>,
+  mode: "insert" | "upsert"
+) {
+  const write = async (payload: Record<string, unknown>) => {
+    const mutation = mode === "upsert"
+      ? supabase.from("campaign_addresses").upsert(payload, { onConflict: "id" })
+      : supabase.from("campaign_addresses").insert(payload);
+
+    return mutation
+      .select(ADDRESS_SELECT)
+      .single();
+  };
+
+  let result = await write(values);
+  if (isMissingColumnError(result.error, "country")) {
+    const { country: _country, ...fallbackValues } = values;
+    console.warn(`[manual-address] campaign_addresses.country missing; retrying ${mode} without country`);
+    result = await write(fallbackValues);
+  }
+
+  return result;
+}
+
 const ADDRESS_SELECT =
   "id, formatted, house_number, street_name, locality, region, postal_code, building_id, building_gers_id, match_source, confidence, source";
 
@@ -157,17 +190,9 @@ export async function POST(request: Request, context: RouteContext): Promise<Res
       ...(isReverseGeocodeConfirmed ? { confidence } : {}),
       geom: JSON.stringify(pointGeoJSON(longitude, latitude)),
     };
-    const addressMutation = requestedAddressId
-      ? supabase
-          .from("campaign_addresses")
-          .upsert(addressInsert, { onConflict: "id" })
-      : supabase
-          .from("campaign_addresses")
-          .insert(addressInsert);
-
-    const { data: insertedAddress, error: insertError } = await addressMutation
-      .select(ADDRESS_SELECT)
-      .single();
+    const { data: insertedAddress, error: insertError } = requestedAddressId
+      ? await writeManualAddress(supabase, addressInsert, "upsert")
+      : await writeManualAddress(supabase, addressInsert, "insert");
 
     if (insertError || !insertedAddress) {
       console.error("[manual-address] insert error:", insertError);

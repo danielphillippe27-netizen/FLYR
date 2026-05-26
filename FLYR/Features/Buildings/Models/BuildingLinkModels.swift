@@ -7,13 +7,16 @@ import CoreLocation
 
 // MARK: - Building Properties (from map RPC / S3)
 
-/// Building feature properties from Supabase RPC (Gold, Silver, address_point)
+/// Building feature properties from Supabase RPC (Gold, Silver/Diamond, address_point)
 struct BuildingProperties: Codable {
     let id: String
     let buildingId: String?
     let addressId: String?
     let addressIds: [String]
     let gersId: String?
+    let publicBuildingId: String?
+    let canonicalBuildingId: String?
+    let buildingIdentifierSource: String?
     let height: Double
     let heightM: Double?
     let minHeight: Double
@@ -52,6 +55,9 @@ struct BuildingProperties: Codable {
         case addressId = "address_id"
         case addressIds = "address_ids"
         case gersId = "gers_id"
+        case publicBuildingId = "public_building_id"
+        case canonicalBuildingId = "canonical_building_id"
+        case buildingIdentifierSource = "building_identifier_source"
         case height
         case heightM = "height_m"
         case minHeight = "min_height"
@@ -82,6 +88,9 @@ struct BuildingProperties: Codable {
         addressId: String?,
         addressIds: [String] = [],
         gersId: String?,
+        publicBuildingId: String? = nil,
+        canonicalBuildingId: String? = nil,
+        buildingIdentifierSource: String? = nil,
         height: Double,
         heightM: Double?,
         minHeight: Double,
@@ -110,6 +119,9 @@ struct BuildingProperties: Codable {
         self.addressId = addressId
         self.addressIds = addressIds
         self.gersId = gersId
+        self.publicBuildingId = publicBuildingId
+        self.canonicalBuildingId = canonicalBuildingId
+        self.buildingIdentifierSource = buildingIdentifierSource
         self.height = height
         self.heightM = heightM
         self.minHeight = minHeight
@@ -148,6 +160,9 @@ struct BuildingProperties: Codable {
         addressId = try? c.decodeIfPresent(String.self, forKey: .addressId)
         addressIds = (try? c.decodeIfPresent([String].self, forKey: .addressIds)) ?? []
         gersId = try? c.decodeIfPresent(String.self, forKey: .gersId)
+        publicBuildingId = try? c.decodeIfPresent(String.self, forKey: .publicBuildingId)
+        canonicalBuildingId = try? c.decodeIfPresent(String.self, forKey: .canonicalBuildingId)
+        buildingIdentifierSource = try? c.decodeIfPresent(String.self, forKey: .buildingIdentifierSource)
         height = decodeDouble(.height, default: 10)
         heightM = (try? c.decodeIfPresent(Double.self, forKey: .heightM)) ?? (try? c.decodeIfPresent(Int.self, forKey: .heightM)).map(Double.init)
         minHeight = decodeDouble(.minHeight, default: 0)
@@ -182,8 +197,7 @@ struct BuildingProperties: Codable {
     }
 
     /// Canonical public identifier for a building feature.
-    /// Gold campaigns now persist the ref_buildings_gold UUID in `building_id`,
-    /// while Silver still commonly keys by `gers_id`.
+    /// GERS/Overture and Diamond municipal ids both flow through this path.
     var canonicalBuildingIdentifier: String? {
         buildingIdentifierCandidates.first
     }
@@ -217,6 +231,9 @@ struct BuildingProperties: Codable {
             addressId: addressId ?? richer.addressId,
             addressIds: mergedAddressIds,
             gersId: gersId ?? richer.gersId,
+            publicBuildingId: publicBuildingId ?? richer.publicBuildingId,
+            canonicalBuildingId: canonicalBuildingId ?? richer.canonicalBuildingId,
+            buildingIdentifierSource: buildingIdentifierSource ?? richer.buildingIdentifierSource,
             height: height,
             heightM: heightM ?? richer.heightM,
             minHeight: minHeight,
@@ -244,9 +261,9 @@ struct BuildingProperties: Codable {
         )
     }
 
-    /// All known identifiers for matching a feature across Gold/Silver responses.
+    /// All known identifiers for matching a feature across Gold/Silver/Diamond responses.
     var buildingIdentifierCandidates: [String] {
-        let rawValues = [buildingId, gersId, id]
+        let rawValues = [publicBuildingId, canonicalBuildingId, buildingId, gersId, id]
             .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
 

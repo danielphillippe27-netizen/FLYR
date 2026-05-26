@@ -1905,6 +1905,9 @@ final class BuildingLinkService {
         guard (200..<300).contains(statusCode) else {
             if let apiError = try? JSONDecoder().decode(APIErrorResponse.self, from: data),
                !apiError.error.isEmpty {
+                if logFailures {
+                    print("⚠️ [BuildingLinkService] HTTP \(statusCode) API error: \(apiError.error)")
+                }
                 throw ManualShapeServiceError.api(apiError.error)
             }
             let responseText = String(data: data, encoding: .utf8)?

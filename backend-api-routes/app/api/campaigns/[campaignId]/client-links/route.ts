@@ -26,6 +26,9 @@ type CampaignAddressLinkRow = {
   confidence: number | null;
 };
 
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 function getAuthToken(request: Request): string | null {
   const authHeader = request.headers.get('authorization');
   return authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
@@ -45,6 +48,18 @@ function normalizedConfidence(value: unknown): number {
   const confidence = finiteNumber(value);
   if (confidence == null) return 0.5;
   return Math.max(0, Math.min(1, confidence));
+}
+
+function isUuid(value: string): boolean {
+  return UUID_RE.test(value);
+}
+
+function isUuidColumnTextIdError(error: { code?: string; message?: string } | null): boolean {
+  const message = error?.message?.toLowerCase() ?? '';
+  return error?.code === '22P02' || (
+    message.includes('invalid input syntax') &&
+    message.includes('uuid')
+  );
 }
 
 function normalizeLink(raw: ClientGeneratedLinkPayload) {
@@ -177,7 +192,14 @@ export async function POST(request: Request, context: RouteContext): Promise<Res
     });
 
     let saved = 0;
+    let skippedForUuidSchema = 0;
+    let externalTextIdsUnsupported = false;
     for (const link of acceptedLinks) {
+      if (externalTextIdsUnsupported && !isUuid(link.buildingId)) {
+        skippedForUuidSchema += 1;
+        continue;
+      }
+
       const { error } = await auth.supabase
         .from('campaign_addresses')
         .update({
@@ -195,6 +217,14 @@ export async function POST(request: Request, context: RouteContext): Promise<Res
           addressId: link.addressId,
           error,
         });
+        if (!isUuid(link.buildingId) && isUuidColumnTextIdError(error)) {
+          externalTextIdsUnsupported = true;
+          skippedForUuidSchema += 1;
+          console.warn(
+            '[client-links] campaign_addresses.building_gers_id rejected text ids; skipping client-generated external links until DB migration is applied'
+          );
+          continue;
+        }
         return NextResponse.json({ error: 'Failed to save client generated links' }, { status: 500 });
       }
       saved += 1;
@@ -204,7 +234,7 @@ export async function POST(request: Request, context: RouteContext): Promise<Res
       campaign_id: campaignId,
       asset_signature: normalizedString((body as { asset_signature?: unknown } | null)?.asset_signature),
       saved,
-      skipped: links.length - acceptedLinks.length,
+      skipped: links.length - acceptedLinks.length + skippedForUuidSchema,
     });
   } catch (error) {
     console.error('[client-links] POST error:', error);
