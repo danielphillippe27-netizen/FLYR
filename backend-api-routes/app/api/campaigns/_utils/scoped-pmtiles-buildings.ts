@@ -25,6 +25,27 @@ function finiteNumber(value: unknown, fallback: number) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function finiteNumberOrNull(value: unknown) {
+  const parsed = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+const DEFAULT_RENDER_HEIGHT_METERS = 8;
+const MIN_RENDER_HEIGHT_METERS = 4;
+const MAX_RENDER_HEIGHT_METERS = 14;
+
+function renderableBuildingHeight(properties: Record<string, unknown>) {
+  const rawHeight =
+    finiteNumberOrNull(properties.height_m) ??
+    finiteNumberOrNull(properties.height) ??
+    finiteNumberOrNull(properties.render_height);
+  const normalized = rawHeight && rawHeight > 0 ? rawHeight : DEFAULT_RENDER_HEIGHT_METERS;
+  return Math.min(
+    Math.max(normalized, MIN_RENDER_HEIGHT_METERS),
+    MAX_RENDER_HEIGHT_METERS
+  );
+}
+
 function scopedMaxZoom(headerMaxZoom: number) {
   const configured = envInt('SCOPED_PMTILES_BUILDINGS_MAX_ZOOM', 17, 10, 18);
   return Math.min(headerMaxZoom, configured);
@@ -404,8 +425,15 @@ export async function fetchScopedPmtilesBuildingFeatures(
             if (feature.geometry?.type !== 'Polygon' && feature.geometry?.type !== 'MultiPolygon') continue;
 
             const properties = (feature.properties ?? {}) as Record<string, unknown>;
-            const height = Math.max(finiteNumber(properties.height_m ?? properties.height, 10), 10);
-            const minHeight = Math.max(finiteNumber(properties.min_height, 0), 0);
+            const rawHeight =
+              finiteNumberOrNull(properties.height_m) ??
+              finiteNumberOrNull(properties.height) ??
+              null;
+            const height = renderableBuildingHeight(properties);
+            const minHeight = Math.max(
+              Math.min(finiteNumber(properties.min_height, 0), height - 0.1),
+              0
+            );
             const buildingId = buildingIdentifier(properties, feature.id, vectorFeature.id);
             if (!buildingId) continue;
             const buildingIdKey = buildingId.toLowerCase();
@@ -424,6 +452,8 @@ export async function fetchScopedPmtilesBuildingFeatures(
                 id: buildingId,
                 building_id: buildingId,
                 gers_id: buildingId,
+                source_height_m: rawHeight,
+                render_height: height,
                 height,
                 height_m: height,
                 min_height: minHeight,

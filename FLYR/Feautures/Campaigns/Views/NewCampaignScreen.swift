@@ -80,20 +80,17 @@ struct NewCampaignScreen: View {
         if detailsSaving {
             return "Saving Details"
         }
-        if isProvisioningCampaign {
-            return detailsSaved ? "Details Saved" : "Save Details"
-        }
-        if detailsSaved && !campaignMapDataReady {
-            return "Preparing Map"
+        if detailsSaved && campaignMapDataReady {
+            return "Open Campaign"
         }
         if detailsSaved {
-            return "Open Campaign"
+            return "Done"
         }
         return "Save & Open"
     }
 
     private var detailsButtonEnabled: Bool {
-        createdCampaign != nil && hasCampaignName && !detailsSaving && !hasNavigatedToCampaign && (!detailsSaved || (!isProvisioningCampaign && campaignMapDataReady))
+        createdCampaign != nil && hasCampaignName && !detailsSaving && !hasNavigatedToCampaign
     }
 
     private var shouldShowCampaignCreatingOverlay: Bool {
@@ -335,16 +332,40 @@ struct NewCampaignScreen: View {
                 .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             }
 
-            if isProvisioningCampaign || provisionFailed {
-                CampaignBackgroundSetupCard(
-                    isProvisioning: isProvisioningCampaign,
-                    isComplete: provisionComplete,
-                    didFail: provisionFailed,
-                    statusText: provisionStatusText
-                )
+            if let tracked = localProvisionBanner {
+                CampaignProvisionStatusBanner(tracked: tracked)
             }
         }
         .formContainerPadding()
+    }
+
+    private var localProvisionBanner: TrackedCampaignProvision? {
+        guard let campaign = createdCampaign else { return nil }
+        if provisionFailed {
+            return TrackedCampaignProvision(
+                campaignId: campaign.id,
+                campaignName: campaign.name,
+                state: .needsAttention,
+                statusText: provisionStatusText.isEmpty ? "Setup needs attention." : provisionStatusText
+            )
+        }
+        if isProvisioningCampaign {
+            return TrackedCampaignProvision(
+                campaignId: campaign.id,
+                campaignName: campaign.name,
+                state: .preparingMap,
+                statusText: provisionStatusText.isEmpty ? "Preparing homes and map data." : provisionStatusText
+            )
+        }
+        if provisionComplete {
+            return TrackedCampaignProvision(
+                campaignId: campaign.id,
+                campaignName: campaign.name,
+                state: campaignMapDataReady ? .ready : .optimizing,
+                statusText: provisionStatusText.isEmpty ? "Campaign setup is running in the background." : provisionStatusText
+            )
+        }
+        return nil
     }
 
     @MainActor
@@ -451,10 +472,20 @@ struct NewCampaignScreen: View {
             campaign.type = campaignType
             createdCampaign = campaign
             store.update(campaign)
+            CampaignProvisionMonitor.shared.update(
+                campaignId: campaign.id,
+                campaignName: campaign.name,
+                state: .optimizing,
+                statusText: "Campaign setup is running in the background. We'll notify you when it's ready."
+            )
             detailsSaved = true
             createHook.error = nil
 
-            await openCreatedCampaign()
+            if campaignMapDataReady {
+                await openCreatedCampaign()
+            } else {
+                dismiss()
+            }
         } catch {
             createHook.error = "Could not save campaign details: \(error.localizedDescription)"
         }
@@ -468,6 +499,11 @@ struct NewCampaignScreen: View {
         provisionFailed = false
         campaignMapDataReady = false
         provisionStatusText = "Saving territory..."
+        CampaignProvisionMonitor.shared.track(
+            campaign: campaign,
+            state: .queued,
+            statusText: "Campaign setup is queued."
+        )
         provisioningTask = Task {
             await provisionCampaignInBackground(campaign: campaign, polygon: polygon, regionCode: regionCode)
         }
@@ -486,7 +522,8 @@ struct NewCampaignScreen: View {
             )
             provisionStatusText = "Building the map..."
             let provisionResponse = try await CampaignsAPI.shared.provisionCampaign(
-                campaignId: campaign.id
+                campaignId: campaign.id,
+                waitUntilReady: false
             )
             if let confidence = provisionResponse?.dataConfidenceSummary {
                 workingCampaign.dataConfidence = confidence
@@ -503,6 +540,23 @@ struct NewCampaignScreen: View {
             preserveCurrentDetails(in: &workingCampaign)
             store.update(workingCampaign)
             createdCampaign = workingCampaign
+
+            if provisionResponse?.accepted == true || provisionResponse?.provisionStatus == .pending {
+                CampaignProvisionMonitor.shared.update(
+                    campaignId: campaign.id,
+                    campaignName: workingCampaign.name,
+                    state: .optimizing,
+                    statusText: "Campaign setup is running in the background. We'll notify you when it's ready."
+                )
+                provisionStatusText = "We'll notify you when this campaign is ready."
+                isProvisioningCampaign = false
+                provisionComplete = true
+                provisionFailed = false
+                Task {
+                    await PushRegistrationService.shared.requestCampaignReadyPermissionAndRegister()
+                }
+                return
+            }
 
             let needsProvisionWait = !isProvisionMapUsable(
                 status: provisionResponse?.provisionStatus,
@@ -596,12 +650,22 @@ struct NewCampaignScreen: View {
                 )
                 provisionStatusText = "Map is warming up."
                 campaignMapDataReady = false
+                CampaignProvisionMonitor.shared.update(
+                    campaignId: campaign.id,
+                    state: .optimizing,
+                    statusText: "Map data is still warming in the background."
+                )
             } else {
                 print("❌ [CAMPAIGN DEBUG] Provision failed: \(error)")
                 provisionFailed = true
                 campaignMapDataReady = false
                 provisionStatusText = "Created, but setup needs another try."
                 createHook.error = "Campaign created but provisioning failed: \(error.localizedDescription). You can retry from campaign details."
+                CampaignProvisionMonitor.shared.update(
+                    campaignId: campaign.id,
+                    state: .needsAttention,
+                    statusText: "Setup needs attention. Open the campaign to retry."
+                )
             }
         }
 

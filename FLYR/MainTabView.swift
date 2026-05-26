@@ -6,6 +6,7 @@ struct MainTabView: View {
     @Environment(\.scenePhase) private var scenePhase
     @ObservedObject private var sessionManager = SessionManager.shared
     @StateObject private var storeV2 = CampaignV2Store.shared
+    @StateObject private var provisionMonitor = CampaignProvisionMonitor.shared
     @State private var showingNewCampaign = false
     /// Item-driven so cover only shows when we have data; no empty state.
     @State private var endSessionSummaryItem: EndSessionSummaryItem?
@@ -19,7 +20,8 @@ struct MainTabView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
+        ZStack(alignment: .top) {
+            VStack(spacing: 0) {
             Group {
                 switch uiState.selectedTabIndex {
                 case Tab.home.rawValue:
@@ -56,6 +58,28 @@ struct MainTabView: View {
                     accentColor: campaignContext.accentColor
                 )
             }
+            }
+
+            if let tracked = provisionMonitor.tracked {
+                CampaignProvisionStatusBanner(
+                    tracked: tracked,
+                    compact: true,
+                    onTap: tracked.state == .ready ? {
+                        uiState.selectCampaign(id: tracked.campaignId, name: tracked.campaignName)
+                        uiState.selectedTabIndex = 1
+                        Task {
+                            await CampaignDownloadService.shared.prefetchIfNeeded(campaignId: tracked.campaignId.uuidString)
+                        }
+                    } : nil,
+                    onDismiss: tracked.state == .ready || tracked.state == .needsAttention ? {
+                        provisionMonitor.dismiss()
+                    } : nil
+                )
+                .padding(.horizontal, 14)
+                .padding(.top, 10)
+                .transition(.move(edge: .top).combined(with: .opacity))
+                .zIndex(10)
+            }
         }
         .background(Color(UIColor.systemGroupedBackground))
         .campaignContext(campaignContext)
@@ -74,6 +98,7 @@ struct MainTabView: View {
             }
         }
         .onAppear {
+            CampaignNotificationRouter.shared.configure(uiState: uiState)
             let inSession = sessionManager.isActive || sessionManager.sessionId != nil
             if inSession, !sessionManager.sessionRestoredThisLaunch {
                 uiState.showTabBar = false
@@ -83,6 +108,7 @@ struct MainTabView: View {
         }
         .task {
             await sessionManager.restoreActiveSessionIfNeeded()
+            await provisionMonitor.refreshLatest()
         }
         .fullScreenCover(isPresented: $showingNewCampaign) {
             NavigationStack {
@@ -103,7 +129,12 @@ struct MainTabView: View {
         .onChange(of: scenePhase) { _, phase in
             switch phase {
             case .active:
-                Task { await sessionManager.appDidBecomeActive() }
+                Task {
+                    await sessionManager.appDidBecomeActive()
+                    await provisionMonitor.refreshLatest()
+                    CampaignNotificationRouter.shared.applyPendingRouteIfPossible()
+                    await PushRegistrationService.shared.uploadPendingTokenIfPossible()
+                }
             case .inactive, .background:
                 Task { await sessionManager.appDidEnterBackground() }
             @unknown default:

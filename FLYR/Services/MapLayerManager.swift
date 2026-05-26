@@ -90,6 +90,7 @@ final class MapLayerManager {
     private static let addressHouseIconImageId = "campaign-address-house-emblem"
 
     static let defaultBuildingExtrusionHeight: Double = 8.0
+    static let maximumBuildingExtrusionHeight: Double = 14.0
     private static let selectedBuildingHeightScale: Double = 1.0
     private static let townhomeOverlayHeightLift: Double = 0.08
     private static let townhomeOverlayPlateThickness: Double = 0.045
@@ -129,17 +130,20 @@ final class MapLayerManager {
     }
 
     static var buildingExtrusionHeightExpression: Exp {
-        Exp(.max) {
-            Exp(.toNumber) {
-                Exp(.coalesce) {
-                    Exp(.get) { "height_m" }
-                    Exp(.get) { "height" }
-                    Exp(.get) { "render_height" }
-                    Exp(.get) { "min_height" }
-                    Self.defaultBuildingExtrusionHeight
+        Exp(.min) {
+            Exp(.max) {
+                Exp(.toNumber) {
+                    Exp(.coalesce) {
+                        Exp(.get) { "render_height" }
+                        Exp(.get) { "height_m" }
+                        Exp(.get) { "height" }
+                        Exp(.get) { "min_height" }
+                        Self.defaultBuildingExtrusionHeight
+                    }
                 }
+                Self.defaultBuildingExtrusionHeight
             }
-            Self.defaultBuildingExtrusionHeight
+            Self.maximumBuildingExtrusionHeight
         }
     }
 
@@ -885,8 +889,9 @@ final class MapLayerManager {
         layer.fillExtrusionColor = .expression(Self.townhomeSegmentColorExpression)
         layer.fillExtrusionHeight = .expression(Self.townhomeOverlayExtrusionHeightExpression)
         layer.fillExtrusionBase = .expression(Self.townhomeOverlayExtrusionBaseExpression)
-        // Keep status chunks as a subtle roof annotation; the building mass stays readable.
-        layer.fillExtrusionOpacity = .constant(0.38)
+        // Townhome segments must render as their actual status color. A translucent
+        // plate blends red/coral statuses into the green building underneath.
+        layer.fillExtrusionOpacity = .constant(1.0)
         layer.fillExtrusionVerticalGradient = .constant(false)
         layer.minZoom = 12
         layer.filter = Self.townhomeOverlayFilter(

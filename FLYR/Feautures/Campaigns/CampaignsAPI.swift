@@ -932,7 +932,8 @@ final class CampaignsAPI {
     @discardableResult
     func provisionCampaign(
         campaignId: UUID,
-        waitForLinker: Bool = false
+        waitForLinker: Bool = false,
+        waitUntilReady: Bool = true
     ) async throws -> CampaignProvisionResponse? {
         let url = URL(string: "\(Self.provisionRequestBaseURL)/api/campaigns/provision")!
         print("🌐 [API DEBUG] Provision URL: \(url.absoluteString)")
@@ -1005,6 +1006,10 @@ final class CampaignsAPI {
         }
         if let provisionResponse = try? JSONDecoder().decode(CampaignProvisionResponse.self, from: data) {
             if provisionResponse.accepted == true || provisionResponse.provisionStatus == .pending {
+                guard waitUntilReady else {
+                    print("🧭 [API] Provision accepted for campaign \(campaignId); server will finish in the background.")
+                    return provisionResponse
+                }
                 print("🧭 [API] Provision accepted for campaign \(campaignId); polling until ready or failed...")
                 let state = try await waitForProvisionReady(
                     campaignId: campaignId,
@@ -1065,7 +1070,7 @@ final class CampaignsAPI {
         return try await fetchProvisionState(campaignId: campaignId)
     }
 
-    private func fetchProvisionState(campaignId: UUID) async throws -> CampaignProvisionState {
+    func fetchProvisionState(campaignId: UUID) async throws -> CampaignProvisionState {
         let res: PostgrestResponse<CampaignProvisionState> = try await client
             .from("campaigns")
             .select("id,provision_status,provision_source,provision_phase,provisioned_at,addresses_ready_at,map_ready_at,optimized_at,snapshot_bucket,snapshot_prefix,snapshot_buildings_url,snapshot_roads_url,address_source")

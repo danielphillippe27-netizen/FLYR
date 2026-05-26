@@ -5,6 +5,7 @@ import GoogleMaps
 import Supabase
 @main
 struct FLYRApp: App {
+    @UIApplicationDelegateAdaptor(FLYRAppDelegate.self) private var appDelegate
     @StateObject private var auth = AuthManager.shared
     @StateObject private var uiState = AppUIState()
     @StateObject private var entitlementsService = EntitlementsService()
@@ -306,6 +307,8 @@ struct AuthGate: View {
 
             if let userId = auth.user?.id {
                 await uiState.loadAppearancePreference(userID: userId)
+                await PushRegistrationService.shared.uploadPendingTokenIfPossible()
+                CampaignNotificationRouter.shared.applyPendingRouteIfPossible()
                 StoreKitManager.shared.entitlementsService = entitlementsService
                 _ = await entitlementsService.fetchEntitlement()
                 await StoreKitManager.shared.refreshLocalProFromCurrentEntitlements()
@@ -325,6 +328,8 @@ struct AuthGate: View {
                     try? await Task.sleep(nanoseconds: 300_000_000) // 0.3s
                     await routeState.resolveRoute()
                     await uiState.loadAppearancePreference(userID: userId)
+                    await PushRegistrationService.shared.uploadPendingTokenIfPossible()
+                    CampaignNotificationRouter.shared.applyPendingRouteIfPossible()
                     StoreKitManager.shared.entitlementsService = entitlementsService
                     _ = await entitlementsService.fetchEntitlement()
                     await StoreKitManager.shared.refreshLocalProFromCurrentEntitlements()
@@ -341,6 +346,8 @@ struct AuthGate: View {
             if phase == .active, auth.user != nil {
                 Task {
                     await routeState.resolveRoute()
+                    await PushRegistrationService.shared.uploadPendingTokenIfPossible()
+                    CampaignNotificationRouter.shared.applyPendingRouteIfPossible()
                     _ = await entitlementsService.fetchEntitlement()
                     await StoreKitManager.shared.refreshLocalProFromCurrentEntitlements()
                 }

@@ -7300,29 +7300,30 @@ struct CampaignMapView: View {
 
         switch effectiveMode {
         case .buildings:
-            manager.getBuildingFeatureAt(point: point) { feature in
-                if let feature {
-                    let building = feature.properties
-                    if !buildingHasAttachedAddress(building) {
-                        presentAddressPicker(
-                            building: building,
-                            address: nil,
-                            seedCoordinateOverride: CampaignTargetResolver.coordinate(for: feature.geometry)
-                        )
-                        return
-                    }
-                    presentBuildingSelection(
-                        building,
-                        hasBuildingGeometry: buildingFeatureHasRenderableFootprint(feature),
-                        tapCoordinate: currentMapCoordinate(for: point),
-                        exactFeature: feature
-                    )
+            manager.getAddressAt(point: point) { address in
+                if let address {
+                    presentAddressSelection(enrichedAddressTapResult(address))
                     return
                 }
 
-                manager.getAddressAt(point: point) { address in
-                    if let address {
-                        presentAddressSelection(enrichedAddressTapResult(address))
+                manager.getBuildingFeatureAt(point: point) { feature in
+                    if let feature {
+                        let building = feature.properties
+                        if !buildingHasAttachedAddress(building) {
+                            presentAddressPicker(
+                                building: building,
+                                address: nil,
+                                seedCoordinateOverride: CampaignTargetResolver.coordinate(for: feature.geometry)
+                            )
+                            return
+                        }
+                        presentBuildingSelection(
+                            building,
+                            hasBuildingGeometry: buildingFeatureHasRenderableFootprint(feature),
+                            tapCoordinate: currentMapCoordinate(for: point),
+                            exactFeature: feature
+                        )
+                        return
                     }
                 }
             }
@@ -8263,24 +8264,28 @@ struct CampaignMapView: View {
         let createdManualAddress: Bool
         let resolvedLinkedCoordinate: CLLocationCoordinate2D
         let linkedCoordinate = candidate.coordinate.clCoordinate
+        let placementCoordinate = manualLinkPlacementCoordinate(
+            for: context,
+            fallback: linkedCoordinate
+        )
         if candidate.isReverseGeocode,
            let existingMatch = matchingCampaignAddress(for: candidate) {
             let response = try await BuildingLinkService.shared.linkAddressToBuilding(
                 campaignId: campaignId,
                 buildingId: context.id,
                 addressId: existingMatch.address.addressId,
-                coordinate: existingMatch.coordinate
+                coordinate: placementCoordinate
             )
             linkedAddressId = existingMatch.address.addressId
             linkedAddress = existingMatch.address
             mutationLinkedAddressIds = response.includesLinkedAddressIds ? response.linkedAddressIds : nil
             createdManualAddress = false
-            resolvedLinkedCoordinate = existingMatch.coordinate
+            resolvedLinkedCoordinate = placementCoordinate
         } else if candidate.isReverseGeocode {
             let response = try await BuildingLinkService.shared.createManualAddress(
                 campaignId: campaignId,
                 input: ManualAddressCreateInput(
-                    coordinate: linkedCoordinate,
+                    coordinate: placementCoordinate,
                     formatted: candidate.displayAddress,
                     houseNumber: candidate.houseNumber,
                     streetName: candidate.resolvedStreetName,
@@ -8301,13 +8306,13 @@ struct CampaignMapView: View {
             )
             mutationLinkedAddressIds = nil
             createdManualAddress = true
-            resolvedLinkedCoordinate = linkedCoordinate
+            resolvedLinkedCoordinate = placementCoordinate
         } else {
             let response = try await BuildingLinkService.shared.linkAddressToBuilding(
                 campaignId: campaignId,
                 buildingId: context.id,
                 addressId: candidate.id,
-                coordinate: linkedCoordinate
+                coordinate: placementCoordinate
             )
             linkedAddressId = candidate.id
             linkedAddress = addressTapResult(
@@ -8317,7 +8322,7 @@ struct CampaignMapView: View {
             )
             mutationLinkedAddressIds = response.includesLinkedAddressIds ? response.linkedAddressIds : nil
             createdManualAddress = false
-            resolvedLinkedCoordinate = linkedCoordinate
+            resolvedLinkedCoordinate = placementCoordinate
         }
 
         var identifiers = context.buildingIdentifiers
@@ -8353,6 +8358,17 @@ struct CampaignMapView: View {
             addressId: linkedAddressId,
             context: context
         )
+    }
+
+    private func manualLinkPlacementCoordinate(
+        for context: BuildingAddressPickerContext,
+        fallback: CLLocationCoordinate2D
+    ) -> CLLocationCoordinate2D {
+        guard let seedCoordinate = context.seedCoordinate,
+              CLLocationCoordinate2DIsValid(seedCoordinate) else {
+            return fallback
+        }
+        return seedCoordinate
     }
 
     private func matchingCampaignAddress(
@@ -8855,9 +8871,13 @@ struct CampaignMapView: View {
         ].compactMap { $0 }
 
         for feature in directMatches {
-            let linkedIds = resolvedAddressResolutionForBuildingCard(feature.properties).ids
+            let resolution = resolvedAddressResolutionForBuildingCard(feature.properties)
+            let linkedIds = resolution.ids
             if linkedIds.count > 1, linkedIds.contains(addressId) {
                 return TownhouseAddressContext(feature: feature, addressIds: linkedIds)
+            }
+            if resolution.source.isPersisted, linkedIds.count == 1, linkedIds.contains(addressId) {
+                return nil
             }
         }
 
@@ -10005,7 +10025,8 @@ struct CampaignMapView: View {
             manualShapeMessage = "Couldn't resolve the selected building."
             return
         }
-        let seed = seedCoordinate(for: building, address: address)
+        let seed = buildingCoordinate(for: building)
+            ?? seedCoordinate(for: building, address: address)
             ?? sessionManager.currentLocation?.coordinate
         guard let seed else {
             manualShapeMessage = "Couldn't resolve a GPS point for this home."
@@ -12255,7 +12276,7 @@ struct LocationCardView: View {
                     .foregroundColor(.white)
                     .padding(.top, 18)
 
-                attachedToolsMenuButton(shouldShowAddBuildingShapeAction ? "Add Building Shape" : (canDeleteBuilding ? "Add Unit" : "Add House")) {
+                attachedToolsMenuButton(shouldShowAddBuildingShapeAction ? "Add Building" : (canDeleteBuilding ? "Add Unit" : "Add House")) {
                     showToolsSheet = false
                     handleToolsAction(shouldShowAddBuildingShapeAction ? .addBuildingShape : (canDeleteBuilding ? .addUnit : .addHouse))
                 }
@@ -12372,8 +12393,14 @@ struct LocationCardView: View {
                     addressEditActionButton("Manual", icon: "square.and.pencil", tint: .red) {
                         addressEditAction(.addManualAddress)
                     }
-                    addressEditActionButton("GPS", icon: "location.circle.fill", tint: .orange) {
-                        addressEditAction(.reverseGeocodeAddress)
+                    if shouldShowAddBuildingShapeAction {
+                        addressEditActionButton("Add Building", icon: "building.2.fill", tint: .orange) {
+                            addressEditAction(.addBuildingShape)
+                        }
+                    } else {
+                        addressEditActionButton("GPS", icon: "location.circle.fill", tint: .orange) {
+                            addressEditAction(.reverseGeocodeAddress)
+                        }
                     }
                     addressEditActionButton("Delete", icon: "trash", tint: .red) {
                         addressEditAction(canDeleteBuilding ? .deleteUnit : .deleteAddress)
@@ -12860,7 +12887,7 @@ struct LocationCardView: View {
 
     private var addBuildingShapePrompt: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("No building shape added yet")
+            Text("No building added yet")
                 .font(.system(size: 13))
                 .foregroundColor(cardPlaceholder)
 
@@ -12870,7 +12897,7 @@ struct LocationCardView: View {
                 HStack(spacing: 8) {
                     Image(systemName: "plus")
                         .font(.system(size: 13, weight: .bold))
-                    Text("Add Building Shape")
+                    Text("Add Building")
                         .font(.system(size: 15, weight: .semibold))
                     Spacer(minLength: 0)
                 }

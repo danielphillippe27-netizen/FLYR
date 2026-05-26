@@ -9,6 +9,7 @@ import type { StandardCampaignAddress } from '@/lib/services/AddressAdapter';
 
 type Bounds = [number, number, number, number];
 type SnapshotTileMetrics = NonNullable<NonNullable<LambdaSnapshotResponse['metadata']>['tile_metrics']>;
+type BedrockLayer = 'addresses' | 'buildings' | 'parcels';
 
 export type BedrockProvisionSource = 'bedrock_au' | 'bedrock_ca' | 'bedrock_us' | 'bedrock_za' | 'bedrock_uk';
 
@@ -83,6 +84,19 @@ type PmtilesAddressFeature = {
   };
   properties?: Record<string, unknown>;
 };
+
+type BedrockScopedBuildingFeature = GeoJSON.Feature<
+  GeoJSON.Polygon | GeoJSON.MultiPolygon,
+  {
+    gers_id: string;
+    building_id: string;
+    name: string | null;
+    height: number | null;
+    layer: 'building';
+    source?: string | null;
+    [key: string]: unknown;
+  }
+>;
 
 const DEFAULT_BUCKET = 'flyr-pro-addresses-2025';
 const REGION = process.env.AWS_REGION || process.env.AWS_S3_BUCKET_REGION || 'us-east-2';
@@ -405,13 +419,22 @@ async function s3Text(config: BedrockCountryConfig, s3Key: string) {
   return (body as { transformToString: () => Promise<string> }).transformToString();
 }
 
-async function readManifest(config: BedrockCountryConfig): Promise<ParquetManifest> {
-  return JSON.parse(await s3Text(config, layerKey(config, 'addresses', 'parquet-manifest.json'))) as ParquetManifest;
+async function readManifest(
+  config: BedrockCountryConfig,
+  layer: BedrockLayer = 'addresses'
+): Promise<ParquetManifest> {
+  return JSON.parse(await s3Text(config, layerKey(config, layer, 'parquet-manifest.json'))) as ParquetManifest;
 }
 
-function parquetPathsForTiles(config: BedrockCountryConfig, manifest: ParquetManifest, bbox: Bounds, regionCode?: string | null) {
+function parquetPathsForTiles(
+  config: BedrockCountryConfig,
+  manifest: ParquetManifest,
+  bbox: Bounds,
+  regionCode?: string | null,
+  layer: BedrockLayer = 'addresses'
+) {
   const parquetPathFor = (relative: string) => {
-    const key = layerKey(config, 'addresses', relative);
+    const key = layerKey(config, layer, relative);
     return `s3://${bucket(config)}/${key}`;
   };
 
@@ -422,9 +445,10 @@ function parquetPathsForTiles(config: BedrockCountryConfig, manifest: ParquetMan
       normalizedRegion,
       config.country === 'south-africa' && normalizedRegion !== config.countryCode ? config.countryCode : null,
     ].filter((candidate): candidate is string => Boolean(candidate));
-    const state = available.size > 0
-      ? candidates.find((candidate) => available.has(candidate))
-      : candidates[0];
+    const stateEntry = available.size > 0
+      ? (manifest.state_counts ?? []).find((entry) => candidates.includes(entry.state.toUpperCase()))
+      : null;
+    const state = stateEntry?.state.toUpperCase() ?? candidates[0];
 
     if (!state) {
       return { paths: [], tileZ: 0, partitioning: 'state' };
@@ -438,7 +462,7 @@ function parquetPathsForTiles(config: BedrockCountryConfig, manifest: ParquetMan
       });
     }
 
-    const relative = `parquet/state=${state}/*.parquet`;
+    const relative = stateEntry?.path ?? `parquet/state=${state}/*.parquet`;
     return {
       paths: [parquetPathFor(relative)],
       tileZ: 0,
@@ -542,8 +566,128 @@ function parseProperties(row: BedrockParquetRow) {
   }
 }
 
+function rowProperties(row: BedrockParquetRow) {
+  return {
+    ...parseProperties(row),
+    ...Object.fromEntries(
+      Object.entries(row).filter(([key, value]) => {
+        return (
+          value != null &&
+          ![
+            'geometry_geojson',
+            'properties_json',
+            'tile_z',
+            'tile_x',
+            'tile_y',
+            'tile_key',
+            'minx',
+            'miny',
+            'maxx',
+            'maxy',
+            'lon',
+            'lat',
+          ].includes(key)
+        );
+      })
+    ),
+  };
+}
+
+function parseRowGeometry(row: BedrockParquetRow): GeoJSON.Geometry | null {
+  if (typeof row.geometry_geojson === 'string' && row.geometry_geojson.trim()) {
+    try {
+      return JSON.parse(row.geometry_geojson) as GeoJSON.Geometry;
+    } catch {
+      return null;
+    }
+  }
+
+  const lon = Number(row.lon ?? row.longitude);
+  const lat = Number(row.lat ?? row.latitude);
+  if (Number.isFinite(lon) && Number.isFinite(lat)) {
+    return { type: 'Point', coordinates: [lon, lat] };
+  }
+
+  return null;
+}
+
+function flattenPositions(geometry: GeoJSON.Geometry | null | undefined): Array<[number, number]> {
+  if (!geometry) return [];
+  if (geometry.type === 'Point') return [geometry.coordinates as [number, number]];
+  if (geometry.type === 'MultiPoint' || geometry.type === 'LineString') {
+    return geometry.coordinates as Array<[number, number]>;
+  }
+  if (geometry.type === 'MultiLineString' || geometry.type === 'Polygon') {
+    return geometry.coordinates.flat() as Array<[number, number]>;
+  }
+  if (geometry.type === 'MultiPolygon') {
+    return geometry.coordinates.flat(2) as Array<[number, number]>;
+  }
+  return [];
+}
+
+function geometryBbox(geometry: GeoJSON.Geometry | null | undefined): Bounds | null {
+  const positions = flattenPositions(geometry).filter(
+    (position) => Number.isFinite(position[0]) && Number.isFinite(position[1])
+  );
+  if (positions.length === 0) return null;
+
+  return [
+    Math.min(...positions.map((position) => position[0])),
+    Math.min(...positions.map((position) => position[1])),
+    Math.max(...positions.map((position) => position[0])),
+    Math.max(...positions.map((position) => position[1])),
+  ];
+}
+
+function bboxIntersects(a: Bounds, b: Bounds) {
+  return !(a[2] < b[0] || a[0] > b[2] || a[3] < b[1] || a[1] > b[3]);
+}
+
+function featureIntersectsPolygon(feature: GeoJSON.Feature, polygon: GeoJSON.Polygon, bbox: Bounds) {
+  const geometry = feature.geometry;
+  if (geometry?.type === 'Point') {
+    const coordinates = geometry.coordinates as [number, number];
+    return bboxIntersects([coordinates[0], coordinates[1], coordinates[0], coordinates[1]], bbox) &&
+      turf.booleanPointInPolygon(turf.point(coordinates), polygon);
+  }
+
+  const featureBbox = geometryBbox(geometry);
+  if (!featureBbox || !bboxIntersects(featureBbox, bbox)) return false;
+  try {
+    return turf.booleanIntersects(feature, polygon);
+  } catch {
+    return true;
+  }
+}
+
 function text(value: unknown) {
-  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed ? trimmed : undefined;
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return Number.isInteger(value) ? String(value) : String(value);
+  }
+  if (typeof value === 'bigint') {
+    return value.toString();
+  }
+  return undefined;
+}
+
+function firstText(...values: unknown[]) {
+  for (const value of values) {
+    const normalized = text(value);
+    if (normalized) return normalized;
+  }
+  return undefined;
+}
+
+function streetText(value: unknown) {
+  const normalized = text(value);
+  if (!normalized) return undefined;
+  if (/^[\d\s#./-]+$/.test(normalized)) return undefined;
+  return normalized;
 }
 
 function fallbackAddressLabel(config: BedrockCountryConfig, row: BedrockParquetRow, props: Record<string, unknown>, addressId?: string) {
@@ -563,8 +707,8 @@ function fallbackAddressLabel(config: BedrockCountryConfig, row: BedrockParquetR
 }
 
 function streetLabel(name: unknown, type: unknown): string | undefined {
-  const streetName = text(name);
-  const streetType = text(type);
+  const streetName = streetText(name);
+  const streetType = streetText(type);
   if (!streetName) return undefined;
   if (!streetType) return streetName;
 
@@ -574,6 +718,105 @@ function streetLabel(name: unknown, type: unknown): string | undefined {
     return streetName;
   }
   return `${streetName} ${streetType}`;
+}
+
+function streetLabelFrom(primary: Record<string, unknown>, secondary: Record<string, unknown> = {}): string | undefined {
+  const streetName =
+    streetText(primary.street_name) ??
+    streetText(primary.street) ??
+    streetText(primary.road_name) ??
+    streetText(primary.road) ??
+    streetText(primary.str_name) ??
+    streetText(primary.street_full) ??
+    streetText(primary.street_label) ??
+    streetText(primary.full_street) ??
+    streetText(primary.primary_street) ??
+    streetText(primary['addr:street']) ??
+    streetText(primary.name) ??
+    streetText(secondary.street_name) ??
+    streetText(secondary.street) ??
+    streetText(secondary.road_name) ??
+    streetText(secondary.road) ??
+    streetText(secondary.str_name) ??
+    streetText(secondary.street_full) ??
+    streetText(secondary.street_label) ??
+    streetText(secondary.full_street) ??
+    streetText(secondary.primary_street) ??
+    streetText(secondary['addr:street']) ??
+    streetText(secondary.name);
+  const streetType =
+    streetText(primary.street_type) ??
+    streetText(primary.road_type) ??
+    streetText(primary.str_type) ??
+    streetText(primary.street_suffix) ??
+    streetText(primary.suffix) ??
+    streetText(secondary.street_type) ??
+    streetText(secondary.road_type) ??
+    streetText(secondary.str_type) ??
+    streetText(secondary.street_suffix) ??
+    streetText(secondary.suffix);
+  return streetLabel(streetName, streetType);
+}
+
+function houseNumberFrom(primary: Record<string, unknown>, secondary: Record<string, unknown> = {}): string | undefined {
+  return firstText(
+    primary.house_number,
+    primary.house_number_label,
+    primary.street_number,
+    primary.number_first,
+    primary.address_number,
+    primary.street_no,
+    primary.civic_number,
+    primary.housenumber,
+    primary['addr:housenumber'],
+    secondary.house_number,
+    secondary.house_number_label,
+    secondary.street_number,
+    secondary.number_first,
+    secondary.address_number,
+    secondary.street_no,
+    secondary.civic_number,
+    secondary.housenumber,
+    secondary['addr:housenumber']
+  );
+}
+
+function explicitAddressText(primary: Record<string, unknown>, secondary: Record<string, unknown> = {}): string | undefined {
+  return firstText(
+    primary.full_address,
+    primary.formatted,
+    primary.display_address,
+    primary.address,
+    primary.label,
+    primary.full_addr,
+    secondary.full_address,
+    secondary.formatted,
+    secondary.display_address,
+    secondary.address,
+    secondary.label,
+    secondary.full_addr
+  );
+}
+
+function looksLikeNumericOnlyAddress(value: string): boolean {
+  return /^[\d\s#./-]+$/.test(value.trim());
+}
+
+function chooseFormattedAddress(
+  explicit: string | undefined,
+  houseNumber: string | undefined,
+  streetName: string | undefined,
+  locality: string | undefined,
+  fallback: string
+) {
+  const composed = [houseNumber, streetName, locality].filter(Boolean).join(' ').trim();
+  if (composed && (!explicit || looksLikeNumericOnlyAddress(explicit))) {
+    return composed;
+  }
+  if (explicit && !looksLikeNumericOnlyAddress(explicit)) {
+    return explicit;
+  }
+  return composed || explicit || fallback;
 }
 
 function normalizeAddress(config: BedrockCountryConfig, campaignId: string, row: BedrockParquetRow): StandardCampaignAddress | null {
@@ -596,19 +839,8 @@ function normalizeAddress(config: BedrockCountryConfig, campaignId: string, row:
     text(row.uprn) ??
     text(props.uprn) ??
     text(row.gers_id);
-  const houseNumber =
-    text(row.house_number) ??
-    text(row.house_number_label) ??
-    text(row.number_first) ??
-    text(row.street_number) ??
-    text(props.house_number) ??
-    text(props.house_number_label) ??
-    text(props.number_first) ??
-    text(props.street_number) ??
-    text(props.address_number);
-  const streetName =
-    streetLabel(row.street_name, row.street_type) ??
-    streetLabel(props.street_name, props.street_type);
+  const houseNumber = houseNumberFrom(row, props);
+  const streetName = streetLabelFrom(row, props);
   const unit = text(row.unit) ?? text(props.unit) ?? text(props.unit_number) ?? text(props.suite);
   const locality =
     text(row.locality) ??
@@ -616,12 +848,13 @@ function normalizeAddress(config: BedrockCountryConfig, campaignId: string, row:
     text(row.locality_name) ??
     text(props.locality_name) ??
     text(row.city);
-  const formatted =
-    text(row.full_address) ??
-    text(row.formatted) ??
-    text(props.full_address) ??
-    ([houseNumber, streetName, locality].filter(Boolean).join(' ') ||
-      fallbackAddressLabel(config, row, props, addressId));
+  const formatted = chooseFormattedAddress(
+    explicitAddressText(row, props),
+    houseNumber,
+    streetName,
+    locality,
+    fallbackAddressLabel(config, row, props, addressId)
+  );
 
   return {
     campaign_id: campaignId,
@@ -638,6 +871,49 @@ function normalizeAddress(config: BedrockCountryConfig, campaignId: string, row:
     geom: geometry,
     source: config.provisionSource,
     gers_id: addressId ? `${config.provisionSource}:${addressId}` : null,
+  };
+}
+
+function normalizeBuildingFeature(row: BedrockParquetRow): BedrockScopedBuildingFeature | null {
+  const geometry = parseRowGeometry(row);
+  if (geometry?.type !== 'Polygon' && geometry?.type !== 'MultiPolygon') return null;
+
+  const properties = rowProperties(row);
+  const buildingId =
+    text(row.building_id) ??
+    text(properties.building_id) ??
+    text(row.gers_id) ??
+    text(properties.gers_id) ??
+    text(row.source_id) ??
+    text(properties.source_id) ??
+    text(row.feature_id) ??
+    text(properties.feature_id);
+
+  if (!buildingId) return null;
+
+  const height = Number(row.height ?? properties.height ?? properties.height_m);
+  return {
+    type: 'Feature',
+    id: buildingId,
+    geometry,
+    properties: {
+      ...properties,
+      id: buildingId,
+      gers_id: buildingId,
+      building_id: buildingId,
+      source_id: text(row.source_id) ?? text(properties.source_id) ?? buildingId,
+      name: text(row.name) ?? text(properties.name) ?? null,
+      height: Number.isFinite(height) && height > 0 ? height : 10,
+      height_m: Number.isFinite(height) && height > 0 ? height : 10,
+      min_height: 0,
+      layer: 'building',
+      source: text(row.source) ?? text(properties.source) ?? 'Overture Maps Buildings',
+      feature_type: 'matched_house',
+      feature_status: 'matched',
+      status: 'not_visited',
+      scans_total: 0,
+      qr_scanned: false,
+    },
   };
 }
 
@@ -660,20 +936,17 @@ function normalizePmtilesAddress(
     text(props.source_id) ??
     text(props.uprn) ??
     text(props.gers_id);
-  const houseNumber =
-    text(props.house_number) ??
-    text(props.house_number_label) ??
-    text(props.street_number) ??
-    text(props.number_first) ??
-    text(props.address_number);
-  const streetName = streetLabel(props.street_name, props.street_type);
+  const houseNumber = houseNumberFrom(props);
+  const streetName = streetLabelFrom(props);
   const unit = text(props.unit) ?? text(props.unit_number) ?? text(props.suite);
   const locality = text(props.locality) ?? text(props.locality_name) ?? text(props.city);
-  const formatted =
-    text(props.full_address) ??
-    text(props.formatted) ??
-    ([houseNumber, streetName, locality].filter(Boolean).join(' ') ||
-      fallbackAddressLabel(config, {}, props, addressId));
+  const formatted = chooseFormattedAddress(
+    explicitAddressText(props),
+    houseNumber,
+    streetName,
+    locality,
+    fallbackAddressLabel(config, {}, props, addressId)
+  );
 
   return {
     campaign_id: campaignId,
@@ -797,6 +1070,79 @@ async function loadAddressesFromPmtiles(options: {
   return { addresses, scanned, bboxCandidates, touchedTiles };
 }
 
+async function loadBuildingsFromParquet(options: {
+  config: BedrockCountryConfig;
+  polygon: GeoJSON.Polygon;
+  bbox: Bounds;
+  regionCode?: string | null;
+}): Promise<{ features: BedrockScopedBuildingFeature[]; metric: BedrockScanResult } | null> {
+  const startedAt = Date.now();
+  const manifestStartedAt = Date.now();
+  const manifest = await readManifest(options.config, 'buildings');
+  const manifestMs = Date.now() - manifestStartedAt;
+  const partitionStartedAt = Date.now();
+  const { paths, partitioning, tilePadding } = parquetPathsForTiles(
+    options.config,
+    manifest,
+    options.bbox,
+    options.regionCode,
+    'buildings'
+  );
+  const partitionMs = Date.now() - partitionStartedAt;
+  if (paths.length === 0) return null;
+
+  const queryStartedAt = Date.now();
+  const rows = await duckDbAll(
+    `
+      SELECT *
+      FROM read_parquet([${paths.map(sqlString).join(',')}], hive_partitioning=1, union_by_name=true)
+      WHERE maxx >= ${sqlNumber(options.bbox[0])}
+        AND minx <= ${sqlNumber(options.bbox[2])}
+        AND maxy >= ${sqlNumber(options.bbox[1])}
+        AND miny <= ${sqlNumber(options.bbox[3])}
+    `,
+    paths.some((path) => path.startsWith('s3://') || /^https?:\/\//i.test(path))
+  );
+  const queryMs = Date.now() - queryStartedAt;
+
+  const filterStartedAt = Date.now();
+  const features: BedrockScopedBuildingFeature[] = [];
+  const seen = new Set<string>();
+  for (const row of rows) {
+    const feature = normalizeBuildingFeature(row);
+    if (!feature) continue;
+    if (!featureIntersectsPolygon(feature, options.polygon, options.bbox)) continue;
+
+    const key = feature.properties.building_id.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    features.push(feature);
+  }
+  const filterMs = Date.now() - filterStartedAt;
+  const totalMs = Date.now() - startedAt;
+
+  return {
+    features,
+    metric: {
+      hits: features.length,
+      scanned: rows.length,
+      bboxCandidates: rows.length,
+      seconds: Number((totalMs / 1000).toFixed(2)),
+      queryEngine: 'duckdb_parquet',
+      touchedTiles: paths.length,
+      partitioning,
+      tilePadding,
+      timings: {
+        manifestMs,
+        partitionMs,
+        queryMs,
+        filterMs,
+        totalMs,
+      },
+    },
+  };
+}
+
 export class BedrockCountryService {
   constructor(private readonly config: BedrockCountryConfig) {}
 
@@ -808,7 +1154,8 @@ export class BedrockCountryService {
   }): Promise<{
     addresses: StandardCampaignAddress[];
     snapshot: LambdaSnapshotResponse;
-    metrics: { addresses: BedrockScanResult };
+    metrics: { addresses: BedrockScanResult; buildings?: BedrockScanResult };
+    linkGeometry?: { buildings: BedrockScopedBuildingFeature[]; parcels: [] } | null;
   }> {
     const startedAt = Date.now();
     const bbox = turf.bbox(options.polygon) as Bounds;
@@ -929,10 +1276,49 @@ export class BedrockCountryService {
       timings: metric.timings,
     });
 
+    let buildingFeatures: BedrockScopedBuildingFeature[] = [];
+    let buildingMetric: BedrockScanResult | undefined;
+    try {
+      const buildingResult = await loadBuildingsFromParquet({
+        config: this.config,
+        polygon: options.polygon,
+        bbox,
+        regionCode: options.regionCode,
+      });
+      buildingFeatures = buildingResult?.features ?? [];
+      buildingMetric = buildingResult?.metric;
+      console.log(`[BedrockCountryService] ${this.config.country} building scan complete`, {
+        campaignId: options.campaignId,
+        hits: buildingMetric?.hits ?? 0,
+        scanned: buildingMetric?.scanned ?? 0,
+        touchedTiles: buildingMetric?.touchedTiles ?? 0,
+        timings: buildingMetric?.timings ?? null,
+      });
+    } catch (buildingError) {
+      console.warn(
+        `[BedrockCountryService] ${this.config.country} building Parquet scan failed; PMTiles display fallback remains available`,
+        buildingError instanceof Error ? buildingError.message : buildingError
+      );
+    }
+
     return {
       addresses,
-      metrics: { addresses: metric },
-      snapshot: this.snapshotForCampaign(options.campaignId, addresses.length, metric, manifest, options.regionCode),
+      metrics: {
+        addresses: metric,
+        ...(buildingMetric ? { buildings: buildingMetric } : {}),
+      },
+      linkGeometry: buildingFeatures.length > 0
+        ? { buildings: buildingFeatures, parcels: [] }
+        : null,
+      snapshot: this.snapshotForCampaign(
+        options.campaignId,
+        addresses.length,
+        metric,
+        manifest,
+        options.regionCode,
+        buildingFeatures.length,
+        buildingMetric
+      ),
     };
   }
 
@@ -941,7 +1327,9 @@ export class BedrockCountryService {
     addressCount: number,
     scanMetric: BedrockScanResult,
     manifest: ParquetManifest,
-    regionCode?: string | null
+    regionCode?: string | null,
+    buildingCount: number = 0,
+    buildingScanMetric?: BedrockScanResult
   ): LambdaSnapshotResponse {
     const buildingPmtilesKey = usaBuildingPmtilesKey(this.config, regionCode);
     const snapshotBuildingKey = buildingPmtilesKey ?? layerKey(this.config, 'buildings', 'buildings.pmtiles');
@@ -1007,6 +1395,7 @@ export class BedrockCountryService {
       addresses_count: addressCount,
       scan_metrics: {
         addresses: scanMetric,
+        ...(buildingScanMetric ? { buildings: buildingScanMetric } : {}),
       },
     };
 
@@ -1015,7 +1404,7 @@ export class BedrockCountryService {
       bucket: bucket(this.config),
       prefix: prefix(this.config),
       counts: {
-        buildings: 0,
+        buildings: buildingCount,
         addresses: addressCount,
         roads: 0,
       },

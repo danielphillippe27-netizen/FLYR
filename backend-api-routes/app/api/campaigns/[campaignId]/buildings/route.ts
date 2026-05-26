@@ -11,7 +11,7 @@ const SUPABASE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABAS
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 const AWS_REGION = process.env.AWS_REGION ?? "us-east-1";
-const POLISHED_BUILDING_GEOMETRY_VERSION = 7;
+const POLISHED_BUILDING_GEOMETRY_VERSION = 8;
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;

@@ -48,26 +48,25 @@ final class UnlinkedHomeAddressResolver {
             for: reverseCandidate,
             in: response.candidates
         ) {
-            let linkedCoordinate = matchingCampaignCandidate.coordinate.clCoordinate
             try await BuildingLinkService.shared.linkAddressToBuilding(
                 campaignId: campaignId,
                 buildingId: buildingId,
                 addressId: matchingCampaignCandidate.id,
-                coordinate: linkedCoordinate
+                coordinate: seedCoordinate
             )
             return UnlinkedHomeAddressResolution(
                 addressId: matchingCampaignCandidate.id,
                 kind: .existingCampaignAddress,
                 candidate: matchingCampaignCandidate,
                 createdAddress: nil,
-                coordinate: linkedCoordinate
+                coordinate: seedCoordinate
             )
         }
 
         let created = try await BuildingLinkService.shared.createManualAddress(
             campaignId: campaignId,
             input: ManualAddressCreateInput(
-                coordinate: reverseCandidate.coordinate.clCoordinate,
+                coordinate: seedCoordinate,
                 formatted: reverseCandidate.displayAddress,
                 houseNumber: reverseCandidate.houseNumber,
                 streetName: reverseCandidate.resolvedStreetName,
@@ -86,7 +85,7 @@ final class UnlinkedHomeAddressResolver {
             kind: .reverseGeocodedPin,
             candidate: reverseCandidate,
             createdAddress: created.address,
-            coordinate: reverseCandidate.coordinate.clCoordinate
+            coordinate: seedCoordinate
         )
     }
 

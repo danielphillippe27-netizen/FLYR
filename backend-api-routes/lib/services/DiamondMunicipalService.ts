@@ -201,12 +201,118 @@ function parseS3Key(value: string | null | undefined) {
 }
 
 function text(value: unknown) {
-  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed ? trimmed : undefined;
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return Number.isInteger(value) ? String(value) : String(value);
+  }
+  if (typeof value === 'bigint') {
+    return value.toString();
+  }
+  return undefined;
 }
 
 function number(value: unknown) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function firstText(...values: unknown[]) {
+  for (const value of values) {
+    const normalized = text(value);
+    if (normalized) return normalized;
+  }
+  return undefined;
+}
+
+function streetText(value: unknown) {
+  const normalized = text(value);
+  if (!normalized) return undefined;
+  if (/^[\d\s#./-]+$/.test(normalized)) return undefined;
+  return normalized;
+}
+
+function streetLabel(name: unknown, type: unknown): string | undefined {
+  const streetName = streetText(name);
+  const streetType = streetText(type);
+  if (!streetName) return undefined;
+  if (!streetType) return streetName;
+
+  const normalizedName = streetName.toUpperCase();
+  const normalizedType = streetType.toUpperCase();
+  if (normalizedName === normalizedType || normalizedName.endsWith(` ${normalizedType}`)) {
+    return streetName;
+  }
+  return `${streetName} ${streetType}`;
+}
+
+function streetLabelFrom(props: Record<string, unknown>): string | undefined {
+  const streetName =
+    streetText(props.street_name) ??
+    streetText(props.street) ??
+    streetText(props.road_name) ??
+    streetText(props.road) ??
+    streetText(props.str_name) ??
+    streetText(props.street_full) ??
+    streetText(props.street_label) ??
+    streetText(props.full_street) ??
+    streetText(props.primary_street) ??
+    streetText(props['addr:street']) ??
+    streetText(props.name);
+  const streetType =
+    streetText(props.street_type) ??
+    streetText(props.road_type) ??
+    streetText(props.str_type) ??
+    streetText(props.street_suffix) ??
+    streetText(props.suffix);
+  return streetLabel(streetName, streetType);
+}
+
+function houseNumberFrom(props: Record<string, unknown>): string | undefined {
+  return firstText(
+    props.house_number,
+    props.house_number_label,
+    props.street_number,
+    props.number_first,
+    props.address_number,
+    props.street_no,
+    props.civic_number,
+    props.housenumber,
+    props['addr:housenumber']
+  );
+}
+
+function explicitAddressText(props: Record<string, unknown>): string | undefined {
+  return firstText(
+    props.full_address,
+    props.formatted,
+    props.display_address,
+    props.address,
+    props.label,
+    props.full_addr
+  );
+}
+
+function looksLikeNumericOnlyAddress(value: string): boolean {
+  return /^[\d\s#./-]+$/.test(value.trim());
+}
+
+function chooseFormattedAddress(
+  explicit: string | undefined,
+  houseNumber: string | undefined,
+  streetName: string | undefined,
+  locality: string | undefined
+) {
+  const composed = [houseNumber, streetName, locality].filter(Boolean).join(' ').trim();
+  if (composed && (!explicit || looksLikeNumericOnlyAddress(explicit))) {
+    return composed;
+  }
+  if (explicit && !looksLikeNumericOnlyAddress(explicit)) {
+    return explicit;
+  }
+  return composed || explicit || 'Address point';
 }
 
 function normalizeCountry(regionCode: string | null | undefined): DiamondCountry | null {
@@ -381,15 +487,16 @@ function normalizeDiamondAddress(
 
   const props = feature.properties ?? {};
   const addressId = text(props.address_id) ?? text(props.gers_id) ?? text(props.source_id);
-  const houseNumber = text(props.house_number) ?? text(props.street_number);
-  const streetName = text(props.street_name);
+  const houseNumber = houseNumberFrom(props);
+  const streetName = streetLabelFrom(props);
   const unit = text(props.unit) ?? text(props.unit_number) ?? text(props.suite);
   const locality = text(props.locality) ?? text(props.city) ?? text(props.municipality);
-  const formatted =
-    text(props.full_address) ??
-    text(props.formatted) ??
-    text(props.label) ??
-    [houseNumber, streetName, locality].filter(Boolean).join(' ');
+  const formatted = chooseFormattedAddress(
+    explicitAddressText(props),
+    houseNumber,
+    streetName,
+    locality
+  );
 
   return {
     campaign_id: campaignId,

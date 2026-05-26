@@ -12,6 +12,7 @@ import {
   ParcelEnrichmentService,
 } from '@/lib/services/ParcelEnrichmentService';
 import { isParcelRegionSupported } from '@/lib/geo/parcelRegions';
+import { sendCampaignReadyNotificationOnce } from '@/lib/notifications/campaign-ready';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -55,7 +56,7 @@ type ExistingCampaignAddressSignatureRow = {
 const DEFAULT_STATIC_GEOMETRY_ADDRESS_HYDRATION_LIMIT = 5000;
 const FALLBACK_INSERT_BATCH_SIZE = 500;
 const BULK_ADDRESS_RPC = 'add_campaign_addresses';
-const POLISHED_BUILDING_GEOMETRY_VERSION = 7;
+const POLISHED_BUILDING_GEOMETRY_VERSION = 8;
 const MAX_PROVISION_ERROR_LENGTH = 2000;
 const DEFAULT_SOURCE_RESOLUTION_TIMEOUT_MS = 240_000;
 
@@ -845,6 +846,43 @@ function addressesForInitialHydration(
   return addresses.length <= staticGeometryAddressHydrationLimit() ? addresses : [];
 }
 
+function isNumericOnlyAddressLabel(value: string | null | undefined): boolean {
+  return typeof value === 'string' && /^[\d\s#./-]+$/.test(value.trim());
+}
+
+function addressLabelQuality(addresses: StandardCampaignAddress[]) {
+  if (addresses.length === 0) {
+    return { usable: 0, numericOnly: 0, usableRatio: 0, acceptable: false };
+  }
+
+  let usable = 0;
+  let numericOnly = 0;
+
+  for (const address of addresses) {
+    const streetName = address.street_name?.trim();
+    const formatted = address.formatted?.trim();
+    const hasNamedStreet = Boolean(streetName && !isNumericOnlyAddressLabel(streetName));
+    const hasReadableFormatted = Boolean(formatted && !isNumericOnlyAddressLabel(formatted));
+    if (hasNamedStreet || hasReadableFormatted) {
+      usable += 1;
+    }
+    if (
+      isNumericOnlyAddressLabel(streetName) ||
+      (formatted && isNumericOnlyAddressLabel(formatted))
+    ) {
+      numericOnly += 1;
+    }
+  }
+
+  const usableRatio = usable / addresses.length;
+  return {
+    usable,
+    numericOnly,
+    usableRatio,
+    acceptable: usableRatio >= 0.6,
+  };
+}
+
 async function resolveDiamondThenBedrock(options: {
   campaignId: string;
   polygon: GeoJSON.Polygon;
@@ -876,23 +914,34 @@ async function resolveDiamondThenBedrock(options: {
     });
 
     if (diamondResult) {
-      console.log('[Provision] DIAMOND municipal S3 polygon scan complete:', {
-        campaignId,
-        country: diamondResult.country,
-        municipality: diamondResult.municipality,
-        addresses: diamondResult.addresses.length,
-        bboxCandidates: diamondResult.metrics.addresses.bboxCandidates,
-        timings: {
-          addresses: diamondResult.metrics.addresses.seconds,
-        },
-      });
+      const quality = addressLabelQuality(diamondResult.addresses);
+      if (!quality.acceptable) {
+        console.warn('[Provision] Diamond municipal address labels failed quality gate; trying Bedrock S3 next:', {
+          campaignId,
+          addresses: diamondResult.addresses.length,
+          usable: quality.usable,
+          numericOnly: quality.numericOnly,
+          usableRatio: Number(quality.usableRatio.toFixed(3)),
+        });
+      } else {
+        console.log('[Provision] DIAMOND municipal S3 polygon scan complete:', {
+          campaignId,
+          country: diamondResult.country,
+          municipality: diamondResult.municipality,
+          addresses: diamondResult.addresses.length,
+          bboxCandidates: diamondResult.metrics.addresses.bboxCandidates,
+          timings: {
+            addresses: diamondResult.metrics.addresses.seconds,
+          },
+        });
 
-      return {
-        addressSource: 'diamond',
-        snapshot: diamondResult.snapshot,
-        addressesToInsert: addressesForInitialHydration(diamondResult.addresses),
-        bedrockLinkGeometry: null,
-      };
+        return {
+          addressSource: 'diamond',
+          snapshot: diamondResult.snapshot,
+          addressesToInsert: addressesForInitialHydration(diamondResult.addresses),
+          bedrockLinkGeometry: null,
+        };
+      }
     }
 
     console.log('[Provision] No matching Diamond S3 folder found; trying Bedrock S3.');
@@ -1226,6 +1275,12 @@ export async function POST(request: NextRequest) {
             readyAt,
             expectedBuildingCount: cachedBuildingGeoJSONCount,
           });
+
+          if (postProcessing.optimized) {
+            await sendCampaignReadyNotificationOnce(campaignId!).catch((error) => {
+              console.error('[Provision] Campaign-ready push notification failed:', error);
+            });
+          }
 
           if (!postProcessing.optimized) {
             await updateCampaignProvision(supabase, campaignId!, {
