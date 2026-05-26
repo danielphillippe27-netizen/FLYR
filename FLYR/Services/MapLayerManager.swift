@@ -2594,23 +2594,12 @@ final class MapLayerManager {
             buildingByIdentifier: buildingByIdentifier,
             buildingByAddressId: buildingByAddressId,
             requireHouseNumberLabel: true,
-            keepSingleAddressCoordinate: false
+            keepSingleAddressCoordinate: true
         )
-
-        let existingFeatureIds = Set(addressPointFeatures.compactMap { feature -> String? in
-            let properties = feature["properties"] as? [String: Any]
-            return normalizedFeatureIdentifier(feature: feature, properties: properties ?? [:])?.lowercased()
-        })
-        let buildingPointFeatures = buildingAddressLabelPointFeatures(
-            buildings: buildings,
-            buildingByIdentifier: buildingByIdentifier,
-            existingFeatureIds: existingFeatureIds
-        )
-        let pointFeatures = addressPointFeatures + buildingPointFeatures
 
         return try stableJSONData(withJSONObject: [
             "type": "FeatureCollection",
-            "features": pointFeatures
+            "features": addressPointFeatures
         ])
     }
 
@@ -2730,18 +2719,21 @@ final class MapLayerManager {
                     totalAddresses: totalAddresses,
                     addressIndex: addressIndex
                 )
-                labelZOffset = linkedBuilding.height + Self.addressNumberRoofClearance
+                if !keepSingleAddressCoordinate {
+                    labelZOffset = linkedBuilding.height + Self.addressNumberRoofClearance
+                }
             } else {
                 resolvedCoordinate = baseCoordinate
                 labelPriority = 90
             }
 
+            let usesBuildingPlacement = linkedBuilding != nil && !keepSingleAddressCoordinate
             var labelProperties: [String: Any] = [
                 "id": addressIdString,
                 "address_id": addressIdString,
                 "label_priority": labelPriority,
                 "label_z_offset": labelZOffset,
-                "geometry_source": linkedBuilding == nil ? "address_only" : "building",
+                "geometry_source": usesBuildingPlacement ? "building" : "address_point",
                 "has_building_geometry": linkedBuilding != nil
             ]
             if !houseLabel.isEmpty { labelProperties["house_number_label"] = houseLabel }

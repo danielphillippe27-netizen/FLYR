@@ -1204,7 +1204,7 @@ export async function POST(request: NextRequest) {
           });
 
           await updateCampaignProvision(supabase, campaignId!, {
-            provision_status: 'ready',
+            provision_status: 'pending',
             provision_phase: 'map_ready',
             provision_source: dbProvisionSource(addressSource),
             provisioned_at: readyAt,
@@ -1226,6 +1226,15 @@ export async function POST(request: NextRequest) {
             readyAt,
             expectedBuildingCount: cachedBuildingGeoJSONCount,
           });
+
+          if (!postProcessing.optimized) {
+            await updateCampaignProvision(supabase, campaignId!, {
+              provision_status: 'ready',
+              provision_phase: 'map_ready',
+              provisioned_at: readyAt,
+              map_ready_at: readyAt,
+            });
+          }
 
           return {
             success: true,

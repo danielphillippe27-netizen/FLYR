@@ -1797,6 +1797,36 @@ final class MapFeaturesService: ObservableObject {
 
         clientLinkingTask = Task { [weak self] in
             guard let self else { return }
+            if NetworkMonitor.shared.isOnline,
+               let canonicalLinks = try? await BuildingLinkService.shared.fetchLinks(campaignId: campaignId),
+               !canonicalLinks.isEmpty {
+                let canonicalClientLinks = canonicalLinks.map { link in
+                    ClientBuildingAddressLink(
+                        id: link.id,
+                        buildingId: link.buildingId,
+                        addressId: link.addressId,
+                        matchType: link.matchType,
+                        confidence: link.confidence,
+                        distanceMeters: 0
+                    )
+                }
+                await MainActor.run {
+                    guard self.isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else { return }
+                    self.applyClientLinks(canonicalClientLinks, toCampaignId: campaignId)
+                    self.clientLinkingProgress = ClientLinkingProgress(
+                        processed: snapshotAddresses.features.count,
+                        total: snapshotAddresses.features.count,
+                        linked: canonicalClientLinks.count
+                    )
+                    self.clientLinkingTask = nil
+                    print(
+                        "🧪 [MAP_DEBUG] backend_links_applied campaign=\(campaignId) " +
+                        "links=\(canonicalClientLinks.count) source=supabase"
+                    )
+                }
+                return
+            }
+
             if let cachedBatch = await self.campaignRepository.getClientGeneratedLinkBatch(
                 campaignId: campaignId,
                 assetSignature: signature

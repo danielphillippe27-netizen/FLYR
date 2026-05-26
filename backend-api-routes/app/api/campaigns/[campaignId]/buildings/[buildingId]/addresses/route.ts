@@ -1,11 +1,7 @@
-import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
 import { StableLinkerService } from "@/lib/services/StableLinkerService";
 import { isUuid, resolveCampaignBuilding } from "@/app/api/campaigns/_utils/resolve-campaign-building";
-
-const SUPABASE_URL = process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY ?? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
-const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+import { createAdminClient } from "@/lib/supabase/server";
 
 type RouteContext = { params: Promise<{ campaignId: string; buildingId: string }> };
 
@@ -183,16 +179,15 @@ export async function GET(request: Request, context: RouteContext) {
     }
 
     const { campaignId, buildingId: buildingIdParam } = await context.params;
-    const supabaseAnon = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    const supabase = createAdminClient();
     const {
       data: { user },
       error: userError,
-    } = await supabaseAnon.auth.getUser(token);
+    } = await supabase.auth.getUser(token);
     if (userError || !user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
     const canAccess = await ensureCampaignAccess(
       supabase,
       campaignId,
@@ -323,16 +318,15 @@ export async function POST(request: Request, context: RouteContext) {
       );
     }
 
-    const supabaseAnon = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    const supabase = createAdminClient();
     const {
       data: { user },
       error: userError,
-    } = await supabaseAnon.auth.getUser(token);
+    } = await supabase.auth.getUser(token);
     if (userError || !user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
     const canAccess = await ensureCampaignAccess(
       supabase,
       campaignId,
@@ -408,16 +402,15 @@ export async function DELETE(request: Request, context: RouteContext) {
       );
     }
 
-    const supabaseAnon = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    const supabase = createAdminClient();
     const {
       data: { user },
       error: userError,
-    } = await supabaseAnon.auth.getUser(token);
+    } = await supabase.auth.getUser(token);
     if (userError || !user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
     const canAccess = await ensureCampaignAccess(
       supabase,
       campaignId,
