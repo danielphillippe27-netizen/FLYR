@@ -793,8 +793,8 @@ final class CampaignsAPI {
             provisionPhase: state.provisionPhase,
             provisionSource: state.provisionSource,
             mapReady: state.provisionStatus == .ready,
-            optimized: state.provisionPhase == .optimized,
-            postprocessDeferred: state.provisionPhase != .optimized,
+            optimized: state.provisionPhase?.isLinkComplete == true,
+            postprocessDeferred: state.provisionPhase?.isLinkComplete != true,
             parcelEnrichmentStatus: nil,
             warning: "Provision request timed out on the client, but the server kept working.",
             hasParcels: nil,
@@ -1015,7 +1015,7 @@ final class CampaignsAPI {
                 return Self.provisionResponse(from: state)
             }
             if waitForLinker,
-               provisionResponse.provisionPhase != .optimized || provisionResponse.postprocessDeferred == true {
+               provisionResponse.provisionPhase?.isLinkComplete != true || provisionResponse.postprocessDeferred == true {
                 print("🧭 [API] Waiting for campaign linker to finish before opening campaign \(campaignId)...")
                 let state = try await waitForProvisionReady(
                     campaignId: campaignId,
@@ -1052,7 +1052,7 @@ final class CampaignsAPI {
             let state = try await fetchProvisionState(campaignId: campaignId)
             print("🧭 [API] Provision state campaign=\(campaignId) status=\(state.provisionStatus?.rawValue ?? "nil") phase=\(state.provisionPhase?.rawValue ?? "nil")")
 
-            if state.provisionStatus == .ready && (!requireOptimized || state.provisionPhase == .optimized) {
+            if state.provisionStatus == .ready && (!requireOptimized || state.provisionPhase?.isLinkComplete == true) {
                 return state
             }
             if state.provisionStatus == .failed {

@@ -26,6 +26,21 @@ interface ProvisionRequest {
 
 type ProvisionSource = 'diamond' | 'bedrock';
 
+type AutoLinkCampaignAddressesResult = {
+  linked?: unknown;
+  skipped_manual?: unknown;
+  unlinked?: unknown;
+};
+
+type CampaignPostProcessingResult = {
+  optimized: boolean;
+  postprocessDeferred: boolean;
+  linkedAddressCount: number;
+  skippedManualCount: number;
+  unlinkedAddressCount: number;
+  message: string;
+};
+
 type ExistingCampaignAddressSignatureRow = {
   formatted: string | null;
   house_number: string | null;
@@ -40,7 +55,7 @@ type ExistingCampaignAddressSignatureRow = {
 const DEFAULT_STATIC_GEOMETRY_ADDRESS_HYDRATION_LIMIT = 2000;
 const FALLBACK_INSERT_BATCH_SIZE = 500;
 const BULK_ADDRESS_RPC = 'add_campaign_addresses';
-const POLISHED_BUILDING_GEOMETRY_VERSION = 6;
+const POLISHED_BUILDING_GEOMETRY_VERSION = 7;
 const MAX_PROVISION_ERROR_LENGTH = 2000;
 const DEFAULT_SOURCE_RESOLUTION_TIMEOUT_MS = 240_000;
 
@@ -53,6 +68,15 @@ class ProvisionError extends Error {
 
 function dbProvisionSource(source: ProvisionSource): ProvisionSource {
   return source;
+}
+
+function sourceDisplayName(source: ProvisionSource): string {
+  return source === 'diamond' ? 'Diamond' : 'Bedrock';
+}
+
+function jsonNumber(value: unknown): number {
+  const parsed = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function provisionFailureMessage(error: unknown): string {
@@ -174,6 +198,48 @@ function normalizeSource(value: string | null | undefined): string {
 
 function normalizeExternalAddressId(value: string | null | undefined): string {
   return typeof value === 'string' ? value.trim() : '';
+}
+
+function normalizedFeatureString(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function normalizeCachedBuildingIdentity(feature: Record<string, unknown>): Record<string, unknown> {
+  const existingProperties =
+    feature.properties && typeof feature.properties === 'object'
+      ? (feature.properties as Record<string, unknown>)
+      : {};
+  const publicId =
+    normalizedFeatureString(existingProperties.public_building_id) ??
+    normalizedFeatureString(existingProperties.canonical_building_id) ??
+    normalizedFeatureString(existingProperties.gers_id) ??
+    normalizedFeatureString(existingProperties.building_id) ??
+    normalizedFeatureString(existingProperties.id) ??
+    normalizedFeatureString(feature.id);
+
+  if (!publicId) return feature;
+
+  const source = normalizedFeatureString(existingProperties.source)?.toLowerCase() ?? '';
+  const identifierSource =
+    normalizedFeatureString(existingProperties.building_identifier_source) ??
+    (source.includes('diamond') || source.startsWith('bedrock') ? 'diamond' : null) ??
+    (normalizedFeatureString(existingProperties.gers_id) ? 'gers' : 'feature');
+
+  return {
+    ...feature,
+    id: normalizedFeatureString(feature.id) ?? publicId,
+    properties: {
+      ...existingProperties,
+      id: normalizedFeatureString(existingProperties.id) ?? publicId,
+      building_id: normalizedFeatureString(existingProperties.building_id) ?? publicId,
+      gers_id: normalizedFeatureString(existingProperties.gers_id) ?? publicId,
+      public_building_id: normalizedFeatureString(existingProperties.public_building_id) ?? publicId,
+      canonical_building_id: normalizedFeatureString(existingProperties.canonical_building_id) ?? publicId,
+      building_identifier_source: identifierSource,
+    },
+  };
 }
 
 function externalAddressId(address: { gers_id?: string | null; source_id?: string | null }): string {
@@ -423,7 +489,7 @@ async function cachePolishedBuildingGeoJSON(
   if (renderableFeatures.length === 0) return 0;
 
   const versionedFeatures = renderableFeatures.map((feature) => {
-    const record = feature as Record<string, unknown>;
+    const record = normalizeCachedBuildingIdentity(feature as Record<string, unknown>);
     const existingProperties =
       record.properties && typeof record.properties === 'object'
         ? (record.properties as Record<string, unknown>)
@@ -437,6 +503,34 @@ async function cachePolishedBuildingGeoJSON(
       },
     };
   });
+
+  const { data: materializedCount, error: materializeError } = await supabase.rpc(
+    'materialize_campaign_buildings_from_geojson',
+    {
+      p_campaign_id: campaignId,
+      p_features: {
+        type: 'FeatureCollection',
+        features: versionedFeatures,
+      },
+      p_source: source,
+    }
+  );
+
+  if (materializeError) {
+    console.warn('[Provision] Campaign building materialization failed:', {
+      campaignId,
+      source,
+      message: materializeError.message,
+      code: materializeError.code,
+      details: materializeError.details,
+    });
+  } else {
+    console.log('[Provision] Materialized campaign buildings into PostGIS', {
+      campaignId,
+      source,
+      buildings: jsonNumber(materializedCount),
+    });
+  }
 
   const { error } = await supabase
     .from('campaign_polished_building_features')
@@ -840,17 +934,87 @@ async function resolveDiamondThenBedrock(options: {
 }
 
 async function runCampaignPostProcessing(params: {
+  supabase: ReturnType<typeof createAdminClient>;
   campaignId: string;
-  polygon: GeoJSON.Polygon;
-  regionCode: string;
   source: ProvisionSource;
-  snapshot: LambdaSnapshotResponse | null;
   insertedCount: number;
-  bedrockLinkGeometry?: BedrockLinkGeometry | null;
-}) {
-  console.log('[Provision] Backend auto-link post-processing disabled; iOS will optimize locally.', {
-    campaignId: params.campaignId,
+  readyAt: string;
+  expectedBuildingCount: number;
+}): Promise<CampaignPostProcessingResult> {
+  const label = sourceDisplayName(params.source);
+
+  const { count: materializedBuildingCount, error: buildingCountError } = await params.supabase
+    .from('buildings')
+    .select('id', { count: 'exact', head: true })
+    .eq('campaign_id', params.campaignId);
+
+  if (buildingCountError || (params.expectedBuildingCount > 0 && (materializedBuildingCount ?? 0) === 0)) {
+    console.error('[Provision] Backend auto-link skipped; campaign buildings are not materialized.', {
+      campaignId: params.campaignId,
+      expectedBuildingCount: params.expectedBuildingCount,
+      materializedBuildingCount: materializedBuildingCount ?? 0,
+      error: buildingCountError?.message,
+    });
+
+    return {
+      optimized: false,
+      postprocessDeferred: true,
+      linkedAddressCount: 0,
+      skippedManualCount: 0,
+      unlinkedAddressCount: params.insertedCount,
+      message: `${label} campaign is map-ready. Linking deferred to device.`,
+    };
+  }
+
+  const { data, error } = await params.supabase.rpc('auto_link_campaign_addresses', {
+    p_campaign_id: params.campaignId,
   });
+
+  if (error) {
+    console.error('[Provision] Backend auto-link RPC failed; leaving iOS fallback enabled.', {
+      campaignId: params.campaignId,
+      code: error.code,
+      message: error.message,
+      details: error.details,
+      hint: error.hint,
+    });
+
+    return {
+      optimized: false,
+      postprocessDeferred: true,
+      linkedAddressCount: 0,
+      skippedManualCount: 0,
+      unlinkedAddressCount: params.insertedCount,
+      message: `${label} campaign is map-ready. Linking deferred to device.`,
+    };
+  }
+
+  const result = (data ?? {}) as AutoLinkCampaignAddressesResult;
+  const linkedAddressCount = jsonNumber(result.linked);
+  const skippedManualCount = jsonNumber(result.skipped_manual);
+  const unlinkedAddressCount = jsonNumber(result.unlinked);
+
+  await updateCampaignProvision(params.supabase, params.campaignId, {
+    provision_status: 'ready',
+    provision_phase: 'linked',
+    optimized_at: params.readyAt,
+  });
+
+  console.log('[Provision] Backend auto-link RPC completed.', {
+    campaignId: params.campaignId,
+    linkedAddressCount,
+    skippedManualCount,
+    unlinkedAddressCount,
+  });
+
+  return {
+    optimized: true,
+    postprocessDeferred: false,
+    linkedAddressCount,
+    skippedManualCount,
+    unlinkedAddressCount,
+    message: `${label} campaign is map-ready. ${linkedAddressCount} addresses auto-linked.`,
+  };
 }
 
 export async function POST(request: NextRequest) {
@@ -871,7 +1035,7 @@ export async function POST(request: NextRequest) {
 	      body.wait_for_postprocess === true ||
 	      body.require_linked_homes === true;
       if (waitForLinker) {
-        console.log('[Provision] wait_for_linker requested but backend auto-linking is disabled; returning map-ready state.');
+        console.log('[Provision] wait_for_linker requested; backend auto-linking will run after map-ready hydration.');
       }
 
     if (!campaignId) {
@@ -1016,10 +1180,8 @@ export async function POST(request: NextRequest) {
 
           await upsertSnapshotMetadata(supabase, campaignId!, snapshot);
 
-	          let linkedAddressCount = 0;
-	          let buildingLinkConfidence = 0;
-	          let mapMode = 'standard_pins';
-	          let linkedBuildingCount = 0;
+          const buildingLinkConfidence = 0;
+          const mapMode = 'standard_pins';
           const effectiveBuildingCount =
             snapshot.counts.buildings > 0
               ? snapshot.counts.buildings
@@ -1056,37 +1218,36 @@ export async function POST(request: NextRequest) {
           console.log('[Provision] Static S3 geometry is map-ready; no legacy Gold/Lambda/White Gold fallbacks will run.', {
             cachedBuildingGeoJSONCount,
           });
-	          await runCampaignPostProcessing({
-	            campaignId: campaignId!,
-	            polygon: polygon as GeoJSON.Polygon,
-            regionCode,
+          const postProcessing = await runCampaignPostProcessing({
+            supabase,
+            campaignId: campaignId!,
             source: addressSource,
-            snapshot,
             insertedCount: finalAddressCount,
-	            bedrockLinkGeometry,
-	          });
+            readyAt,
+            expectedBuildingCount: cachedBuildingGeoJSONCount,
+          });
 
-	          const optimized = false;
-
-	          return {
+          return {
             success: true,
             campaign_id: campaignId,
             addresses_saved: finalAddressCount,
             buildings_saved: effectiveBuildingCount,
             source: addressSource,
-            links_created: linkedBuildingCount,
+            links_created: postProcessing.linkedAddressCount,
             units_created: 0,
             has_parcels: false,
             building_link_confidence: buildingLinkConfidence,
             map_mode: mapMode,
-            linked_address_count: linkedAddressCount,
+            linked_address_count: postProcessing.linkedAddressCount,
+            skipped_manual_link_count: postProcessing.skippedManualCount,
+            unlinked_address_count: postProcessing.unlinkedAddressCount,
             total_campaign_addresses: finalAddressCount,
             provision_status: 'ready',
-	            provision_phase: 'map_ready',
-	            provision_source: dbProvisionSource(addressSource),
-	            map_ready: true,
-	            optimized,
-	            postprocess_deferred: true,
+            provision_phase: postProcessing.optimized ? 'linked' : 'map_ready',
+            provision_source: dbProvisionSource(addressSource),
+            map_ready: true,
+            optimized: postProcessing.optimized,
+            postprocess_deferred: postProcessing.postprocessDeferred,
             parcel_enrichment_status: parcelEnrichmentStatus,
             map_layers: {
               buildings: snapshot.urls.buildings,
@@ -1098,11 +1259,8 @@ export async function POST(request: NextRequest) {
               tile_metrics: snapshot.metadata?.tile_metrics,
             },
             warning: snapshot.warning ?? null,
-	            message:
-	              `${addressSource === 'diamond' ? 'Diamond' : 'Bedrock'} campaign is map-ready: ` +
-	              `${finalAddressCount} leads loaded. ` +
-	              `Map linking will optimize on device.`,
-	          };
+            message: postProcessing.message,
+          };
 	        });
 	      } catch (error) {
         console.error('[Provision] Background provisioning error:', error);

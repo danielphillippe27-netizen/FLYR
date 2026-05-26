@@ -631,7 +631,7 @@ struct NewCampaignScreen: View {
     ) -> Bool {
         guard status == .ready else { return false }
         guard let phase else { return true }
-        return phase == .mapReady || phase == .optimized
+        return phase == .mapReady || phase.isLinkComplete
     }
 
     @MainActor

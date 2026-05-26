@@ -385,8 +385,13 @@ enum CampaignProvisionPhase: String, Codable, Equatable {
     case addressesReady = "addresses_ready"
     case mapReady = "map_ready"
     case optimizing
+    case linked
     case optimized
     case failed
+
+    var isLinkComplete: Bool {
+        self == .linked || self == .optimized
+    }
 }
 
 // MARK: - Campaign V2

@@ -10,6 +10,11 @@
     "tsx": "^4.19.2"
   },
   "scripts": {
-    "apple:secret": "node scripts/generate-apple-secret.js"
+    "apple:secret": "node scripts/generate-apple-secret.js",
+    "supabase": "scripts/supabase.sh",
+    "supabase:push:dry-run": "scripts/push-supabase-migrations.sh dry-run",
+    "supabase:push": "scripts/push-supabase-migrations.sh push",
+    "supabase:apply-linking:dry-run": "scripts/apply-linking-migrations.sh dry-run",
+    "supabase:apply-linking": "scripts/apply-linking-migrations.sh apply"
   }
 }
