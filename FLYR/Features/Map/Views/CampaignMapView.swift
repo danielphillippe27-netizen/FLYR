@@ -8330,9 +8330,11 @@ struct CampaignMapView: View {
             linkedIds.append(linkedAddressId)
         }
         linkedIds = deduplicatedAddressIds(linkedIds)
-        for identifier in identifiers {
-            buildingAddressMap[identifier] = linkedIds
-        }
+        applyExclusiveManualLink(
+            addressId: linkedAddressId,
+            targetIdentifiers: identifiers,
+            linkedAddressIds: linkedIds
+        )
 
         updateBuildingLinkFeatureState(identifiers: identifiers, linkedAddressIds: linkedIds)
         moveAddressFeature(addressId: linkedAddressId, to: resolvedLinkedCoordinate)
@@ -8792,6 +8794,29 @@ struct CampaignMapView: View {
         return values
             .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
             .filter { !$0.isEmpty && seen.insert($0).inserted }
+    }
+
+    private func applyExclusiveManualLink(
+        addressId: UUID,
+        targetIdentifiers: [String],
+        linkedAddressIds: [UUID]
+    ) {
+        let normalizedTargets = Set(normalizedSelectionIdentifiers(targetIdentifiers))
+        guard !normalizedTargets.isEmpty else { return }
+
+        for key in Array(buildingAddressMap.keys) where !normalizedTargets.contains(key) {
+            let existing = buildingAddressMap[key] ?? []
+            let filtered = deduplicatedAddressIds(existing.filter { $0 != addressId })
+            if filtered.count != existing.count {
+                buildingAddressMap[key] = filtered
+                updateBuildingLinkFeatureState(identifiers: [key], linkedAddressIds: filtered)
+            }
+        }
+
+        let normalizedLinkedIds = deduplicatedAddressIds(linkedAddressIds)
+        for identifier in normalizedTargets {
+            buildingAddressMap[identifier] = normalizedLinkedIds
+        }
     }
 
     private func buildingSelectionIdentifiers(for building: BuildingProperties, preferredAddressId: UUID? = nil) -> [String] {
@@ -9950,9 +9975,11 @@ struct CampaignMapView: View {
             linkedIds.append(resolution.addressId)
         }
         linkedIds = deduplicatedAddressIds(linkedIds)
-        for identifier in identifiers {
-            buildingAddressMap[identifier] = linkedIds
-        }
+        applyExclusiveManualLink(
+            addressId: resolution.addressId,
+            targetIdentifiers: identifiers,
+            linkedAddressIds: linkedIds
+        )
 
         updateBuildingLinkFeatureState(identifiers: identifiers, linkedAddressIds: linkedIds)
         moveAddressFeature(addressId: resolution.addressId, to: resolution.coordinate)
