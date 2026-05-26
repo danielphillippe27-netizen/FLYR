@@ -4397,8 +4397,8 @@ struct CampaignMapView: View {
             let addressResolutionForCard = cachedLinkedAddressIdsForCard.map {
                 BuildingAddressResolution(ids: $0, source: .persisted)
             } ?? resolvedAddressResolutionForBuildingCard(building)
-            let linkedAddressIdsForCard = addressResolutionForCard.ids
             let cardHasPersistedLinkResolution = addressResolutionForCard.source.isPersisted
+            let linkedAddressIdsForCard = cardHasPersistedLinkResolution ? addressResolutionForCard.ids : []
             let cardAllowsManualLinkActions = !addressResolutionForCard.source.isProvisional && canPersistManualLinkWrites
             let shouldShowAddressList = selectedAddressIdForCard == nil && shouldOpenAddressListFirst(for: building)
             let buildingAddressHint = nonEmptyAddressText(
@@ -9007,28 +9007,21 @@ struct CampaignMapView: View {
     private func resolvedAddressResolutionForBuildingCard(_ building: BuildingProperties) -> BuildingAddressResolution {
         let building = enrichedBuildingSelection(building)
         let identifiers = normalizedBuildingIdentifiers(for: building)
-        let footprintResolution = addressIdsInsideTappedBuildingFootprint(for: building)
-        if footprintResolution.ids.count > 1, footprintResolution.source == .provisionalContained {
-            return footprintResolution
-        }
 
-        let persistedResolution: BuildingAddressResolution
         if let cachedLinkedAddressIds = cachedLinkedAddressIds(for: identifiers) {
-            persistedResolution = BuildingAddressResolution(ids: cachedLinkedAddressIds, source: .persisted)
-        } else if !building.addressUUIDs.isEmpty {
-            persistedResolution = BuildingAddressResolution(ids: deduplicatedAddressIds(building.addressUUIDs), source: .persisted)
-        } else {
-            let mappedIds = deduplicatedAddressIds(identifiers.flatMap { addressIdsForBuilding(gersId: $0) })
-            persistedResolution = mappedIds.isEmpty
-                ? .empty
-                : BuildingAddressResolution(ids: mappedIds, source: .persisted)
+            return BuildingAddressResolution(ids: cachedLinkedAddressIds, source: .persisted)
         }
 
-        if !persistedResolution.ids.isEmpty {
-            return persistedResolution
+        if !building.addressUUIDs.isEmpty {
+            return BuildingAddressResolution(ids: deduplicatedAddressIds(building.addressUUIDs), source: .persisted)
         }
 
-        return footprintResolution
+        let mappedIds = deduplicatedAddressIds(identifiers.flatMap { addressIdsForBuilding(gersId: $0) })
+        if !mappedIds.isEmpty {
+            return BuildingAddressResolution(ids: mappedIds, source: .persisted)
+        }
+
+        return addressIdsInsideTappedBuildingFootprint(for: building)
     }
 
     private func setSelectedAddressForCard(_ addressId: UUID?) {
