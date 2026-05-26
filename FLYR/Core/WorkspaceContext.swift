@@ -1,19 +1,21 @@
 import Foundation
 import Combine
 
-/// Lightweight workspace context (id, name, role, reason). Populated from access state and invite accept. Persisted for scoped API calls.
+/// Lightweight workspace context (id, name, industry, role, reason). Populated from access state and invite accept. Persisted for scoped API calls.
 @MainActor
 final class WorkspaceContext: ObservableObject {
     static let shared = WorkspaceContext()
 
     private let workspaceIdKey = "flyr_workspace_id"
     private let workspaceNameKey = "flyr_workspace_name"
+    private let workspaceIndustryKey = "flyr_workspace_industry"
     private let workspaceRoleKey = "flyr_workspace_role"
     private let accessReasonKey = "flyr_access_reason"
     private var activeUserScope: String?
 
     @Published private(set) var workspaceId: UUID?
     @Published private(set) var workspaceName: String?
+    @Published private(set) var industry: String?
     @Published private(set) var role: String?
     @Published private(set) var accessReason: String?
 
@@ -39,14 +41,16 @@ final class WorkspaceContext: ObservableObject {
             workspaceId = nil
         }
         workspaceName = state.workspaceName
+        industry = state.industry
         role = state.role
         accessReason = state.reason
         persist()
     }
 
-    func update(workspaceId: UUID, name: String?, role: String?) {
+    func update(workspaceId: UUID, name: String?, role: String?, industry: String? = nil) {
         self.workspaceId = workspaceId
         self.workspaceName = name
+        self.industry = industry ?? self.industry
         self.role = role
         self.accessReason = nil
         persist()
@@ -61,6 +65,7 @@ final class WorkspaceContext: ObservableObject {
     private func clearInMemory() {
         workspaceId = nil
         workspaceName = nil
+        industry = nil
         role = nil
         accessReason = nil
     }
@@ -73,6 +78,7 @@ final class WorkspaceContext: ObservableObject {
             defaults.removeObject(forKey: scopedKey(workspaceIdKey))
         }
         defaults.set(workspaceName, forKey: scopedKey(workspaceNameKey))
+        defaults.set(industry, forKey: scopedKey(workspaceIndustryKey))
         defaults.set(role, forKey: scopedKey(workspaceRoleKey))
         defaults.set(accessReason, forKey: scopedKey(accessReasonKey))
         removeLegacyStoredValues()
@@ -86,6 +92,7 @@ final class WorkspaceContext: ObservableObject {
             workspaceId = nil
         }
         workspaceName = defaults.string(forKey: scopedKey(workspaceNameKey))
+        industry = defaults.string(forKey: scopedKey(workspaceIndustryKey))
         role = defaults.string(forKey: scopedKey(workspaceRoleKey))
         accessReason = defaults.string(forKey: scopedKey(accessReasonKey))
     }
@@ -95,6 +102,7 @@ final class WorkspaceContext: ObservableObject {
         let defaults = UserDefaults.standard
         let hasScopedValues = defaults.object(forKey: scopedKey(workspaceIdKey)) != nil
             || defaults.object(forKey: scopedKey(workspaceNameKey)) != nil
+            || defaults.object(forKey: scopedKey(workspaceIndustryKey)) != nil
             || defaults.object(forKey: scopedKey(workspaceRoleKey)) != nil
             || defaults.object(forKey: scopedKey(accessReasonKey)) != nil
         guard !hasScopedValues else { return }
@@ -104,6 +112,9 @@ final class WorkspaceContext: ObservableObject {
         }
         if let workspaceName = defaults.string(forKey: workspaceNameKey) {
             defaults.set(workspaceName, forKey: scopedKey(workspaceNameKey))
+        }
+        if let industry = defaults.string(forKey: workspaceIndustryKey) {
+            defaults.set(industry, forKey: scopedKey(workspaceIndustryKey))
         }
         if let role = defaults.string(forKey: workspaceRoleKey) {
             defaults.set(role, forKey: scopedKey(workspaceRoleKey))
@@ -117,6 +128,7 @@ final class WorkspaceContext: ObservableObject {
         let defaults = UserDefaults.standard
         defaults.removeObject(forKey: scopedKey(workspaceIdKey))
         defaults.removeObject(forKey: scopedKey(workspaceNameKey))
+        defaults.removeObject(forKey: scopedKey(workspaceIndustryKey))
         defaults.removeObject(forKey: scopedKey(workspaceRoleKey))
         defaults.removeObject(forKey: scopedKey(accessReasonKey))
     }
@@ -125,6 +137,7 @@ final class WorkspaceContext: ObservableObject {
         let defaults = UserDefaults.standard
         defaults.removeObject(forKey: workspaceIdKey)
         defaults.removeObject(forKey: workspaceNameKey)
+        defaults.removeObject(forKey: workspaceIndustryKey)
         defaults.removeObject(forKey: workspaceRoleKey)
         defaults.removeObject(forKey: accessReasonKey)
     }

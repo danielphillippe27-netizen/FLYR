@@ -33,6 +33,29 @@ struct ProfileSetupScreen: View {
                 }
 
                 VStack(alignment: .leading, spacing: 8) {
+                    Text("Country (required)")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(.secondary)
+                    Picker("Country", selection: Binding(
+                        get: { viewModel.response.countryCode ?? "" },
+                        set: { viewModel.response.countryCode = $0.isEmpty ? nil : $0 }
+                    )) {
+                        Text("Select your country").tag("")
+                        ForEach(CountryOptions.all) { country in
+                            Text(country.label).tag(country.code)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(Color(.secondarySystemBackground))
+                    )
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
                     Text("Profile photo (optional)")
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundColor(.secondary)

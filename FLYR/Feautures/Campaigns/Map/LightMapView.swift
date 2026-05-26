@@ -25,6 +25,7 @@ struct LightMapView: UIViewRepresentable {
         
         // Load custom light style
         mapView.mapboxMap.loadStyle(StyleURI(rawValue: "mapbox://styles/fliper27/cml6z0dhg002301qo9xxc08k4")!)
+        MapTheme.hideBaseMapAddressNumberLayersWhenStyleLoads(on: mapView.mapboxMap)
         
         _ = mapView.mapboxMap.onMapLoaded.observeNext { _ in
             // Center the map when loaded

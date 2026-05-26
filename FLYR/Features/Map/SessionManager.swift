@@ -170,6 +170,9 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
     /// Centroids for auto-complete: gers_id -> location. Set when starting building session.
     var buildingCentroids: [String: CLLocation] = [:]
 
+    /// Resolves an auto-completed target that has no linked campaign address yet.
+    var unlinkedTargetAddressResolver: ((String, CLLocation, AddressStatus) async throws -> [UUID])?
+
     /// Count of addresses user marked as delivered (knocked) this session via the location card. Used for summary "doors" when no building targets.
     @Published var addressesMarkedDelivered: Int = 0
     private var trackedVisitedAddressIds: Set<String> = []
@@ -206,10 +209,10 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         return max(addressesMarkedDelivered, 0)
     }
 
-    var autoCompleteThresholdMeters: Double = 10.0
+    var autoCompleteThresholdMeters: Double = 15.0
     var autoCompleteDwellSeconds: Double = 5.0
-    var autoCompleteMaxSpeedMPS: Double = 1.8
-    var autoCompleteRequiredAccuracyMeters: Double = 10.0
+    var autoCompleteMaxSpeedMPS: Double = 2.5
+    var autoCompleteRequiredAccuracyMeters: Double = 25.0
     private var dwellTracker: [String: DwellState] = [:]
     private var lastAutoCompleteTime: Date?
     private let autoCompleteDebounceSeconds: Double = 3.0
@@ -693,20 +696,21 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         )
     }
 
+    @discardableResult
     private func enqueueSessionProgressOutbox(
         sessionId: UUID,
         activeSeconds: Int,
         operation: OutboxOperation = .updateSessionProgress,
         pathGeoJSONNormalized: String? = nil,
         endTime: Date? = nil
-    ) async {
+    ) async -> String? {
         let payload = makeSessionProgressPayload(
             sessionId: sessionId,
             activeSeconds: activeSeconds,
             pathGeoJSONNormalized: pathGeoJSONNormalized,
             endTime: endTime
         )
-        await outboxRepository.enqueue(
+        let outboxId = await outboxRepository.enqueue(
             entityType: "session",
             entityId: sessionId.uuidString,
             operation: operation,
@@ -716,6 +720,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         if NetworkMonitor.shared.isOnline {
             OfflineSyncCoordinator.shared.scheduleProcessOutbox()
         }
+        return outboxId
     }
 
     private func enqueueSessionEvent(
@@ -808,7 +813,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         activeSecondsAccumulator = elapsedTime
         sessionRestoredThisLaunch = true
         isActive = true
-        staleActiveSessionNeedsResolution = true
+        staleActiveSessionNeedsResolution = false
         restoredServerPausedAfterStalePrompt = snapshot.status == "paused"
         autoCompleteEnabled = snapshot.payload?.autoCompleteEnabled ?? false
         flyersDelivered = 0
@@ -835,7 +840,52 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         showLongSessionPrompt = false
         hasShownLongSessionPrompt = false
         hasAutoEndedLongSession = false
-        print("⏸️ [SessionManager] Restored local session \(snapshot.id) — awaiting resume or end")
+        let sessionAge = Date().timeIntervalSince(snapshot.startedAt)
+        await finishRestoredSessionSetup(
+            sessionId: snapshot.id,
+            startTime: snapshot.startedAt,
+            sessionAge: sessionAge,
+            isStaleOpenSession: sessionAge > Self.staleActiveSessionThreshold,
+            wasPaused: snapshot.status == "paused",
+            source: "local"
+        )
+    }
+
+    private func finishRestoredSessionSetup(
+        sessionId sid: UUID,
+        startTime restoredStartTime: Date,
+        sessionAge: TimeInterval,
+        isStaleOpenSession: Bool,
+        wasPaused: Bool,
+        source: String
+    ) async {
+        buildingCentroids = [:]
+
+        if isStaleOpenSession {
+            staleActiveSessionNeedsResolution = true
+            restoredServerPausedAfterStalePrompt = wasPaused
+            isPaused = true
+            activeSegmentStartTime = nil
+            print("⏸️ [SessionManager] Restored stale \(source) session \(sid) (age \(Int(sessionAge / 60)) min) — awaiting resume or end")
+            return
+        }
+
+        staleActiveSessionNeedsResolution = false
+        restoredServerPausedAfterStalePrompt = wasPaused
+        isPaused = wasPaused
+        activeSegmentStartTime = wasPaused ? nil : Date()
+        if !wasPaused {
+            requestAuthorizationAndStartLocation(for: sessionMode)
+            presentBackgroundLocationUpgradePromptIfNeeded()
+        }
+        startElapsedTimer()
+        await flushPendingEvents()
+        await syncLiveActivity(forceStart: !wasPaused)
+        await safetyBeaconService.restoreState(for: sid, startTime: restoredStartTime)
+        if let currentLocation {
+            await safetyBeaconService.recordHeartbeat(location: currentLocation, isPaused: wasPaused)
+        }
+        print("✅ [SessionManager] Restored recent \(source) session \(sid) (age \(Int(sessionAge / 60)) min) without showing stale prompt")
     }
 
     private func recordRejectedPoint(_ reason: RejectionReason, location: CLLocation?) {
@@ -942,6 +992,11 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
             let key = normalizeVisitKey(entry.key)
             result[key] = result[key] ?? entry.value
         }
+    }
+
+    private func setResolvedAddressIds(_ addressIds: [UUID], for targetId: String) {
+        let uniqueAddressIds = Array(Set(addressIds))
+        targetAddressIdsByTargetId[normalizeVisitKey(targetId)] = uniqueAddressIds
     }
 
     private func resolvedAddressIds(for targetId: String) -> [UUID] {
@@ -1574,8 +1629,31 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
             return
         }
 
-        let addressIds = resolvedAddressIds(for: targetId)
-        let buildingId = resolvedBuildingId(for: targetId, addressIds: addressIds)
+        var addressIds = resolvedAddressIds(for: targetId)
+        var buildingId = resolvedBuildingId(for: targetId, addressIds: addressIds)
+        var completionStatus: AddressStatus = sessionMode == .doorKnocking ? .noAnswer : .delivered
+
+        if addressIds.isEmpty, let unlinkedTargetAddressResolver {
+            do {
+                let resolvedIds = try await unlinkedTargetAddressResolver(targetId, location, .noAnswer)
+                addressIds = Array(Set(resolvedIds))
+                if !addressIds.isEmpty {
+                    setResolvedAddressIds(addressIds, for: targetId)
+                    buildingId = resolvedBuildingId(for: targetId, addressIds: addressIds)
+                    completionStatus = .noAnswer
+                    appendVisitDebugMessage("✅ [VisitPipeline] resolved_unlinked source=\(source.rawValue) target=\(targetId) addresses=\(addressIds.count)")
+                }
+            } catch {
+                appendVisitDebugMessage("⚠️ [VisitPipeline] unresolved_unlinked source=\(source.rawValue) target=\(targetId) error=\(error.localizedDescription)")
+            }
+        }
+
+        guard !addressIds.isEmpty else {
+            failedVisitedTargets[normalizedTargetId] = "missing_target_addresses"
+            appendVisitDebugMessage("⚠️ [VisitPipeline] revert source=\(source.rawValue) target=\(targetId) reason=missing_target_addresses")
+            return
+        }
+
         guard updatePendingVisitState(
             targetId: targetId,
             addressIds: addressIds,
@@ -1614,17 +1692,6 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
             return
         }
 
-        guard !addressIds.isEmpty else {
-            revertPendingVisitState(
-                targetId: targetId,
-                addressIds: [],
-                buildingId: buildingId,
-                reason: "missing_target_addresses"
-            )
-            appendVisitDebugMessage("⚠️ [VisitPipeline] revert source=\(source.rawValue) target=\(targetId) reason=missing_target_addresses")
-            return
-        }
-
         let task = Task { [weak self] in
             guard let self else { return }
             defer { self.inFlightVisitConfirmationTasks.removeValue(forKey: normalizedTargetId) }
@@ -1632,11 +1699,11 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
                 try await VisitsAPI.shared.updateTargetStatus(
                     addressIds: addressIds,
                     campaignId: campaignId,
-                    status: .delivered,
+                    status: completionStatus,
                     notes: nil,
                     sessionId: sessionId,
                     sessionTargetId: targetId,
-                    sessionEventType: .flyerLeft,
+                    sessionEventType: SessionEventType.recordedVisitEventType(for: completionStatus),
                     location: location
                 )
                 _ = await self.confirmVisitState(targetId: targetId, addressIds: addressIds, buildingId: buildingId)
@@ -1928,7 +1995,6 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
             restoredServerPausedAfterStalePrompt = serverPaused
             let sessionAge = Date().timeIntervalSince(session.start_time)
             let isStaleOpenSession = sessionAge > Self.staleActiveSessionThreshold
-            staleActiveSessionNeedsResolution = true
             resetBackgroundLocationUpgradePromptState()
             showLongSessionPrompt = false
             hasShownLongSessionPrompt = false
@@ -1954,9 +2020,14 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
                 leadsCreated: leadsCreated,
                 at: Date()
             )
-            buildingCentroids = [:]
-            let restoreReason = isStaleOpenSession ? "stale active" : "active"
-            print("⏸️ [SessionManager] Restored \(restoreReason) session \(sid) (age \(Int(sessionAge / 60)) min) — awaiting resume or end")
+            await finishRestoredSessionSetup(
+                sessionId: sid,
+                startTime: session.start_time,
+                sessionAge: sessionAge,
+                isStaleOpenSession: isStaleOpenSession,
+                wasPaused: serverPaused,
+                source: "remote"
+            )
         } catch {
             print("⚠️ [SessionManager] Could not restore session: \(error)")
         }
@@ -1981,6 +2052,124 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
             await safetyBeaconService.recordHeartbeat(location: currentLocation, isPaused: isPaused)
         }
         print("✅ [SessionManager] Resumed stale restored session \(sid)")
+    }
+
+    /// User chose to throw away a restored open session instead of resuming or saving it.
+    func discardRestoredSession() async {
+        guard let sid = sessionId, !isEndingSession else {
+            staleActiveSessionNeedsResolution = false
+            return
+        }
+
+        isEndingSession = true
+        sessionEndError = nil
+        defer { isEndingSession = false }
+
+        locationManager.stopUpdatingLocation()
+        headingManager.stop(reset: true)
+        timer?.invalidate()
+        timer = nil
+
+        if !isDemoSession, NetworkMonitor.shared.isOnline {
+            do {
+                try await SessionsAPI.shared.deleteSession(id: sid)
+            } catch {
+                do {
+                    try await SessionsAPI.shared.updateSession(
+                        id: sid,
+                        completedCount: 0,
+                        distanceM: 0,
+                        activeSeconds: 0,
+                        pathGeoJSON: "{\"type\":\"LineString\",\"coordinates\":[]}",
+                        flyersDelivered: 0,
+                        conversations: 0,
+                        leadsCreated: 0,
+                        doorsHit: 0,
+                        isPaused: false,
+                        endTime: Date()
+                    )
+                    print("⚠️ [SessionManager] Delete session failed; closed discarded session instead: \(error)")
+                } catch {
+                    staleActiveSessionNeedsResolution = true
+                    isPaused = true
+                    activeSegmentStartTime = nil
+                    sessionEndError = "Couldn't discard this session. Please try again when you're online."
+                    print("⚠️ [SessionManager] Failed to discard restored session \(sid): \(error)")
+                    return
+                }
+            }
+        }
+
+        await sessionRepository.discardSession(id: sid)
+        await outboxRepository.discardPendingSessionEntries(sessionId: sid)
+        await safetyBeaconService.endSession(location: currentLocation)
+        await sharedLiveCanvassingService.leaveCurrentSession()
+        await liveActivityManager.end()
+        clearActiveSessionStateAfterDiscard()
+        print("🗑️ [SessionManager] Discarded restored session \(sid)")
+    }
+
+    private func clearActiveSessionStateAfterDiscard() {
+        SessionManager.lastEndedSummary = nil
+        SessionManager.lastEndedSessionId = nil
+        SessionManager.lastEndedSummaryMapSnapshot = nil
+        pendingSessionSummary = nil
+        pendingSessionSummarySessionId = nil
+        staleActiveSessionNeedsResolution = false
+        sessionRestoredThisLaunch = false
+        sessionId = nil
+        campaignId = nil
+        routeAssignmentId = nil
+        currentFarmExecutionContext = nil
+        sessionNotes = nil
+        sessionMode = .doorKnocking
+        goalType = .knocks
+        goalAmount = 0
+        isDemoSession = false
+        isActive = false
+        isPaused = false
+        activeSharedLiveSessionId = nil
+        lastSharedLivePresencePeriodicSync = nil
+        currentHeading = 0
+        headingState = .unavailable
+        headingPresentationState = .unavailable
+        headingPresentationEngine.reset()
+        targetBuildings = []
+        resetVisitState()
+        buildingCentroids = [:]
+        pathCoordinates = []
+        distanceMeters = 0
+        elapsedTime = 0
+        activeSecondsAccumulator = 0
+        activeSegmentStartTime = nil
+        pauseStartTime = nil
+        startTime = nil
+        autoCompleteEnabled = false
+        flyersDelivered = 0
+        addressesMarkedDelivered = 0
+        conversationsHad = 0
+        leadsCreated = 0
+        appointmentsSet = 0
+        lastLocation = nil
+        segmentBreaks = []
+        lastSimplifiedCount = 0
+        cachedSimplifiedPath = []
+        conversationAddressIds = []
+        appointmentAddressIds = []
+        progressSyncer.reset()
+        shareCardDoorPinCoordinates = []
+        trailNormalizer = nil
+        scoredVisitEngine = nil
+        streetCoverageVisitEngine = nil
+        flyerTargetIds = []
+        flyerCentroids = [:]
+        onFlyerAddressesCompleted = nil
+        sessionRoadCorridors = []
+        showLongSessionPrompt = false
+        hasShownLongSessionPrompt = false
+        hasAutoEndedLongSession = false
+        sessionEndError = nil
+        locationError = nil
     }
 
     /// Persist active session snapshot when app transitions to background/inactive.
@@ -2022,8 +2211,6 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
 
         let now = Date()
         let activeSeconds = Int(elapsedTime)
-        let doorsHit = effectiveDoorKnockCount
-        let currentFlyersDelivered = leaderboardFlyersDelivered
         guard progressSyncer.shouldSync(
             force: force,
             now: now,
@@ -2359,13 +2546,40 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
             pathGeoJSON: pathGeoJSON,
             pathGeoJSONNormalized: pathGeoJSONNormalized
         )
-        await enqueueSessionProgressOutbox(
+
+        let outboxId = await enqueueSessionProgressOutbox(
             sessionId: sessionId,
             activeSeconds: activeSeconds,
             operation: .endSession,
             pathGeoJSONNormalized: pathGeoJSONNormalized,
             endTime: endTime
         )
+
+        if NetworkMonitor.shared.isOnline {
+            do {
+                try await SessionsAPI.shared.updateSession(
+                    id: sessionId,
+                    completedCount: completedCount,
+                    distanceM: distanceMeters,
+                    activeSeconds: activeSeconds,
+                    pathGeoJSON: pathGeoJSON,
+                    pathGeoJSONNormalized: pathGeoJSONNormalized,
+                    flyersDelivered: flyersDelivered,
+                    conversations: conversationsHad,
+                    leadsCreated: leadsCreated,
+                    doorsHit: doorsHit,
+                    autoCompleteEnabled: autoCompleteEnabled,
+                    isPaused: false,
+                    endTime: endTime
+                )
+                await sessionRepository.markSessionSynced(id: sessionId)
+                if let outboxId {
+                    await outboxRepository.markSynced(id: outboxId)
+                }
+            } catch {
+                print("⚠️ [SessionManager] Direct final session save failed; queued outbox retry: \(error)")
+            }
+        }
     }
 
     /// Flyer mode no longer uses scored road matching, but we keep this setter so other
@@ -2391,7 +2605,8 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
             return
         }
         let distance = location.distance(from: nearest.centroid)
-        guard distance <= autoCompleteThresholdMeters else {
+        let thresholdMeters = adaptiveAutoCompleteThresholdMeters(for: location)
+        guard distance <= thresholdMeters else {
             dwellTracker = [:]
             return
         }
@@ -2428,6 +2643,14 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
                 )
             ]
         }
+    }
+
+    private func adaptiveAutoCompleteThresholdMeters(for location: CLLocation) -> Double {
+        guard location.horizontalAccuracy > 0 else {
+            return autoCompleteThresholdMeters
+        }
+        let scaledAccuracy = location.horizontalAccuracy * 1.2
+        return min(autoCompleteRequiredAccuracyMeters, max(autoCompleteThresholdMeters, scaledAccuracy))
     }
 
     private func findNearestIncompleteBuilding(from location: CLLocation) -> (buildingId: String, centroid: CLLocation)? {
@@ -2968,12 +3191,7 @@ extension SessionManager {
 
     var goalProgressText: String {
         guard goalAmount > 0 else { return goalType.displayName }
-        switch goalType {
-        case .appointments:
-            return appointmentsSet > 0 ? "Appointment booked" : "Appointment goal"
-        default:
-            return "Goal \(goalCurrentValue)/\(goalAmount) \(goalType.progressMetricLabel)"
-        }
+        return "Goal \(goalCurrentValue)/\(goalAmount) \(goalType.progressMetricLabel)"
     }
 
     /// Goal progress (0.0 to 1.0) for the active session goal.

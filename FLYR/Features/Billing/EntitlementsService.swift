@@ -54,6 +54,7 @@ final class EntitlementsService: ObservableObject {
         if Self.forceUnlockAllAccess { return true }
         if databaseProUnlocked { return true }
         if localProUnlocked { return true }
+        if hasCachedWorkspaceAccess { return true }
         guard let e = entitlement else { return false }
         guard e.isActive else { return false }
         let plan = e.plan.lowercased()
@@ -62,6 +63,12 @@ final class EntitlementsService: ObservableObject {
             return periodEnd > Date()
         }
         return true
+    }
+
+    private var hasCachedWorkspaceAccess: Bool {
+        guard WorkspaceContext.shared.workspaceId != nil else { return false }
+        let reason = WorkspaceContext.shared.accessReason?.lowercased() ?? ""
+        return !reason.contains("inactive") && !reason.contains("no-workspace")
     }
 
     /// Layer 1: Call after successful StoreKit purchase or restore. Later replace with verify + fetch.
@@ -82,6 +89,7 @@ final class EntitlementsService: ObservableObject {
             let url = URL(string: "\(requestBaseURL)/api/billing/entitlement")!
             var request = URLRequest(url: url)
             request.httpMethod = "GET"
+            request.timeoutInterval = 8
 
             let (data, http) = try await dataForAuthorizedRequest(request)
 
@@ -131,7 +139,7 @@ final class EntitlementsService: ObservableObject {
             #if DEBUG
             print("⚠️ [Entitlements] access state lookup failed: \(error.localizedDescription)")
             #endif
-            return false
+            return hasCachedWorkspaceAccess
         }
     }
 

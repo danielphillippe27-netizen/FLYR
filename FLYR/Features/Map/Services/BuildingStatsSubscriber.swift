@@ -14,6 +14,7 @@ actor BuildingStatsSubscriber {
     private var useWebSocket = true
     private var lastStats: [String: BuildingStatsUpdate] = [:]
     private var subscribedCampaignId: UUID?
+    private var isSubscribing = false
     
     // MARK: - Callback
     
@@ -38,11 +39,19 @@ actor BuildingStatsSubscriber {
     /// Subscribes to building stats updates for a campaign
     /// - Parameter campaignId: The campaign ID to subscribe to
     func subscribe(campaignId: UUID) async {
-        if subscribedCampaignId == campaignId, channel != nil || pollingTask != nil {
+        if subscribedCampaignId == campaignId, isSubscribing || channel != nil || pollingTask != nil {
             return
         }
         await unsubscribe()
         subscribedCampaignId = campaignId
+        isSubscribing = true
+        defer { isSubscribing = false }
+
+        guard NetworkMonitor.shared.isOnline else {
+            print("📴 BuildingStatsSubscriber: Skipping subscribe while offline for campaign \(campaignId)")
+            subscribedCampaignId = nil
+            return
+        }
 
         // Try WebSocket first
         if useWebSocket {
@@ -55,6 +64,8 @@ actor BuildingStatsSubscriber {
     
     /// Unsubscribes from all updates and cleans up resources
     func unsubscribe() async {
+        isSubscribing = false
+
         // Cancel polling task
         pollingTask?.cancel()
         pollingTask = nil
@@ -65,7 +76,7 @@ actor BuildingStatsSubscriber {
         
         // Unsubscribe from channel
         if let channel = channel {
-            await channel.unsubscribe()
+            await supabase.realtimeV2.removeChannel(channel)
             self.channel = nil
         }
         
@@ -77,16 +88,17 @@ actor BuildingStatsSubscriber {
     // MARK: - Private Methods - WebSocket
     
     private func subscribeWebSocket(campaignId: UUID) async {
-        let channelId = "building-stats-\(campaignId.uuidString)"
+        let channelId = "building-stats-\(campaignId.uuidString)-\(UUID().uuidString)"
         
         // Create channel
         let newChannel = supabase.realtimeV2.channel(channelId)
         
-        // Listen to building_stats changes
+        // Listen to only this campaign's building_stats changes.
         let changeStream = newChannel.postgresChange(
-            InsertAction.self,
+            AnyAction.self,
             schema: "public",
-            table: "building_stats"
+            table: "building_stats",
+            filter: .eq("campaign_id", value: campaignId.uuidString)
         )
         
         // Handle updates in a background task
@@ -95,54 +107,49 @@ actor BuildingStatsSubscriber {
                 await self.handleWebSocketUpdate(change: change)
             }
         }
-        
-        // Also listen to updates
-        let updateStream = newChannel.postgresChange(
-            UpdateAction.self,
-            schema: "public",
-            table: "building_stats"
-        )
-        
-        updateStreamTask = Task {
-            for await change in updateStream {
-                await self.handleWebSocketUpdate(change: change)
-            }
-        }
-        
+
         // Subscribe to channel
         do {
             try await newChannel.subscribeWithError()
+            guard subscribedCampaignId == campaignId, isSubscribing else {
+                await supabase.realtimeV2.removeChannel(newChannel)
+                return
+            }
             self.channel = newChannel
             print("✅ BuildingStatsSubscriber: WebSocket connected for campaign \(campaignId)")
         } catch {
+            guard subscribedCampaignId == campaignId, isSubscribing else {
+                await supabase.realtimeV2.removeChannel(newChannel)
+                return
+            }
             print("⚠️ BuildingStatsSubscriber: WebSocket subscribe failed: \(error). Falling back to polling.")
             useWebSocket = false
             insertStreamTask?.cancel()
             insertStreamTask = nil
             updateStreamTask?.cancel()
             updateStreamTask = nil
+            await supabase.realtimeV2.removeChannel(newChannel)
             await subscribeFallback(campaignId: campaignId)
         }
     }
     
-    private func handleWebSocketUpdate<T>(change: T) async {
-        // Extract data from change (gers_id is string from building_stats table)
-        var gersIdString: String?
-        var status: String?
-        var scansTotal: Int?
-        
-        // Try to parse the change payload
-        if let mirror = Mirror(reflecting: change).children.first(where: { $0.label == "record" })?.value as? [String: Any] {
-            gersIdString = mirror["gers_id"] as? String
-            status = mirror["status"] as? String
-            scansTotal = mirror["scans_total"] as? Int
-        }
-        
-        guard let gersId = gersIdString, !gersId.isEmpty,
-              let status = status,
-              let scansTotal = scansTotal else {
+    private func handleWebSocketUpdate(change: AnyAction) async {
+        let record: [String: AnyJSON]
+        switch change {
+        case .insert(let insert):
+            record = insert.record
+        case .update(let update):
+            record = update.record
+        case .delete:
             return
         }
+        
+        guard let gersId = record["gers_id"]?.stringValue, !gersId.isEmpty,
+              let status = record["status"]?.stringValue else {
+            return
+        }
+        let scansTotal = record["scans_total"]?.intValue
+            ?? Int(record["scans_total"]?.doubleValue ?? 0)
         
         let qrScanned = scansTotal > 0
         
@@ -165,6 +172,11 @@ actor BuildingStatsSubscriber {
         
         pollingTask = Task {
             while !Task.isCancelled {
+                guard NetworkMonitor.shared.isOnline else {
+                    print("📴 BuildingStatsSubscriber: Pausing polling while offline")
+                    return
+                }
+
                 do {
                     // Fetch current stats
                     let stats = try await fetchBuildingStats(campaignId: campaignId)

@@ -3,7 +3,7 @@ import CoreLocation
 
 // MARK: - Overture Address Provider
 
-/// Address provider backed by backend (Lambda + S3) via generate-address-list API.
+/// Address provider backed by the server address lookup API.
 public struct OvertureAddressProvider: AddressProvider {
     private let service = OvertureAddressService.shared
 

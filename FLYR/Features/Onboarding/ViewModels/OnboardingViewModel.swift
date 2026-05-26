@@ -20,7 +20,10 @@ final class OnboardingViewModel: ObservableObject {
         case 2: return response.experienceLevel != nil
         case 3: return response.territoryType != nil
         case 4: return !response.goals.isEmpty
-        case 5: return !response.firstName.isEmpty && !response.lastName.isEmpty
+        case 5:
+            return !response.firstName.isEmpty
+                && !response.lastName.isEmpty
+                && CountryOptions.normalize(response.countryCode) != nil
         case 6: return response.contactPreference != nil
         case 7: return true // Pricing framing – optional
         case 8: return true // Auth
@@ -79,6 +82,7 @@ final class OnboardingViewModel: ObservableObject {
             "full_name": AnyCodable(fullName),
             "first_name": AnyCodable(trimmedFirstName),
             "last_name": AnyCodable(trimmedLastName),
+            "country_code": AnyCodable(CountryOptions.normalize(response.countryCode) ?? ""),
             "contact_preference": AnyCodable(response.contactPreference?.rawValue ?? ""),
             "industry": AnyCodable(response.industry?.rawValue ?? ""),
             "activity_type": AnyCodable(response.activityType?.rawValue ?? ""),

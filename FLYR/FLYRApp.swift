@@ -323,11 +323,11 @@ struct AuthGate: View {
                     guard let userId = newUserId else { return }
                     // Brief delay so Supabase session is fully available before calling redirect API
                     try? await Task.sleep(nanoseconds: 300_000_000) // 0.3s
+                    await routeState.resolveRoute()
                     await uiState.loadAppearancePreference(userID: userId)
                     StoreKitManager.shared.entitlementsService = entitlementsService
                     _ = await entitlementsService.fetchEntitlement()
                     await StoreKitManager.shared.refreshLocalProFromCurrentEntitlements()
-                    await routeState.resolveRoute()
                     #if DEBUG
                     print("🔍 [AuthGate] After sign-in resolveRoute → route: \(routeState.route)")
                     #endif

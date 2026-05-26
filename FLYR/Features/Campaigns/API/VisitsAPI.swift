@@ -247,7 +247,11 @@ final class VisitsAPI {
                 statuses[statusRow.addressId] = statusRow
             }
 
-            await campaignRepository.upsertStatuses(rows: rows)
+            await campaignRepository.upsertStatuses(rows: rows, preserveDirty: true)
+            let dirtyLocalStatuses = await campaignRepository.getDirtyStatuses(campaignId: campaignId)
+            for (addressId, dirtyRow) in dirtyLocalStatuses {
+                statuses[addressId] = dirtyRow
+            }
             
             synchronizedStatusState {
                 cachedStatuses[scope] = statuses
@@ -411,6 +415,8 @@ final class VisitsAPI {
             )
             invalidateStatusCache(campaignId: campaignId)
             cacheStatuses(localRows, scope: StatusFetchScope(campaignId: campaignId, farmCycleNumber: nil))
+            let farmExecutionContext = await MainActor.run { SessionManager.shared.currentFarmExecutionContext }
+            let matchingFarmExecutionContext = farmExecutionContext?.campaignId == campaignId ? farmExecutionContext : nil
 
             let payload = AddressStatusOutboxPayload(
                 campaignId: campaignId.uuidString,
@@ -423,7 +429,8 @@ final class VisitsAPI {
                 sessionEventType: sessionEventType?.rawValue,
                 latitude: location?.coordinate.latitude,
                 longitude: location?.coordinate.longitude,
-                occurredAt: OfflineDateCodec.string(from: now)
+                occurredAt: OfflineDateCodec.string(from: now),
+                farmExecutionContext: matchingFarmExecutionContext.map(OfflineFarmExecutionPayload.init(context:))
             )
 
             if NetworkMonitor.shared.isOnline {
@@ -459,8 +466,24 @@ final class VisitsAPI {
                 entityId: uniqueAddressIds.map(\.uuidString).joined(separator: ","),
                 operation: .upsertAddressStatus,
                 payload: payload,
-                dependencyKey: "address_status:\(campaignId.uuidString.lowercased()):\(uniqueAddressIds.map { $0.uuidString.lowercased() }.joined(separator: ","))"
+                dependencyKey: matchingFarmExecutionContext.map {
+                    "farm_touch:\($0.touchId.uuidString.lowercased())"
+                } ?? "address_status:\(campaignId.uuidString.lowercased()):\(uniqueAddressIds.map { $0.uuidString.lowercased() }.joined(separator: ","))"
             )
+            if let matchingFarmExecutionContext,
+               sessionId != nil {
+                let occurredAt = OfflineDateCodec.date(from: payload.occurredAt) ?? now
+                for addressId in uniqueAddressIds {
+                    await FarmOfflineRepository.shared.recordAddressOutcome(
+                        context: matchingFarmExecutionContext,
+                        addressId: addressId,
+                        status: status,
+                        notes: notes,
+                        occurredAt: occurredAt,
+                        dirty: true
+                    )
+                }
+            }
 
             if NetworkMonitor.shared.isOnline {
                 await MainActor.run {
@@ -594,7 +617,7 @@ final class VisitsAPI {
         }
 
         invalidateStatusCache(campaignId: campaignId)
-        await campaignRepository.upsertStatuses(rows: updatedRows)
+        await campaignRepository.upsertStatuses(rows: updatedRows, preserveDirty: false)
         cacheStatuses(updatedRows, scope: StatusFetchScope(campaignId: campaignId, farmCycleNumber: nil))
         return updatedRows
     }
@@ -642,25 +665,81 @@ final class VisitsAPI {
         occurredAt: String? = nil
     ) async {
         let timestamp = occurredAt ?? ISO8601DateFormatter().string(from: Date())
+        let occurredAtDate = OfflineDateCodec.date(from: timestamp) ?? Date()
+        await FarmOfflineRepository.shared.recordAddressOutcome(
+            context: context,
+            addressId: addressId,
+            status: status,
+            notes: notes,
+            occurredAt: occurredAtDate,
+            dirty: !NetworkMonitor.shared.isOnline
+        )
+
+        guard NetworkMonitor.shared.isOnline else {
+            await outboxRepository.enqueue(
+                entityType: "farm_address_outcome",
+                entityId: "\(context.touchId.uuidString):\(addressId.uuidString)",
+                operation: .recordFarmAddressOutcome,
+                payload: FarmAddressOutcomeOutboxPayload(
+                    farmExecutionContext: OfflineFarmExecutionPayload(context: context),
+                    addressId: addressId.uuidString,
+                    status: status.rawValue,
+                    notes: notes,
+                    occurredAt: timestamp
+                ),
+                dependencyKey: "farm_touch:\(context.touchId.uuidString.lowercased())"
+            )
+            return
+        }
 
         do {
-            _ = try await client
-                .rpc(
-                    "record_farm_address_outcome",
-                    params: [
-                        "p_farm_id": AnyCodable(context.farmId),
-                        "p_farm_touch_id": AnyCodable(context.touchId),
-                        "p_campaign_address_id": AnyCodable(addressId),
-                        "p_status": AnyCodable(status.persistedRPCValue),
-                        "p_notes": AnyCodable(notes ?? ""),
-                        "p_occurred_at": AnyCodable(timestamp)
-                    ]
-                )
-                .execute()
+            try await performRemoteRecordFarmAddressOutcome(
+                context: context,
+                addressId: addressId,
+                status: status,
+                notes: notes,
+                occurredAt: timestamp
+            )
+            await FarmOfflineRepository.shared.markAddressOutcomeSynced(context: context, addressId: addressId)
             invalidateStatusCache(campaignId: context.campaignId)
         } catch {
             debugLog("⚠️ [VisitsAPI] Failed to record explicit farm address outcome: \(error.localizedDescription)")
+            await outboxRepository.enqueue(
+                entityType: "farm_address_outcome",
+                entityId: "\(context.touchId.uuidString):\(addressId.uuidString)",
+                operation: .recordFarmAddressOutcome,
+                payload: FarmAddressOutcomeOutboxPayload(
+                    farmExecutionContext: OfflineFarmExecutionPayload(context: context),
+                    addressId: addressId.uuidString,
+                    status: status.rawValue,
+                    notes: notes,
+                    occurredAt: timestamp
+                ),
+                dependencyKey: "farm_touch:\(context.touchId.uuidString.lowercased())"
+            )
         }
+    }
+
+    func performRemoteRecordFarmAddressOutcome(
+        context: FarmExecutionContext,
+        addressId: UUID,
+        status: AddressStatus,
+        notes: String? = nil,
+        occurredAt: String
+    ) async throws {
+        _ = try await client
+            .rpc(
+                "record_farm_address_outcome",
+                params: [
+                    "p_farm_id": AnyCodable(context.farmId),
+                    "p_farm_touch_id": AnyCodable(context.touchId),
+                    "p_campaign_address_id": AnyCodable(addressId),
+                    "p_status": AnyCodable(status.persistedRPCValue),
+                    "p_notes": AnyCodable(notes ?? ""),
+                    "p_occurred_at": AnyCodable(occurredAt)
+                ]
+            )
+            .execute()
     }
 
     public func flushPending() async {
@@ -998,7 +1077,7 @@ final class VisitsAPI {
             occurredAt: occurredAtString
         )
         if let updatedRow {
-            await campaignRepository.upsertStatuses(rows: [updatedRow])
+            await campaignRepository.upsertStatuses(rows: [updatedRow], preserveDirty: false)
         }
         return updatedRow
     }

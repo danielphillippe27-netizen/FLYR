@@ -7,6 +7,7 @@ struct AccessStateResponse: Codable {
     let role: String?
     let workspaceName: String?
     let workspaceId: String?
+    let industry: String?
     /// When API omits this (e.g. returns workspace + subscription payload), treat as true if we have a workspace.
     let hasAccess: Bool
     let reason: String?
@@ -19,6 +20,7 @@ struct AccessStateResponse: Codable {
         case workspaceNameCamel = "workspaceName"
         case workspaceId = "workspace_id"
         case workspaceIdCamel = "workspaceId"
+        case industry
         case hasAccess = "has_access"
         case hasAccessCamel = "hasAccess"
     }
@@ -32,6 +34,7 @@ struct AccessStateResponse: Codable {
             ?? c.decodeIfPresent(String.self, forKey: .workspaceNameCamel)
         workspaceId = try c.decodeIfPresent(String.self, forKey: .workspaceId)
             ?? c.decodeIfPresent(String.self, forKey: .workspaceIdCamel)
+        industry = try c.decodeIfPresent(String.self, forKey: .industry)
         hasAccess = try c.decodeIfPresent(Bool.self, forKey: .hasAccess)
             ?? c.decodeIfPresent(Bool.self, forKey: .hasAccessCamel)
             ?? true
@@ -44,6 +47,7 @@ struct AccessStateResponse: Codable {
         try c.encodeIfPresent(role, forKey: .role)
         try c.encodeIfPresent(workspaceName, forKey: .workspaceName)
         try c.encodeIfPresent(workspaceId, forKey: .workspaceId)
+        try c.encodeIfPresent(industry, forKey: .industry)
         try c.encode(hasAccess, forKey: .hasAccess)
         try c.encodeIfPresent(reason, forKey: .reason)
     }
@@ -66,6 +70,7 @@ enum OnboardingUseCase: String, Codable {
 struct OnboardingCompleteRequest: Codable {
     var firstName: String?
     var lastName: String?
+    var countryCode: String?
     var workspaceName: String?
     var industry: String?
     var useCase: OnboardingUseCase?
@@ -74,7 +79,7 @@ struct OnboardingCompleteRequest: Codable {
     var brokerageId: String?
 
     enum CodingKeys: String, CodingKey {
-        case firstName, lastName, workspaceName, industry, useCase
+        case firstName, lastName, countryCode, workspaceName, industry, useCase
         case inviteEmails, brokerage, brokerageId
     }
 }

@@ -11,6 +11,10 @@ struct FLYRProfileCard: View {
     private var avatarUrl: String? {
         profile?.profileImageURL ?? profile?.avatarURL
     }
+
+    private var countryFlag: String {
+        CountryOptions.flag(for: profile?.countryCode)
+    }
     
     private var weeklyDistance: Double {
         stats?.distance_walked ?? 0.0
@@ -37,6 +41,11 @@ struct FLYRProfileCard: View {
                     Text(displayName)
                         .font(.flyrTitle2Bold)
                         .foregroundColor(.text)
+
+                    if !countryFlag.isEmpty {
+                        Text(countryFlag)
+                            .font(.system(size: 20))
+                    }
                     
                     // Streaks metric
                     HStack(spacing: 4) {
@@ -104,4 +113,3 @@ struct ProfileStatItem: View {
         .padding()
         .background(Color.bg)
 }
-

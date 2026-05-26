@@ -9,10 +9,10 @@ FLYR is a door-knocking and flyer tracking app for real estate agents and field 
 - **iOS App**: Swift/SwiftUI with Hooks/Stores/Views architecture
 - **Map**: Mapbox Maps SDK (3D fill-extrusion buildings)
 - **Backend**: Supabase Postgres + PostGIS for spatial data
-- **Database**: RPC functions returning GeoJSON FeatureCollections
+- **Database**: Supabase relational state; legacy RPCs can return GeoJSON FeatureCollections
 - **Web API**: Next.js backend at `https://flyrpro.app`
 - **Address Data**: Backend Lambda + S3 (Overture parquet) primary source, Mapbox Geocoding fallback
-- **Building Data**: S3 snapshot (provision) + GET `/api/campaigns/[id]/buildings`; Mapbox for rendering
+- **Building Data**: PMTiles/vector tiles are the strategic render path; S3 GeoJSON snapshots + GET `/api/campaigns/[id]/buildings` are legacy fallback
 - **Integrations**: HubSpot, Monday.com, Follow Up Boss, KVCore, Zapier
 
 ## Core Data Model (High Level)
@@ -90,9 +90,10 @@ users (1) → (many) campaigns
 2. **Provisioning**: App calls `POST /api/campaigns/provision` with `campaign_id`
    - Backend loads polygon from Supabase, calls Tile Lambda; Lambda reads S3 parquet, writes snapshot to S3
    - Backend ingests addresses into `campaign_addresses`, writes `campaign_snapshots`; runs StableLinker + TownhouseSplitter
-   - Building geometry in S3; map fetches via GET `/api/campaigns/[id]/buildings` (and optional `building_units` from Supabase)
+   - Strategic geometry path is a Diamond manifest + PMTiles/vector tiles; S3 GeoJSON building snapshots remain fallback for campaigns without renderable vector geometry
 
-3. **Map Data Loading**: iOS fetches GeoJSON via Supabase RPCs
+3. **Map Data Loading**: iOS prefers a Diamond manifest for PMTiles/vector geometry, then falls back to GeoJSON RPC/API paths
+   - `GET /api/campaigns/[campaignId]/diamond-manifest` → PMTiles/vector tile source contract
    - `rpc_get_campaign_full_features(campaign_id)` → Buildings FeatureCollection (Polygon/MultiPolygon)
    - `rpc_get_campaign_addresses(campaign_id)` → Addresses FeatureCollection (Point)
    - `rpc_get_campaign_roads(campaign_id)` → Roads FeatureCollection (LineString)

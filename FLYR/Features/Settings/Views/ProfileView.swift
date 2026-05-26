@@ -60,6 +60,12 @@ struct ProfileView: View {
                             .font(.callout)
                             .foregroundColor(.blue)
                     }
+
+                    if !countryFlag.isEmpty {
+                        Text("\(countryFlag) \(countryName)")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundColor(.text)
+                    }
                 }
                 .padding(.top, 20)
                 
@@ -85,6 +91,29 @@ struct ProfileView: View {
                             .textFieldStyle(.roundedBorder)
                             .autocapitalization(.words)
                             .disableAutocorrection(true)
+                    }
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Country")
+                            .font(.flyrSubheadline)
+                            .foregroundColor(.text)
+                        Picker("Country", selection: Binding(
+                            get: { viewModel.countryCode ?? "" },
+                            set: { viewModel.countryCode = $0.isEmpty ? nil : $0 }
+                        )) {
+                            Text("Select country").tag("")
+                            ForEach(CountryOptions.all) { country in
+                                Text(country.label).tag(country.code)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 10)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(Color(.secondarySystemBackground))
+                        )
                     }
                     
                     // Quote
@@ -152,6 +181,15 @@ struct ProfileView: View {
             }
         }
     }
+
+    private var countryFlag: String {
+        CountryOptions.flag(for: viewModel.countryCode)
+    }
+
+    private var countryName: String {
+        guard let code = viewModel.countryCode else { return "" }
+        return CountryOptions.all.first(where: { $0.code == code })?.name ?? ""
+    }
 }
 
 #Preview {
@@ -159,5 +197,3 @@ struct ProfileView: View {
         ProfileView()
     }
 }
-
-

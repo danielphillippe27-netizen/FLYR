@@ -362,19 +362,26 @@ extension ShareCardGenerator {
         accessToken: String
     ) -> URL? {
         guard let viewport = snapshotViewport(for: coordinates, size: size) else { return nil }
-        let width = max(Int(size.width), 320)
-        let height = max(Int(size.height), 568)
+        let dimensions = homesMapStaticImageDimensions(for: size)
         let urlString = String(
             format: "https://api.mapbox.com/styles/v1/%@/static/%.6f,%.6f,%.2f,0,42/%dx%d@2x?logo=false&attribution=false&access_token=%@",
             theme.stylePath,
             viewport.center.longitude,
             viewport.center.latitude,
             viewport.zoom,
-            width,
-            height,
+            dimensions.width,
+            dimensions.height,
             accessToken
         )
         return URL(string: urlString)
+    }
+
+    private static func homesMapStaticImageDimensions(for size: CGSize) -> (width: Int, height: Int) {
+        // Mapbox Static Images caps the requested width/height before @2x scaling.
+        // Request half-size with @2x so the exported card still receives a 1080x1920 map bitmap.
+        let width = min(max(Int((size.width / 2).rounded()), 320), 1280)
+        let height = min(max(Int((size.height / 2).rounded()), 568), 1280)
+        return (width, height)
     }
 
     private static func snapshotViewport(

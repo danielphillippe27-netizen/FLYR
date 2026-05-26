@@ -164,7 +164,7 @@ struct SupabaseClientShim {
         let encodableParams = params.mapValues { AnyCodable($0) }
         let response = try await client.rpc(function, params: encodableParams).execute()
         #if DEBUG
-        let mapRPCs = ["rpc_get_campaign_addresses", "rpc_get_campaign_roads", "rpc_get_campaign_full_features"]
+        let mapRPCs = ["rpc_get_campaign_addresses", "rpc_get_campaign_roads", "rpc_get_campaign_full_features", "rpc_get_campaign_parcels", "rpc_get_campaign_map_bundle"]
         if mapRPCs.contains(function) {
             let raw = String(data: response.data, encoding: .utf8) ?? ""
             let preview = String(raw.prefix(2048))
@@ -185,7 +185,7 @@ struct SupabaseClientShim {
         let response = try await client.rpc(function, params: encodableParams).execute()
         
         #if DEBUG
-        let mapRPCs = ["rpc_get_campaign_addresses", "rpc_get_campaign_roads", "rpc_get_campaign_full_features"]
+        let mapRPCs = ["rpc_get_campaign_addresses", "rpc_get_campaign_roads", "rpc_get_campaign_full_features", "rpc_get_campaign_parcels", "rpc_get_campaign_map_bundle"]
         if mapRPCs.contains(function) {
             let raw = String(data: response.data, encoding: .utf8) ?? ""
             let preview = String(raw.prefix(2048))

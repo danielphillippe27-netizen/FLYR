@@ -2,7 +2,6 @@ import Foundation
 import Supabase
 import Combine
 import CoreLocation
-import MapboxMaps
 
 /// Service for fetching and caching building data including address, residents, and QR status
 @MainActor
@@ -17,13 +16,27 @@ class BuildingDataService: ObservableObject {
     private var cache: [String: CachedBuildingData] = [:]
     private let cacheTTL: TimeInterval = 300  // 5 minutes
     private var fetchGeneration = 0
+    private static let addressSelect = """
+        id,
+        house_number,
+        street_name,
+        formatted,
+        locality,
+        region,
+        postal_code,
+        gers_id,
+        building_gers_id,
+        scans,
+        last_scanned_at,
+        qr_code_base64,
+        contact_name,
+        lead_status,
+        product_interest,
+        follow_up_date,
+        raw_transcript,
+        ai_summary
+    """
 
-    private struct AddressFeatureCandidate {
-        let feature: AddressFeature
-        let score: Int
-        let distanceMeters: Double
-    }
-    
     // MARK: - Initialization
     
     init(supabase: SupabaseClient) {
@@ -76,12 +89,23 @@ class BuildingDataService: ObservableObject {
     ///   - addressId: Optional campaign address ID from the tapped feature; when set, we try direct lookup first so the card shows linked state
     ///   - preferredAddressId: When multiple addresses exist, which one to show as primary (e.g. selected from list); nil = show first or list
     ///   - addressTextHint: Address text from the tapped map feature. Used only to disambiguate bad multi-link results.
-    func fetchBuildingData(gersId: String, campaignId: UUID, addressId: UUID? = nil, preferredAddressId: UUID? = nil, addressTextHint: String? = nil) async {
+    ///   - buildingIdentifiers: Additional public/row building IDs from the selected map feature.
+    func fetchBuildingData(
+        gersId: String,
+        campaignId: UUID,
+        addressId: UUID? = nil,
+        preferredAddressId: UUID? = nil,
+        addressTextHint: String? = nil,
+        buildingIdentifiers: [String] = [],
+        linkedAddressIds: [UUID] = []
+    ) async {
         fetchGeneration += 1
         let requestGeneration = fetchGeneration
 
         // Check cache first (include addressId when present so direct lookups are cached)
-        let cacheKey = addressId.map { "\(campaignId.uuidString):addr:\($0.uuidString)" } ?? "\(campaignId.uuidString):\(gersId)"
+        let identifierCacheKey = Self.normalizedIdentifierList([gersId] + buildingIdentifiers).joined(separator: ",")
+        let linkedAddressCacheKey = linkedAddressIds.map { $0.uuidString.lowercased() }.sorted().joined(separator: ",")
+        let cacheKey = addressId.map { "\(campaignId.uuidString):addr:\($0.uuidString):\(identifierCacheKey):\(linkedAddressCacheKey)" } ?? "\(campaignId.uuidString):\(gersId):\(identifierCacheKey):\(linkedAddressCacheKey)"
         if let cached = cache[cacheKey], cached.isValid(ttl: cacheTTL) {
             guard requestGeneration == fetchGeneration else { return }
             if let preferred = preferredAddressId, !cached.data.addresses.isEmpty,
@@ -111,7 +135,8 @@ class BuildingDataService: ObservableObject {
             gersId: gersId,
             campaignId: campaignId,
             addressId: addressId,
-            preferredAddressId: preferredAddressId
+            preferredAddressId: preferredAddressId,
+            buildingIdentifiers: buildingIdentifiers
         )
         guard requestGeneration == fetchGeneration else { return }
         if let localData {
@@ -151,32 +176,14 @@ class BuildingDataService: ObservableObject {
         do {
             var resolvedAddress: CampaignAddressResponse?
             var buildingExists = false
+            var linkedPathAddresses: [CampaignAddressResponse] = []
             var goldPathAddresses: [CampaignAddressResponse] = []
             
             // Step 0: If we have address_id from the tapped feature, try direct lookup first (so we "have the link")
             if let addrId = addressId {
                 let directQuery = supabase
                     .from("campaign_addresses")
-                    .select("""
-                        id,
-                        house_number,
-                        street_name,
-                        formatted,
-                        locality,
-                        region,
-                        postal_code,
-                        gers_id,
-                        building_gers_id,
-                        scans,
-                        last_scanned_at,
-                        qr_code_base64,
-                        contact_name,
-                        lead_status,
-                        product_interest,
-                        follow_up_date,
-                        raw_transcript,
-                        ai_summary
-                    """)
+                    .select(Self.addressSelect)
                     .eq("id", value: addrId.uuidString)
                     .eq("campaign_id", value: campaignId.uuidString)
                 let directResponse = try await directQuery.execute()
@@ -196,31 +203,13 @@ class BuildingDataService: ObservableObject {
                     : "gers_id.eq.\(gersId),building_gers_id.eq.\(gersId),gers_id.eq.\(gersIdLower),building_gers_id.eq.\(gersIdLower)"
                 let addressQuery = supabase
                     .from("campaign_addresses")
-                    .select("""
-                        id,
-                        house_number,
-                        street_name,
-                        formatted,
-                        locality,
-                        region,
-                        postal_code,
-                        gers_id,
-                        building_gers_id,
-                        scans,
-                        last_scanned_at,
-                        qr_code_base64,
-                        contact_name,
-                        lead_status,
-                        product_interest,
-                        follow_up_date,
-                        raw_transcript,
-                        ai_summary
-                    """)
+                    .select(Self.addressSelect)
                     .eq("campaign_id", value: campaignId.uuidString)
                     .or(orFilter)
                 
                 let addressResponse = try await addressQuery.execute()
                 let addresses = try decoder.decode([CampaignAddressResponse].self, from: addressResponse.data)
+                linkedPathAddresses = addresses
                 resolvedAddress = addresses.first
                 buildingExists = resolvedAddress != nil
             }
@@ -229,26 +218,7 @@ class BuildingDataService: ObservableObject {
             if resolvedAddress == nil, UUID(uuidString: gersId) != nil {
                 let goldQuery = supabase
                     .from("campaign_addresses")
-                    .select("""
-                        id,
-                        house_number,
-                        street_name,
-                        formatted,
-                        locality,
-                        region,
-                        postal_code,
-                        gers_id,
-                        building_gers_id,
-                        scans,
-                        last_scanned_at,
-                        qr_code_base64,
-                        contact_name,
-                        lead_status,
-                        product_interest,
-                        follow_up_date,
-                        raw_transcript,
-                        ai_summary
-                    """)
+                    .select(Self.addressSelect)
                     .eq("campaign_id", value: campaignId.uuidString)
                     .eq("building_id", value: gersId)
                 let goldResponse = try await goldQuery.execute()
@@ -260,19 +230,42 @@ class BuildingDataService: ObservableObject {
                 }
             }
             
-            // Step 2: Build the card from direct/gold/local geometry only. Do not hydrate
-            // from building_address_links; legacy Silver links can attach neighboring homes.
+            let persistedLinkedAddresses = try await fetchPersistedLinkedAddresses(
+                campaignId: campaignId,
+                buildingIdentifiers: [gersId] + buildingIdentifiers,
+                decoder: decoder
+            )
+
+            // Step 2: Build the card from persisted building links first, then fall back
+            // to direct/gold/local geometry paths for legacy or partially cached data.
             var allAddressResponses: [CampaignAddressResponse] = []
+            if allAddressResponses.isEmpty, !persistedLinkedAddresses.isEmpty {
+                allAddressResponses = persistedLinkedAddresses
+            }
+            if allAddressResponses.isEmpty, !linkedPathAddresses.isEmpty {
+                allAddressResponses = linkedPathAddresses
+            }
             if allAddressResponses.isEmpty, !goldPathAddresses.isEmpty {
                 allAddressResponses = goldPathAddresses
             }
             if allAddressResponses.isEmpty, let single = resolvedAddress {
                 allAddressResponses = [single]
             }
+            if allAddressResponses.isEmpty, !linkedAddressIds.isEmpty {
+                let linkedIdStrings = linkedAddressIds.map(\.uuidString)
+                let linkedAddressesResponse = try await supabase
+                    .from("campaign_addresses")
+                    .select(Self.addressSelect)
+                    .eq("campaign_id", value: campaignId.uuidString)
+                    .in("id", values: linkedIdStrings)
+                    .execute()
+                allAddressResponses = try decoder.decode([CampaignAddressResponse].self, from: linkedAddressesResponse.data)
+            }
             if let localResolution = await resolveLocalAddressResolution(
                 gersId: gersId,
                 campaignId: campaignId,
-                addressId: addressId
+                addressId: addressId,
+                buildingIdentifiers: buildingIdentifiers
             ),
                !allAddressResponses.isEmpty,
                !localResolution.matchedAddressIDs.isEmpty {
@@ -302,13 +295,20 @@ class BuildingDataService: ObservableObject {
                 preferredAddressId: preferredAddressId,
                 requestedAddressId: addressId
             )
+            allAddressResponses = Self.enforceOneAddressPerBuilding(
+                allAddressResponses,
+                linkedAddressIds: linkedAddressIds,
+                preferredAddressId: preferredAddressId,
+                requestedAddressId: addressId
+            )
             allAddressResponses = Self.sortAddressesForDisplay(allAddressResponses)
             if allAddressResponses.isEmpty,
                let localData = await loadLocalBuildingData(
                     gersId: gersId,
                     campaignId: campaignId,
                     addressId: addressId,
-                    preferredAddressId: preferredAddressId
+                    preferredAddressId: preferredAddressId,
+                    buildingIdentifiers: buildingIdentifiers
                ) {
                 guard requestGeneration == fetchGeneration else { return }
                 buildingData = localData
@@ -376,7 +376,8 @@ class BuildingDataService: ObservableObject {
                 gersId: gersId,
                 campaignId: campaignId,
                 addressId: addressId,
-                preferredAddressId: preferredAddressId
+                preferredAddressId: preferredAddressId,
+                buildingIdentifiers: buildingIdentifiers
             ) {
                 guard requestGeneration == fetchGeneration else { return }
                 buildingData = localData
@@ -445,6 +446,44 @@ class BuildingDataService: ObservableObject {
 
         let exactMatches = addresses.filter { normalizedAddressIdentity(for: $0) == hintIdentity }
         return exactMatches.count == 1 ? exactMatches : addresses
+    }
+
+    private static func enforceOneAddressPerBuilding(
+        _ addresses: [CampaignAddressResponse],
+        linkedAddressIds: [UUID],
+        preferredAddressId: UUID?,
+        requestedAddressId: UUID?
+    ) -> [CampaignAddressResponse] {
+        guard addresses.count > 1 else { return addresses }
+
+        let priorityIds = Set([preferredAddressId, requestedAddressId].compactMap { $0 })
+        if !priorityIds.isEmpty {
+            let priorityMatches = addresses.filter { priorityIds.contains($0.id) }
+            if !priorityMatches.isEmpty {
+                return priorityMatches
+            }
+        }
+
+        let explicitLinkedIds = Set(linkedAddressIds)
+        if explicitLinkedIds.count == 1,
+           let onlyLinkedId = explicitLinkedIds.first,
+           let linkedAddress = addresses.first(where: { $0.id == onlyLinkedId }) {
+            return [linkedAddress]
+        }
+        if explicitLinkedIds.count > 1 {
+            let linkedAddresses = addresses.filter { explicitLinkedIds.contains($0.id) }
+            if !linkedAddresses.isEmpty {
+                return linkedAddresses
+            }
+        }
+
+        let labels = addresses
+            .prefix(6)
+            .map { ($0.formatted ?? "\($0.houseNumber ?? "") \($0.streetName ?? "")").trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: ", ")
+        print("⚠️ [BuildingDataService] Suppressed \(addresses.count) addresses for one building: \(labels)")
+        return []
     }
     /// Fetches contacts for a given address ID
     /// - Parameter addressId: The address ID to fetch contacts for
@@ -562,6 +601,127 @@ class BuildingDataService: ObservableObject {
         return (number, suffix, normalized)
     }
 
+    private static func normalizedIdentifierList(_ identifiers: [String]) -> [String] {
+        var seen = Set<String>()
+        return identifiers.compactMap { rawValue in
+            let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard !value.isEmpty, seen.insert(value).inserted else { return nil }
+            return value
+        }
+    }
+
+    private struct PersistedBuildingAddressLinkRow: Decodable {
+        let addressId: String
+
+        enum CodingKeys: String, CodingKey {
+            case addressId = "address_id"
+        }
+    }
+
+    private struct PersistedBuildingIdentityRow: Decodable {
+        let id: String
+        let gersId: String?
+
+        enum CodingKeys: String, CodingKey {
+            case id
+            case gersId = "gers_id"
+        }
+    }
+
+    private func fetchPersistedLinkedAddresses(
+        campaignId: UUID,
+        buildingIdentifiers: [String],
+        decoder: JSONDecoder
+    ) async throws -> [CampaignAddressResponse] {
+        let identifiers = Self.normalizedIdentifierList(buildingIdentifiers)
+        guard !identifiers.isEmpty else { return [] }
+
+        var buildingRowIds = Set(
+            identifiers.compactMap { identifier -> String? in
+                UUID(uuidString: identifier)?.uuidString.lowercased()
+            }
+        )
+        var directBuildingIdentifiers = Set(identifiers)
+
+        if !buildingRowIds.isEmpty {
+            let rowsResponse = try await supabase
+                .from("buildings")
+                .select("id, gers_id")
+                .eq("campaign_id", value: campaignId.uuidString)
+                .in("id", values: Array(buildingRowIds))
+                .execute()
+            let rows = try decoder.decode([PersistedBuildingIdentityRow].self, from: rowsResponse.data)
+            buildingRowIds.formUnion(rows.map { $0.id.lowercased() })
+            directBuildingIdentifiers.formUnion(rows.compactMap { $0.gersId?.lowercased() })
+        }
+
+        let gersResponse = try await supabase
+            .from("buildings")
+            .select("id, gers_id")
+            .eq("campaign_id", value: campaignId.uuidString)
+            .in("gers_id", values: identifiers)
+            .execute()
+        let gersRows = try decoder.decode([PersistedBuildingIdentityRow].self, from: gersResponse.data)
+        buildingRowIds.formUnion(gersRows.map { $0.id.lowercased() })
+        directBuildingIdentifiers.formUnion(buildingRowIds)
+        directBuildingIdentifiers.formUnion(gersRows.compactMap { $0.gersId?.lowercased() })
+
+        var linkedAddressIds: [String] = []
+        if !buildingRowIds.isEmpty {
+            let linksResponse = try await supabase
+                .from("building_address_links")
+                .select("address_id")
+                .eq("campaign_id", value: campaignId.uuidString)
+                .in("building_id", values: Array(buildingRowIds))
+                .execute()
+            let links = try decoder.decode([PersistedBuildingAddressLinkRow].self, from: linksResponse.data)
+            linkedAddressIds.append(contentsOf: Self.normalizedIdentifierList(links.map(\.addressId)))
+        }
+
+        var addressRowsById: [UUID: CampaignAddressResponse] = [:]
+        if !linkedAddressIds.isEmpty {
+            let addressesResponse = try await supabase
+                .from("campaign_addresses")
+                .select(Self.addressSelect)
+                .eq("campaign_id", value: campaignId.uuidString)
+                .in("id", values: linkedAddressIds)
+                .execute()
+            for address in try decoder.decode([CampaignAddressResponse].self, from: addressesResponse.data) {
+                addressRowsById[address.id] = address
+            }
+        }
+
+        if !directBuildingIdentifiers.isEmpty {
+            let directValues = Array(directBuildingIdentifiers)
+            let directGersResponse = try await supabase
+                .from("campaign_addresses")
+                .select(Self.addressSelect)
+                .eq("campaign_id", value: campaignId.uuidString)
+                .in("building_gers_id", values: directValues)
+                .execute()
+            for address in try decoder.decode([CampaignAddressResponse].self, from: directGersResponse.data) {
+                addressRowsById[address.id] = address
+            }
+        }
+
+        let uuidDirectValues = Array(
+            directBuildingIdentifiers.compactMap { UUID(uuidString: $0)?.uuidString.lowercased() }
+        )
+        if !uuidDirectValues.isEmpty {
+            let directBuildingIdResponse = try await supabase
+                .from("campaign_addresses")
+                .select(Self.addressSelect)
+                .eq("campaign_id", value: campaignId.uuidString)
+                .in("building_id", values: uuidDirectValues)
+                .execute()
+            for address in try decoder.decode([CampaignAddressResponse].self, from: directBuildingIdResponse.data) {
+                addressRowsById[address.id] = address
+            }
+        }
+
+        return Self.sortAddressesForDisplay(Array(addressRowsById.values))
+    }
+
     private struct LocalAddressResolution {
         let buildingFeature: BuildingFeature?
         let resolvedAddresses: [ResolvedAddress]
@@ -571,21 +731,22 @@ class BuildingDataService: ObservableObject {
     private func resolveLocalAddressResolution(
         gersId: String,
         campaignId: UUID,
-        addressId: UUID?
+        addressId: UUID?,
+        buildingIdentifiers: [String] = []
     ) async -> LocalAddressResolution? {
         guard let bundle = await CampaignRepository.shared.getCampaignMapBundle(campaignId: campaignId.uuidString) else {
             return nil
         }
 
-        let normalizedGersId = gersId.lowercased()
+        let normalizedIdentifiers = Set(Self.normalizedIdentifierList([gersId] + buildingIdentifiers))
         let buildingFeature = bundle.buildings.features.first { feature in
-            if feature.id?.lowercased() == normalizedGersId {
+            if let featureId = feature.id?.lowercased(), normalizedIdentifiers.contains(featureId) {
                 return true
             }
-            return feature.properties.buildingIdentifierCandidates.contains(where: { $0.lowercased() == normalizedGersId })
+            return feature.properties.buildingIdentifierCandidates.contains(where: { normalizedIdentifiers.contains($0.lowercased()) })
         }
 
-        var buildingCandidates = Set([normalizedGersId])
+        var buildingCandidates = normalizedIdentifiers
         if let buildingFeature {
             buildingCandidates.formUnion(buildingFeature.properties.buildingIdentifierCandidates.map { $0.lowercased() })
         }
@@ -606,16 +767,26 @@ class BuildingDataService: ObservableObject {
             return false
         }
 
+        let persistedBuildingMatches = bundle.addresses.features.filter { feature in
+            let addressBuildingIdentifiers = [
+                feature.properties.buildingGersId,
+                feature.properties.gersId
+            ]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+
+            return addressBuildingIdentifiers.contains(where: { buildingCandidates.contains($0) })
+        }
+
         let matchedFeatures: [AddressFeature]
         if addressId != nil, !explicitMatches.isEmpty {
             matchedFeatures = explicitMatches
-        } else if let buildingFeature {
-            let spatialMatches = inferSpatialAddressFeatures(
-                for: buildingFeature,
-                in: bundle.addresses.features
-            )
-            // Containment is the strongest local signal; direct IDs are only a fallback.
-            matchedFeatures = spatialMatches.isEmpty ? explicitMatches : spatialMatches
+        } else if !persistedBuildingMatches.isEmpty {
+            matchedFeatures = persistedBuildingMatches
+        } else if buildingFeature != nil {
+            // Only persisted address/building assignments may populate a home.
+            // Geometry can overlap row-home address points, so display-time spatial inference
+            // would create hidden links that were never saved by campaign provisioning.
+            matchedFeatures = explicitMatches
         } else if !explicitMatches.isEmpty {
             matchedFeatures = explicitMatches
         } else {
@@ -642,192 +813,18 @@ class BuildingDataService: ObservableObject {
         )
     }
 
-    private func inferSpatialAddressFeatures(
-        for buildingFeature: BuildingFeature,
-        in addressFeatures: [AddressFeature]
-    ) -> [AddressFeature] {
-        let polygons = polygons(from: buildingFeature.geometry)
-        guard !polygons.isEmpty else { return [] }
-
-        let insideCandidates = addressFeatures.compactMap { feature -> AddressFeatureCandidate? in
-            guard let point = coordinate(from: feature.geometry) else { return nil }
-            let inside = polygons.contains { BuildingGeometryHelpers.pointInPolygon(point, polygon: $0) }
-            guard inside else { return nil }
-
-            let centroidDistance = polygons.compactMap {
-                BuildingGeometryHelpers.distanceToPolygonCentroid(point, polygon: $0)
-            }.min() ?? .greatestFiniteMagnitude
-
-            return AddressFeatureCandidate(feature: feature, score: 1000 - Int(min(centroidDistance.rounded(), 300)), distanceMeters: centroidDistance)
-        }
-
-        if !insideCandidates.isEmpty {
-            return sortedAddressCandidates(insideCandidates)
-        }
-
-        let buildingStreet = normalizedStreetHint(for: buildingFeature.properties)
-        let buildingHouse = normalizedHouseHint(for: buildingFeature.properties)
-        let polygonRadius = max(polygons.compactMap(approximatePolygonRadiusMeters).max() ?? 0, 10)
-
-        let fallbackCandidates = addressFeatures.compactMap { feature -> AddressFeatureCandidate? in
-            guard let point = coordinate(from: feature.geometry) else { return nil }
-            let centroidDistance = polygons.compactMap {
-                BuildingGeometryHelpers.distanceToPolygonCentroid(point, polygon: $0)
-            }.min() ?? .greatestFiniteMagnitude
-
-            let featureStreet = normalizedStreetHint(for: feature.properties)
-            let featureHouse = normalizedHouseHint(for: feature.properties)
-            let sameStreet = !buildingStreet.isEmpty && !featureStreet.isEmpty && buildingStreet == featureStreet
-            let sameHouse = !buildingHouse.isEmpty && !featureHouse.isEmpty && buildingHouse == featureHouse
-
-            let isPlausibleMatch =
-                (sameStreet && sameHouse) ||
-                (buildingStreet.isEmpty && centroidDistance <= min(polygonRadius + 8, 20))
-
-            guard isPlausibleMatch else { return nil }
-
-            let score =
-                (sameStreet ? 120 : 0) +
-                (sameHouse ? 40 : 0) -
-                Int(min(centroidDistance.rounded(), 300))
-
-            return AddressFeatureCandidate(feature: feature, score: score, distanceMeters: centroidDistance)
-        }
-
-        return sortedAddressCandidates(fallbackCandidates)
-    }
-
-    private func sortedAddressCandidates(_ candidates: [AddressFeatureCandidate]) -> [AddressFeature] {
-        candidates
-            .sorted {
-                if $0.score != $1.score { return $0.score > $1.score }
-                return $0.distanceMeters < $1.distanceMeters
-            }
-            .map(\.feature)
-    }
-
-    private func polygons(from geometry: MapFeatureGeoJSONGeometry) -> [Polygon] {
-        if let rawPolygon = geometry.asPolygon {
-            let ring = rawPolygon.first?.compactMap(makeCoordinate(from:)) ?? []
-            if ring.count >= 3 {
-                return [Polygon([ring])]
-            }
-        }
-
-        if let rawMultiPolygon = geometry.asMultiPolygon {
-            return rawMultiPolygon.compactMap { polygon in
-                let ring = polygon.first?.compactMap(makeCoordinate(from:)) ?? []
-                guard ring.count >= 3 else { return nil }
-                return Polygon([ring])
-            }
-        }
-
-        return []
-    }
-
-    private func coordinate(from geometry: MapFeatureGeoJSONGeometry) -> CLLocationCoordinate2D? {
-        guard let point = geometry.asPoint, point.count >= 2 else { return nil }
-        return CLLocationCoordinate2D(latitude: point[1], longitude: point[0])
-    }
-
-    private func makeCoordinate(from raw: [Double]) -> CLLocationCoordinate2D? {
-        guard raw.count >= 2 else { return nil }
-        return CLLocationCoordinate2D(latitude: raw[1], longitude: raw[0])
-    }
-
-    private func approximatePolygonRadiusMeters(_ polygon: Polygon) -> Double? {
-        guard let centroid = BuildingGeometryHelpers.polygonCentroid(polygon),
-              let ring = polygon.coordinates.first,
-              !ring.isEmpty else {
-            return nil
-        }
-
-        let centroidLocation = CLLocation(latitude: centroid.latitude, longitude: centroid.longitude)
-        let maxDistance = ring.reduce(0.0) { partial, coordinate in
-            let point = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
-            return max(partial, centroidLocation.distance(from: point))
-        }
-        return maxDistance
-    }
-
-    private func normalizedStreetHint(for properties: BuildingProperties) -> String {
-        if let streetName = normalizedStreetText(properties.streetName) {
-            return streetName
-        }
-        return normalizedStreetText(properties.addressText) ?? ""
-    }
-
-    private func normalizedStreetHint(for properties: AddressProperties) -> String {
-        if let streetName = normalizedStreetText(properties.streetName) {
-            return streetName
-        }
-        return normalizedStreetText(properties.formatted) ?? ""
-    }
-
-    private func normalizedHouseHint(for properties: BuildingProperties) -> String {
-        if let normalized = normalizedHouseText(properties.houseNumber) {
-            return normalized
-        }
-        return normalizedHouseText(properties.addressText) ?? ""
-    }
-
-    private func normalizedHouseHint(for properties: AddressProperties) -> String {
-        normalizedHouseText(properties.houseNumber) ?? normalizedHouseText(properties.formatted) ?? ""
-    }
-
-    private func normalizedStreetText(_ value: String?) -> String? {
-        let raw = (value ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !raw.isEmpty else { return nil }
-
-        let streetOnly = raw
-            .split(separator: ",", maxSplits: 1, omittingEmptySubsequences: true)
-            .first
-            .map(String.init) ?? raw
-
-        let withoutHouseNumber = streetOnly.replacingOccurrences(
-            of: #"^\s*\d+[A-Za-z\-]*\s+"#,
-            with: "",
-            options: .regularExpression
-        )
-
-        let normalized = withoutHouseNumber
-            .lowercased()
-            .replacingOccurrences(of: #"[^a-z0-9]+"#, with: " ", options: .regularExpression)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-
-        return normalized.isEmpty ? nil : normalized
-    }
-
-    private func normalizedHouseText(_ value: String?) -> String? {
-        let raw = (value ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !raw.isEmpty else { return nil }
-
-        let candidate = raw
-            .split(separator: ",", maxSplits: 1, omittingEmptySubsequences: true)
-            .first
-            .map(String.init) ?? raw
-
-        guard let match = candidate.range(of: #"^\s*\d+[A-Za-z\-]*"#, options: .regularExpression) else {
-            return nil
-        }
-
-        let normalized = candidate[match]
-            .lowercased()
-            .replacingOccurrences(of: #"[^a-z0-9]+"#, with: "", options: .regularExpression)
-
-        return normalized.isEmpty ? nil : normalized
-    }
-
     private func loadLocalBuildingData(
         gersId: String,
         campaignId: UUID,
         addressId: UUID?,
-        preferredAddressId: UUID?
+        preferredAddressId: UUID?,
+        buildingIdentifiers: [String] = []
     ) async -> BuildingData? {
         guard let localResolution = await resolveLocalAddressResolution(
             gersId: gersId,
             campaignId: campaignId,
-            addressId: addressId
+            addressId: addressId,
+            buildingIdentifiers: buildingIdentifiers
         ) else {
             return nil
         }

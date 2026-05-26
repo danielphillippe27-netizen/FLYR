@@ -8,7 +8,6 @@ struct SessionStartView: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var entitlementsService: EntitlementsService
     @EnvironmentObject private var uiState: AppUIState
-    @StateObject private var authManager = AuthManager.shared
     @ObservedObject private var workspaceContext = WorkspaceContext.shared
 
     /// When false, Cancel button is hidden (e.g. when used as Record tab root).
@@ -19,14 +18,16 @@ struct SessionStartView: View {
 
     // Data loading
     @State private var campaigns: [CampaignV2] = []
-    @State private var farms: [Farm] = []
     @State private var routeAssignments: [RouteAssignmentSummary] = []
     @State private var isLoadingData: Bool = false
     @State private var isFetchingData: Bool = false
     @State private var lastFetchTime: Date?
 
-    /// Show at most this many items before "More" menu
-    private let maxVisibleItems = 3
+    /// Show at most this many campaigns before the "More" menu.
+    private let maxVisibleCampaignItems = 5
+
+    /// Show at most this many route items before the "More" menu.
+    private let maxVisibleRouteItems = 3
 
     /// Campaign chosen to open directly in map.
     @State private var mapCampaign: CampaignV2?
@@ -39,7 +40,6 @@ struct SessionStartView: View {
     @State private var routeDetailAssignmentSheetItem: SessionRouteAssignmentDetailSheetItem?
     @State private var openingRouteAssignmentId: UUID?
     @State private var routeOpenErrorMessage: String?
-    @State private var plannerFarm: Farm?
 
     var body: some View {
         NavigationStack {
@@ -68,14 +68,6 @@ struct SessionStartView: View {
             }
             .navigationDestination(isPresented: $showNetworkingSession) {
                 NetworkingSessionView()
-            }
-            .navigationDestination(item: $plannerFarm) { farm in
-                FarmTouchPlannerView(
-                    farmId: farm.id,
-                    onStartSession: { context in
-                        uiState.beginPlannedFarmExecution(context)
-                    }
-                )
             }
             .sheet(isPresented: $showPaywall) {
                 PaywallView()
@@ -106,12 +98,6 @@ struct SessionStartView: View {
             VStack(alignment: .leading, spacing: 24) {
                 sessionActionButtons
                 campaignList
-                if !isLoadingData {
-                    farmsList
-                }
-                if !isLoadingData {
-                    routesList
-                }
                 Spacer()
             }
             .padding(.vertical)
@@ -220,8 +206,8 @@ struct SessionStartView: View {
                     .frame(maxWidth: .infinity)
                     .padding()
             } else {
-                let visible = Array(campaigns.prefix(maxVisibleItems))
-                let remaining = Array(campaigns.dropFirst(maxVisibleItems))
+                let visible = Array(campaigns.prefix(maxVisibleCampaignItems))
+                let remaining = Array(campaigns.dropFirst(maxVisibleCampaignItems))
 
                 ForEach(visible) { campaign in
                     Button {
@@ -265,69 +251,6 @@ struct SessionStartView: View {
         routeAssignments.filter { $0.status.lowercased() != "completed" }
     }
 
-    private var farmsForStartSession: [Farm] {
-        farms
-            .filter(\.isActive)
-            .sorted { lhs, rhs in
-                if lhs.createdAt != rhs.createdAt {
-                    return lhs.createdAt > rhs.createdAt
-                }
-                return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
-            }
-    }
-
-    private var farmsList: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("FARMS")
-                .font(.flyrHeadline)
-                .foregroundColor(.secondary)
-
-            if farmsForStartSession.isEmpty {
-                Text("No active farms available")
-                    .foregroundColor(.secondary)
-                    .frame(maxWidth: .infinity)
-                    .padding()
-            } else {
-                let visible = Array(farmsForStartSession.prefix(maxVisibleItems))
-                let remaining = Array(farmsForStartSession.dropFirst(maxVisibleItems))
-
-                ForEach(visible) { farm in
-                    Button {
-                        openFarm(farm)
-                    } label: {
-                        farmRow(farm)
-                    }
-                    .buttonStyle(.plain)
-                }
-
-                if !remaining.isEmpty {
-                    Menu {
-                        ForEach(remaining) { farm in
-                            Button(farm.name) {
-                                openFarm(farm)
-                            }
-                        }
-                    } label: {
-                        HStack {
-                            Text("More (\(remaining.count) more)")
-                                .font(.flyrHeadline)
-                                .foregroundColor(.primary)
-                            Spacer()
-                            Image(systemName: "chevron.down")
-                                .font(.flyrCaption)
-                                .foregroundColor(.secondary)
-                        }
-                        .padding()
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(RoundedRectangle(cornerRadius: 12).fill(Color(.systemGray6)))
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-        }
-        .padding(.horizontal)
-    }
-
     private var routesList: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("ROUTES")
@@ -340,8 +263,8 @@ struct SessionStartView: View {
                     .frame(maxWidth: .infinity)
                     .padding()
             } else {
-                let visible = Array(routesForStartSession.prefix(maxVisibleItems))
-                let remaining = Array(routesForStartSession.dropFirst(maxVisibleItems))
+                let visible = Array(routesForStartSession.prefix(maxVisibleRouteItems))
+                let remaining = Array(routesForStartSession.dropFirst(maxVisibleRouteItems))
 
                 ForEach(visible) { route in
                     Button {
@@ -458,51 +381,12 @@ struct SessionStartView: View {
         )
     }
 
-    private func farmRow(_ farm: Farm) -> some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(farm.name)
-                    .font(.flyrHeadline)
-
-                HStack(spacing: 12) {
-                    Label("\(farm.addressCount ?? 0)", systemImage: "house.fill")
-                        .font(.flyrCaption)
-                        .foregroundColor(.secondary)
-
-                    Text("Active")
-                        .font(.flyrCaption)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 2)
-                        .background(Color.green.opacity(0.2))
-                        .foregroundColor(.green)
-                        .cornerRadius(4)
-                }
-            }
-
-            Spacer()
-
-            Image(systemName: "chevron.right")
-                .font(.flyrCaption)
-                .foregroundColor(.secondary)
-        }
-        .padding()
-        .background(
-            RoundedRectangle(cornerRadius: 12)
-                .fill(Color(.systemGray6))
-        )
-    }
-
     // MARK: - Helpers
 
     private func openCampaign(_ campaign: CampaignV2) {
         HapticManager.light()
         mapCampaign = campaign
         showCampaignMap = true
-    }
-
-    private func openFarm(_ farm: Farm) {
-        HapticManager.light()
-        plannerFarm = farm
     }
 
     private func openRoute(_ route: RouteAssignmentSummary) async {
@@ -512,7 +396,8 @@ struct SessionStartView: View {
 
         do {
             let detail = try await RouteAssignmentsAPI.shared.fetchAssignmentDetail(assignmentId: route.id)
-            await openResolvedRoute(
+            await SessionStartCacheRepository.shared.upsertRouteAssignmentDetail(detail)
+            openResolvedRoute(
                 context: RouteWorkContext(detail: detail),
                 campaignId: detail.campaignId,
                 routeName: detail.displayPlanName,
@@ -520,17 +405,36 @@ struct SessionStartView: View {
             )
         } catch {
             let originalError = error
+            if let detail = await SessionStartCacheRepository.shared.getCachedRouteAssignmentDetail(assignmentId: route.id) {
+                openResolvedRoute(
+                    context: RouteWorkContext(detail: detail),
+                    campaignId: detail.campaignId,
+                    routeName: detail.displayPlanName,
+                    fallbackAssignmentId: route.id
+                )
+                return
+            }
             do {
                 let planDetail = try await RoutePlansAPI.shared.fetchRoutePlanDetail(routePlanId: route.routePlanId)
-                await openResolvedRoute(
+                await SessionStartCacheRepository.shared.upsertRoutePlanDetail(planDetail)
+                openResolvedRoute(
                     context: RouteWorkContext(assignment: route, planDetail: planDetail),
                     campaignId: planDetail.campaignId,
                     routeName: RouteAssignmentSummary.displayName(fromRoutePlanName: planDetail.name),
                     fallbackAssignmentId: route.id
                 )
             } catch {
-                await MainActor.run {
-                    routeOpenErrorMessage = originalError.localizedDescription
+                if let planDetail = await SessionStartCacheRepository.shared.getCachedRoutePlanDetail(routePlanId: route.routePlanId) {
+                    openResolvedRoute(
+                        context: RouteWorkContext(assignment: route, planDetail: planDetail),
+                        campaignId: planDetail.campaignId,
+                        routeName: RouteAssignmentSummary.displayName(fromRoutePlanName: planDetail.name),
+                        fallbackAssignmentId: route.id
+                    )
+                } else {
+                    await MainActor.run {
+                        routeOpenErrorMessage = originalError.localizedDescription
+                    }
                 }
             }
         }
@@ -595,9 +499,8 @@ struct SessionStartView: View {
         }
 
         async let campaignsDone: Void = loadCampaigns()
-        async let farmsDone: Void = loadFarms()
         async let routesDone: Void = loadRoutes()
-        _ = await (campaignsDone, farmsDone, routesDone)
+        _ = await (campaignsDone, routesDone)
     }
 
     private func loadCampaigns() async {
@@ -616,7 +519,14 @@ struct SessionStartView: View {
     }
 
     private func loadRoutes() async {
-        guard let workspaceId = await RoutePlansAPI.shared.resolveWorkspaceId(preferred: WorkspaceContext.shared.workspaceId) else {
+        let preferredWorkspaceId = WorkspaceContext.shared.workspaceId
+        if !NetworkMonitor.shared.isOnline, let preferredWorkspaceId {
+            let cached = await SessionStartCacheRepository.shared.getCachedRouteAssignments(workspaceId: preferredWorkspaceId)
+            routeAssignments = cached
+            return
+        }
+
+        guard let workspaceId = await RoutePlansAPI.shared.resolveWorkspaceId(preferred: preferredWorkspaceId) else {
             routeAssignments = []
             return
         }
@@ -624,32 +534,18 @@ struct SessionStartView: View {
         do {
             let result = try await RouteAssignmentsAPI.shared.fetchAssignments(workspaceId: workspaceId)
             routeAssignments = result.assignments
+            await SessionStartCacheRepository.shared.upsertRouteAssignments(result.assignments, workspaceId: workspaceId)
         } catch {
             if (error as NSError).code == NSURLErrorCancelled {
                 return
             }
             do {
                 routeAssignments = try await RoutePlansAPI.shared.fetchMyAssignedRoutes(workspaceId: workspaceId)
+                await SessionStartCacheRepository.shared.upsertRouteAssignments(routeAssignments, workspaceId: workspaceId)
             } catch {
-                routeAssignments = []
+                let cached = await SessionStartCacheRepository.shared.getCachedRouteAssignments(workspaceId: workspaceId)
+                routeAssignments = cached
             }
-        }
-    }
-
-    private func loadFarms() async {
-        guard let userId = await MainActor.run(body: { authManager.user?.id }) else {
-            farms = []
-            return
-        }
-
-        do {
-            farms = try await FarmService.shared.fetchFarms(userID: userId)
-        } catch {
-            if (error as NSError).code == NSURLErrorCancelled {
-                return
-            }
-            print("❌ Failed to load farms: \(error)")
-            farms = []
         }
     }
 

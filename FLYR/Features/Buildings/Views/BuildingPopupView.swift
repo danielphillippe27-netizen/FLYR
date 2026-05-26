@@ -221,22 +221,28 @@ final class BuildingPopupView: UIView {
         var statusColor: UIColor
         
         if canShowScans && scans > 0 {
-            statusText = "📱 QR Scanned (\(scans))"
-            statusColor = UIColor(hex: "#8b5cf6")! // Purple
+            statusText = "QR code (\(scans))"
+            statusColor = MapStatusColor.qrScanned
         } else {
             switch status {
             case "hot":
-                statusText = "🔥 Hot Lead"
-                statusColor = UIColor(hex: "#facc15")! // Gold
-            case "lead", "appointment", "future_seller", "hot_lead":
-                statusText = "🔥 Lead"
-                statusColor = UIColor(hex: "#facc15")! // Gold
+                statusText = "Talked"
+                statusColor = MapStatusColor.conversations
+            case "lead", "hot_lead":
+                statusText = "Lead"
+                statusColor = MapStatusColor.lead
+            case "appointment", "future_seller", "follow_up":
+                statusText = "Appointment / follow up"
+                statusColor = MapStatusColor.hotLead
+            case "no_answer":
+                statusText = "Attempted"
+                statusColor = MapStatusColor.noOneHome
             case "visited":
-                statusText = "✅ Visited"
-                statusColor = UIColor(hex: "#22c55e")! // Green
+                statusText = "Visited"
+                statusColor = MapStatusColor.touched
             default:
-                statusText = "⚪ Not Visited"
-                statusColor = UIColor(hex: "#ef4444")! // Red
+                statusText = "Not visited"
+                statusColor = MapStatusColor.untouched
             }
         }
         

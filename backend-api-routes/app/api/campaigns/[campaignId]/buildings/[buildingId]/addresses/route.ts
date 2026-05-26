@@ -1,14 +1,16 @@
 import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
+import { StableLinkerService } from "@/lib/services/StableLinkerService";
+import { isUuid, resolveCampaignBuilding } from "@/app/api/campaigns/_utils/resolve-campaign-building";
 
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY!;
+const SUPABASE_URL = process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL!;
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY ?? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 
 type RouteContext = { params: Promise<{ campaignId: string; buildingId: string }> };
 
 type ResolvedBuilding = {
-  rowId: string;
+  rowId: string | null;
   publicId: string;
 };
 
@@ -22,10 +24,6 @@ const ADDRESS_SELECT =
 
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
-}
-
-function pointGeoJSON(longitude: number, latitude: number) {
-  return { type: "Point", coordinates: [longitude, latitude] as [number, number] };
 }
 
 function mergeAddressesById<T extends { id: string }>(groups: T[][]): T[] {
@@ -42,32 +40,6 @@ function mergeAddressesById<T extends { id: string }>(groups: T[][]): T[] {
   }
 
   return merged;
-}
-
-/**
- * Resolve a public building identifier to both the buildings row UUID and the public id shown on the map.
- * Supports both UUID-based manual buildings (buildings.id) and GERS-linked imported buildings.
- */
-async function resolveBuilding(
-  supabase: any,
-  buildingIdParam: string
-): Promise<ResolvedBuilding | null> {
-  const uuidMatch = buildingIdParam.match(
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-  );
-  const query = supabase.from("buildings").select("id, gers_id").limit(1);
-  const builder = uuidMatch
-    ? query.or(`id.eq.${buildingIdParam},gers_id.eq.${buildingIdParam}`)
-    : query.eq("gers_id", buildingIdParam);
-
-  const { data: row, error } = await builder.maybeSingle();
-
-  if (error || !row) return null;
-  const building = row as { id: string; gers_id: string | null };
-  return {
-    rowId: building.id,
-    publicId: building.gers_id ?? building.id,
-  };
 }
 
 async function fetchGoldAddresses(
@@ -87,11 +59,33 @@ async function fetchGoldAddresses(
     return { data: [], error: null };
   }
 
-  return supabase
-    .from("campaign_addresses")
-    .select(ADDRESS_SELECT)
-    .eq("campaign_id", campaignId)
-    .in("building_id", candidates);
+  const uuidCandidates = candidates.filter(isUuid);
+  const externalCandidates = candidates.filter((candidate) => !isUuid(candidate));
+  const groups: Array<Array<{ id: string }>> = [];
+
+  if (uuidCandidates.length > 0) {
+    const { data, error } = await supabase
+      .from("campaign_addresses")
+      .select(ADDRESS_SELECT)
+      .eq("campaign_id", campaignId)
+      .in("building_id", uuidCandidates);
+
+    if (error) return { data: null, error };
+    groups.push((data ?? []) as Array<{ id: string }>);
+  }
+
+  if (externalCandidates.length > 0) {
+    const { data, error } = await supabase
+      .from("campaign_addresses")
+      .select(ADDRESS_SELECT)
+      .eq("campaign_id", campaignId)
+      .in("building_gers_id", externalCandidates);
+
+    if (error) return { data: null, error };
+    groups.push((data ?? []) as Array<{ id: string }>);
+  }
+
+  return { data: mergeAddressesById(groups), error: null };
 }
 
 async function fetchLinkedAddresses(
@@ -208,7 +202,7 @@ export async function GET(request: Request, context: RouteContext) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
-    const resolvedBuilding = await resolveBuilding(supabase, buildingIdParam);
+    const resolvedBuilding = await resolveCampaignBuilding(supabase, campaignId, buildingIdParam);
     const buildingIdCandidates = Array.from(
       new Set(
         [buildingIdParam, resolvedBuilding?.rowId, resolvedBuilding?.publicId]
@@ -238,12 +232,14 @@ export async function GET(request: Request, context: RouteContext) {
         return NextResponse.json({ addresses: goldAddressRows });
       }
 
-      const { data: manualLinkedAddresses, error: manualLinkedError } = await fetchLinkedAddresses(
-        supabase,
-        campaignId,
-        resolvedBuilding.rowId,
-        new Set(["manual"])
-      );
+      const { data: manualLinkedAddresses, error: manualLinkedError } = resolvedBuilding.rowId
+        ? await fetchLinkedAddresses(
+            supabase,
+            campaignId,
+            resolvedBuilding.rowId,
+            new Set(["manual"])
+          )
+        : { data: [], error: null };
 
       if (manualLinkedError) {
         console.warn("[buildings/addresses] manual link fallback warning:", manualLinkedError);
@@ -265,11 +261,13 @@ export async function GET(request: Request, context: RouteContext) {
       );
     }
 
-    const { data: linkedAddresses, error: linkedError } = await fetchLinkedAddresses(
-      supabase,
-      campaignId,
-      resolvedBuilding.rowId
-    );
+    const { data: linkedAddresses, error: linkedError } = resolvedBuilding.rowId
+      ? await fetchLinkedAddresses(
+          supabase,
+          campaignId,
+          resolvedBuilding.rowId
+        )
+      : { data: [], error: null };
 
     if (linkedError) {
       console.error("[buildings/addresses] link fallback error:", linkedError);
@@ -344,130 +342,38 @@ export async function POST(request: Request, context: RouteContext) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
-    const resolvedBuilding = await resolveBuilding(supabase, buildingIdParam);
+    const resolvedBuilding = await resolveCampaignBuilding(supabase, campaignId, buildingIdParam);
     if (!resolvedBuilding) {
       return NextResponse.json({ error: "Building not found" }, { status: 404 });
     }
 
-    const { data: previousLinks } = await supabase
-      .from("building_address_links")
-      .select("building_id")
-      .eq("campaign_id", campaignId)
-      .eq("address_id", addressId);
-    const previousBuildingIds = Array.from(
-      new Set(
-        ((previousLinks ?? []) as Array<{ building_id: string }>)
-          .map((row) => row.building_id)
-          .filter(Boolean)
-      )
-    );
-
-    const { error: insertError } = await supabase
-      .from("building_address_links")
-      .upsert({
-        building_id: resolvedBuilding.rowId,
-        address_id: addressId,
-        campaign_id: campaignId,
-        match_type: "manual",
-        confidence: 1,
-        is_multi_unit: false,
-        unit_count: 1,
-      }, { onConflict: "campaign_id,address_id" });
-
-    if (insertError) {
-      console.error("[buildings/addresses] POST insert error:", insertError);
-      return NextResponse.json(
-        { error: "Failed to link address" },
-        { status: 500 }
-      );
-    }
-
-    const { data: linkedRows, error: linkedRowsError } = await supabase
-      .from("building_address_links")
-      .select("address_id")
-      .eq("campaign_id", campaignId)
-      .eq("building_id", resolvedBuilding.rowId);
-
-    if (linkedRowsError) {
-      console.warn("[buildings/addresses] linked rows warning:", linkedRowsError);
-    }
-
-    const linkedAddressIds = Array.from(
-      new Set(((linkedRows ?? []) as Array<{ address_id: string }>).map((row) => row.address_id))
-    );
-    const unitCount = Math.max(linkedAddressIds.length, 1);
-
-    if (linkedAddressIds.length > 0) {
-      const { error: multiUnitSyncError } = await supabase
-        .from("building_address_links")
-        .update({
-          is_multi_unit: unitCount > 1,
-          unit_count: unitCount,
+    const linker = new StableLinkerService(supabase);
+    const coordinate = hasMoveCoordinate && isFiniteNumber(longitude) && isFiniteNumber(latitude)
+      ? [longitude, latitude] as [number, number]
+      : undefined;
+    const stableLink = resolvedBuilding.rowId
+      ? await linker.assignAddressToBuilding({
+          campaignId,
+          addressId,
+          buildingRowId: resolvedBuilding.rowId,
+          buildingPublicId: resolvedBuilding.publicId,
+          assignedBy: user.id,
+          coordinate,
         })
-        .eq("campaign_id", campaignId)
-        .eq("building_id", resolvedBuilding.rowId);
-
-      if (multiUnitSyncError) {
-        console.warn("[buildings/addresses] multi-unit sync warning:", multiUnitSyncError);
-      }
-    }
-
-    for (const previousBuildingId of previousBuildingIds) {
-      if (previousBuildingId === resolvedBuilding.rowId) continue;
-      const { data: staleRows, error: staleRowsError } = await supabase
-        .from("building_address_links")
-        .select("address_id")
-        .eq("campaign_id", campaignId)
-        .eq("building_id", previousBuildingId);
-
-      if (staleRowsError) {
-        console.warn("[buildings/addresses] previous building count warning:", staleRowsError);
-        continue;
-      }
-
-      const staleUnitCount = Math.max(
-        new Set(((staleRows ?? []) as Array<{ address_id: string }>).map((row) => row.address_id)).size,
-        1
-      );
-      if (staleUnitCount <= 0) continue;
-
-      const { error: previousSyncError } = await supabase
-        .from("building_address_links")
-        .update({
-          is_multi_unit: staleUnitCount > 1,
-          unit_count: staleUnitCount,
-        })
-        .eq("campaign_id", campaignId)
-        .eq("building_id", previousBuildingId);
-
-      if (previousSyncError) {
-        console.warn("[buildings/addresses] previous building multi-unit sync warning:", previousSyncError);
-      }
-    }
-
-    const addressUpdate: Record<string, unknown> = {
-      building_gers_id: resolvedBuilding.publicId,
-    };
-    if (hasMoveCoordinate && isFiniteNumber(longitude) && isFiniteNumber(latitude)) {
-      addressUpdate.geom = JSON.stringify(pointGeoJSON(longitude, latitude));
-    }
-
-    const { error: syncError } = await supabase
-      .from("campaign_addresses")
-      .update(addressUpdate)
-      .eq("campaign_id", campaignId)
-      .eq("id", addressId);
-
-    if (syncError) {
-      console.warn("[buildings/addresses] address sync warning:", syncError);
-    }
+      : await linker.assignAddressToExternalBuilding({
+          campaignId,
+          addressId,
+          buildingPublicId: resolvedBuilding.publicId,
+          assignedBy: user.id,
+          coordinate,
+        });
 
     return NextResponse.json({
       linked: true,
       address_id: addressId,
       building_id: resolvedBuilding.publicId,
-      linked_address_ids: linkedAddressIds,
-      unit_count: unitCount,
+      linked_address_ids: stableLink.linkedAddressIds,
+      unit_count: stableLink.unitCount,
     });
   } catch (err) {
     console.error("[buildings/addresses] POST", err);
@@ -515,27 +421,28 @@ export async function DELETE(request: Request, context: RouteContext) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
-    const resolvedBuilding = await resolveBuilding(supabase, buildingIdParam);
+    const resolvedBuilding = await resolveCampaignBuilding(supabase, campaignId, buildingIdParam);
     if (!resolvedBuilding) {
       return NextResponse.json({ error: "Building not found" }, { status: 404 });
     }
 
-    const { error: deleteError } = await supabase
-      .from("building_address_links")
-      .delete()
-      .eq("building_id", resolvedBuilding.rowId)
-      .eq("address_id", addressId)
-      .eq("campaign_id", campaignId);
+    const deleteManualAddress = url.searchParams.get("mode") === "delete_manual";
+    const result = await new StableLinkerService(supabase).unassignAddressFromBuilding({
+      campaignId,
+      addressId,
+      buildingRowId: resolvedBuilding.rowId,
+      buildingPublicId: resolvedBuilding.publicId,
+      deleteManualAddress,
+    });
 
-    if (deleteError) {
-      console.error("[buildings/addresses] DELETE error:", deleteError);
-      return NextResponse.json(
-        { error: "Failed to unlink address" },
-        { status: 500 }
-      );
-    }
-
-    return NextResponse.json({ unlinked: true, address_id: addressId });
+    return NextResponse.json({
+      unlinked: true,
+      deleted: deleteManualAddress,
+      address_id: addressId,
+      building_id: resolvedBuilding.publicId,
+      linked_address_ids: result.linkedAddressIds,
+      unit_count: result.unitCount,
+    });
   } catch (err) {
     console.error("[buildings/addresses] DELETE", err);
     return NextResponse.json(

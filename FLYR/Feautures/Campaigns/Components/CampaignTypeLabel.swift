@@ -51,7 +51,13 @@ struct CampaignTypeLabel: View {
         case .gift: return .pink
         case .popBy: return .cyan
         case .openHouse: return .brown
+        case .comingSoon: return .indigo
+        case .marketUpdate: return .teal
         case .letters: return .orange
+        case .justSold: return .red
+        case .justListed: return .green
+        case .prospecting: return .purple
+        case .other: return .gray
         }
     }
 }

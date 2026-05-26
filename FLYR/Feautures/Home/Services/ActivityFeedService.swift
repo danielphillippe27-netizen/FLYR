@@ -63,8 +63,13 @@ final class ActivityFeedService {
                 includeMembers: includeMembers,
                 limit: limit
             )
-            let activities = (try? await appointmentActivities) ?? []
             let contacts = try await contactsTask
+            let localActivities = await fetchLocalAppointmentRows(
+                contacts: contacts,
+                limit: limit
+            )
+            let remoteActivities = (try? await appointmentActivities) ?? []
+            let activities = mergeAppointmentRows(localActivities + remoteActivities, limit: limit)
             let contactIdsWithMeeting = Set(activities.map(\.contact.id))
 
             let activityItems = activities.map { row in
@@ -244,6 +249,11 @@ final class ActivityFeedService {
         includeMembers: Bool,
         limit: Int
     ) async throws -> [ContactFeedRow] {
+        let localRows = await fetchLocalContactRows(
+            userId: userId,
+            workspaceId: workspaceId,
+            includeMembers: includeMembers
+        )
         let decoder = JSONDecoder.supabaseDates
         do {
             var query = client
@@ -259,11 +269,15 @@ final class ActivityFeedService {
                 .limit(limit)
                 .execute()
             let contacts = try decoder.decode([ContactFeedRow].self, from: response.data)
-            if !contacts.isEmpty {
-                return contacts
+            let mergedContacts = mergeContactRows(localRows + contacts, limit: limit)
+            if !mergedContacts.isEmpty {
+                return mergedContacts
             }
         } catch {
-            // Fall through to legacy field_leads when contacts are empty/unavailable.
+            if !localRows.isEmpty {
+                return mergeContactRows(localRows, limit: limit)
+            }
+            // Fall through to legacy field_leads when contacts are unavailable.
         }
 
         var legacyQuery = client
@@ -291,6 +305,79 @@ final class ActivityFeedService {
                 createdAt: $0.createdAt
             )
         }
+    }
+
+    private func fetchLocalContactRows(
+        userId: UUID,
+        workspaceId: UUID?,
+        includeMembers: Bool
+    ) async -> [ContactFeedRow] {
+        let contacts = await ContactRepository.shared.fetchContacts(
+            userId: userId,
+            workspaceId: includeMembers ? workspaceId : nil
+        )
+        return contacts.map(ContactFeedRow.init(contact:))
+    }
+
+    private func mergeContactRows(_ rows: [ContactFeedRow], limit: Int) -> [ContactFeedRow] {
+        var rowsById: [UUID: ContactFeedRow] = [:]
+        for row in rows {
+            guard let existing = rowsById[row.id] else {
+                rowsById[row.id] = row
+                continue
+            }
+            if row.sortDate >= existing.sortDate {
+                rowsById[row.id] = row
+            }
+        }
+        return Array(rowsById.values)
+            .sorted { $0.sortDate > $1.sortDate }
+            .prefix(limit)
+            .map { $0 }
+    }
+
+    private func fetchLocalAppointmentRows(
+        contacts: [ContactFeedRow],
+        limit: Int
+    ) async -> [AppointmentActivityRow] {
+        let contactsById = Dictionary(uniqueKeysWithValues: contacts.map { ($0.id, $0) })
+        let activities = await ContactRepository.shared.fetchActivities(
+            contactIds: Array(contactsById.keys),
+            type: .meeting,
+            limit: limit
+        )
+
+        return activities.compactMap { activity in
+            guard let contact = contactsById[activity.contactId] else { return nil }
+            return AppointmentActivityRow(activity: activity, contact: contact)
+        }
+    }
+
+    private func mergeAppointmentRows(_ rows: [AppointmentActivityRow], limit: Int) -> [AppointmentActivityRow] {
+        var rowsByKey: [String: AppointmentActivityRow] = [:]
+        for row in rows {
+            let key = appointmentFingerprint(for: row)
+            guard let existing = rowsByKey[key] else {
+                rowsByKey[key] = row
+                continue
+            }
+            if row.timestamp >= existing.timestamp {
+                rowsByKey[key] = row
+            }
+        }
+
+        return Array(rowsByKey.values)
+            .sorted { $0.timestamp > $1.timestamp }
+            .prefix(limit)
+            .map { $0 }
+    }
+
+    private func appointmentFingerprint(for row: AppointmentActivityRow) -> String {
+        [
+            row.contact.id.uuidString.lowercased(),
+            String(Int(row.timestamp.timeIntervalSince1970.rounded())),
+            row.note?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        ].joined(separator: "|")
     }
 
     private func fetchAppointmentRows(
@@ -426,6 +513,43 @@ private struct ContactFeedRow: Decodable {
         case updatedAt = "updated_at"
         case createdAt = "created_at"
     }
+
+    init(
+        id: UUID,
+        userId: UUID?,
+        fullName: String?,
+        address: String,
+        status: String,
+        reminderDate: Date?,
+        updatedAt: Date?,
+        createdAt: Date
+    ) {
+        self.id = id
+        self.userId = userId
+        self.fullName = fullName
+        self.address = address
+        self.status = status
+        self.reminderDate = reminderDate
+        self.updatedAt = updatedAt
+        self.createdAt = createdAt
+    }
+
+    init(contact: Contact) {
+        self.init(
+            id: contact.id,
+            userId: nil,
+            fullName: contact.fullName,
+            address: contact.address,
+            status: contact.status.rawValue,
+            reminderDate: contact.reminderDate,
+            updatedAt: contact.updatedAt,
+            createdAt: contact.createdAt
+        )
+    }
+
+    var sortDate: Date {
+        updatedAt ?? createdAt
+    }
 }
 
 private struct LegacyLeadRow: Decodable {
@@ -464,6 +588,15 @@ private struct AppointmentActivityRow: Decodable {
         case createdAt = "created_at"
         case contact = "contacts"
     }
+
+    init(activity: ContactActivity, contact: ContactFeedRow) {
+        self.id = activity.id
+        self.contactId = activity.contactId
+        self.note = activity.note
+        self.timestamp = activity.timestamp
+        self.createdAt = activity.createdAt
+        self.contact = AppointmentContactRow(contact: contact)
+    }
 }
 
 private struct AppointmentContactRow: Decodable {
@@ -479,5 +612,13 @@ private struct AppointmentContactRow: Decodable {
         case address
         case userId = "user_id"
         case workspaceId = "workspace_id"
+    }
+
+    init(contact: ContactFeedRow) {
+        self.id = contact.id
+        self.fullName = contact.fullName
+        self.address = contact.address
+        self.userId = contact.userId
+        self.workspaceId = nil
     }
 }

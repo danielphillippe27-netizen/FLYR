@@ -2,16 +2,20 @@ import SwiftUI
 import CoreHaptics
 import CoreLocation
 
+private enum CampaignCreationStage {
+    case territory
+    case details
+}
+
 struct NewCampaignScreen: View {
     @ObservedObject var store: CampaignV2Store
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var uiState: AppUIState
     @EnvironmentObject private var entitlementsService: EntitlementsService
+    @ObservedObject private var workspaceContext = WorkspaceContext.shared
     
     @State private var name = ""
     @State private var description = ""
-    @State private var source: AddressSource = .map
-    @State private var count: AddressCountOption = .c100
 
     @StateObject private var auto = UseAddressAutocomplete()
     @State private var showMapSeed = false
@@ -22,11 +26,21 @@ struct NewCampaignScreen: View {
     @StateObject private var createHook = UseCreateCampaign()
     @StateObject private var locationManager = LocationManager()
     @Environment(\.colorScheme) private var colorScheme
-    /// Screen-level lock for the full workflow (create + territory save + provision + navigation).
-    /// Do not use createHook.isCreating for this because createHook resets after insert/createV2 returns.
     @State private var isSubmittingCampaign = false
     @State private var showPaywall = false
-    @State private var showNameRequiredScreen = false
+    @State private var campaignType: CampaignType = .justSold
+    @State private var creationStage: CampaignCreationStage = .territory
+    @State private var createdCampaign: CampaignV2?
+    @State private var isProvisioningCampaign = false
+    @State private var provisionComplete = false
+    @State private var provisionFailed = false
+    @State private var provisionStatusText = ""
+    @State private var detailsSaving = false
+    @State private var detailsSaved = false
+    @State private var hasNavigatedToCampaign = false
+    @State private var campaignMapDataReady = false
+    @State private var showCampaignReadinessOverlay = false
+    @State private var provisioningTask: Task<Void, Never>?
 
     private var mapPreviewCenter: CLLocationCoordinate2D {
         selectedCenter ?? locationManager.currentLocation?.coordinate ?? CLLocationCoordinate2D(latitude: 43.65, longitude: -79.38)
@@ -49,210 +63,147 @@ struct NewCampaignScreen: View {
     }
 
     private var canCreate: Bool {
-        hasCampaignName && hasDrawnTerritory
+        creationStage == .territory && hasDrawnTerritory && createdCampaign == nil
     }
 
     private var createButtonTitle: String {
-        if !hasCampaignName {
-            return "Enter Campaign Name"
-        }
         if !hasDrawnTerritory {
-            return "Draw Territory to Continue"
+            return "Draw Territory"
         }
-        return "Create Campaign"
+        return "Create Territory"
+    }
+
+    private var detailsButtonTitle: String {
+        if createdCampaign == nil || isSubmittingCampaign {
+            return "Preparing Campaign"
+        }
+        if detailsSaving {
+            return "Saving Details"
+        }
+        if isProvisioningCampaign {
+            return detailsSaved ? "Details Saved" : "Save Details"
+        }
+        if detailsSaved && !campaignMapDataReady {
+            return "Preparing Map"
+        }
+        if detailsSaved {
+            return "Open Campaign"
+        }
+        return "Save & Open"
+    }
+
+    private var detailsButtonEnabled: Bool {
+        createdCampaign != nil && hasCampaignName && !detailsSaving && !hasNavigatedToCampaign && (!detailsSaved || (!isProvisioningCampaign && campaignMapDataReady))
+    }
+
+    private var shouldShowCampaignCreatingOverlay: Bool {
+        showCampaignReadinessOverlay && isProvisioningCampaign && !provisionFailed
     }
 
     private var territoryHelperText: String {
-        if !hasCampaignName {
-            return "Enter a campaign name to start drawing your territory."
-        }
         if !hasDrawnTerritory {
             return hasMapCenterAddress
                 ? "Map centered. Now draw your territory on the map."
                 : "Territory not set yet - draw on the map to continue."
         }
-        return "Territory set. You can create this campaign now."
+        return "Territory set. Create it, then name the campaign while homes load."
     }
 
     private var territoryHelperColor: Color {
-        if !hasCampaignName {
-            return .red
-        }
         if hasDrawnTerritory {
             return .green
         }
         return .secondary
     }
-    
+
+    private var campaignTypeOptions: [CampaignType] {
+        CampaignType.ordered(forIndustry: workspaceContext.industry)
+    }
+
     var body: some View {
-        ScrollView {
-            VStack(spacing: 28) {
-                VStack(alignment: .leading, spacing: 16) {
-                    Text("Step 1")
-                        .font(.flyrCaption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-
-                    Text("Enter campaign name")
-                        .font(.flyrHeadline)
-
-                    HStack {
-                        TextField("Campaign name", text: $name)
-                            .textInputAutocapitalization(.words)
-                            .font(.system(size: 16))
-                        Spacer()
-                    }
-                    .padding(12)
-                    .background(Color(.secondarySystemBackground))
-                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                }
-                .formContainerPadding()
-                
-                // Territory: starting address + map preview + draw polygon
-                VStack(alignment: .leading, spacing: 16) {
-                    HStack(spacing: 8) {
-                        Text("Step 2")
-                            .font(.flyrCaption.weight(.semibold))
-                            .foregroundStyle(.secondary)
-
-                        Text("(Optional)")
-                            .font(.flyrCaption.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                    }
-
-                    Text("Center map on address")
-                        .font(.flyrHeadline)
-
-                    AddressSearchField(
-                        auto: auto,
-                        onPick: { suggestion in
-                            applySelectedCenter(
-                                suggestion.coordinate,
-                                label: formattedAddress(from: suggestion)
-                            )
-                            auto.clear()
-                        },
-                        onSubmitQuery: { query in
-                            Task { await centerMap(on: query) }
-                        }
-                    )
-
-                    Text("Step 3")
-                        .font(.flyrCaption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-
-                    Text("Draw your territory")
-                        .font(.flyrHeadline)
-
-                    ZStack(alignment: .topLeading) {
-                        // Map preview: tap to open draw polygon workflow
-                        TerritoryPreviewMapView(center: mapPreviewCenter, polygon: drawnPolygon, useDarkStyle: colorScheme == .dark, height: 220)
-                            .frame(height: 220)
-                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                            .contentShape(Rectangle())
-                            .onTapGesture {
-                                openMapDrawing()
-                            }
-
-                        if !hasDrawnTerritory {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("No territory drawn yet")
-                                    .font(.flyrFootnote.weight(.semibold))
-                                Text("Tap or drag on the map to outline your area.")
-                                    .font(.flyrCaption)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(2)
-                            }
-                            .padding(10)
-                            .background(.ultraThinMaterial)
-                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                            .padding(10)
-                            .allowsHitTesting(false)
-                        }
-                    }
-
-                    if hasMapCenterAddress {
-                        HStack(alignment: .top, spacing: 12) {
-                            Image(systemName: "mappin.and.ellipse")
-                                .foregroundStyle(.secondary)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Map centered at")
-                                    .font(.flyrFootnote)
-                                    .foregroundStyle(.secondary)
-                                Text(mapCenterLabel)
-                                    .font(.flyrSubheadline)
-                                    .foregroundStyle(.primary)
-                                    .lineLimit(2)
-                            }
-                            Spacer()
-                        }
-                        .padding()
-                        .background(Color(.systemGray6))
-                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                    }
-
-                    Text(territoryHelperText)
-                        .font(.flyrFootnote)
-                        .foregroundStyle(territoryHelperColor)
-                }
-                .formContainerPadding()
-
-                Rectangle()
-                    .fill(.clear)
-                    .frame(height: 8)
-            }
-        }
-        .navigationTitle("New Campaign")
-        .toolbarTitleDisplayMode(.inline)
-        .safeAreaInset(edge: .bottom) {
-            VStack(spacing: 12) {
-                if let err = createHook.error { 
-                    Text(err)
-                        .foregroundStyle(.red)
-                        .font(.flyrFootnote) 
-                }
-                PrimaryButton(
-                    title: createButtonTitle,
-                    enabled: canCreate && !isSubmittingCampaign,
-                    isLoading: isSubmittingCampaign
-                ) {
-                    guard !isSubmittingCampaign else { return }
-                    isSubmittingCampaign = true
-                    Task { await createCampaignTapped() }
-                }
-                .padding(.horizontal, 20)
-                .padding(.bottom, 10)
-            }
-            .background(.ultraThinMaterial)
-        }
-                .onAppear {
-                    locationManager.requestLocation()
-                }
-                .sheet(isPresented: $showMapSeed) {
+        Group {
+            if creationStage == .territory {
+                ZStack(alignment: .bottom) {
                     MapDrawingView(
                         initialCenter: selectedCenter ?? locationManager.currentLocation?.coordinate,
                         onPolygonDone: { vertices in
-                            self.drawnPolygon = vertices
-                            self.showMapSeed = false
+                            self.beginCampaignCreation(with: vertices)
                         },
                         onCreateCampaign: { vertices in
-                            self.drawnPolygon = vertices
-                            self.showMapSeed = false
-                            guard !self.isSubmittingCampaign else { return }
-                            self.isSubmittingCampaign = true
-                            Task { await self.createCampaignTapped(polygonFromSheet: vertices) }
-                        }
+                            self.beginCampaignCreation(with: vertices)
+                        },
+                        dismissOnPolygonDone: false,
+                        dismissOnCreateCampaign: false
                     )
+
+                    if let err = createHook.error {
+                        Text(err)
+                            .font(.flyrFootnote.weight(.semibold))
+                            .foregroundStyle(.white)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 10)
+                            .background(Color.red.opacity(0.92), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                            .padding(.horizontal, 16)
+                            .padding(.bottom, 118)
+                    }
+                }
+            } else {
+                ScrollView {
+                    VStack(spacing: 28) {
+                    campaignDetailsSection
+
+                        Rectangle()
+                            .fill(.clear)
+                            .frame(height: 8)
+                    }
+                }
+            }
+        }
+        .navigationTitle(creationStage == .territory ? "" : "New Campaign")
+        .toolbarTitleDisplayMode(.inline)
+        .toolbar(creationStage == .territory ? .hidden : .visible, for: .navigationBar)
+        .safeAreaInset(edge: .bottom) {
+            if creationStage == .details {
+                VStack(spacing: 12) {
+                    if let err = createHook.error {
+                        Text(err)
+                            .foregroundStyle(.red)
+                            .font(.flyrFootnote)
+                    }
+                    Group {
+                        PrimaryButton(
+                            title: detailsButtonTitle,
+                            enabled: detailsButtonEnabled,
+                            isLoading: detailsSaving
+                        ) {
+                            Task { await saveCampaignDetailsTapped() }
+                        }
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 10)
+                }
+                .background(.ultraThinMaterial)
+            }
+        }
+                .onAppear {
+                    locationManager.requestLocation()
+                    reconcileCampaignTypeWithIndustry()
+                }
+                .onChange(of: name) { _, _ in
+                    markDetailsDirtyIfNeeded()
+                }
+                .onChange(of: campaignType) { _, _ in
+                    markDetailsDirtyIfNeeded()
+                }
+                .onChange(of: workspaceContext.industry) { _, _ in
+                    reconcileCampaignTypeWithIndustry()
                 }
                 .sheet(isPresented: $showPaywall) {
                     PaywallView()
                 }
-                .fullScreenCover(isPresented: $showNameRequiredScreen) {
-                    CampaignNameRequiredView {
-                        showNameRequiredScreen = false
-                    }
-                }
                 .overlay {
-                    if isSubmittingCampaign {
+                    if shouldShowCampaignCreatingOverlay {
                         CampaignCreatingOverlayView(useDarkStyle: colorScheme == .dark)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                             .ignoresSafeArea()
@@ -261,193 +212,439 @@ struct NewCampaignScreen: View {
                 .hidesTabBar()
     }
 
-    private func openMapDrawing() {
-        guard !trimmedCampaignName.isEmpty else {
-            HapticManager.light()
-            showNameRequiredScreen = true
-            return
+    private var territorySetupSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Step 1")
+                .font(.flyrCaption.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            Text("Draw your territory")
+                .font(.flyrHeadline)
+
+            ZStack(alignment: .topLeading) {
+                TerritoryPreviewMapView(center: mapPreviewCenter, polygon: drawnPolygon, useDarkStyle: colorScheme == .dark, height: 220)
+                    .frame(height: 220)
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        openMapDrawing()
+                    }
+
+                if !hasDrawnTerritory {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("No territory drawn yet")
+                            .font(.flyrFootnote.weight(.semibold))
+                        Text("Tap or drag on the map to outline your area.")
+                            .font(.flyrCaption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+                    .padding(10)
+                    .background(.ultraThinMaterial)
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .padding(10)
+                    .allowsHitTesting(false)
+                }
+            }
+
+            Text(territoryHelperText)
+                .font(.flyrFootnote)
+                .foregroundStyle(territoryHelperColor)
+
+            Divider()
+
+            HStack(spacing: 8) {
+                Text("Map center")
+                    .font(.flyrCaption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+
+                Text("(Optional)")
+                    .font(.flyrCaption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+
+            AddressSearchField(
+                auto: auto,
+                onPick: { suggestion in
+                    applySelectedCenter(
+                        suggestion.coordinate,
+                        label: formattedAddress(from: suggestion)
+                    )
+                    auto.clear()
+                },
+                onSubmitQuery: { query in
+                    Task { await centerMap(on: query) }
+                }
+            )
+
+            if hasMapCenterAddress {
+                HStack(alignment: .top, spacing: 12) {
+                    Image(systemName: "mappin.and.ellipse")
+                        .foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Map centered at")
+                            .font(.flyrFootnote)
+                            .foregroundStyle(.secondary)
+                        Text(mapCenterLabel)
+                            .font(.flyrSubheadline)
+                            .foregroundStyle(.primary)
+                            .lineLimit(2)
+                    }
+                    Spacer()
+                }
+                .padding()
+                .background(Color(.systemGray6))
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            }
         }
+        .formContainerPadding()
+    }
+
+    private var campaignDetailsSection: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("Step 2")
+                .font(.flyrCaption.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            Text("Name campaign")
+                .font(.flyrHeadline)
+
+            HStack {
+                TextField("Campaign name", text: $name)
+                    .textInputAutocapitalization(.words)
+                    .font(.system(size: 16))
+                Spacer()
+            }
+            .padding(12)
+            .background(Color(.secondarySystemBackground))
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Campaign type")
+                    .font(.flyrSubheadline.weight(.semibold))
+
+                Picker("Campaign type", selection: $campaignType) {
+                    ForEach(campaignTypeOptions) { type in
+                        Text(type.title).tag(type)
+                    }
+                }
+                .pickerStyle(.menu)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(12)
+                .background(Color(.secondarySystemBackground))
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
+
+            if isProvisioningCampaign || provisionFailed {
+                CampaignBackgroundSetupCard(
+                    isProvisioning: isProvisioningCampaign,
+                    isComplete: provisionComplete,
+                    didFail: provisionFailed,
+                    statusText: provisionStatusText
+                )
+            }
+        }
+        .formContainerPadding()
+    }
+
+    @MainActor
+    private func beginCampaignCreation(with vertices: [CLLocationCoordinate2D]) {
+        drawnPolygon = vertices
+        guard !isSubmittingCampaign else { return }
+        isSubmittingCampaign = true
+        Task { await createCampaignTapped(polygonFromSheet: vertices) }
+    }
+
+    private func openMapDrawing() {
         showMapSeed = true
+    }
+
+    private func markDetailsDirtyIfNeeded() {
+        guard creationStage == .details, detailsSaved else { return }
+        detailsSaved = false
+    }
+
+    private func reconcileCampaignTypeWithIndustry() {
+        let options = campaignTypeOptions
+        guard !options.contains(campaignType), let fallbackType = options.first else { return }
+        campaignType = fallbackType
     }
     
     /// If polygonFromSheet is non-nil, use it for the map flow (avoids relying on state when coming from sheet).
     @MainActor
     private func createCampaignTapped(polygonFromSheet: [CLLocationCoordinate2D]? = nil) async {
         defer { isSubmittingCampaign = false }
-        guard await canCreateCampaignInCurrentPlan() else {
-            await MainActor.run { showPaywall = true }
-            return
-        }
         let effectivePolygon = polygonFromSheet ?? drawnPolygon
-        let canCreateFromForm = canCreate
-        let canCreateFromMapSheet = source == .map && (effectivePolygon?.count ?? 0) >= 3 && !name.trimmingCharacters(in: .whitespaces).isEmpty
         print("🚀 [CAMPAIGN DEBUG] Starting campaign creation workflow")
-        print("🚀 [CAMPAIGN DEBUG] Campaign name: '\(name)'")
-        print("🚀 [CAMPAIGN DEBUG] Address source: \(source.rawValue)")
-        print("🚀 [CAMPAIGN DEBUG] Can create (form): \(canCreateFromForm), (map sheet): \(canCreateFromMapSheet)")
-        
-        guard canCreateFromForm || canCreateFromMapSheet else {
-            print("❌ [CAMPAIGN DEBUG] Cannot create campaign - validation failed")
+
+        guard let polygon = effectivePolygon, polygon.count >= 3 else {
+            createHook.error = "Draw a polygon on the map"
             return
         }
-        
-        switch source {
-        case .closestHome:
-            print("🏠 [CAMPAIGN DEBUG] Creating campaign with closest home source (create first, then address backend)")
-            var center: CLLocationCoordinate2D?
-            if let c = selectedCenter {
-                center = c
-            } else if !auto.query.isEmpty {
-                do {
-                    let seed = try await GeoAPI.shared.forwardGeocodeSeed(auto.query)
-                    center = seed.coordinate
-                } catch {
-                    print("❌ [CAMPAIGN DEBUG] Geocode failed: \(error)")
-                    createHook.error = "Could not find location for \"\(auto.query)\""
-                    return
-                }
-            }
-            guard let center else {
-                createHook.error = "Select an address or enter a location"
-                return
-            }
-            print("🏠 [CAMPAIGN DEBUG] Seed center: (\(center.latitude), \(center.longitude)), target count: \(count.rawValue)")
 
-            let workspaceId = await RoutePlansAPI.shared.primaryWorkspaceIdForCurrentUser()
-            guard let workspaceId else {
-                createHook.error = "No workspace found. Please sign out and back in, or try again."
-                return
-            }
-            let payload = CampaignCreatePayloadV2(
-                name: name,
-                description: description.isEmpty ? "Campaign created from \(source.displayName)" : description,
-                type: nil,
-                addressSource: source,
-                addressTargetCount: count.rawValue,
-                seedQuery: auto.query.isEmpty ? nil : auto.query,
-                seedLon: center.longitude,
-                seedLat: center.latitude,
-                tags: nil,
-                addressesJSON: [],
-                workspaceId: workspaceId
-            )
-
-            if let created = await createHook.createV2(payload: payload, store: store) {
-                print("✅ [CAMPAIGN DEBUG] Campaign created with ID: \(created.id), calling generate-address-list...")
-                do {
-                    _ = try await OvertureAddressService.shared.getAddressesNearest(center: center, limit: count.rawValue, campaignId: created.id, startingAddress: auto.query.isEmpty ? nil : auto.query)
-                    print("✅ [CAMPAIGN DEBUG] Address list generated")
-                } catch {
-                    print("⚠️ [CAMPAIGN DEBUG] generate-address-list failed: \(error)")
-                    createHook.error = "Campaign created. Address list is still loading or failed; check the campaign in a moment."
-                }
-                await routeToCampaignMap(created)
-            } else {
-                print("❌ [CAMPAIGN DEBUG] Campaign creation failed")
-            }
-            
-        case .map:
-            print("🗺️ [CAMPAIGN DEBUG] Creating campaign with map source")
-            if let polygon = effectivePolygon, polygon.count >= 3 {
-                // Polygon flow: create campaign (minimal addresses), then provision (backend Lambda/S3)
-                print("🗺️ [CAMPAIGN DEBUG] Using drawn polygon (\(polygon.count) points) – will provision after create")
-                print("🗺️ [CAMPAIGN DEBUG] Polygon bounds: \(polygonBoundsSummary(for: polygon))")
-                let workspaceId = await RoutePlansAPI.shared.primaryWorkspaceIdForCurrentUser()
-                guard let workspaceId else {
-                    createHook.error = "No workspace found. Please sign out and back in, or try again."
-                    return
-                }
-                let payload = CampaignCreatePayloadV2(
-                    name: name,
-                    description: description.isEmpty ? "Campaign created from polygon" : description,
-                    type: nil,
-                    addressSource: source,
-                    addressTargetCount: 0,
-                    seedQuery: nil,
-                    seedLon: nil,
-                    seedLat: nil,
-                    tags: nil,
-                    addressesJSON: [],
-                    workspaceId: workspaceId
-                )
-                if let created = await createHook.createV2(payload: payload, store: store, polygon: polygon) {
-                    print("✅ [CAMPAIGN DEBUG] Campaign created with ID: \(created.id)")
-                    var createdCampaign = created
-                    let geoJSON = polygonToGeoJSON(polygon)
-                    var shouldNavigateToDetails = true
-                    do {
-                        try await CampaignsAPI.shared.updateTerritoryBoundary(campaignId: created.id, polygonGeoJSON: geoJSON)
-                        print("🗺️ [CAMPAIGN DEBUG] Territory updated, skipping pre-provision generate-address-list to avoid duplicate backend work")
-                        print("🗺️ [CAMPAIGN DEBUG] Territory updated, starting provision...")
-                        let provisionResponse = try await CampaignsAPI.shared.provisionCampaign(campaignId: created.id)
-                        if let confidence = provisionResponse?.dataConfidenceSummary {
-                            createdCampaign.dataConfidence = confidence
-                        }
-                        createdCampaign.provisionStatus = provisionResponse?.provisionStatus
-                        createdCampaign.provisionSource = provisionResponse?.provisionSource
-                        createdCampaign.provisionPhase = provisionResponse?.provisionPhase
-                        createdCampaign.hasParcels = provisionResponse?.hasParcels
-                        createdCampaign.buildingLinkConfidence = provisionResponse?.buildingLinkConfidence
-                        createdCampaign.mapMode = provisionResponse?.mapMode
-                        store.update(createdCampaign)
-                        let needsProvisionWait = provisionResponse?.provisionStatus != .ready
-                        var finalProvisionStatus = provisionResponse?.provisionStatus
-                        if needsProvisionWait {
-                            let provisionState = try await CampaignsAPI.shared.waitForProvisionReady(campaignId: created.id)
-                            createdCampaign.provisionStatus = provisionState.provisionStatus
-                            createdCampaign.provisionSource = provisionState.provisionSource
-                            createdCampaign.provisionPhase = provisionState.provisionPhase
-                            createdCampaign.addressesReadyAt = provisionState.addressesReadyAt
-                            createdCampaign.mapReadyAt = provisionState.mapReadyAt
-                            createdCampaign.optimizedAt = provisionState.optimizedAt
-                            store.update(createdCampaign)
-                            finalProvisionStatus = provisionState.provisionStatus
-                        }
-                        if finalProvisionStatus != .ready {
-                            createHook.error = "Campaign created but provisioning did not complete (status: \(finalProvisionStatus?.rawValue ?? "unknown")). You can retry from campaign details."
-                            shouldNavigateToDetails = false
-                        } else {
-                            let dbAddressCount = (try? await CampaignsAPI.shared.fetchAddresses(campaignId: created.id).count) ?? 0
-                            let addressesSaved = provisionResponse?.addressesSaved ?? dbAddressCount
-                            let buildingsSaved = provisionResponse?.buildingsSaved ?? 0
-                            print("🗺️ [CAMPAIGN DEBUG] Provision result: addresses=\(addressesSaved), buildings=\(buildingsSaved), dbAddresses=\(dbAddressCount)")
-                            if addressesSaved == 0 && buildingsSaved == 0 {
-                                createHook.error = "Campaign was created, but no addresses/buildings were found in this area. Try drawing a larger polygon or a different location."
-                                shouldNavigateToDetails = false
-                            } else {
-                                MapFeaturesService.shared.beginDiamondManifestPrewarm(
-                                    campaignId: created.id.uuidString,
-                                    timeoutSeconds: 90
-                                )
-                                print("💎 [CAMPAIGN DEBUG] Diamond/White Gold geometry will warm in the background")
-                            }
-                        }
-                    } catch {
-                        if isDiamondGeometryReadinessError(error) {
-                            print("💎 [CAMPAIGN DEBUG] Diamond/White Gold geometry not ready yet; opening map and warming in the background")
-                            MapFeaturesService.shared.beginDiamondManifestPrewarm(
-                                campaignId: created.id.uuidString,
-                                timeoutSeconds: 90
-                            )
-                        } else {
-                            print("❌ [CAMPAIGN DEBUG] Provision failed: \(error)")
-                            createHook.error = "Campaign created but provisioning failed: \(error.localizedDescription). You can retry from campaign details."
-                            shouldNavigateToDetails = false
-                        }
-                    }
-                    guard shouldNavigateToDetails else { return }
-                    await routeToCampaignMap(createdCampaign, boundaryCoordinates: polygon)
-                } else {
-                    print("❌ [CAMPAIGN DEBUG] Campaign creation failed")
-                }
-            } else {
-                createHook.error = "Draw a polygon on the map"
-            }
-            
-        case .sameStreet, .importList:
-            print("📋 [CAMPAIGN DEBUG] Import list functionality not implemented")
-            // TODO: Implement import list functionality if needed
+        creationStage = .details
+        guard await canCreateCampaignInCurrentPlan() else {
+            showPaywall = true
+            creationStage = .territory
+            return
         }
+        print("🗺️ [CAMPAIGN DEBUG] Using drawn polygon (\(polygon.count) points) - will provision in background")
+        print("🗺️ [CAMPAIGN DEBUG] Polygon bounds: \(polygonBoundsSummary(for: polygon))")
+        let provisionRegionCode = await inferredProvisionRegionCode(for: polygon)
+        if let provisionRegionCode {
+            print("🗺️ [CAMPAIGN DEBUG] Inferred provision region: \(provisionRegionCode)")
+        }
+        let workspaceId = await RoutePlansAPI.shared.primaryWorkspaceIdForCurrentUser()
+        guard let workspaceId else {
+            createHook.error = "No workspace found. Please sign out and back in, or try again."
+            creationStage = .territory
+            return
+        }
+        let payload = CampaignCreatePayloadV2(
+            name: "Untitled Campaign",
+            description: description.isEmpty ? "Campaign created from polygon" : description,
+            type: campaignType,
+            addressSource: .map,
+            addressTargetCount: 0,
+            seedQuery: provisionRegionCode,
+            seedLon: nil,
+            seedLat: nil,
+            tags: nil,
+            addressesJSON: [],
+            workspaceId: workspaceId
+        )
+        if var created = await createHook.createV2(payload: payload, store: store, polygon: polygon) {
+            print("✅ [CAMPAIGN DEBUG] Campaign created with ID: \(created.id)")
+            created.type = campaignType
+            createdCampaign = created
+            createHook.error = nil
+            uiState.selectCampaign(
+                id: created.id,
+                name: created.name,
+                boundaryCoordinates: polygon
+            )
+            startBackgroundProvision(campaign: created, polygon: polygon, regionCode: provisionRegionCode)
+        } else {
+            print("❌ [CAMPAIGN DEBUG] Campaign creation failed")
+            creationStage = .territory
+        }
+    }
+
+    @MainActor
+    private func saveCampaignDetailsTapped() async {
+        guard var campaign = createdCampaign else { return }
+        if detailsSaved && !isProvisioningCampaign && campaignMapDataReady {
+            await openCreatedCampaign()
+            return
+        }
+
+        detailsSaving = true
+        defer { detailsSaving = false }
+
+        do {
+            try await CampaignsAPI.shared.updateCampaignDetails(
+                campaignId: campaign.id,
+                name: trimmedCampaignName,
+                type: campaignType
+            )
+            campaign.name = trimmedCampaignName
+            campaign.type = campaignType
+            createdCampaign = campaign
+            store.update(campaign)
+            detailsSaved = true
+            createHook.error = nil
+
+            await openCreatedCampaign()
+        } catch {
+            createHook.error = "Could not save campaign details: \(error.localizedDescription)"
+        }
+    }
+
+    @MainActor
+    private func startBackgroundProvision(campaign: CampaignV2, polygon: [CLLocationCoordinate2D], regionCode: String?) {
+        provisioningTask?.cancel()
+        isProvisioningCampaign = true
+        provisionComplete = false
+        provisionFailed = false
+        campaignMapDataReady = false
+        provisionStatusText = "Saving territory..."
+        provisioningTask = Task {
+            await provisionCampaignInBackground(campaign: campaign, polygon: polygon, regionCode: regionCode)
+        }
+    }
+
+    @MainActor
+    private func provisionCampaignInBackground(campaign: CampaignV2, polygon: [CLLocationCoordinate2D], regionCode: String?) async {
+        var workingCampaign = campaign
+        let geoJSON = polygonToGeoJSON(polygon)
+
+        do {
+            try await CampaignsAPI.shared.updateTerritoryBoundary(
+                campaignId: campaign.id,
+                polygonGeoJSON: geoJSON,
+                regionCode: regionCode
+            )
+            provisionStatusText = "Building the map..."
+            let provisionResponse = try await CampaignsAPI.shared.provisionCampaign(
+                campaignId: campaign.id
+            )
+            if let confidence = provisionResponse?.dataConfidenceSummary {
+                workingCampaign.dataConfidence = confidence
+            }
+            workingCampaign.provisionStatus = provisionResponse?.provisionStatus
+            workingCampaign.provisionSource = provisionResponse?.provisionSource
+            workingCampaign.provisionPhase = provisionResponse?.provisionPhase
+            workingCampaign.hasParcels = provisionResponse?.hasParcels
+            workingCampaign.buildingLinkConfidence = provisionResponse?.buildingLinkConfidence
+            workingCampaign.mapMode = provisionResponse?.mapMode
+            if let addressesSaved = provisionResponse?.addressesSaved {
+                workingCampaign.totalFlyers = max(workingCampaign.totalFlyers, addressesSaved)
+            }
+            preserveCurrentDetails(in: &workingCampaign)
+            store.update(workingCampaign)
+            createdCampaign = workingCampaign
+
+            let needsProvisionWait = !isProvisionMapUsable(
+                status: provisionResponse?.provisionStatus,
+                phase: provisionResponse?.provisionPhase
+            )
+            var finalProvisionStatus = provisionResponse?.provisionStatus
+            if needsProvisionWait {
+                provisionStatusText = "Waiting for map data..."
+                let provisionState = try await CampaignsAPI.shared.waitForProvisionReady(
+                    campaignId: campaign.id,
+                    requireOptimized: false
+                )
+                workingCampaign.provisionStatus = provisionState.provisionStatus
+                workingCampaign.provisionSource = provisionState.provisionSource
+                workingCampaign.provisionPhase = provisionState.provisionPhase
+                workingCampaign.addressesReadyAt = provisionState.addressesReadyAt
+                workingCampaign.mapReadyAt = provisionState.mapReadyAt
+                workingCampaign.optimizedAt = provisionState.optimizedAt
+                preserveCurrentDetails(in: &workingCampaign)
+                store.update(workingCampaign)
+                createdCampaign = workingCampaign
+                finalProvisionStatus = provisionState.provisionStatus
+            }
+
+            var mapDataReadiness: CampaignMapDataReadiness?
+            if finalProvisionStatus == .ready {
+                let dbAddressCount = (try? await CampaignsAPI.shared.fetchCampaignAddressCount(campaignId: campaign.id)) ?? 0
+                let addressesSaved = max(provisionResponse?.addressesSaved ?? 0, dbAddressCount)
+                let buildingsSaved = provisionResponse?.buildingsSaved ?? 0
+                print("🗺️ [CAMPAIGN DEBUG] Provision result: addresses=\(addressesSaved), buildings=\(buildingsSaved), dbAddresses=\(dbAddressCount)")
+                workingCampaign.totalFlyers = max(workingCampaign.totalFlyers, addressesSaved, dbAddressCount)
+                preserveCurrentDetails(in: &workingCampaign)
+                store.update(workingCampaign)
+                createdCampaign = workingCampaign
+                provisionStatusText = "Waiting for homes and buildings..."
+                let addressTask = Task {
+                    (try? await fetchCampaignAddressesWithRetry(campaignId: campaign.id)) ?? []
+                }
+                let buildingTask = Task {
+                    await prewarmCampaignBuildingsAfterProvision(campaignId: campaign.id)
+                }
+
+                let campaignAddresses = await addressTask.value
+                if !campaignAddresses.isEmpty {
+                    workingCampaign.totalFlyers = max(workingCampaign.totalFlyers, campaignAddresses.count)
+                    preserveCurrentDetails(in: &workingCampaign)
+                    store.update(workingCampaign)
+                    createdCampaign = workingCampaign
+                }
+                let prewarmedMapDataReadiness = await buildingTask.value
+
+                provisionStatusText = "Loading map data..."
+                await MapFeaturesService.shared.fetchAllCampaignFeatures(
+                    campaignId: campaign.id.uuidString,
+                    forceRefresh: true
+                )
+
+                provisionStatusText = "Waiting for buildings..."
+                MapFeaturesService.shared.beginDiamondManifestPrewarm(
+                    campaignId: campaign.id.uuidString,
+                    timeoutSeconds: 90
+                )
+                print("💎 [CAMPAIGN DEBUG] Diamond/Bedrock geometry will warm in the background")
+
+                if let prewarmedMapDataReadiness {
+                    mapDataReadiness = prewarmedMapDataReadiness
+                } else {
+                    mapDataReadiness = await waitForCampaignMapDataReady(campaignId: campaign.id)
+                }
+                if let mapDataReadiness {
+                    campaignMapDataReady = true
+                    provisionStatusText = "Buildings are ready."
+                    print("🗺️ [CAMPAIGN DEBUG] Map data ready: buildings=\(mapDataReadiness.buildingCount)")
+                } else {
+                    campaignMapDataReady = false
+                    provisionFailed = true
+                    provisionStatusText = "Created, but map data is still preparing."
+                    createHook.error = "Campaign created, but buildings are not ready yet. Keep this screen open or retry from campaign details."
+                }
+            } else {
+                provisionFailed = true
+                provisionStatusText = "Created, but setup needs another try."
+                createHook.error = "Campaign created but provisioning did not complete (status: \(finalProvisionStatus?.rawValue ?? "unknown")). You can retry from campaign details."
+            }
+        } catch {
+            if isDiamondGeometryReadinessError(error) {
+                print("💎 [CAMPAIGN DEBUG] Diamond/Bedrock geometry not ready yet; warming in the background")
+                MapFeaturesService.shared.beginDiamondManifestPrewarm(
+                    campaignId: campaign.id.uuidString,
+                    timeoutSeconds: 90
+                )
+                provisionStatusText = "Map is warming up."
+                campaignMapDataReady = false
+            } else {
+                print("❌ [CAMPAIGN DEBUG] Provision failed: \(error)")
+                provisionFailed = true
+                campaignMapDataReady = false
+                provisionStatusText = "Created, but setup needs another try."
+                createHook.error = "Campaign created but provisioning failed: \(error.localizedDescription). You can retry from campaign details."
+            }
+        }
+
+        isProvisioningCampaign = false
+        provisionComplete = true
+
+        if detailsSaved && campaignMapDataReady {
+            await openCreatedCampaign()
+        }
+    }
+
+    @MainActor
+    private func preserveCurrentDetails(in campaign: inout CampaignV2) {
+        if let current = createdCampaign {
+            campaign.name = current.name
+            campaign.type = current.type
+        }
+        if detailsSaved {
+            campaign.name = trimmedCampaignName
+            campaign.type = campaignType
+        }
+    }
+
+    private func isProvisionMapUsable(
+        status: CampaignProvisionStatus?,
+        phase: CampaignProvisionPhase?
+    ) -> Bool {
+        guard status == .ready else { return false }
+        guard let phase else { return true }
+        return phase == .mapReady || phase == .optimized
+    }
+
+    @MainActor
+    private func openCreatedCampaign() async {
+        guard !hasNavigatedToCampaign, let campaign = createdCampaign else { return }
+        guard campaignMapDataReady else {
+            provisionStatusText = "Waiting for homes and buildings..."
+            showCampaignReadinessOverlay = true
+            return
+        }
+        hasNavigatedToCampaign = true
+        showCampaignReadinessOverlay = false
+        await routeToCampaignMap(campaign, boundaryCoordinates: drawnPolygon ?? [])
     }
 
     private func canCreateCampaignInCurrentPlan() async -> Bool {
@@ -495,6 +692,107 @@ struct NewCampaignScreen: View {
         return "lat[\(minLat), \(maxLat)] lon[\(minLon), \(maxLon)]"
     }
 
+    private func inferredProvisionRegionCode(for polygon: [CLLocationCoordinate2D]) async -> String? {
+        guard let first = polygon.first else { return nil }
+        var minLat = first.latitude
+        var maxLat = first.latitude
+        var minLon = first.longitude
+        var maxLon = first.longitude
+        for coord in polygon {
+            minLat = min(minLat, coord.latitude)
+            maxLat = max(maxLat, coord.latitude)
+            minLon = min(minLon, coord.longitude)
+            maxLon = max(maxLon, coord.longitude)
+        }
+
+        let centerLat = (minLat + maxLat) / 2
+        let centerLon = (minLon + maxLon) / 2
+        let center = CLLocationCoordinate2D(latitude: centerLat, longitude: centerLon)
+        if let regionCode = try? await GeoAPI.shared.reverseProvisionRegionCode(at: center) {
+            return regionCode
+        }
+
+        let regionBounds: [(code: String, minLon: Double, minLat: Double, maxLon: Double, maxLat: Double)] = [
+            ("NZ", 166.0, -48.5, 179.5, -33.0),
+            ("AU", 96.0, -44.0, 168.5, -9.0),
+            ("GB", -6.5, 49.8, 1.9, 58.8),
+            ("ZA", 16.4, -35.0, 33.1, -22.0),
+            ("BC", -139.06, 48.2, -114.03, 60.01),
+            ("AB", -120.0, 48.9, -109.0, 60.0),
+            ("SK", -110.0, 49.0, -101.3, 60.0),
+            ("MB", -102.0, 49.0, -89.0, 60.0),
+            ("ON", -95.2, 41.6, -74.0, 56.9),
+            ("QC", -79.9, 44.9, -57.1, 62.6),
+            ("NB", -69.1, 44.5, -63.5, 48.2),
+            ("NS", -66.5, 43.3, -59.7, 47.2),
+            ("PE", -64.6, 45.9, -61.8, 47.1),
+            ("NL", -67.9, 46.5, -52.5, 60.7),
+            ("YT", -141.1, 59.9, -123.8, 69.7),
+            ("NT", -136.5, 59.9, -102.0, 78.0),
+            ("NU", -110.0, 50.0, -60.0, 84.0),
+            ("AK", -179.2, 51.0, -129.9, 71.6),
+            ("AL", -88.6, 30.1, -84.8, 35.1),
+            ("AR", -94.7, 33.0, -89.6, 36.6),
+            ("AZ", -114.9, 31.2, -109.0, 37.1),
+            ("CA", -124.5, 32.4, -114.1, 42.1),
+            ("CO", -109.1, 36.9, -102.0, 41.1),
+            ("CT", -73.8, 40.9, -71.7, 42.1),
+            ("DC", -77.2, 38.7, -76.8, 39.1),
+            ("DE", -75.8, 38.4, -75.0, 39.9),
+            ("FL", -87.7, 24.3, -79.8, 31.1),
+            ("GA", -85.7, 30.3, -80.7, 35.1),
+            ("HI", -160.3, 18.8, -154.7, 22.3),
+            ("IA", -96.7, 40.3, -90.1, 43.6),
+            ("ID", -117.3, 42.0, -111.0, 49.1),
+            ("IL", -91.6, 36.9, -87.0, 42.6),
+            ("IN", -88.2, 37.7, -84.7, 41.8),
+            ("KS", -102.1, 36.9, -94.5, 40.1),
+            ("KY", -89.7, 36.4, -81.9, 39.2),
+            ("LA", -94.1, 28.8, -88.7, 33.1),
+            ("MA", -73.6, 41.2, -69.9, 42.9),
+            ("MD", -79.6, 37.8, -75.0, 39.8),
+            ("ME", -71.1, 42.9, -66.8, 47.6),
+            ("MI", -90.5, 41.6, -82.3, 48.4),
+            ("MN", -97.3, 43.4, -89.5, 49.4),
+            ("MO", -95.8, 35.9, -89.1, 40.7),
+            ("MS", -91.8, 30.1, -88.1, 35.1),
+            ("MT", -116.1, 44.3, -104.0, 49.1),
+            ("NC", -84.4, 33.8, -75.4, 36.7),
+            ("ND", -104.1, 45.9, -96.5, 49.1),
+            ("NE", -104.1, 39.9, -95.2, 43.1),
+            ("NH", -72.7, 42.6, -70.6, 45.4),
+            ("NJ", -75.6, 38.8, -73.8, 41.4),
+            ("NM", -109.1, 31.2, -103.0, 37.1),
+            ("NV", -120.1, 35.0, -114.0, 42.1),
+            ("NY", -79.8, 40.4, -71.8, 45.1),
+            ("OH", -84.9, 38.3, -80.5, 42.4),
+            ("OK", -103.1, 33.6, -94.3, 37.1),
+            ("OR", -124.7, 41.9, -116.4, 46.4),
+            ("PA", -80.6, 39.6, -74.6, 42.3),
+            ("PR", -67.4, 17.8, -65.2, 18.6),
+            ("RI", -71.9, 41.1, -71.0, 42.1),
+            ("SC", -83.4, 32.0, -78.5, 35.3),
+            ("SD", -104.1, 42.4, -96.4, 45.9),
+            ("TN", -90.4, 34.9, -81.6, 36.8),
+            ("TX", -106.7, 25.8, -93.5, 36.6),
+            ("UT", -114.1, 36.9, -109.0, 42.1),
+            ("VA", -83.8, 36.5, -75.2, 39.5),
+            ("VI", -65.2, 17.6, -64.5, 18.5),
+            ("VT", -73.5, 42.7, -71.4, 45.1),
+            ("WA", -124.9, 45.5, -116.8, 49.1),
+            ("WI", -92.9, 42.4, -86.8, 47.2),
+            ("WV", -82.7, 37.1, -77.7, 40.7),
+            ("WY", -111.1, 40.9, -104.0, 45.1)
+        ]
+
+        return regionBounds.first { bounds in
+            centerLon >= bounds.minLon &&
+            centerLon <= bounds.maxLon &&
+            centerLat >= bounds.minLat &&
+            centerLat <= bounds.maxLat
+        }?.code
+    }
+
     private func isDiamondGeometryReadinessError(_ error: Error) -> Bool {
         if let diamondError = error as? DiamondManifestAPIError {
             switch diamondError {
@@ -508,6 +806,99 @@ struct NewCampaignScreen: View {
         }
 
         return error.localizedDescription.localizedCaseInsensitiveContains("Diamond geometry was not ready")
+    }
+
+    private struct CampaignMapDataReadiness {
+        let buildingCount: Int
+    }
+
+    private func fetchCampaignAddressesWithRetry(
+        campaignId: UUID,
+        attempts: Int = 8,
+        delayMs: UInt64 = 350
+    ) async throws -> [CampaignAddressRow] {
+        var lastError: Error?
+
+        for attempt in 1...max(attempts, 1) {
+            do {
+                let addresses = try await CampaignsAPI.shared.fetchAddresses(campaignId: campaignId)
+                if !addresses.isEmpty {
+                    print("✅ [CAMPAIGN DEBUG] Loaded \(addresses.count) addresses after provision (attempt \(attempt))")
+                    return addresses
+                }
+                print("⚠️ [CAMPAIGN DEBUG] No addresses yet for campaign \(campaignId) (attempt \(attempt)/\(attempts))")
+            } catch {
+                lastError = error
+                print("⚠️ [CAMPAIGN DEBUG] Address fetch attempt \(attempt)/\(attempts) failed: \(error)")
+            }
+
+            if attempt < attempts {
+                try? await Task.sleep(nanoseconds: delayMs * 1_000_000)
+            }
+        }
+
+        if let lastError {
+            throw lastError
+        }
+        return []
+    }
+
+    private func prewarmCampaignBuildingsAfterProvision(campaignId: UUID) async -> CampaignMapDataReadiness? {
+        do {
+            let buildings = try await BuildingLinkService.shared.fetchBuildings(campaignId: campaignId.uuidString)
+            MapFeaturesService.shared.primeBuildingFeatures(
+                campaignId: campaignId.uuidString,
+                features: buildings
+            )
+            let buildingCount = renderableBuildingCount(in: buildings)
+            print("✅ [CAMPAIGN DEBUG] Campaign building prewarm loaded \(buildingCount) renderable buildings")
+            if buildingCount > 0 {
+                return CampaignMapDataReadiness(buildingCount: buildingCount)
+            }
+        } catch {
+            print("⚠️ [CAMPAIGN DEBUG] Building prewarm skipped: \(error)")
+        }
+
+        return nil
+    }
+
+    private func waitForCampaignMapDataReady(
+        campaignId: UUID,
+        timeoutSeconds: TimeInterval = 150,
+        pollIntervalSeconds: TimeInterval = 2
+    ) async -> CampaignMapDataReadiness? {
+        let startedAt = Date()
+        var attempt = 0
+
+        while Date().timeIntervalSince(startedAt) < timeoutSeconds {
+            attempt += 1
+            do {
+                let buildings = try await BuildingLinkService.shared.fetchBuildings(campaignId: campaignId.uuidString)
+                MapFeaturesService.shared.primeBuildingFeatures(
+                    campaignId: campaignId.uuidString,
+                    features: buildings
+                )
+                let buildingCount = renderableBuildingCount(in: buildings)
+
+                print("🧭 [CAMPAIGN DEBUG] map_data_gate attempt=\(attempt) buildings=\(buildingCount)")
+                if buildingCount > 0 {
+                    return CampaignMapDataReadiness(buildingCount: buildingCount)
+                }
+            } catch {
+                print("⚠️ [CAMPAIGN DEBUG] map_data_gate attempt=\(attempt) failed: \(error.localizedDescription)")
+            }
+
+            try? await Task.sleep(nanoseconds: UInt64(max(0.5, pollIntervalSeconds) * 1_000_000_000))
+        }
+
+        return nil
+    }
+
+    private func renderableBuildingCount(in buildings: [BuildingFeature]) -> Int {
+        buildings.filter { feature in
+            let type = feature.geometry.type.lowercased()
+            return type == "polygon" || type == "multipolygon"
+        }.count
     }
 
     @MainActor
@@ -561,41 +952,36 @@ struct NewCampaignScreen: View {
     }
 }
 
-private struct CampaignNameRequiredView: View {
-    let onDismiss: () -> Void
+private struct CampaignBackgroundSetupCard: View {
+    let isProvisioning: Bool
+    let isComplete: Bool
+    let didFail: Bool
+    let statusText: String
 
     var body: some View {
-        NavigationStack {
-            VStack(spacing: 20) {
-                Spacer()
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .font(.system(size: 48))
-                    .foregroundStyle(.orange)
-                Text("Campaign Name Required")
-                    .font(.title3.bold())
-                    .multilineTextAlignment(.center)
-                Text("Enter a campaign name to start drawing your territory.")
-                    .font(.body)
+        HStack(alignment: .top, spacing: 12) {
+            if isProvisioning {
+                ProgressView()
+                    .controlSize(.small)
+                    .padding(.top, 2)
+            } else {
+                Image(systemName: didFail ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                    .foregroundStyle(didFail ? .orange : .green)
+                    .padding(.top, 1)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(isProvisioning ? "Setting up in the background" : didFail ? "Setup needs attention" : isComplete ? "Setup finished" : "Setup queued")
+                    .font(.flyrFootnote.weight(.semibold))
+                Text(statusText.isEmpty ? "Homes and map data will continue loading while you finish these details." : statusText)
+                    .font(.flyrCaption)
                     .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, 24)
-                Button("Back to Campaign Setup") {
-                    onDismiss()
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-                Spacer()
             }
-            .padding()
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Close") {
-                        onDismiss()
-                    }
-                }
-            }
+            Spacer()
         }
+        .padding(12)
+        .background(Color(.systemGray6))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 }
 

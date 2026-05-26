@@ -275,7 +275,7 @@ struct LeaderboardTableHeaderView: View {
                 .foregroundColor(.muted)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-            // Metric (Doors / Conversations / Distance)
+            // Metric (Doors / Convo's)
             Button {
                 withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
                     selectedMetric = selectedMetric.next()

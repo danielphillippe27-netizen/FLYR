@@ -1,36 +1,33 @@
 import Foundation
 
-enum CampaignMapMode: String, Codable, Equatable {
-    case smartBuildings = "smart_buildings"
+enum CampaignMapMode: Codable, Equatable, RawRepresentable {
     case hybrid
-    case standardPins = "standard_pins"
+    case standardPins
+
+    init?(rawValue: String) {
+        switch rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "standard_pins", "standardpins", "standard":
+            self = .standardPins
+        default:
+            self = .hybrid
+        }
+    }
+
+    var rawValue: String {
+        switch self {
+        case .hybrid:
+            return "hybrid"
+        case .standardPins:
+            return "standard_pins"
+        }
+    }
 
     static func resolved(
         explicit mapMode: CampaignMapMode?,
-        hasParcels: Bool?,
-        buildingLinkConfidence: Double?
+        hasParcels _: Bool?,
+        buildingLinkConfidence _: Double?
     ) -> CampaignMapMode {
-        if let mapMode {
-            return mapMode
-        }
-
-        guard let buildingLinkConfidence else {
-            return .standardPins
-        }
-
-        if hasParcels == true {
-            return buildingLinkConfidence >= 90 ? .smartBuildings : .hybrid
-        }
-
-        if buildingLinkConfidence >= 90 {
-            return .smartBuildings
-        }
-
-        if buildingLinkConfidence >= 60 {
-            return .hybrid
-        }
-
-        return .standardPins
+        mapMode ?? .hybrid
     }
 
     static func resolvedForPresentation(
@@ -39,39 +36,43 @@ enum CampaignMapMode: String, Codable, Equatable {
         buildingLinkConfidence: Double?,
         provisionPhase _: CampaignProvisionPhase?
     ) -> CampaignMapMode {
-        let resolvedMode = resolved(
+        return resolved(
             explicit: mapMode,
             hasParcels: hasParcels,
             buildingLinkConfidence: buildingLinkConfidence
         )
-
-        return resolvedMode == .standardPins ? .hybrid : resolvedMode
     }
 
     var bannerTitle: String {
         switch self {
-        case .standardPins:
-            return "Standard Canvassing Mode"
-        case .smartBuildings:
-            return "Smart Buildings"
         case .hybrid:
             return "Hybrid"
+        case .standardPins:
+            return "Standard Pins"
         }
     }
 
     var settingsTitle: String {
         switch self {
-        case .standardPins:
-            return "Standard Canvassing"
-        case .smartBuildings:
-            return "Smart Buildings"
         case .hybrid:
             return "Hybrid"
+        case .standardPins:
+            return "Standard Pins"
         }
     }
 
     var usesStandardPins: Bool {
         self == .standardPins
+    }
+
+    init(from decoder: Decoder) throws {
+        let rawValue = (try? decoder.singleValueContainer().decode(String.self)) ?? ""
+        self = CampaignMapMode(rawValue: rawValue) ?? .hybrid
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
     }
 }
 
@@ -152,14 +153,20 @@ struct CampaignDataConfidenceSummary: Codable, Equatable {
 // MARK: - Campaign Type
 
 public enum CampaignType: String, CaseIterable, Identifiable, Codable {
-  case flyer
-  case doorKnock
-  case event
-  case survey
-  case gift
-  case popBy
-  case openHouse
-  case letters
+  case flyer = "flyer"
+  case doorKnock = "door_knock"
+  case event = "event"
+  case survey = "survey"
+  case gift = "gift"
+  case popBy = "pop_by"
+  case openHouse = "open_house"
+  case comingSoon = "coming_soon"
+  case marketUpdate = "market_update"
+  case letters = "letters"
+  case justSold = "just_sold"
+  case justListed = "just_listed"
+  case prospecting = "prospecting"
+  case other = "other"
 
   public var id: String { rawValue }
 
@@ -172,29 +179,88 @@ public enum CampaignType: String, CaseIterable, Identifiable, Codable {
       case .gift:             "Gift"
       case .popBy:            "Pop-By"
       case .openHouse:        "Open House"
+      case .comingSoon:       "Coming Soon"
+      case .marketUpdate:     "Market Update"
       case .letters:          "Letters"
+      case .justSold:         "Just Sold"
+      case .justListed:       "Just Listed"
+      case .prospecting:      "Prospecting"
+      case .other:            "Other"
     }
   }
 
   public var label: String { title }
 
-  /// Picker options: Flyer and Door Knock only.
+  /// Picker options for campaign creation.
   public static var ordered: [CampaignType] {
-    [.flyer, .doorKnock]
+    [
+      .flyer,
+      .doorKnock,
+      .event,
+      .survey,
+      .gift,
+      .popBy,
+      .openHouse,
+      .comingSoon,
+      .marketUpdate,
+      .letters,
+      .justSold,
+      .justListed,
+      .prospecting,
+      .other
+    ]
+  }
+
+  /// Picker options tuned to the workspace industry. Keep the mapping here so the
+  /// campaign creation UI can swap campaign menus without duplicating logic.
+  public static func ordered(forIndustry industry: String?) -> [CampaignType] {
+    let normalizedIndustry = industry?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+
+    if normalizedIndustry.contains("real estate") {
+      return [
+        .justSold,
+        .justListed,
+        .openHouse,
+        .comingSoon,
+        .marketUpdate,
+        .prospecting,
+        .popBy,
+        .letters,
+        .flyer,
+        .doorKnock,
+        .event,
+        .other
+      ]
+    }
+
+    if ["roof", "solar", "hvac", "pest", "home service"].contains(where: { normalizedIndustry.contains($0) }) {
+      return [
+        .doorKnock,
+        .flyer,
+        .survey,
+        .event,
+        .gift,
+        .letters,
+        .prospecting,
+        .other
+      ]
+    }
+
+    return [
+      .flyer,
+      .doorKnock,
+      .event,
+      .survey,
+      .gift,
+      .letters,
+      .prospecting,
+      .other
+    ]
   }
 
   /// Canonical value expected by Supabase `campaigns.type` constraints.
   var dbValue: String {
-    switch self {
-      case .flyer: return "flyer"
-      case .doorKnock: return "door_knock"
-      case .event: return "event"
-      case .survey: return "survey"
-      case .gift: return "gift"
-      case .popBy: return "pop_by"
-      case .openHouse: return "open_house"
-      case .letters: return "letters"
-    }
+    rawValue
   }
 }
 
@@ -208,7 +274,13 @@ extension CampaignType {
         case "gift": self = .gift
         case "pop_by": self = .popBy
         case "open_house": self = .openHouse
+        case "coming_soon": self = .comingSoon
+        case "market_update": self = .marketUpdate
         case "letters": self = .letters
+        case "just_sold": self = .justSold
+        case "just_listed": self = .justListed
+        case "prospecting": self = .prospecting
+        case "other": self = .other
         default: return nil
         }
     }
@@ -270,12 +342,40 @@ enum CampaignProvisionStatus: String, Codable, Equatable {
     case pending
     case ready
     case failed
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let value = (try? container.decode(String.self))?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+
+        switch value {
+        case "ready", "complete", "completed":
+            self = .ready
+        case "failed":
+            self = .failed
+        case "pending", nil:
+            self = .pending
+        default:
+            self = .pending
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
 }
 
 enum CampaignProvisionSource: String, Codable, Equatable {
-    case gold
-    case silver
-    case lambda
+    case diamond
+    case bedrock
+    case bedrockNz = "bedrock_nz"
+    case bedrockAu = "bedrock_au"
+    case bedrockCa = "bedrock_ca"
+    case bedrockUs = "bedrock_us"
+    case bedrockZa = "bedrock_za"
+    case bedrockUk = "bedrock_uk"
 }
 
 enum CampaignProvisionPhase: String, Codable, Equatable {

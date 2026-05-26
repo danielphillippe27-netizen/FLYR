@@ -241,9 +241,9 @@ struct NewCampaignDetailView: View {
                             initialCenter: mapCenter,
                             showPreSessionStartButton: false
                         )
-                            .frame(height: 260)
-                            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                            .matchedGeometryEffect(id: "map", in: mapNamespace, isSource: !isMapFullscreen)
+                        .frame(height: 260)
+                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        .matchedGeometryEffect(id: "map", in: mapNamespace, isSource: !isMapFullscreen)
                         
                         // Fullscreen trigger
                         Button(action: {
@@ -899,25 +899,21 @@ struct NewCampaignDetailView: View {
     }
     
     private func updateMapCenter(for campaign: CampaignV2) {
-        // Use the first address in the list to center the map
-        if let firstAddress = campaign.addresses.first {
-            if let coord = firstAddress.coordinate {
-                mapCenter = coord
-                print("🗺️ [MAP] Centering map on first address: \(firstAddress.address) at \(coord)")
-            } else {
-                // If first address doesn't have coordinates, try to find any address with coordinates
-                if let firstAddressWithCoords = campaign.addresses.first(where: { $0.coordinate != nil }) {
-                    mapCenter = firstAddressWithCoords.coordinate!
-                    print("🗺️ [MAP] First address has no coordinates, using first available: \(firstAddressWithCoords.coordinate!)")
-                } else {
-                    mapCenter = nil
-                    print("🗺️ [MAP] No addresses with coordinates; waiting for campaign map data")
-                }
-            }
-        } else {
+        let coordinates = campaign.addresses
+            .compactMap(\.coordinate)
+            .filter(CLLocationCoordinate2DIsValid)
+
+        guard !coordinates.isEmpty else {
             mapCenter = nil
             print("🗺️ [MAP] Campaign has no addresses; waiting for campaign map data")
+            return
         }
+
+        let latitude = coordinates.reduce(0) { $0 + $1.latitude } / Double(coordinates.count)
+        let longitude = coordinates.reduce(0) { $0 + $1.longitude } / Double(coordinates.count)
+        let center = CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+        mapCenter = center
+        print("🗺️ [MAP] Centering map on campaign address centroid: \(coordinates.count) coordinates at \(center)")
     }
 
     private func refreshCampaignDetailData() async {
@@ -1739,12 +1735,22 @@ struct FullscreenMapView: View {
     let namespace: Namespace.ID
     /// When true, this view is the geometry source for the matched effect (inline map uses isSource: false when fullscreen).
     let isSource: Bool
+    var initialCenter: CLLocationCoordinate2D? = nil
+    var showPreSessionStartButton: Bool = true
+    var farmExecutionContext: FarmExecutionContext? = nil
+    var initialFarmSessionType: FarmTouchType? = nil
+    var farmSessionStartContextProvider: ((FarmTouchType) async -> FarmExecutionContext?)? = nil
     let onClose: () -> Void
     @ObservedObject private var sessionManager = SessionManager.shared
 
     var body: some View {
         CampaignMapView(
             campaignId: campaignID.uuidString,
+            farmExecutionContext: farmExecutionContext,
+            initialFarmSessionType: initialFarmSessionType,
+            farmSessionStartContextProvider: farmSessionStartContextProvider,
+            initialCenter: initialCenter,
+            showPreSessionStartButton: showPreSessionStartButton,
             onDismissFromMap: sessionManager.sessionId == nil
                 ? {
                     let impactFeedback = UIImpactFeedbackGenerator(style: .light)

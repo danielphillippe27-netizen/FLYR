@@ -5,6 +5,7 @@ import Combine
 final class WorkspaceOnboardingViewModel: ObservableObject {
     @Published var firstName = ""
     @Published var lastName = ""
+    @Published var countryCode: String?
     @Published var workspaceName = ""
     @Published var useCase: OnboardingUseCase = .solo
     @Published var industry: String?
@@ -30,6 +31,7 @@ final class WorkspaceOnboardingViewModel: ObservableObject {
     var canSubmit: Bool {
         !firstName.trimmingCharacters(in: .whitespaces).isEmpty
             && !lastName.trimmingCharacters(in: .whitespaces).isEmpty
+            && CountryOptions.normalize(countryCode) != nil
             && !workspaceName.trimmingCharacters(in: .whitespaces).isEmpty
             && industry != nil
     }
@@ -97,6 +99,7 @@ final class WorkspaceOnboardingViewModel: ObservableObject {
         return OnboardingCompleteRequest(
             firstName: firstName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : firstName.trimmingCharacters(in: .whitespacesAndNewlines),
             lastName: lastName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : lastName.trimmingCharacters(in: .whitespacesAndNewlines),
+            countryCode: CountryOptions.normalize(countryCode),
             workspaceName: workspaceName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : workspaceName.trimmingCharacters(in: .whitespacesAndNewlines),
             industry: industry,
             useCase: useCase,

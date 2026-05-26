@@ -1,6 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { fetchAllInPages } from '@/lib/supabase/fetchAllInPages';
 
-export type CampaignMapMode = 'smart_buildings' | 'hybrid' | 'standard_pins';
+export type CampaignMapMode = 'hybrid';
 
 export interface CampaignMapModeAssessment {
   hasParcels: boolean;
@@ -18,8 +19,6 @@ export interface CampaignMapModeComputationOptions {
   linkedAddressCount?: number;
 }
 
-export const SMART_BUILDINGS_LINK_THRESHOLD = 90;
-export const HYBRID_LINK_THRESHOLD = 60;
 export const ACCEPTABLE_LINK_CONFIDENCE_SCORE = 0.6;
 
 function roundPercentage(value: number): number {
@@ -30,21 +29,8 @@ export function resolveCampaignMapMode(input: {
   hasParcels: boolean;
   buildingLinkConfidence: number;
 }): CampaignMapMode {
-  if (input.hasParcels) {
-    return input.buildingLinkConfidence >= SMART_BUILDINGS_LINK_THRESHOLD
-      ? 'smart_buildings'
-      : 'hybrid';
-  }
-
-  if (input.buildingLinkConfidence >= SMART_BUILDINGS_LINK_THRESHOLD) {
-    return 'smart_buildings';
-  }
-
-  if (input.buildingLinkConfidence >= HYBRID_LINK_THRESHOLD) {
-    return 'hybrid';
-  }
-
-  return 'standard_pins';
+  void input;
+  return 'hybrid';
 }
 
 export class CampaignMapModeService {
@@ -110,21 +96,54 @@ export class CampaignMapModeService {
   }
 
   private async fetchLinkedAddressCount(campaignId: string): Promise<number> {
-    const confidenceColumns = ['confidence', 'confidence_score'];
+    const linkedAddressIds = new Set<string>();
 
-    for (const column of confidenceColumns) {
-      const { count, error } = await this.supabase
-        .from('building_address_links')
-        .select('address_id', { count: 'exact', head: true })
+    const directLinks = await fetchAllInPages<{
+      id: string;
+      building_id: string | null;
+      building_gers_id: string | null;
+      confidence: number | null;
+    }>((from, to) =>
+      this.supabase
+        .from('campaign_addresses')
+        .select('id, building_id, building_gers_id, confidence')
         .eq('campaign_id', campaignId)
-        .gte(column, ACCEPTABLE_LINK_CONFIDENCE_SCORE);
+        .range(from, to)
+    );
 
-      if (!error) {
-        return count ?? 0;
+    for (const row of directLinks) {
+      const hasBuilding = typeof row.building_id === 'string' || typeof row.building_gers_id === 'string';
+      const confidence = typeof row.confidence === 'number' ? row.confidence : 1;
+      if (hasBuilding && confidence >= ACCEPTABLE_LINK_CONFIDENCE_SCORE) {
+        linkedAddressIds.add(row.id);
       }
     }
 
-    throw new Error('Failed to count linked addresses using confidence or confidence_score.');
+    const confidenceColumns = ['confidence', 'confidence_score'];
+    let lastError: { message?: string } | null = null;
+
+    for (const column of confidenceColumns) {
+      try {
+        const rows = await fetchAllInPages<{ address_id: string }>((from, to) =>
+          this.supabase
+            .from('building_address_links')
+            .select('address_id')
+            .eq('campaign_id', campaignId)
+            .gte(column, ACCEPTABLE_LINK_CONFIDENCE_SCORE)
+            .range(from, to)
+        );
+        for (const row of rows) {
+          if (typeof row.address_id === 'string') {
+            linkedAddressIds.add(row.address_id);
+          }
+        }
+        return linkedAddressIds.size;
+      } catch (error) {
+        lastError = error as { message?: string };
+      }
+    }
+
+    throw new Error(`Failed to count linked addresses using confidence or confidence_score: ${lastError?.message ?? 'unknown error'}`);
   }
 
   private async fetchParcelCount(campaignId: string): Promise<number> {

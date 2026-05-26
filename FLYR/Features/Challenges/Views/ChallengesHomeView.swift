@@ -4,16 +4,10 @@ import Supabase
 import UIKit
 import LinkPresentation
 
-private enum ChallengeBoardTab: String, CaseIterable {
-    case mine = "My Challenges"
-    case search = "Search Challenges"
-}
-
 struct ChallengesHomeView: View {
     @Environment(\.colorScheme) private var colorScheme
     @StateObject private var viewModel = ChallengesViewModel()
     @StateObject private var auth = AuthManager.shared
-    @State private var selectedTab: ChallengeBoardTab = .mine
     @State private var showCreateSheet = false
     @State private var shareStatusMessage: String?
     @State private var selectedChallenge: Challenge?
@@ -25,14 +19,7 @@ struct ChallengesHomeView: View {
             if let user = auth.user {
                 ScrollView {
                     VStack(spacing: 18) {
-                        tabPicker
-
-                        switch selectedTab {
-                        case .mine:
-                            myChallengesContent(user: user)
-                        case .search:
-                            searchChallengesContent(user: user)
-                        }
+                        myChallengesContent(user: user)
 
                         if let errorMessage = viewModel.errorMessage {
                             errorBanner(errorMessage)
@@ -114,145 +101,20 @@ struct ChallengesHomeView: View {
         }
     }
 
-    private var tabPicker: some View {
-        HStack(spacing: 10) {
-            ForEach(ChallengeBoardTab.allCases, id: \.self) { tab in
-                Button {
-                    selectedTab = tab
-                    HapticManager.light()
-                } label: {
-                    Text(tab.rawValue)
-                        .font(.flyrSubheadline.weight(.semibold))
-                        .foregroundStyle(selectedTab == tab ? Color.white : Color.text)
-                        .lineLimit(2)
-                        .minimumScaleFactor(0.78)
-                        .multilineTextAlignment(.center)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
-                        .background(
-                            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                .fill(selectedTab == tab ? Color.flyrPrimary : Color.bgSecondary)
-                        )
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .frame(maxWidth: .infinity)
-        .padding(6)
-        .background(
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .fill(Color.bgSecondary)
-        )
-    }
-
     @ViewBuilder
     private func myChallengesContent(user: AppUser) -> some View {
-        heroCard(user: user)
-        if let rolling = viewModel.rollingLeaderboard {
-            challengeLeaderboardCard(rolling, currentUserID: user.id)
-        }
         privateChallengesCard(user: user)
         actionCard(user: user)
-    }
-
-    @ViewBuilder
-    private func searchChallengesContent(user: AppUser) -> some View {
-        searchHeader
-
-        if viewModel.filteredSearchChallenges.isEmpty {
-            emptySearchState
-        } else {
-            VStack(spacing: 14) {
-                ForEach(viewModel.filteredSearchChallenges) { challenge in
-                    searchableChallengeCard(challenge, user: user) {
-                        selectedChallenge = challenge
-                    }
-                }
-            }
-        }
-    }
-
-    private func heroCard(user: AppUser) -> some View {
-        let cardShape = RoundedRectangle(cornerRadius: 28, style: .continuous)
-
-        return ZStack(alignment: .topLeading) {
-            cardShape
-                .fill(
-                    LinearGradient(
-                        colors: colorScheme == .dark
-                            ? [Color(red: 0.96, green: 0.27, blue: 0.18), Color(red: 0.59, green: 0.09, blue: 0.10)]
-                            : [Color(red: 1.0, green: 0.53, blue: 0.31), Color(red: 0.93, green: 0.24, blue: 0.19)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
-
-            Circle()
-                .fill(Color.white.opacity(colorScheme == .dark ? 0.08 : 0.16))
-                .frame(width: 180, height: 180)
-                .offset(x: 170, y: -40)
-
-            Circle()
-                .fill(Color.black.opacity(colorScheme == .dark ? 0.14 : 0.08))
-                .frame(width: 120, height: 120)
-                .offset(x: -40, y: 140)
-
-            VStack(alignment: .leading, spacing: 18) {
-                HStack(alignment: .top) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("30 Day Challenge")
-                            .font(.flyrTitle)
-                            .foregroundStyle(Color.white)
-
-                        Text("Keep your streak alive, track the habit, and give yourself one challenge that never slips.")
-                            .font(.flyrSubheadline)
-                            .foregroundStyle(Color.white.opacity(0.86))
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                    Spacer(minLength: 16)
-
-                    heroStatusBadge(user: user)
-                }
-
-                HStack(spacing: 18) {
-                    ProgressRing(progress: viewModel.progressRatio, size: 112, strokeWidth: 10) {
-                        VStack(spacing: 2) {
-                            Text("\(viewModel.displayedProgressDays)")
-                                .font(.flyrTitle2Bold)
-                                .foregroundStyle(Color.white)
-                                .monospacedDigit()
-                            Text("/ 30")
-                                .font(.flyrCaption)
-                                .foregroundStyle(Color.white.opacity(0.78))
-                        }
-                    }
-
-                    VStack(alignment: .leading, spacing: 12) {
-                        heroMetric(title: "Current streak", value: "\(viewModel.currentStreak) days", icon: "flame.fill")
-                        heroMetric(title: "Best streak", value: "\(viewModel.bestStreak) days", icon: "trophy.fill")
-                        heroMetric(title: "Time left", value: remainingDaysLabel, icon: "calendar")
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-            }
-            .padding(24)
-        }
-        .frame(maxWidth: .infinity)
-        .frame(minHeight: 260)
-        .clipShape(cardShape)
-        .shadow(color: Color.black.opacity(colorScheme == .dark ? 0.24 : 0.08), radius: 24, x: 0, y: 10)
     }
 
     private func privateChallengesCard(user: AppUser) -> some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Challenge Board")
+                    Text("Your Challenges")
                         .font(.flyrHeadline)
                         .foregroundStyle(Color.text)
-                    Text("Track the challenges you created and the group challenges you’ve joined.")
+                    Text("Created by you or joined from an invite.")
                         .font(.flyrFootnote)
                         .foregroundStyle(Color.muted)
                 }
@@ -264,10 +126,10 @@ struct ChallengesHomeView: View {
                     Image(systemName: "person.2.badge.plus")
                         .font(.system(size: 28, weight: .semibold))
                         .foregroundStyle(Color.flyrPrimary)
-                    Text("No private challenges yet")
+                    Text("No challenges yet")
                         .font(.flyrSubheadline.weight(.semibold))
                         .foregroundStyle(Color.text)
-                    Text("Tap the + button to create a private friend challenge or publish one into Search Challenges.")
+                    Text("Tap the + button to create a challenge and send it to someone.")
                         .font(.flyrFootnote)
                         .foregroundStyle(Color.muted)
                         .multilineTextAlignment(.center)
@@ -295,40 +157,6 @@ struct ChallengesHomeView: View {
         )
     }
 
-    @ViewBuilder
-    private func heroStatusBadge(user: AppUser) -> some View {
-        let badgeLabel = (viewModel.thirtyDayChallenge == nil ? "START" : viewModel.statusTitle.uppercased())
-
-        if viewModel.thirtyDayChallenge == nil {
-            Button {
-                Task {
-                    await viewModel.startChallenge(
-                        for: user.id,
-                        creatorName: user.displayName ?? fallbackName(from: user.email)
-                    )
-                }
-            } label: {
-                Text(badgeLabel)
-                    .font(.flyrCaption.weight(.bold))
-                    .foregroundStyle(Color.white)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(Color.black.opacity(0.18))
-                    .clipShape(Capsule())
-            }
-            .buttonStyle(.plain)
-            .disabled(viewModel.isMutating)
-        } else {
-            Text(badgeLabel)
-                .font(.flyrCaption.weight(.bold))
-                .foregroundStyle(Color.white)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(Color.black.opacity(0.18))
-                .clipShape(Capsule())
-        }
-    }
-
     private func actionCard(user: AppUser) -> some View {
         Button {
             showCreateSheet = true
@@ -352,113 +180,11 @@ struct ChallengesHomeView: View {
         )
     }
 
-    private func challengeLeaderboardCard(_ leaderboard: RollingChallengeLeaderboardSnapshot, currentUserID: UUID) -> some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("First 30 Days Leaderboard")
-                        .font(.flyrHeadline)
-                        .foregroundStyle(Color.text)
-                    Text("\(leaderboard.participantCount) reps in the live window")
-                        .font(.flyrFootnote)
-                        .foregroundStyle(Color.muted)
-                }
-                Spacer()
-                Text("LIVE")
-                    .font(.flyrCaption.weight(.bold))
-                    .foregroundStyle(Color.orange)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(Color.orange.opacity(0.12))
-                    .clipShape(Capsule())
-            }
-
-            VStack(spacing: 10) {
-                ForEach(Array(leaderboard.entries.prefix(10))) { entry in
-                    ChallengeLeaderboardInlineRow(
-                        entry: entry,
-                        isCurrentUser: normalizeUserID(entry.userID) == currentUserID.uuidString.lowercased()
-                    )
-                }
-            }
-
-            if leaderboard.entries.count > 10 {
-                Text("Showing the top 10 for now.")
-                    .font(.flyrCaption)
-                    .foregroundStyle(Color.muted)
-            }
-        }
-        .padding(20)
-        .background(
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .fill(Color.bgSecondary)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .stroke(Color.border.opacity(0.35), lineWidth: 1)
-        )
-    }
-
-    private var searchHeader: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Search Challenges")
-                .font(.flyrHeadline)
-                .foregroundStyle(Color.text)
-
-            Text("Browse public challenges to join — including ones you published — or search by title or creator.")
-                .font(.flyrFootnote)
-                .foregroundStyle(Color.muted)
-
-            HStack(spacing: 12) {
-                Image(systemName: "magnifyingglass")
-                    .foregroundStyle(Color.textTertiary)
-                TextField("Search by title, type, or creator", text: $viewModel.searchText)
-                    .textInputAutocapitalization(.words)
-                    .disableAutocorrection(true)
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 12)
-            .background(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(Color.bgSecondary)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .stroke(Color.border.opacity(0.35), lineWidth: 1)
-            )
-        }
-    }
-
-    private var emptySearchState: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "sparkles.rectangle.stack")
-                .font(.system(size: 28, weight: .semibold))
-                .foregroundStyle(Color.flyrPrimary)
-            Text("No searchable challenges yet")
-                .font(.flyrHeadline)
-                .foregroundStyle(Color.text)
-            Text("Create one with the + button. It’ll show up here for you and for others to find and join.")
-                .font(.flyrFootnote)
-                .foregroundStyle(Color.muted)
-                .multilineTextAlignment(.center)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(28)
-        .background(
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .fill(Color.bgSecondary)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .stroke(Color.border.opacity(0.35), lineWidth: 1)
-        )
-    }
-
     @ViewBuilder
     private func challengeInfoPillsRow(challenge: Challenge, timeLimitDays: Int?) -> some View {
         ViewThatFits(in: .horizontal) {
             HStack(spacing: 10) {
-                infoPill(text: challenge.visibilityLabel, icon: challenge.visibility == .privateInvite ? "lock.fill" : "globe")
+                infoPill(text: challenge.typeLabel, icon: challenge.type.iconName)
                 infoPill(
                     text: challenge.participantCount == 1 ? "1 joined" : "\(challenge.participantCount) joined",
                     icon: "person.2.fill"
@@ -471,7 +197,7 @@ struct ChallengesHomeView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
 
             VStack(alignment: .leading, spacing: 10) {
-                infoPill(text: challenge.visibilityLabel, icon: challenge.visibility == .privateInvite ? "lock.fill" : "globe")
+                infoPill(text: challenge.typeLabel, icon: challenge.type.iconName)
                 infoPill(
                     text: challenge.participantCount == 1 ? "1 joined" : "\(challenge.participantCount) joined",
                     icon: "person.2.fill"
@@ -479,36 +205,6 @@ struct ChallengesHomeView: View {
                 infoPill(text: "\(challenge.goalCount) \(challenge.metricLabel)", icon: "scope")
                 if let timeLimitDays {
                     infoPill(text: "\(timeLimitDays) days", icon: "calendar")
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func searchableChallengePillsRow(challenge: Challenge) -> some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 10) {
-                infoPill(text: challenge.typeLabel, icon: challenge.type.iconName)
-                infoPill(
-                    text: challenge.participantCount == 1 ? "1 joined" : "\(challenge.participantCount) joined",
-                    icon: "person.2.fill"
-                )
-                infoPill(text: "\(challenge.goalCount) \(challenge.metricLabel)", icon: "chart.bar.fill")
-                if let timeLimitHours = challenge.timeLimitHours {
-                    infoPill(text: "\(max(timeLimitHours / 24, 1)) days", icon: "clock.fill")
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            VStack(alignment: .leading, spacing: 10) {
-                infoPill(text: challenge.typeLabel, icon: challenge.type.iconName)
-                infoPill(
-                    text: challenge.participantCount == 1 ? "1 joined" : "\(challenge.participantCount) joined",
-                    icon: "person.2.fill"
-                )
-                infoPill(text: "\(challenge.goalCount) \(challenge.metricLabel)", icon: "chart.bar.fill")
-                if let timeLimitHours = challenge.timeLimitHours {
-                    infoPill(text: "\(max(timeLimitHours / 24, 1)) days", icon: "clock.fill")
                 }
             }
         }
@@ -663,76 +359,6 @@ struct ChallengesHomeView: View {
         )
     }
 
-    private func searchableChallengeCard(
-        _ challenge: Challenge,
-        user: AppUser,
-        onOpenHostChallenge: @escaping () -> Void
-    ) -> some View {
-        let isHost = challenge.isCreated(by: user.id)
-
-        return VStack(alignment: .leading, spacing: 16) {
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text(challenge.title)
-                        .font(.flyrHeadline)
-                        .foregroundStyle(Color.text)
-                    Text("Created by \(challenge.creatorName ?? "Someone in FLYR")")
-                        .font(.flyrFootnote)
-                        .foregroundStyle(Color.muted)
-                }
-                Spacer()
-                statusCapsule(for: challenge)
-            }
-
-            Text(challenge.description?.isEmpty == false ? challenge.description! : "A public \(challenge.typeLabel.lowercased()) challenge anyone can join.")
-                .font(.flyrBody)
-                .foregroundStyle(Color.text)
-                .fixedSize(horizontal: false, vertical: true)
-
-            searchableChallengePillsRow(challenge: challenge)
-
-            if isHost {
-                Text("You’re the host. Others can discover this challenge here; you can’t join your own challenge as a participant.")
-                    .font(.flyrFootnote)
-                    .foregroundStyle(Color.muted)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                Button(action: onOpenHostChallenge) {
-                    Text("Open challenge")
-                        .frame(maxWidth: .infinity, minHeight: 46)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .secondaryButton()
-            } else {
-                Button {
-                    Task {
-                        await viewModel.joinSearchableChallenge(challenge, user: user)
-                    }
-                } label: {
-                    HStack {
-                        if viewModel.isMutating {
-                            ProgressView().tint(.white)
-                        }
-                        Text("Join Challenge")
-                    }
-                    .frame(maxWidth: .infinity)
-                }
-                .primaryButton()
-                .disabled(viewModel.isMutating)
-            }
-        }
-        .padding(20)
-        .background(
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .fill(Color.bgSecondary)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .stroke(Color.border.opacity(0.35), lineWidth: 1)
-        )
-    }
-
     private func statusCapsule(for challenge: Challenge) -> some View {
         Text(challenge.status.rawValue.capitalized)
             .font(.flyrCaption.weight(.bold))
@@ -743,24 +369,6 @@ struct ChallengesHomeView: View {
                 Capsule()
                     .fill(challenge.status == .completed ? Color.success.opacity(0.12) : Color.bgSecondary)
             )
-    }
-
-    private func heroMetric(title: String, value: String, icon: String) -> some View {
-        HStack(spacing: 10) {
-            Image(systemName: icon)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(Color.white.opacity(0.92))
-                .frame(width: 18)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.flyrCaption)
-                    .foregroundStyle(Color.white.opacity(0.72))
-                Text(value)
-                    .font(.flyrSubheadline.weight(.semibold))
-                    .foregroundStyle(Color.white)
-            }
-        }
     }
 
     private func infoPill(text: String, icon: String) -> some View {
@@ -865,54 +473,12 @@ struct ChallengesHomeView: View {
             Image(systemName: "person.crop.circle.badge.exclamationmark")
                 .font(.system(size: 40, weight: .semibold))
                 .foregroundStyle(Color.muted)
-            Text("Sign in to start, share, and search challenges.")
+            Text("Sign in to start and share challenges.")
                 .font(.flyrHeadline)
                 .foregroundStyle(Color.text)
                 .multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    private var remainingDaysLabel: String {
-        guard let challenge = viewModel.thirtyDayChallenge,
-              let expiresAt = challenge.expiresAt else {
-            return "30 days"
-        }
-
-        let daysRemaining = max(
-            Calendar.current.dateComponents(
-                [.day],
-                from: Calendar.current.startOfDay(for: Date()),
-                to: Calendar.current.startOfDay(for: expiresAt)
-            ).day ?? 0,
-            0
-        )
-
-        return challenge.status == .completed ? "Done" : "\(daysRemaining)d left"
-    }
-
-    private var actionBody: String {
-        switch viewModel.thirtyDayChallenge?.status {
-        case .active:
-            return "Progress syncs from your current day streak. Pull to refresh after a session or send out a private friend challenge with the + button."
-        case .completed:
-            return "You can start another round or use the + button to challenge someone else privately."
-        case .failed:
-            return "A restart creates a new 30-day run without deleting the previous one."
-        case .none:
-            return "Start your own 30 day streak or create a private challenge for a friend from the + button."
-        }
-    }
-
-    private var primaryButtonTitle: String {
-        switch viewModel.thirtyDayChallenge?.status {
-        case .completed:
-            return "Start Another Round"
-        case .failed:
-            return "Restart Challenge"
-        case .none, .active:
-            return "Start 30 Day Challenge"
-        }
     }
 
     private func challengeHeadline(
@@ -955,7 +521,7 @@ struct ChallengesHomeView: View {
                     return "Invite link is locked to \(email) until the first person joins."
                 }
             }
-            return "Anyone with the invite or in Search Challenges can join this one."
+            return "Anyone with the invite link can join this one."
         }
 
         if challenge.status == .completed {
@@ -997,10 +563,6 @@ struct ChallengesHomeView: View {
         email.split(separator: "@").first.map(String.init)?.capitalized ?? "Friend"
     }
 
-    private func normalizeUserID(_ raw: String) -> String {
-        raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-    }
-
     private func displayedProgress(for challenge: Challenge, participant: ChallengeParticipant?) -> Int {
         guard let participant, !challenge.isThirtyDayChallenge else {
             return challenge.progressCount
@@ -1018,82 +580,6 @@ struct ChallengesHomeView: View {
             total = max(challenge.goalCount, 1)
         }
         return min(max(Double(progress) / Double(total), 0), 1)
-    }
-}
-
-private struct ChallengeLeaderboardInlineRow: View {
-    let entry: RollingChallengeLeaderboardEntry
-    let isCurrentUser: Bool
-
-    var body: some View {
-        HStack(spacing: 12) {
-            rankView
-
-            VStack(alignment: .leading, spacing: 6) {
-                Text(nameLine)
-                    .font(.flyrSubheadline.weight(.semibold))
-                    .foregroundStyle(Color.text)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .lineLimit(1)
-
-                HStack(spacing: 8) {
-                    if entry.currentStreak >= 2 {
-                        pill("🔥 \(entry.currentStreak)", tint: Color.orange, background: Color.orange.opacity(0.14))
-                    }
-                    if entry.accountabilityPosted {
-                        pill("📤 Posted", tint: Color.green, background: Color.green.opacity(0.14))
-                    }
-                }
-            }
-
-            VStack(alignment: .trailing, spacing: 4) {
-                Text("\(entry.score)")
-                    .font(.flyrHeadline.weight(.bold))
-                    .foregroundStyle(Color.flyrPrimary)
-                    .monospacedDigit()
-                Text("homes")
-                    .font(.flyrCaption)
-                    .foregroundStyle(Color.muted)
-            }
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
-        .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(isCurrentUser ? Color.flyrPrimary.opacity(0.08) : Color.bg)
-        )
-    }
-
-    private var nameLine: String {
-        ([entry.displayName] + entry.activeBadges.map(\.emoji) + (isCurrentUser ? ["You"] : []))
-            .filter { !$0.isEmpty }
-            .joined(separator: " ")
-    }
-
-    @ViewBuilder
-    private var rankView: some View {
-        if entry.rank == 1 {
-            Image(systemName: "crown.fill")
-                .font(.system(size: 18, weight: .bold))
-                .foregroundStyle(Color.yellow)
-                .frame(width: 30, height: 30)
-        } else {
-            Text("#\(entry.rank)")
-                .font(.flyrFootnote.weight(.bold))
-                .foregroundStyle(Color.muted)
-                .monospacedDigit()
-                .frame(width: 30)
-        }
-    }
-
-    private func pill(_ text: String, tint: Color, background: Color) -> some View {
-        Text(text)
-            .font(.flyrCaption.weight(.semibold))
-            .foregroundStyle(tint)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 5)
-            .background(background)
-            .clipShape(Capsule())
     }
 }
 
@@ -1223,29 +709,21 @@ private struct ChallengeCreateSheet: View {
                     Stepper("Duration: \(draft.durationDays) days", value: $draft.durationDays, in: 1...60)
                 }
 
-                Section("Visibility") {
-                    Picker("Audience", selection: $draft.visibility) {
-                        ForEach(ChallengeVisibility.allCases, id: \.self) { visibility in
-                            Text(visibility.title).tag(visibility)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-
-                    Text(draft.visibility.subtitle)
+                Section("Invite") {
+                    Text("Send this challenge directly to a friend by phone.")
                         .font(.flyrFootnote)
                         .foregroundStyle(Color.muted)
 
-                    if draft.visibility == .privateInvite {
-                        TextField("Friend’s phone number", text: $draft.invitePhone)
-                            .keyboardType(.phonePad)
-                            .textContentType(.telephoneNumber)
-                    }
+                    TextField("Friend’s phone number", text: $draft.invitePhone)
+                        .keyboardType(.phonePad)
+                        .textContentType(.telephoneNumber)
                 }
 
                 Section {
                     Button {
                         Task {
                             var outgoing = draft
+                            outgoing.visibility = .privateInvite
                             outgoing.coverImageData = coverImage?.jpegData(compressionQuality: 0.85)
                             await onCreate(outgoing)
                         }
@@ -1254,7 +732,7 @@ private struct ChallengeCreateSheet: View {
                             if isSaving {
                                 ProgressView().tint(.white)
                             }
-                            Text(draft.visibility == .privateInvite ? "Create and Send" : "Create Challenge")
+                            Text("Create and Send")
                                 .frame(maxWidth: .infinity)
                         }
                     }

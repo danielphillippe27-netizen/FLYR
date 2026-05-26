@@ -5,6 +5,7 @@ struct UserProfile: Identifiable, Codable, Equatable {
     let email: String
     let fullName: String?
     let avatarURL: String?
+    var countryCode: String?
     let phoneNumber: String?
     let createdAt: Date
     let updatedAt: Date
@@ -20,6 +21,7 @@ struct UserProfile: Identifiable, Codable, Equatable {
         case email
         case fullName = "full_name"
         case avatarURL = "avatar_url"
+        case countryCode = "country_code"
         case phoneNumber = "phone_number"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
@@ -36,6 +38,9 @@ struct UserProfile: Identifiable, Codable, Equatable {
         let full = "\(first) \(last)".trimmingCharacters(in: .whitespaces)
         return full.isEmpty ? (email.components(separatedBy: "@").first?.capitalized ?? "User") : full
     }
-}
 
+    var countryFlag: String {
+        CountryOptions.flag(for: countryCode)
+    }
+}
 

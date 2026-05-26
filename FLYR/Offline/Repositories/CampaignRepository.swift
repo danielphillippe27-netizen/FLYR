@@ -22,13 +22,29 @@ struct OfflineCampaignMapBundle: Sendable {
     let roads: RoadFeatureCollection
 }
 
+struct CachedClientLinkBatch: Sendable {
+    let summary: ClientLinkingSummary
+    let assetSignature: String
+}
+
 struct CampaignOfflineAssetCounts: Sendable {
     let buildings: Int
     let addresses: Int
     let buildingLinks: Int
+    let addressOrphans: Int
     let statuses: Int
     let roads: Int
     let metadata: Int
+}
+
+struct CampaignAddressOrphanSnapshot: Sendable {
+    let addressId: String
+    let nearestBuildingId: String?
+    let nearestDistance: Double?
+    let status: String?
+    let suggestedStreet: String?
+    let addressStreet: String?
+    let coordinateJSON: String?
 }
 
 struct AddressCaptureMetadata: Sendable {
@@ -192,6 +208,109 @@ private struct CachedBuildingAddressLinkRecord: Codable, FetchableRecord, Persis
         case confidence
         case source
         case updatedAt = "updated_at"
+    }
+}
+
+private struct CachedClientLinkBatchRecord: Codable, FetchableRecord, PersistableRecord {
+    static let databaseTableName = "cached_client_link_batches"
+
+    let campaignId: String
+    let assetSignature: String
+    let buildingCount: Int
+    let addressCount: Int
+    let parcelCount: Int
+    let linkCount: Int
+    let updatedAt: String?
+    let publishedAt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case campaignId = "campaign_id"
+        case assetSignature = "asset_signature"
+        case buildingCount = "building_count"
+        case addressCount = "address_count"
+        case parcelCount = "parcel_count"
+        case linkCount = "link_count"
+        case updatedAt = "updated_at"
+        case publishedAt = "published_at"
+    }
+}
+
+private struct CachedAddressOrphanRecord: Codable, FetchableRecord, PersistableRecord {
+    static let databaseTableName = "cached_address_orphans"
+
+    let id: String
+    let campaignId: String
+    let addressId: String
+    let nearestBuildingId: String?
+    let nearestDistance: Double?
+    let status: String?
+    let suggestedStreet: String?
+    let addressStreet: String?
+    let coordinateJSON: String?
+    let updatedAt: String?
+
+    enum Columns: String, ColumnExpression {
+        case id
+        case campaignId = "campaign_id"
+        case addressId = "address_id"
+        case nearestBuildingId = "nearest_building_id"
+        case nearestDistance = "nearest_distance"
+        case status
+        case suggestedStreet = "suggested_street"
+        case addressStreet = "address_street"
+        case coordinateJSON = "coordinate_json"
+        case updatedAt = "updated_at"
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case campaignId = "campaign_id"
+        case addressId = "address_id"
+        case nearestBuildingId = "nearest_building_id"
+        case nearestDistance = "nearest_distance"
+        case status
+        case suggestedStreet = "suggested_street"
+        case addressStreet = "address_street"
+        case coordinateJSON = "coordinate_json"
+        case updatedAt = "updated_at"
+    }
+}
+
+private struct LocalFallbackBuildingRecord: Codable, FetchableRecord, PersistableRecord {
+    static let databaseTableName = "local_fallback_buildings"
+
+    let localGeometryId: String
+    let campaignId: String
+    let addressId: String
+    let geometryGeoJSON: String
+    let geometrySource: String
+    let payloadJSON: String?
+    let createdAt: String?
+    let updatedAt: String?
+    let syncStatus: String
+
+    enum Columns: String, ColumnExpression {
+        case localGeometryId = "local_geometry_id"
+        case campaignId = "campaign_id"
+        case addressId = "address_id"
+        case geometryGeoJSON = "geometry_geojson"
+        case geometrySource = "geometry_source"
+        case payloadJSON = "payload_json"
+        case createdAt = "created_at"
+        case updatedAt = "updated_at"
+        case syncStatus = "sync_status"
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case localGeometryId = "local_geometry_id"
+        case campaignId = "campaign_id"
+        case addressId = "address_id"
+        case geometryGeoJSON = "geometry_geojson"
+        case geometrySource = "geometry_source"
+        case payloadJSON = "payload_json"
+        case createdAt = "created_at"
+        case updatedAt = "updated_at"
+        case syncStatus = "sync_status"
     }
 }
 
@@ -416,6 +535,55 @@ final class CampaignRepository {
         }
     }
 
+    func upsertCampaignMetadataRows(
+        _ rows: [CampaignDBRow],
+        addressCounts: [UUID: Int]
+    ) async {
+        let updatedAt = OfflineDateCodec.string(from: Date())
+        try? await dbQueue.write { db in
+            for row in rows {
+                let existing = try CachedCampaignRecord.fetchOne(db, key: row.id.uuidString)
+                let payloadJSON = Self.campaignPayloadJSON(from: row, totalFlyers: addressCounts[row.id])
+                    ?? existing?.payloadJSON
+                let record = CachedCampaignRecord(
+                    id: row.id.uuidString,
+                    name: row.title,
+                    mode: row.status?.rawValue ?? existing?.mode,
+                    boundaryGeoJSON: existing?.boundaryGeoJSON,
+                    payloadJSON: payloadJSON,
+                    downloadedAt: existing?.downloadedAt,
+                    updatedAt: updatedAt
+                )
+                try record.save(db)
+            }
+        }
+    }
+
+    func getCachedCampaigns() async -> [CampaignV2] {
+        (try? await dbQueue.read { db in
+            let campaignRecords = try CachedCampaignRecord
+                .order(Column("updated_at").desc)
+                .fetchAll(db)
+            let addressRecords = try CachedAddressRecord.fetchAll(db)
+            let addressesByCampaignId = Dictionary(grouping: addressRecords, by: \.campaignId)
+
+            let campaigns = campaignRecords.compactMap { record -> CampaignV2? in
+                guard !Self.isQuickStartCampaign(payloadJSON: record.payloadJSON) else { return nil }
+                guard let campaignId = UUID(uuidString: record.id) else { return nil }
+                return Self.cachedCampaign(
+                    campaignId: campaignId,
+                    record: record,
+                    addressRecords: addressesByCampaignId[record.id] ?? []
+                )
+            }
+
+            return campaigns.sorted { lhs, rhs in
+                if lhs.createdAt != rhs.createdAt { return lhs.createdAt > rhs.createdAt }
+                return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+            }
+        }) ?? []
+    }
+
     func getCampaignBoundaryCoordinates(campaignId: String) async -> [CLLocationCoordinate2D]? {
         try? await dbQueue.read { db in
             guard let record = try CachedCampaignRecord
@@ -452,41 +620,10 @@ final class CampaignRepository {
                 return nil
             }
 
-            let payload = Self.jsonObject(from: campaignRecord?.payloadJSON)
-            let addresses = Self.campaignAddresses(from: addressRecords, campaignId: campaignIdString)
-            let createdAt = Self.dateValue(payload["created_at"])
-                ?? OfflineDateCodec.date(from: campaignRecord?.downloadedAt)
-                ?? OfflineDateCodec.date(from: campaignRecord?.updatedAt)
-                ?? Date()
-
-            return CampaignV2(
-                id: campaignId,
-                name: Self.stringValue(payload["title"]) ?? campaignRecord?.name ?? "Campaign",
-                type: Self.stringValue(payload["type"]).flatMap(CampaignType.init(dbValue:)) ?? .flyer,
-                addressSource: Self.stringValue(payload["address_source"]).flatMap(AddressSource.init(rawValue:)) ?? .closestHome,
-                addresses: addresses,
-                totalFlyers: addresses.count,
-                scans: Self.intValue(payload["scans"]) ?? 0,
-                conversions: Self.intValue(payload["conversions"]) ?? 0,
-                createdAt: createdAt,
-                status: Self.stringValue(payload["status"]).flatMap(CampaignStatus.init(rawValue:))
-                    ?? campaignRecord?.mode.flatMap(CampaignStatus.init(rawValue:))
-                    ?? .draft,
-                seedQuery: Self.stringValue(payload["region"]),
-                dataConfidence: Self.codableValue(CampaignDataConfidenceSummary.self, from: payload["data_confidence_summary"]),
-                provisionStatus: Self.stringValue(payload["provision_status"]).flatMap(CampaignProvisionStatus.init(rawValue:)),
-                provisionSource: Self.stringValue(payload["provision_source"]).flatMap(CampaignProvisionSource.init(rawValue:)),
-                provisionPhase: Self.stringValue(payload["provision_phase"]).flatMap(CampaignProvisionPhase.init(rawValue:)),
-                addressesReadyAt: Self.dateValue(payload["addresses_ready_at"]),
-                mapReadyAt: Self.dateValue(payload["map_ready_at"]),
-                optimizedAt: Self.dateValue(payload["optimized_at"]),
-                hasParcels: Self.boolValue(payload["has_parcels"]),
-                buildingLinkConfidence: Self.doubleValue(payload["building_link_confidence"]),
-                mapMode: Self.stringValue(payload["map_mode"]).flatMap(CampaignMapMode.init(rawValue:)),
-                coverageScore: Self.intValue(payload["coverage_score"]),
-                dataQuality: Self.stringValue(payload["data_quality"]).flatMap(CampaignDataQuality.init(rawValue:)),
-                standardModeRecommended: Self.boolValue(payload["standard_mode_recommended"]),
-                dataQualityReason: Self.stringValue(payload["data_quality_reason"])
+            return Self.cachedCampaign(
+                campaignId: campaignId,
+                record: campaignRecord,
+                addressRecords: addressRecords
             )
         }
     }
@@ -549,6 +686,71 @@ final class CampaignRepository {
         }
     }
 
+    func upsertManualAddressLocally(
+        campaignId: String,
+        addressId: UUID,
+        input: ManualAddressCreateInput
+    ) async {
+        guard CLLocationCoordinate2DIsValid(input.coordinate),
+              let geometry = Self.pointGeometry(for: input.coordinate) else {
+            return
+        }
+
+        let trimmedFormatted = input.formatted.trimmingCharacters(in: .whitespacesAndNewlines)
+        let formatted = trimmedFormatted.isEmpty ? "Manual Address" : trimmedFormatted
+        let updatedAt = OfflineDateCodec.string(from: Date())
+        let feature = AddressFeature(
+            type: "Feature",
+            id: addressId.uuidString,
+            geometry: geometry,
+            properties: AddressProperties(
+                id: addressId.uuidString,
+                gersId: nil,
+                buildingGersId: input.buildingId,
+                houseNumber: input.houseNumber,
+                streetName: input.streetName,
+                postalCode: input.postalCode,
+                locality: input.locality,
+                formatted: formatted,
+                source: "manual"
+            )
+        )
+
+        try? await dbQueue.write { db in
+            let record = CachedAddressRecord(
+                id: cacheScopedId(campaignId: campaignId, entityId: addressId.uuidString),
+                campaignId: campaignId,
+                buildingId: input.buildingId,
+                address: formatted,
+                unit: nil,
+                city: input.locality,
+                province: input.region,
+                postalCode: input.postalCode,
+                latitude: input.coordinate.latitude,
+                longitude: input.coordinate.longitude,
+                payloadJSON: OfflineJSONCodec.encode(feature),
+                updatedAt: updatedAt
+            )
+            try record.save(db)
+
+            guard let buildingId = input.buildingId?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !buildingId.isEmpty else {
+                return
+            }
+
+            let linkRecord = CachedBuildingAddressLinkRecord(
+                id: cacheScopedId(campaignId: campaignId, entityId: "\(buildingId.lowercased()):\(addressId.uuidString.lowercased())"),
+                campaignId: campaignId,
+                buildingId: buildingId,
+                addressId: addressId.uuidString.lowercased(),
+                confidence: 1,
+                source: "manual",
+                updatedAt: updatedAt
+            )
+            try linkRecord.save(db)
+        }
+    }
+
     func upsertBuildingAddressLinks(campaignId: String, links: [BuildingAddressLink]) async {
         let updatedAt = OfflineDateCodec.string(from: Date())
         try? await dbQueue.write { db in
@@ -565,6 +767,687 @@ final class CampaignRepository {
                 )
                 try record.save(db)
             }
+        }
+    }
+
+    func upsertClientGeneratedBuildingAddressLinks(
+        campaignId: String,
+        links: [ClientBuildingAddressLink],
+        assetSignature: String,
+        buildingCount: Int,
+        addressCount: Int,
+        parcelCount: Int
+    ) async {
+        let updatedAt = OfflineDateCodec.string(from: Date())
+        try? await dbQueue.write { db in
+            let existingLinks = try CachedBuildingAddressLinkRecord
+                .filter(Column("campaign_id") == campaignId)
+                .fetchAll(db)
+
+            let protectedAddressIds = Set(
+                existingLinks
+                    .filter { ($0.source ?? "").lowercased().hasPrefix("manual") }
+                    .map { $0.addressId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            )
+
+            let generatedIdsToDelete = existingLinks
+                .filter { ($0.source ?? "").caseInsensitiveCompare("client_auto") == .orderedSame }
+                .map(\.id)
+            if !generatedIdsToDelete.isEmpty {
+                try CachedBuildingAddressLinkRecord
+                    .filter(generatedIdsToDelete.contains(Column("id")))
+                    .deleteAll(db)
+            }
+
+            var writableLinksByAddress: [String: ClientBuildingAddressLink] = [:]
+            for link in links {
+                let normalizedAddressId = link.addressId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                guard !normalizedAddressId.isEmpty,
+                      !protectedAddressIds.contains(normalizedAddressId) else {
+                    continue
+                }
+
+                if let existing = writableLinksByAddress[normalizedAddressId],
+                   existing.confidence >= link.confidence {
+                    continue
+                }
+                writableLinksByAddress[normalizedAddressId] = link
+            }
+            let writableLinks = Array(writableLinksByAddress.values)
+
+            let replacedAddressIds = Set(writableLinks.map {
+                $0.addressId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            })
+            if !replacedAddressIds.isEmpty {
+                let linkIdsToReplace = existingLinks
+                    .filter {
+                        replacedAddressIds.contains($0.addressId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+                    }
+                    .map(\.id)
+                if !linkIdsToReplace.isEmpty {
+                    try CachedBuildingAddressLinkRecord
+                        .filter(linkIdsToReplace.contains(Column("id")))
+                        .deleteAll(db)
+                }
+            }
+
+            let batchRecord = CachedClientLinkBatchRecord(
+                campaignId: campaignId,
+                assetSignature: assetSignature,
+                buildingCount: buildingCount,
+                addressCount: addressCount,
+                parcelCount: parcelCount,
+                linkCount: writableLinks.count,
+                updatedAt: updatedAt,
+                publishedAt: nil
+            )
+            try batchRecord.save(db)
+
+            for link in writableLinks {
+                let normalizedAddressId = link.addressId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                let normalizedBuildingId = link.buildingId.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !normalizedAddressId.isEmpty, !normalizedBuildingId.isEmpty else { continue }
+                let record = CachedBuildingAddressLinkRecord(
+                    id: cacheScopedId(campaignId: campaignId, entityId: "\(normalizedBuildingId.lowercased()):\(normalizedAddressId)"),
+                    campaignId: campaignId,
+                    buildingId: normalizedBuildingId,
+                    addressId: normalizedAddressId,
+                    confidence: link.confidence,
+                    source: "client_auto",
+                    updatedAt: updatedAt
+                )
+                try record.save(db)
+
+                let addressRecords = try CachedAddressRecord
+                    .filter(Column("campaign_id") == campaignId)
+                    .fetchAll(db)
+                    .filter { Self.record($0, campaignId: campaignId, matchesAddressId: normalizedAddressId) }
+
+                for addressRecord in addressRecords {
+                    let feature = OfflineJSONCodec.decode(AddressFeature.self, from: addressRecord.payloadJSON)
+                    let updatedFeature: AddressFeature?
+                    if let feature {
+                        updatedFeature = AddressFeature(
+                            type: feature.type,
+                            id: feature.id,
+                            geometry: feature.geometry,
+                            properties: AddressProperties(
+                                id: feature.properties.id,
+                                gersId: feature.properties.gersId,
+                                buildingGersId: normalizedBuildingId,
+                                houseNumber: feature.properties.houseNumber,
+                                streetName: feature.properties.streetName,
+                                postalCode: feature.properties.postalCode,
+                                locality: feature.properties.locality,
+                                formatted: feature.properties.formatted,
+                                source: feature.properties.source
+                            )
+                        )
+                    } else {
+                        updatedFeature = nil
+                    }
+
+                    let updated = CachedAddressRecord(
+                        id: addressRecord.id,
+                        campaignId: addressRecord.campaignId,
+                        buildingId: normalizedBuildingId,
+                        address: addressRecord.address,
+                        unit: addressRecord.unit,
+                        city: addressRecord.city,
+                        province: addressRecord.province,
+                        postalCode: addressRecord.postalCode,
+                        latitude: addressRecord.latitude,
+                        longitude: addressRecord.longitude,
+                        payloadJSON: updatedFeature.flatMap { OfflineJSONCodec.encode($0) } ?? addressRecord.payloadJSON,
+                        updatedAt: updatedAt
+                    )
+                    try updated.save(db)
+                }
+            }
+        }
+    }
+
+    func getClientGeneratedLinkBatch(
+        campaignId: String,
+        assetSignature: String
+    ) async -> CachedClientLinkBatch? {
+        try? await dbQueue.read { db in
+            guard let batch = try CachedClientLinkBatchRecord
+                .filter(Column("campaign_id") == campaignId)
+                .filter(Column("asset_signature") == assetSignature)
+                .fetchOne(db) else {
+                return nil
+            }
+
+            let records = try CachedBuildingAddressLinkRecord
+                .filter(Column("campaign_id") == campaignId)
+                .filter(Column("source") == "client_auto")
+                .fetchAll(db)
+
+            let links = records.map { record in
+                ClientBuildingAddressLink(
+                    id: record.id,
+                    buildingId: record.buildingId,
+                    addressId: record.addressId,
+                    matchType: record.source ?? "client_auto",
+                    confidence: record.confidence ?? 0.5,
+                    distanceMeters: 0
+                )
+            }
+            let progress = ClientLinkingProgress(
+                processed: batch.addressCount,
+                total: batch.addressCount,
+                linked: links.count
+            )
+            return CachedClientLinkBatch(
+                summary: ClientLinkingSummary(links: links, progress: progress),
+                assetSignature: batch.assetSignature
+            )
+        }
+    }
+
+    func getBuildingAddressLinks(campaignId: String) async -> [BuildingAddressLink] {
+        (try? await dbQueue.read { db in
+            let records = try CachedBuildingAddressLinkRecord
+                .filter(Column("campaign_id") == campaignId)
+                .fetchAll(db)
+
+            return records.map { record in
+                BuildingAddressLink(
+                    id: record.id,
+                    buildingId: record.buildingId,
+                    addressId: record.addressId,
+                    matchType: record.source ?? "cached",
+                    confidence: record.confidence ?? 1,
+                    isMultiUnit: false,
+                    unitCount: 1
+                )
+            }
+        }) ?? []
+    }
+
+    func upsertAddressOrphans(campaignId: String, orphans: [CampaignAddressOrphanSnapshot]) async {
+        let updatedAt = OfflineDateCodec.string(from: Date())
+        try? await dbQueue.write { db in
+            try CachedAddressOrphanRecord.filter(Column("campaign_id") == campaignId).deleteAll(db)
+            for orphan in orphans {
+                let addressId = orphan.addressId.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !addressId.isEmpty else { continue }
+                let nearestBuildingId = orphan.nearestBuildingId?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let record = CachedAddressOrphanRecord(
+                    id: cacheScopedId(campaignId: campaignId, entityId: "\(nearestBuildingId ?? "none"):\(addressId)"),
+                    campaignId: campaignId,
+                    addressId: addressId.lowercased(),
+                    nearestBuildingId: nearestBuildingId?.isEmpty == false ? nearestBuildingId : nil,
+                    nearestDistance: orphan.nearestDistance,
+                    status: orphan.status,
+                    suggestedStreet: orphan.suggestedStreet,
+                    addressStreet: orphan.addressStreet,
+                    coordinateJSON: orphan.coordinateJSON,
+                    updatedAt: updatedAt
+                )
+                try record.save(db)
+            }
+        }
+    }
+
+    func getAddressOrphans(campaignId: String) async -> [CampaignAddressOrphanSnapshot] {
+        (try? await dbQueue.read { db in
+            let records = try CachedAddressOrphanRecord
+                .filter(Column("campaign_id") == campaignId)
+                .fetchAll(db)
+
+            return records.map { record in
+                CampaignAddressOrphanSnapshot(
+                    addressId: record.addressId,
+                    nearestBuildingId: record.nearestBuildingId,
+                    nearestDistance: record.nearestDistance,
+                    status: record.status,
+                    suggestedStreet: record.suggestedStreet,
+                    addressStreet: record.addressStreet,
+                    coordinateJSON: record.coordinateJSON
+                )
+            }
+        }) ?? []
+    }
+
+    func upsertBuildingAddressLinkLocally(
+        campaignId: String,
+        buildingId: String,
+        addressId: String,
+        coordinate: CLLocationCoordinate2D? = nil,
+        confidence: Double = 1,
+        source: String = "manual"
+    ) async {
+        let normalizedAddressId = addressId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let normalizedBuildingId = buildingId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedAddressId.isEmpty, !normalizedBuildingId.isEmpty else { return }
+
+        let updatedAt = OfflineDateCodec.string(from: Date())
+        try? await dbQueue.write { db in
+            let previousLinks = try CachedBuildingAddressLinkRecord
+                .filter(Column("campaign_id") == campaignId)
+                .filter(Column("address_id") == normalizedAddressId)
+                .fetchAll(db)
+            if !previousLinks.isEmpty {
+                try CachedBuildingAddressLinkRecord
+                    .filter(previousLinks.map(\.id).contains(Column("id")))
+                    .deleteAll(db)
+            }
+
+            let linkRecord = CachedBuildingAddressLinkRecord(
+                id: cacheScopedId(campaignId: campaignId, entityId: "\(normalizedBuildingId.lowercased()):\(normalizedAddressId)"),
+                campaignId: campaignId,
+                buildingId: normalizedBuildingId,
+                addressId: normalizedAddressId,
+                confidence: confidence,
+                source: source,
+                updatedAt: updatedAt
+            )
+            try linkRecord.save(db)
+
+            var records = try CachedAddressRecord
+                .filter(Column("id") == cacheScopedId(campaignId: campaignId, entityId: normalizedAddressId))
+                .fetchAll(db)
+
+            if records.isEmpty {
+                records = try CachedAddressRecord
+                    .filter(Column("campaign_id") == campaignId)
+                    .fetchAll(db)
+                    .filter { Self.record($0, campaignId: campaignId, matchesAddressId: normalizedAddressId) }
+            }
+
+            for record in records {
+                let feature = OfflineJSONCodec.decode(AddressFeature.self, from: record.payloadJSON)
+                let updatedFeature: AddressFeature?
+                if let feature {
+                    let updatedProperties = AddressProperties(
+                        id: feature.properties.id,
+                        gersId: feature.properties.gersId,
+                        buildingGersId: normalizedBuildingId,
+                        houseNumber: feature.properties.houseNumber,
+                        streetName: feature.properties.streetName,
+                        postalCode: feature.properties.postalCode,
+                        locality: feature.properties.locality,
+                        formatted: feature.properties.formatted,
+                        source: feature.properties.source
+                    )
+                    let geometry = coordinate.flatMap(Self.pointGeometry(for:)) ?? feature.geometry
+                    updatedFeature = AddressFeature(
+                        type: feature.type,
+                        id: feature.id,
+                        geometry: geometry,
+                        properties: updatedProperties
+                    )
+                } else {
+                    updatedFeature = nil
+                }
+
+                let updated = CachedAddressRecord(
+                    id: record.id,
+                    campaignId: record.campaignId,
+                    buildingId: normalizedBuildingId,
+                    address: record.address,
+                    unit: record.unit,
+                    city: record.city,
+                    province: record.province,
+                    postalCode: record.postalCode,
+                    latitude: coordinate?.latitude ?? record.latitude,
+                    longitude: coordinate?.longitude ?? record.longitude,
+                    payloadJSON: updatedFeature.flatMap { OfflineJSONCodec.encode($0) } ?? record.payloadJSON,
+                    updatedAt: updatedAt
+                )
+                try updated.save(db)
+            }
+        }
+    }
+
+    func fallbackBuildingId(addressId: UUID) -> String {
+        Self.fallbackBuildingId(addressId: addressId)
+    }
+
+    func hasLocalFallbackBuilding(campaignId: String, addressId: UUID) async -> Bool {
+        let normalizedAddressId = addressId.uuidString.lowercased()
+        return (try? await dbQueue.read { db in
+            try LocalFallbackBuildingRecord
+                .filter(Column("campaign_id") == campaignId)
+                .filter(Column("address_id") == normalizedAddressId)
+                .fetchCount(db) > 0
+        }) ?? false
+    }
+
+    func upsertFallbackBuildingLocally(
+        campaignId: String,
+        addressId: UUID
+    ) async -> BuildingFeature? {
+        let normalizedAddressId = addressId.uuidString.lowercased()
+        let fallbackId = Self.fallbackBuildingId(addressId: addressId)
+        let now = OfflineDateCodec.string(from: Date())
+
+        return try? await dbQueue.write { db in
+            if let existing = try LocalFallbackBuildingRecord
+                .filter(Column("campaign_id") == campaignId)
+                .filter(Column("address_id") == normalizedAddressId)
+                .fetchOne(db),
+               let feature = Self.decodeLocalFallbackBuildingFeature(from: existing) {
+                return feature
+            }
+
+            let addressRecords = try CachedAddressRecord
+                .filter(Column("campaign_id") == campaignId)
+                .fetchAll(db)
+            guard let addressRecord = addressRecords.first(where: {
+                Self.record($0, campaignId: campaignId, matchesAddressId: normalizedAddressId)
+            }) else {
+                return nil
+            }
+
+            let addressFeature = OfflineJSONCodec.decode(AddressFeature.self, from: addressRecord.payloadJSON)
+            let coordinate = addressFeature
+                .flatMap { CampaignTargetResolver.coordinate(for: $0.geometry) }
+                ?? addressRecord.latitude.flatMap { latitude in
+                    addressRecord.longitude.map { longitude in
+                        CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+                    }
+                }
+            guard let coordinate, CLLocationCoordinate2DIsValid(coordinate),
+                  let geometry = Self.fallbackRectangleGeometry(center: coordinate) else {
+                return nil
+            }
+
+            let displayAddress = addressFeature?.properties.formatted
+                ?? addressRecord.address
+                ?? [addressFeature?.properties.houseNumber, addressFeature?.properties.streetName]
+                    .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+                    .joined(separator: " ")
+            let trimmedDisplayAddress = displayAddress.trimmingCharacters(in: .whitespacesAndNewlines)
+
+            let properties = BuildingProperties(
+                id: fallbackId,
+                buildingId: fallbackId,
+                addressId: addressId.uuidString,
+                gersId: fallbackId,
+                height: 8,
+                heightM: 8,
+                minHeight: 0,
+                isTownhome: false,
+                unitsCount: 1,
+                addressText: trimmedDisplayAddress.isEmpty ? nil : trimmedDisplayAddress,
+                matchMethod: "manual_fallback",
+                featureStatus: "matched",
+                featureType: "manual_fallback",
+                status: "not_visited",
+                scansToday: 0,
+                scansTotal: 0,
+                lastScanSecondsAgo: nil,
+                houseNumber: addressFeature?.properties.houseNumber,
+                streetName: addressFeature?.properties.streetName,
+                confidence: 1,
+                source: "manual_fallback",
+                addressCount: 1,
+                areaSqm: 80,
+                buildingType: "residential",
+                qrScanned: false,
+                isLinked: true
+            )
+            let feature = BuildingFeature(
+                type: "Feature",
+                id: fallbackId,
+                geometry: geometry,
+                properties: properties
+            )
+            let record = LocalFallbackBuildingRecord(
+                localGeometryId: fallbackId,
+                campaignId: campaignId,
+                addressId: normalizedAddressId,
+                geometryGeoJSON: OfflineJSONCodec.encode(geometry) ?? "{}",
+                geometrySource: "manual_fallback",
+                payloadJSON: OfflineJSONCodec.encode(feature),
+                createdAt: now,
+                updatedAt: now,
+                syncStatus: "pending"
+            )
+            try record.save(db)
+
+            let previousLinks = try CachedBuildingAddressLinkRecord
+                .filter(Column("campaign_id") == campaignId)
+                .filter(Column("address_id") == normalizedAddressId)
+                .fetchAll(db)
+            if !previousLinks.isEmpty {
+                try CachedBuildingAddressLinkRecord
+                    .filter(previousLinks.map(\.id).contains(Column("id")))
+                    .deleteAll(db)
+            }
+
+            let linkRecord = CachedBuildingAddressLinkRecord(
+                id: cacheScopedId(campaignId: campaignId, entityId: "\(fallbackId.lowercased()):\(normalizedAddressId)"),
+                campaignId: campaignId,
+                buildingId: fallbackId,
+                addressId: normalizedAddressId,
+                confidence: 1,
+                source: "manual_fallback",
+                updatedAt: now
+            )
+            try linkRecord.save(db)
+
+            let updatedFeature: AddressFeature?
+            if let addressFeature {
+                updatedFeature = AddressFeature(
+                    type: addressFeature.type,
+                    id: addressFeature.id,
+                    geometry: addressFeature.geometry,
+                    properties: AddressProperties(
+                        id: addressFeature.properties.id,
+                        gersId: addressFeature.properties.gersId,
+                        buildingGersId: fallbackId,
+                        houseNumber: addressFeature.properties.houseNumber,
+                        streetName: addressFeature.properties.streetName,
+                        postalCode: addressFeature.properties.postalCode,
+                        locality: addressFeature.properties.locality,
+                        formatted: addressFeature.properties.formatted,
+                        source: addressFeature.properties.source
+                    )
+                )
+            } else {
+                updatedFeature = nil
+            }
+
+            let updatedAddressRecord = CachedAddressRecord(
+                id: addressRecord.id,
+                campaignId: addressRecord.campaignId,
+                buildingId: fallbackId,
+                address: addressRecord.address,
+                unit: addressRecord.unit,
+                city: addressRecord.city,
+                province: addressRecord.province,
+                postalCode: addressRecord.postalCode,
+                latitude: addressRecord.latitude,
+                longitude: addressRecord.longitude,
+                payloadJSON: updatedFeature.flatMap { OfflineJSONCodec.encode($0) } ?? addressRecord.payloadJSON,
+                updatedAt: now
+            )
+            try updatedAddressRecord.save(db)
+
+            return feature
+        }
+    }
+
+    func markFallbackBuildingSynced(campaignId: String, addressId: UUID) async {
+        await updateFallbackBuildingSyncStatus(campaignId: campaignId, addressId: addressId, status: "synced")
+    }
+
+    func markFallbackBuildingFailed(campaignId: String, addressId: UUID) async {
+        await updateFallbackBuildingSyncStatus(campaignId: campaignId, addressId: addressId, status: "failed")
+    }
+
+    private func updateFallbackBuildingSyncStatus(campaignId: String, addressId: UUID, status: String) async {
+        let updatedAt = OfflineDateCodec.string(from: Date())
+        try? await dbQueue.write { db in
+            try db.execute(
+                sql: """
+                UPDATE local_fallback_buildings
+                SET sync_status = ?,
+                    updated_at = ?
+                WHERE campaign_id = ?
+                  AND address_id = ?
+                """,
+                arguments: [status, updatedAt, campaignId, addressId.uuidString.lowercased()]
+            )
+        }
+    }
+
+    func mergeLocalFallbackBuildings(
+        campaignId: String,
+        into collection: BuildingFeatureCollection
+    ) async -> BuildingFeatureCollection {
+        let fallbackFeatures = await getLocalFallbackBuildingFeatures(campaignId: campaignId)
+        guard !fallbackFeatures.isEmpty else { return collection }
+
+        var seen = Set(collection.features.compactMap { ($0.id ?? $0.properties.canonicalBuildingIdentifier)?.lowercased() })
+        var merged = collection.features
+        for feature in fallbackFeatures {
+            let identifier = (feature.id ?? feature.properties.canonicalBuildingIdentifier ?? feature.properties.id).lowercased()
+            guard seen.insert(identifier).inserted else { continue }
+            merged.append(feature)
+        }
+        return BuildingFeatureCollection(type: collection.type, features: merged)
+    }
+
+    func getLocalFallbackBuildingFeatures(campaignId: String) async -> [BuildingFeature] {
+        (try? await dbQueue.read { db in
+            let records = try LocalFallbackBuildingRecord
+                .filter(Column("campaign_id") == campaignId)
+                .fetchAll(db)
+            return records.compactMap(Self.decodeLocalFallbackBuildingFeature(from:))
+        }) ?? []
+    }
+
+    func unlinkAddressFromBuildingLocally(
+        campaignId: String,
+        buildingId: String,
+        addressId: String,
+        deleteManualAddress: Bool
+    ) async -> [UUID] {
+        let normalizedAddressId = addressId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let normalizedBuildingId = buildingId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalizedAddressId.isEmpty, !normalizedBuildingId.isEmpty else { return [] }
+
+        let updatedAt = OfflineDateCodec.string(from: Date())
+        return (try? await dbQueue.write { db in
+            let buildingRecords = try CachedBuildingRecord
+                .filter(Column("campaign_id") == campaignId)
+                .fetchAll(db)
+
+            var buildingIdentifiers = Set([normalizedBuildingId])
+            for record in buildingRecords {
+                let feature = OfflineJSONCodec.decode(BuildingFeature.self, from: record.payloadJSON)
+                let recordIdentifiers = Set(
+                    ([record.sourceId, record.externalId, feature?.id, feature?.properties.gersId, feature?.properties.buildingId, feature?.properties.id]
+                        .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+                        + (feature?.properties.buildingIdentifierCandidates.map { $0.lowercased() } ?? []))
+                )
+                if recordIdentifiers.contains(normalizedBuildingId) {
+                    buildingIdentifiers.formUnion(recordIdentifiers)
+                }
+            }
+
+            let linkRecords = try CachedBuildingAddressLinkRecord
+                .filter(Column("campaign_id") == campaignId)
+                .fetchAll(db)
+
+            let linkIdsToDelete = linkRecords.compactMap { record -> String? in
+                let linkAddressId = record.addressId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                let linkBuildingId = record.buildingId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                return linkAddressId == normalizedAddressId && buildingIdentifiers.contains(linkBuildingId)
+                    ? record.id
+                    : nil
+            }
+            if !linkIdsToDelete.isEmpty {
+                try CachedBuildingAddressLinkRecord
+                    .filter(linkIdsToDelete.contains(Column("id")))
+                    .deleteAll(db)
+            }
+
+            if deleteManualAddress {
+                try Self.deleteAddressRows(
+                    db,
+                    campaignId: campaignId,
+                    normalizedAddressId: normalizedAddressId
+                )
+            } else {
+                let addressRecords = try CachedAddressRecord
+                    .filter(Column("campaign_id") == campaignId)
+                    .fetchAll(db)
+
+                for record in addressRecords where Self.record(record, campaignId: campaignId, matchesAddressId: normalizedAddressId) {
+                    let feature = OfflineJSONCodec.decode(AddressFeature.self, from: record.payloadJSON)
+                    let updatedFeature: AddressFeature?
+                    if let feature {
+                        let updatedProperties = AddressProperties(
+                            id: feature.properties.id,
+                            gersId: feature.properties.gersId,
+                            buildingGersId: nil,
+                            houseNumber: feature.properties.houseNumber,
+                            streetName: feature.properties.streetName,
+                            postalCode: feature.properties.postalCode,
+                            locality: feature.properties.locality,
+                            formatted: feature.properties.formatted,
+                            source: feature.properties.source
+                        )
+                        updatedFeature = AddressFeature(
+                            type: feature.type,
+                            id: feature.id,
+                            geometry: feature.geometry,
+                            properties: updatedProperties
+                        )
+                    } else {
+                        updatedFeature = nil
+                    }
+
+                    let updated = CachedAddressRecord(
+                        id: record.id,
+                        campaignId: record.campaignId,
+                        buildingId: nil,
+                        address: record.address,
+                        unit: record.unit,
+                        city: record.city,
+                        province: record.province,
+                        postalCode: record.postalCode,
+                        latitude: record.latitude,
+                        longitude: record.longitude,
+                        payloadJSON: updatedFeature.flatMap { OfflineJSONCodec.encode($0) } ?? record.payloadJSON,
+                        updatedAt: updatedAt
+                    )
+                    try updated.save(db)
+                }
+            }
+
+            let remainingLinks = try CachedBuildingAddressLinkRecord
+                .filter(Column("campaign_id") == campaignId)
+                .fetchAll(db)
+
+            return remainingLinks.compactMap { record -> UUID? in
+                let linkBuildingId = record.buildingId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                guard buildingIdentifiers.contains(linkBuildingId) else { return nil }
+                return UUID(uuidString: record.addressId)
+            }
+        }) ?? []
+    }
+
+    func deleteAddressLocally(
+        campaignId: String,
+        addressId: String
+    ) async {
+        let normalizedAddressId = addressId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalizedAddressId.isEmpty else { return }
+
+        try? await dbQueue.write { db in
+            try Self.deleteAddressRows(
+                db,
+                campaignId: campaignId,
+                normalizedAddressId: normalizedAddressId
+            )
         }
     }
 
@@ -678,12 +1561,19 @@ final class CampaignRepository {
         }
     }
 
-    func upsertStatuses(rows: [AddressStatusRow]) async {
+    func upsertStatuses(rows: [AddressStatusRow], preserveDirty: Bool = true) async {
         let now = Date()
         try? await dbQueue.write { db in
             for row in rows {
+                let recordId = cacheScopedId(campaignId: row.campaignId.uuidString, entityId: row.addressId.uuidString)
+                if preserveDirty,
+                   let existing = try CachedAddressStatusRecord.fetchOne(db, key: recordId),
+                   existing.dirty != 0 {
+                    continue
+                }
+
                 let record = CachedAddressStatusRecord(
-                    id: cacheScopedId(campaignId: row.campaignId.uuidString, entityId: row.addressId.uuidString),
+                    id: recordId,
                     campaignId: row.campaignId.uuidString,
                     addressId: row.addressId.uuidString,
                     buildingId: nil,
@@ -938,12 +1828,77 @@ final class CampaignRepository {
         }
     }
 
+    private static func decodeCachedBuildingFeature(from record: CachedBuildingRecord) -> BuildingFeature? {
+        if let feature = OfflineJSONCodec.decode(BuildingFeature.self, from: record.payloadJSON) {
+            return feature
+        }
+        guard let geometry = OfflineJSONCodec.decode(MapFeatureGeoJSONGeometry.self, from: record.geometryGeoJSON),
+              let properties = OfflineJSONCodec.decode(BuildingProperties.self, from: record.propertiesJSON) else {
+            return nil
+        }
+        return BuildingFeature(
+            type: "Feature",
+            id: record.sourceId ?? record.id,
+            geometry: geometry,
+            properties: properties
+        )
+    }
+
+    private static func decodeLocalFallbackBuildingFeature(from record: LocalFallbackBuildingRecord) -> BuildingFeature? {
+        if let feature = OfflineJSONCodec.decode(BuildingFeature.self, from: record.payloadJSON) {
+            return feature
+        }
+        guard let geometry = OfflineJSONCodec.decode(MapFeatureGeoJSONGeometry.self, from: record.geometryGeoJSON) else {
+            return nil
+        }
+        let properties = BuildingProperties(
+            id: record.localGeometryId,
+            buildingId: record.localGeometryId,
+            addressId: record.addressId,
+            gersId: record.localGeometryId,
+            height: 8,
+            heightM: 8,
+            minHeight: 0,
+            isTownhome: false,
+            unitsCount: 1,
+            addressText: nil,
+            matchMethod: "manual_fallback",
+            featureStatus: "matched",
+            featureType: "manual_fallback",
+            status: "not_visited",
+            scansToday: 0,
+            scansTotal: 0,
+            lastScanSecondsAgo: nil,
+            houseNumber: nil,
+            streetName: nil,
+            confidence: 1,
+            source: record.geometrySource,
+            addressCount: 1,
+            areaSqm: 80,
+            buildingType: "residential",
+            qrScanned: false,
+            isLinked: true
+        )
+        return BuildingFeature(
+            type: "Feature",
+            id: record.localGeometryId,
+            geometry: geometry,
+            properties: properties
+        )
+    }
+
     func getCampaignMapBundle(campaignId: String) async -> OfflineCampaignMapBundle? {
         try? await dbQueue.read { db in
             let buildingRecords = try CachedBuildingRecord
                 .filter(Column("campaign_id") == campaignId)
                 .fetchAll(db)
+            let fallbackRecords = try LocalFallbackBuildingRecord
+                .filter(Column("campaign_id") == campaignId)
+                .fetchAll(db)
             let addressRecords = try CachedAddressRecord
+                .filter(Column("campaign_id") == campaignId)
+                .fetchAll(db)
+            let linkRecords = try CachedBuildingAddressLinkRecord
                 .filter(Column("campaign_id") == campaignId)
                 .fetchAll(db)
             let roadRecords = try CachedRoadRecord
@@ -955,11 +1910,22 @@ final class CampaignRepository {
             }
 
             let buildings = buildingRecords.compactMap { record in
-                OfflineJSONCodec.decode(BuildingFeature.self, from: record.payloadJSON)
+                Self.decodeCachedBuildingFeature(from: record)
+            }
+            let fallbackBuildings = fallbackRecords.compactMap(Self.decodeLocalFallbackBuildingFeature(from:))
+            var seenBuildingIds = Set(buildings.compactMap { ($0.id ?? $0.properties.canonicalBuildingIdentifier)?.lowercased() })
+            let mergedBuildings = buildings + fallbackBuildings.filter { feature in
+                let identifier = (feature.id ?? feature.properties.canonicalBuildingIdentifier ?? feature.properties.id).lowercased()
+                return seenBuildingIds.insert(identifier).inserted
             }
             let addresses = addressRecords.compactMap { record in
                 OfflineJSONCodec.decode(AddressFeature.self, from: record.payloadJSON)
             }
+            let linkedBundle = Self.mergeCachedBuildingAddressLinks(
+                linkRecords,
+                buildings: mergedBuildings,
+                addresses: addresses
+            )
             let roads = roadRecords.compactMap { record -> RoadFeature? in
                 guard let geometry = OfflineJSONCodec.decode(MapFeatureGeoJSONGeometry.self, from: record.geometryGeoJSON),
                       let properties = OfflineJSONCodec.decode(RoadProperties.self, from: record.propertiesJSON) else {
@@ -974,17 +1940,158 @@ final class CampaignRepository {
             }
 
             return OfflineCampaignMapBundle(
-                buildings: BuildingFeatureCollection(type: "FeatureCollection", features: buildings),
-                addresses: AddressFeatureCollection(type: "FeatureCollection", features: addresses),
+                buildings: BuildingFeatureCollection(type: "FeatureCollection", features: linkedBundle.buildings),
+                addresses: AddressFeatureCollection(type: "FeatureCollection", features: linkedBundle.addresses),
                 roads: RoadFeatureCollection(type: "FeatureCollection", features: roads)
             )
         }
+    }
+
+    private static func mergeCachedBuildingAddressLinks(
+        _ linkRecords: [CachedBuildingAddressLinkRecord],
+        buildings: [BuildingFeature],
+        addresses: [AddressFeature]
+    ) -> (buildings: [BuildingFeature], addresses: [AddressFeature]) {
+        guard !linkRecords.isEmpty else {
+            return (buildings, addresses)
+        }
+
+        let linksByBuilding = Dictionary(grouping: linkRecords) {
+            $0.buildingId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        }
+        let linksByAddress = Dictionary(
+            grouping: linkRecords,
+            by: { $0.addressId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+        ).compactMapValues { records in
+            records.sorted { ($0.confidence ?? 0) > ($1.confidence ?? 0) }.first
+        }
+        let addressesById = Dictionary(uniqueKeysWithValues: addresses.compactMap { feature -> (String, AddressFeature)? in
+            guard let id = feature.properties.id ?? feature.id else { return nil }
+            return (id.lowercased(), feature)
+        })
+
+        let updatedBuildings = buildings.map { feature -> BuildingFeature in
+            let identifiers = feature.properties.buildingIdentifierCandidates.map { $0.lowercased() }
+            let links = identifiers.flatMap { linksByBuilding[$0] ?? [] }
+            guard !links.isEmpty else { return feature }
+
+            let linkedAddresses = links.compactMap {
+                addressesById[$0.addressId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()]
+            }
+            let addressIds = Array(Set(feature.properties.addressIds + links.map(\.addressId))).sorted()
+            let firstAddress = linkedAddresses.first
+            let bestConfidence = max(
+                feature.properties.confidence ?? 0,
+                links.compactMap(\.confidence).max() ?? 0
+            )
+            let bestMatch = links
+                .sorted { ($0.confidence ?? 0) > ($1.confidence ?? 0) }
+                .first?
+                .source
+
+            let updatedProperties = BuildingProperties(
+                id: feature.properties.id,
+                buildingId: feature.properties.buildingId ?? links.first?.buildingId,
+                addressId: addressIds.count == 1 ? addressIds.first : feature.properties.addressId,
+                addressIds: addressIds,
+                gersId: feature.properties.gersId,
+                height: feature.properties.height,
+                heightM: feature.properties.heightM,
+                minHeight: feature.properties.minHeight,
+                isTownhome: feature.properties.isTownhome || addressIds.count > 1,
+                unitsCount: max(feature.properties.unitsCount, addressIds.count),
+                addressText: addressIds.count == 1 ? firstAddress?.properties.formatted ?? feature.properties.addressText : feature.properties.addressText,
+                matchMethod: feature.properties.matchMethod ?? bestMatch,
+                featureStatus: "matched",
+                featureType: "matched_house",
+                status: feature.properties.status,
+                scansToday: feature.properties.scansToday,
+                scansTotal: feature.properties.scansTotal,
+                lastScanSecondsAgo: feature.properties.lastScanSecondsAgo,
+                houseNumber: addressIds.count == 1 ? firstAddress?.properties.houseNumber ?? feature.properties.houseNumber : feature.properties.houseNumber,
+                streetName: addressIds.count == 1 ? firstAddress?.properties.streetName ?? feature.properties.streetName : feature.properties.streetName,
+                confidence: bestConfidence > 0 ? bestConfidence : feature.properties.confidence,
+                source: feature.properties.source,
+                addressCount: max(feature.properties.addressCount ?? 0, addressIds.count),
+                areaSqm: feature.properties.areaSqm,
+                buildingType: feature.properties.buildingType,
+                qrScanned: feature.properties.qrScanned,
+                isLinked: true
+            )
+            return BuildingFeature(
+                type: feature.type,
+                id: feature.id,
+                geometry: feature.geometry,
+                properties: updatedProperties
+            )
+        }
+
+        let updatedAddresses = addresses.map { feature -> AddressFeature in
+            guard let id = feature.properties.id ?? feature.id,
+                  let link = linksByAddress[id.lowercased()] else {
+                return feature
+            }
+
+            let updatedProperties = AddressProperties(
+                id: feature.properties.id,
+                gersId: feature.properties.gersId,
+                buildingGersId: feature.properties.buildingGersId ?? link.buildingId,
+                houseNumber: feature.properties.houseNumber,
+                streetName: feature.properties.streetName,
+                postalCode: feature.properties.postalCode,
+                locality: feature.properties.locality,
+                formatted: feature.properties.formatted,
+                source: feature.properties.source
+            )
+            return AddressFeature(
+                type: feature.type,
+                id: feature.id,
+                geometry: feature.geometry,
+                properties: updatedProperties
+            )
+        }
+
+        return (updatedBuildings, updatedAddresses)
     }
 
     func getStatuses(campaignId: UUID) async -> [UUID: AddressStatusRow] {
         (try? await dbQueue.read { db in
             let records = try CachedAddressStatusRecord
                 .filter(Column("campaign_id") == campaignId.uuidString)
+                .fetchAll(db)
+
+            var rows: [UUID: AddressStatusRow] = [:]
+            for record in records {
+                if let row = OfflineJSONCodec.decode(AddressStatusRow.self, from: record.payloadJSON) {
+                    rows[row.addressId] = row
+                } else if let addressIdString = record.addressId,
+                          let addressId = UUID(uuidString: addressIdString) {
+                    let status = AddressStatus(rawValue: record.status ?? "") ?? .none
+                    let updatedAt = OfflineDateCodec.date(from: record.updatedAt) ?? Date()
+                    rows[addressId] = AddressStatusRow(
+                        id: addressId,
+                        addressId: addressId,
+                        campaignId: campaignId,
+                        status: status,
+                        lastVisitedAt: status == .none ? nil : updatedAt,
+                        notes: record.notes,
+                        visitCount: 0,
+                        lastActionBy: nil,
+                        lastSessionId: nil,
+                        lastHomeEventId: nil,
+                        createdAt: updatedAt,
+                        updatedAt: updatedAt
+                    )
+                }
+            }
+            return rows
+        }) ?? [:]
+    }
+
+    func getDirtyStatuses(campaignId: UUID) async -> [UUID: AddressStatusRow] {
+        (try? await dbQueue.read { db in
+            let records = try CachedAddressStatusRecord
+                .filter(Column("campaign_id") == campaignId.uuidString && Column("dirty") != 0)
                 .fetchAll(db)
 
             var rows: [UUID: AddressStatusRow] = [:]
@@ -1026,6 +2133,9 @@ final class CampaignRepository {
             let buildingLinks = try CachedBuildingAddressLinkRecord
                 .filter(Column("campaign_id") == campaignId)
                 .fetchCount(db)
+            let addressOrphans = try CachedAddressOrphanRecord
+                .filter(Column("campaign_id") == campaignId)
+                .fetchCount(db)
             let statuses = try CachedAddressStatusRecord
                 .filter(Column("campaign_id") == campaignId)
                 .fetchCount(db)
@@ -1040,6 +2150,7 @@ final class CampaignRepository {
                 buildings: buildings,
                 addresses: addresses,
                 buildingLinks: buildingLinks,
+                addressOrphans: addressOrphans,
                 statuses: statuses,
                 roads: roads,
                 metadata: metadata
@@ -1048,6 +2159,7 @@ final class CampaignRepository {
             buildings: 0,
             addresses: 0,
             buildingLinks: 0,
+            addressOrphans: 0,
             statuses: 0,
             roads: 0,
             metadata: 0
@@ -1249,6 +2361,85 @@ final class CampaignRepository {
         "\(campaignId.lowercased()):\(entityId.lowercased())"
     }
 
+    private static func cachedCampaign(
+        campaignId: UUID,
+        record: CachedCampaignRecord?,
+        addressRecords: [CachedAddressRecord]
+    ) -> CampaignV2 {
+        let payload = jsonObject(from: record?.payloadJSON)
+        let addresses = campaignAddresses(from: addressRecords, campaignId: campaignId.uuidString)
+        let createdAt = dateValue(payload["created_at"])
+            ?? dateValue(payload["createdAt"])
+            ?? OfflineDateCodec.date(from: record?.downloadedAt)
+            ?? OfflineDateCodec.date(from: record?.updatedAt)
+            ?? Date()
+        let totalFlyers = intValue(payload["total_flyers"])
+            ?? intValue(payload["totalFlyers"])
+            ?? intValue(payload["address_count"])
+            ?? addresses.count
+
+        return CampaignV2(
+            id: campaignId,
+            name: stringValue(payload["title"]) ?? stringValue(payload["name"]) ?? record?.name ?? "Campaign",
+            type: (stringValue(payload["type"]).flatMap(CampaignType.init(dbValue:))
+                ?? stringValue(payload["type"]).flatMap(CampaignType.init(rawValue:)))
+                ?? .flyer,
+            addressSource: stringValue(payload["address_source"]).flatMap(AddressSource.init(rawValue:))
+                ?? stringValue(payload["addressSource"]).flatMap(AddressSource.init(rawValue:))
+                ?? .closestHome,
+            addresses: addresses,
+            totalFlyers: totalFlyers,
+            scans: intValue(payload["scans"]) ?? 0,
+            conversions: intValue(payload["conversions"]) ?? 0,
+            createdAt: createdAt,
+            status: stringValue(payload["status"]).flatMap(CampaignStatus.init(rawValue:))
+                ?? record?.mode.flatMap(CampaignStatus.init(rawValue:))
+                ?? .draft,
+            seedQuery: stringValue(payload["region"]) ?? stringValue(payload["seedQuery"]),
+            dataConfidence: codableValue(CampaignDataConfidenceSummary.self, from: payload["data_confidence_summary"])
+                ?? codableValue(CampaignDataConfidenceSummary.self, from: payload["dataConfidence"]),
+            provisionStatus: stringValue(payload["provision_status"]).flatMap(CampaignProvisionStatus.init(rawValue:))
+                ?? stringValue(payload["provisionStatus"]).flatMap(CampaignProvisionStatus.init(rawValue:)),
+            provisionSource: stringValue(payload["provision_source"]).flatMap(CampaignProvisionSource.init(rawValue:))
+                ?? stringValue(payload["provisionSource"]).flatMap(CampaignProvisionSource.init(rawValue:)),
+            provisionPhase: stringValue(payload["provision_phase"]).flatMap(CampaignProvisionPhase.init(rawValue:))
+                ?? stringValue(payload["provisionPhase"]).flatMap(CampaignProvisionPhase.init(rawValue:)),
+            addressesReadyAt: dateValue(payload["addresses_ready_at"]) ?? dateValue(payload["addressesReadyAt"]),
+            mapReadyAt: dateValue(payload["map_ready_at"]) ?? dateValue(payload["mapReadyAt"]),
+            optimizedAt: dateValue(payload["optimized_at"]) ?? dateValue(payload["optimizedAt"]),
+            hasParcels: boolValue(payload["has_parcels"]) ?? boolValue(payload["hasParcels"]),
+            buildingLinkConfidence: doubleValue(payload["building_link_confidence"]) ?? doubleValue(payload["buildingLinkConfidence"]),
+            mapMode: stringValue(payload["map_mode"]).flatMap(CampaignMapMode.init(rawValue:))
+                ?? stringValue(payload["mapMode"]).flatMap(CampaignMapMode.init(rawValue:)),
+            coverageScore: intValue(payload["coverage_score"]) ?? intValue(payload["coverageScore"]),
+            dataQuality: stringValue(payload["data_quality"]).flatMap(CampaignDataQuality.init(rawValue:))
+                ?? stringValue(payload["dataQuality"]).flatMap(CampaignDataQuality.init(rawValue:)),
+            standardModeRecommended: boolValue(payload["standard_mode_recommended"]) ?? boolValue(payload["standardModeRecommended"]),
+            dataQualityReason: stringValue(payload["data_quality_reason"]) ?? stringValue(payload["dataQualityReason"])
+        )
+    }
+
+    private static func campaignPayloadJSON(from row: CampaignDBRow, totalFlyers: Int?) -> String? {
+        guard
+            let encoded = OfflineJSONCodec.encode(row),
+            let data = encoded.data(using: .utf8),
+            var payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            return nil
+        }
+
+        if let totalFlyers {
+            payload["total_flyers"] = totalFlyers
+            payload["address_count"] = totalFlyers
+        }
+
+        guard JSONSerialization.isValidJSONObject(payload),
+              let payloadData = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]) else {
+            return encoded
+        }
+        return String(data: payloadData, encoding: .utf8)
+    }
+
     private static func campaignAddresses(
         from records: [CachedAddressRecord],
         campaignId: String
@@ -1308,6 +2499,92 @@ final class CampaignRepository {
         .first
     }
 
+    private static func record(
+        _ record: CachedAddressRecord,
+        campaignId: String,
+        matchesAddressId normalizedAddressId: String
+    ) -> Bool {
+        let feature = OfflineJSONCodec.decode(AddressFeature.self, from: record.payloadJSON)
+        let scopedPrefix = "\(campaignId.lowercased()):"
+        let unscopedRecordId = record.id.lowercased().hasPrefix(scopedPrefix)
+            ? String(record.id.dropFirst(scopedPrefix.count))
+            : record.id
+
+        let ids = [
+            feature?.properties.id,
+            feature?.id,
+            unscopedRecordId
+        ]
+        .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+
+        return ids.contains(normalizedAddressId)
+    }
+
+    private static func deleteAddressRows(
+        _ db: Database,
+        campaignId: String,
+        normalizedAddressId: String
+    ) throws {
+        let addressRecords = try CachedAddressRecord
+            .filter(Column("campaign_id") == campaignId)
+            .fetchAll(db)
+
+        let addressCacheIds = addressRecords
+            .filter { record($0, campaignId: campaignId, matchesAddressId: normalizedAddressId) }
+            .map(\.id)
+
+        if !addressCacheIds.isEmpty {
+            try CachedAddressRecord
+                .filter(addressCacheIds.contains(Column("id")))
+                .deleteAll(db)
+        }
+
+        let linkIds = try CachedBuildingAddressLinkRecord
+            .filter(Column("campaign_id") == campaignId)
+            .fetchAll(db)
+            .compactMap { record -> String? in
+                record.addressId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == normalizedAddressId
+                    ? record.id
+                    : nil
+            }
+
+        if !linkIds.isEmpty {
+            try CachedBuildingAddressLinkRecord
+                .filter(linkIds.contains(Column("id")))
+                .deleteAll(db)
+        }
+
+        let statusIds = try CachedAddressStatusRecord
+            .filter(Column("campaign_id") == campaignId)
+            .fetchAll(db)
+            .compactMap { record -> String? in
+                record.addressId?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == normalizedAddressId
+                    ? record.id
+                    : nil
+            }
+
+        if !statusIds.isEmpty {
+            try CachedAddressStatusRecord
+                .filter(statusIds.contains(Column("id")))
+                .deleteAll(db)
+        }
+
+        let metadataIds = try CachedAddressCaptureMetadataRecord
+            .filter(Column("campaign_id") == campaignId)
+            .fetchAll(db)
+            .compactMap { record -> String? in
+                record.addressId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == normalizedAddressId
+                    ? record.id
+                    : nil
+            }
+
+        if !metadataIds.isEmpty {
+            try CachedAddressCaptureMetadataRecord
+                .filter(metadataIds.contains(Column("id")))
+                .deleteAll(db)
+        }
+    }
+
     private static func coordinateValue(
         from record: CachedAddressRecord,
         feature: AddressFeature?
@@ -1334,6 +2611,13 @@ final class CampaignRepository {
             return [:]
         }
         return object
+    }
+
+    private static func isQuickStartCampaign(payloadJSON: String?) -> Bool {
+        let payload = jsonObject(from: payloadJSON)
+        return (stringValue(payload["tags"]) ?? "")
+            .lowercased()
+            .contains("quick_start")
     }
 
     private static func codableValue<T: Decodable>(_ type: T.Type, from value: Any?) -> T? {
@@ -1403,9 +2687,42 @@ final class CampaignRepository {
     }
 
     private static func pointGeometry(for coordinate: CLLocationCoordinate2D) -> MapFeatureGeoJSONGeometry? {
+        mapFeatureGeometry(type: "Point", coordinates: [coordinate.longitude, coordinate.latitude])
+    }
+
+    private static func fallbackBuildingId(addressId: UUID) -> String {
+        "fallback_\(addressId.uuidString.lowercased())"
+    }
+
+    private static func fallbackRectangleGeometry(
+        center: CLLocationCoordinate2D,
+        widthMeters: Double = 10,
+        depthMeters: Double = 8
+    ) -> MapFeatureGeoJSONGeometry? {
+        guard CLLocationCoordinate2DIsValid(center) else { return nil }
+        let metersPerDegreeLatitude = 111_320.0
+        let latitudeRadians = center.latitude * .pi / 180
+        let metersPerDegreeLongitude = max(1, metersPerDegreeLatitude * cos(latitudeRadians))
+        let halfLatitude = (depthMeters / 2) / metersPerDegreeLatitude
+        let halfLongitude = (widthMeters / 2) / metersPerDegreeLongitude
+        let west = center.longitude - halfLongitude
+        let east = center.longitude + halfLongitude
+        let south = center.latitude - halfLatitude
+        let north = center.latitude + halfLatitude
+        let ring = [
+            [west, south],
+            [east, south],
+            [east, north],
+            [west, north],
+            [west, south]
+        ]
+        return mapFeatureGeometry(type: "Polygon", coordinates: [ring])
+    }
+
+    private static func mapFeatureGeometry(type: String, coordinates: Any) -> MapFeatureGeoJSONGeometry? {
         let payload: [String: Any] = [
-            "type": "Point",
-            "coordinates": [coordinate.longitude, coordinate.latitude]
+            "type": type,
+            "coordinates": coordinates
         ]
         guard JSONSerialization.isValidJSONObject(payload),
               let data = try? JSONSerialization.data(withJSONObject: payload) else {

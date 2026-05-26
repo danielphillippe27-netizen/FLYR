@@ -195,7 +195,7 @@ struct SignInView: View {
         isSigningIn = true
         do {
             try await auth.signInWithGoogle()
-            await MainActor.run { displayToast(message: "Signed in successfully", type: .success) }
+            finishSuccessfulSignIn(message: "Signed in successfully")
         } catch {
             await MainActor.run {
                 let msg = error.localizedDescription
@@ -209,7 +209,7 @@ struct SignInView: View {
         isSigningIn = true
         do {
             try await auth.signInWithApple()
-            await MainActor.run { displayToast(message: "Signed in successfully", type: .success) }
+            finishSuccessfulSignIn(message: "Signed in successfully")
         } catch {
             await MainActor.run {
                 let msg = error.localizedDescription
@@ -227,8 +227,8 @@ struct SignInView: View {
         emailSignInError = nil
         do {
             try await auth.signInWithEmail(email: trimmedEmail, password: password)
+            finishSuccessfulSignIn(message: "Signed in successfully")
             await MainActor.run {
-                displayToast(message: "Signed in successfully", type: .success)
                 email = ""
                 password = ""
             }
@@ -256,6 +256,13 @@ struct SignInView: View {
             }
         }
         isEmailSigningIn = false
+    }
+
+    private func finishSuccessfulSignIn(message: String) {
+        displayToast(message: message, type: .success)
+        Task { @MainActor in
+            await routeState.resolveRoute()
+        }
     }
 
     private func displayToast(message: String, type: ToastType) {

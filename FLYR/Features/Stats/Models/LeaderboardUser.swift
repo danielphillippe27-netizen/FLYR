@@ -4,6 +4,7 @@ struct LeaderboardUser: Identifiable, Codable {
     let id: String // user_id from Supabase
     let name: String
     let avatarUrl: String?
+    let countryCode: String?
     let brokerage: String?
     let rank: Int
     let doorknocks: Int
@@ -19,6 +20,7 @@ struct LeaderboardUser: Identifiable, Codable {
         case id
         case name
         case avatarUrl = "avatar_url"
+        case countryCode = "country_code"
         case brokerage
         case rank
         case doorknocks
@@ -36,6 +38,7 @@ struct LeaderboardUser: Identifiable, Codable {
         id: String,
         name: String,
         avatarUrl: String?,
+        countryCode: String?,
         brokerage: String?,
         rank: Int,
         doorknocks: Int,
@@ -50,6 +53,7 @@ struct LeaderboardUser: Identifiable, Codable {
         self.id = id
         self.name = name
         self.avatarUrl = avatarUrl
+        self.countryCode = countryCode
         self.brokerage = brokerage
         self.rank = rank
         self.doorknocks = doorknocks
@@ -60,6 +64,10 @@ struct LeaderboardUser: Identifiable, Codable {
         self.weekly = weekly
         self.monthly = monthly
         self.allTime = allTime
+    }
+
+    var countryFlag: String {
+        CountryOptions.flag(for: countryCode)
     }
     
     // Helper to get value for selected metric and timeframe

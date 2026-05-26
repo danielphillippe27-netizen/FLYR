@@ -18,6 +18,24 @@ type RouteHandlerConfig<Route extends AppRouteHandlerRoutes = AppRouteHandlerRou
 
 
 
+// Validate ../../app/api/access/redirect/route.ts
+{
+  type __IsExpected<Specific extends RouteHandlerConfig<"/api/access/redirect">> = Specific
+  const handler = {} as typeof import("../../app/api/access/redirect/route.js")
+  type __Check = __IsExpected<typeof handler>
+  // @ts-ignore
+  type __Unused = __Check
+}
+
+// Validate ../../app/api/access/state/route.ts
+{
+  type __IsExpected<Specific extends RouteHandlerConfig<"/api/access/state">> = Specific
+  const handler = {} as typeof import("../../app/api/access/state/route.js")
+  type __Check = __IsExpected<typeof handler>
+  // @ts-ignore
+  type __Unused = __Check
+}
+
 // Validate ../../app/api/account/delete/route.ts
 {
   type __IsExpected<Specific extends RouteHandlerConfig<"/api/account/delete">> = Specific
@@ -45,6 +63,15 @@ type RouteHandlerConfig<Route extends AppRouteHandlerRoutes = AppRouteHandlerRou
   type __Unused = __Check
 }
 
+// Validate ../../app/api/campaigns/[campaignId]/address-tiles/[...tile]/route.ts
+{
+  type __IsExpected<Specific extends RouteHandlerConfig<"/api/campaigns/[campaignId]/address-tiles/[...tile]">> = Specific
+  const handler = {} as typeof import("../../app/api/campaigns/[campaignId]/address-tiles/[...tile]/route.js")
+  type __Check = __IsExpected<typeof handler>
+  // @ts-ignore
+  type __Unused = __Check
+}
+
 // Validate ../../app/api/campaigns/[campaignId]/addresses/[addressId]/manual/route.ts
 {
   type __IsExpected<Specific extends RouteHandlerConfig<"/api/campaigns/[campaignId]/addresses/[addressId]/manual">> = Specific
@@ -54,10 +81,37 @@ type RouteHandlerConfig<Route extends AppRouteHandlerRoutes = AppRouteHandlerRou
   type __Unused = __Check
 }
 
+// Validate ../../app/api/campaigns/[campaignId]/addresses/[addressId]/route.ts
+{
+  type __IsExpected<Specific extends RouteHandlerConfig<"/api/campaigns/[campaignId]/addresses/[addressId]">> = Specific
+  const handler = {} as typeof import("../../app/api/campaigns/[campaignId]/addresses/[addressId]/route.js")
+  type __Check = __IsExpected<typeof handler>
+  // @ts-ignore
+  type __Unused = __Check
+}
+
 // Validate ../../app/api/campaigns/[campaignId]/addresses/manual/route.ts
 {
   type __IsExpected<Specific extends RouteHandlerConfig<"/api/campaigns/[campaignId]/addresses/manual">> = Specific
   const handler = {} as typeof import("../../app/api/campaigns/[campaignId]/addresses/manual/route.js")
+  type __Check = __IsExpected<typeof handler>
+  // @ts-ignore
+  type __Unused = __Check
+}
+
+// Validate ../../app/api/campaigns/[campaignId]/addresses/route.ts
+{
+  type __IsExpected<Specific extends RouteHandlerConfig<"/api/campaigns/[campaignId]/addresses">> = Specific
+  const handler = {} as typeof import("../../app/api/campaigns/[campaignId]/addresses/route.js")
+  type __Check = __IsExpected<typeof handler>
+  // @ts-ignore
+  type __Unused = __Check
+}
+
+// Validate ../../app/api/campaigns/[campaignId]/buildings/[buildingId]/address-candidates/route.ts
+{
+  type __IsExpected<Specific extends RouteHandlerConfig<"/api/campaigns/[campaignId]/buildings/[buildingId]/address-candidates">> = Specific
+  const handler = {} as typeof import("../../app/api/campaigns/[campaignId]/buildings/[buildingId]/address-candidates/route.js")
   type __Check = __IsExpected<typeof handler>
   // @ts-ignore
   type __Unused = __Check
@@ -103,6 +157,42 @@ type RouteHandlerConfig<Route extends AppRouteHandlerRoutes = AppRouteHandlerRou
 {
   type __IsExpected<Specific extends RouteHandlerConfig<"/api/campaigns/[campaignId]/buildings">> = Specific
   const handler = {} as typeof import("../../app/api/campaigns/[campaignId]/buildings/route.js")
+  type __Check = __IsExpected<typeof handler>
+  // @ts-ignore
+  type __Unused = __Check
+}
+
+// Validate ../../app/api/campaigns/[campaignId]/diamond-manifest/route.ts
+{
+  type __IsExpected<Specific extends RouteHandlerConfig<"/api/campaigns/[campaignId]/diamond-manifest">> = Specific
+  const handler = {} as typeof import("../../app/api/campaigns/[campaignId]/diamond-manifest/route.js")
+  type __Check = __IsExpected<typeof handler>
+  // @ts-ignore
+  type __Unused = __Check
+}
+
+// Validate ../../app/api/campaigns/[campaignId]/diamond-tiles/buildings/[...tile]/route.ts
+{
+  type __IsExpected<Specific extends RouteHandlerConfig<"/api/campaigns/[campaignId]/diamond-tiles/buildings/[...tile]">> = Specific
+  const handler = {} as typeof import("../../app/api/campaigns/[campaignId]/diamond-tiles/buildings/[...tile]/route.js")
+  type __Check = __IsExpected<typeof handler>
+  // @ts-ignore
+  type __Unused = __Check
+}
+
+// Validate ../../app/api/campaigns/[campaignId]/parcel-tiles/[...tile]/route.ts
+{
+  type __IsExpected<Specific extends RouteHandlerConfig<"/api/campaigns/[campaignId]/parcel-tiles/[...tile]">> = Specific
+  const handler = {} as typeof import("../../app/api/campaigns/[campaignId]/parcel-tiles/[...tile]/route.js")
+  type __Check = __IsExpected<typeof handler>
+  // @ts-ignore
+  type __Unused = __Check
+}
+
+// Validate ../../app/api/campaigns/[campaignId]/parcels/route.ts
+{
+  type __IsExpected<Specific extends RouteHandlerConfig<"/api/campaigns/[campaignId]/parcels">> = Specific
+  const handler = {} as typeof import("../../app/api/campaigns/[campaignId]/parcels/route.js")
   type __Check = __IsExpected<typeof handler>
   // @ts-ignore
   type __Unused = __Check

@@ -43,15 +43,27 @@ enum FarmTouchType: String, Codable, CaseIterable, Identifiable, Sendable {
         case .custom: return "gray"
         }
     }
+
+    var defaultModeRawValue: String {
+        switch self {
+        case .flyer: return "flyer"
+        case .doorKnock: return "door_knock"
+        case .event: return "event"
+        case .newsletter: return "newsletter"
+        case .ad: return "social_ad"
+        case .custom: return "pop_by"
+        }
+    }
 }
 
 /// Farm touch model representing a planned or executed touch
-struct FarmTouch: Identifiable, Codable, Equatable {
+struct FarmTouch: Identifiable, Codable, Equatable, Sendable {
     let id: UUID
     let farmId: UUID
     let cycleNumber: Int?
     let date: Date
     let type: FarmTouchType
+    let mode: String?
     let title: String
     let notes: String?
     let orderIndex: Int?
@@ -70,6 +82,7 @@ struct FarmTouch: Identifiable, Codable, Equatable {
         case cycleNumber = "cycle_number"
         case date
         case type
+        case mode
         case title
         case notes
         case orderIndex = "order_index"
@@ -108,6 +121,7 @@ struct FarmTouch: Identifiable, Codable, Equatable {
         }
         
         type = try container.decode(FarmTouchType.self, forKey: .type)
+        mode = try container.decodeIfPresent(String.self, forKey: .mode)
         title = try container.decode(String.self, forKey: .title)
         notes = try container.decodeIfPresent(String.self, forKey: .notes)
         orderIndex = try container.decodeIfPresent(Int.self, forKey: .orderIndex)
@@ -127,6 +141,7 @@ struct FarmTouch: Identifiable, Codable, Equatable {
         cycleNumber: Int? = nil,
         date: Date,
         type: FarmTouchType,
+        mode: String? = nil,
         title: String,
         notes: String? = nil,
         orderIndex: Int? = nil,
@@ -144,6 +159,7 @@ struct FarmTouch: Identifiable, Codable, Equatable {
         self.cycleNumber = cycleNumber
         self.date = date
         self.type = type
+        self.mode = mode
         self.title = title
         self.notes = notes
         self.orderIndex = orderIndex
@@ -171,6 +187,7 @@ struct FarmTouch: Identifiable, Codable, Equatable {
         try container.encode(dateFormatter.string(from: date), forKey: .date)
         
         try container.encode(type, forKey: .type)
+        try container.encodeIfPresent(mode, forKey: .mode)
         try container.encode(title, forKey: .title)
         try container.encodeIfPresent(notes, forKey: .notes)
         try container.encodeIfPresent(orderIndex, forKey: .orderIndex)
@@ -182,5 +199,106 @@ struct FarmTouch: Identifiable, Codable, Equatable {
         try container.encodeIfPresent(completedByUserId, forKey: .completedByUserId)
         try container.encodeIfPresent(executionMetrics, forKey: .executionMetrics)
         try container.encode(createdAt, forKey: .createdAt)
+    }
+}
+
+extension FarmTouch {
+    var effectiveModeRawValue: String {
+        let trimmedMode = mode?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let trimmedMode, !trimmedMode.isEmpty {
+            return trimmedMode.lowercased()
+        }
+        return type.defaultModeRawValue
+    }
+
+    var effectiveModeDisplayName: String {
+        switch effectiveModeRawValue {
+        case "flyer":
+            return "Flyer Run"
+        case "door_knock", "door_knocking":
+            return "Door Knock"
+        case "event", "community_event":
+            return "Community Event"
+        case "newsletter":
+            return "Newsletter"
+        case "ad", "social_ad":
+            return "Social Ad Campaign"
+        case "phone_call", "call":
+            return "Phone Call"
+        case "pop_by", "popby":
+            return "Pop-By"
+        case "survey":
+            return "Survey"
+        case "custom":
+            return "Custom"
+        default:
+            return effectiveModeRawValue
+                .replacingOccurrences(of: "_", with: " ")
+                .capitalized
+        }
+    }
+
+    var effectiveIconName: String {
+        switch effectiveModeRawValue {
+        case "flyer":
+            return "paperplane.fill"
+        case "door_knock", "door_knocking":
+            return "door.left.hand.closed"
+        case "event", "community_event":
+            return "calendar"
+        case "newsletter":
+            return "envelope.fill"
+        case "ad", "social_ad":
+            return "megaphone.fill"
+        case "phone_call", "call":
+            return "phone.fill"
+        case "pop_by", "popby":
+            return "gift.fill"
+        case "survey":
+            return "list.clipboard.fill"
+        default:
+            return type.iconName
+        }
+    }
+
+    var effectiveColorName: String {
+        switch effectiveModeRawValue {
+        case "flyer":
+            return "blue"
+        case "door_knock", "door_knocking":
+            return "green"
+        case "event", "community_event":
+            return "orange"
+        case "newsletter":
+            return "purple"
+        case "ad", "social_ad":
+            return "yellow"
+        case "phone_call", "call":
+            return "teal"
+        case "pop_by", "popby":
+            return "purple"
+        case "survey":
+            return "indigo"
+        default:
+            return type.colorName
+        }
+    }
+
+    var effectiveDisplayTitle: String {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty
+            || trimmed.localizedCaseInsensitiveContains("cycle")
+            || type == .custom {
+            return effectiveModeDisplayName
+        }
+
+        switch effectiveModeRawValue {
+        case "pop_by", "popby":
+            return "Pop-By"
+        case "phone_call", "call":
+            return "Phone Call"
+        default:
+            return trimmed
+        }
     }
 }

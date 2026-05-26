@@ -16,6 +16,7 @@ struct CampaignsListView: View {
     @State private var showBulkDeleteConfirmation = false
     @State private var pendingDeleteCampaign: CampaignV2?
     @State private var isBulkActionInProgress = false
+    @State private var didPositionListOnInitialLoad = false
     var externalFilter: Binding<CampaignFilter>? = nil
     /// When set, empty state and "+ New Campaign" button set this to true (same as toolbar + button).
     var showCreateCampaign: Binding<Bool>? = nil
@@ -222,7 +223,10 @@ struct CampaignsListView: View {
                 }
             }
             .onChange(of: storeV2.campaigns.count) { oldCount, newCount in
-                if newCount > oldCount, let newCampaign = storeV2.campaigns.last {
+                if !didPositionListOnInitialLoad, oldCount == 0, newCount > 0 {
+                    didPositionListOnInitialLoad = true
+                    scrollToTop(proxy)
+                } else if newCount > oldCount, let newCampaign = storeV2.campaigns.last {
                     recentlyCreatedCampaignID = newCampaign.id
                 }
             }
@@ -241,6 +245,8 @@ struct CampaignsListView: View {
             }
             .task(id: "campaigns") {
                 hooksV2.load(store: storeV2)
+                didPositionListOnInitialLoad = !storeV2.campaigns.isEmpty
+                scrollToTop(proxy)
             }
             .refreshable {
                 hooksV2.load(store: storeV2)
@@ -292,6 +298,13 @@ struct CampaignsListView: View {
             } message: {
                 Text("This will permanently delete \(selectedCampaignIDs.count) campaign\(selectedCampaignIDs.count == 1 ? "" : "s").")
             }
+        }
+    }
+
+    private func scrollToTop(_ proxy: ScrollViewProxy) {
+        guard let firstCampaignID = visibleCampaigns.first?.id else { return }
+        Task { @MainActor in
+            proxy.scrollTo(firstCampaignID, anchor: .top)
         }
     }
 

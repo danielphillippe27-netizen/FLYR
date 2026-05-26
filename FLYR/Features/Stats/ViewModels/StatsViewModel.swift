@@ -12,6 +12,17 @@ final class StatsViewModel: ObservableObject {
     private let statsService = StatsService.shared
     private let leaderboardService = LeaderboardService.shared
 
+    private func isCancellation(_ error: Error) -> Bool {
+        if error is CancellationError {
+            return true
+        }
+
+        let nsError = error as NSError
+        return (nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled)
+            || nsError.domain == "Swift.CancellationError"
+            || error.localizedDescription.lowercased().contains("cancel")
+    }
+
     func loadStats(for userID: UUID) async {
         isLoading = true
         errorMessage = nil
@@ -21,10 +32,7 @@ final class StatsViewModel: ObservableObject {
             stats = try await statsService.fetchUserStats(userID: userID)
             await loadRanks(for: userID)
         } catch {
-            let nsError = error as NSError
-            let isCancelled = (nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled)
-                || error.localizedDescription.lowercased().contains("cancelled")
-            if isCancelled { return }
+            if isCancellation(error) { return }
 
             errorMessage = "Failed to load stats: \(error.localizedDescription)"
             print("❌ Error loading stats: \(error)")

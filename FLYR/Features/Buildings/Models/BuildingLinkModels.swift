@@ -12,6 +12,7 @@ struct BuildingProperties: Codable {
     let id: String
     let buildingId: String?
     let addressId: String?
+    let addressIds: [String]
     let gersId: String?
     let height: Double
     let heightM: Double?
@@ -42,11 +43,14 @@ struct BuildingProperties: Codable {
     let buildingType: String?
     /// QR code was scanned
     let qrScanned: Bool?
+    /// True when the backend knows at least one campaign address is linked to this building.
+    let isLinked: Bool?
 
     enum CodingKeys: String, CodingKey {
         case id
         case buildingId = "building_id"
         case addressId = "address_id"
+        case addressIds = "address_ids"
         case gersId = "gers_id"
         case height
         case heightM = "height_m"
@@ -69,12 +73,14 @@ struct BuildingProperties: Codable {
         case areaSqm = "area_sqm"
         case buildingType = "building_type"
         case qrScanned = "qr_scanned"
+        case isLinked = "is_linked"
     }
 
     init(
         id: String,
         buildingId: String?,
         addressId: String?,
+        addressIds: [String] = [],
         gersId: String?,
         height: Double,
         heightM: Double?,
@@ -96,11 +102,13 @@ struct BuildingProperties: Codable {
         addressCount: Int?,
         areaSqm: Double?,
         buildingType: String?,
-        qrScanned: Bool?
+        qrScanned: Bool?,
+        isLinked: Bool? = nil
     ) {
         self.id = id
         self.buildingId = buildingId
         self.addressId = addressId
+        self.addressIds = addressIds
         self.gersId = gersId
         self.height = height
         self.heightM = heightM
@@ -123,6 +131,7 @@ struct BuildingProperties: Codable {
         self.areaSqm = areaSqm
         self.buildingType = buildingType
         self.qrScanned = qrScanned
+        self.isLinked = isLinked
     }
 
     init(from decoder: Decoder) throws {
@@ -137,6 +146,7 @@ struct BuildingProperties: Codable {
         id = (try? c.decode(String.self, forKey: .id)) ?? UUID().uuidString
         buildingId = try? c.decodeIfPresent(String.self, forKey: .buildingId)
         addressId = try? c.decodeIfPresent(String.self, forKey: .addressId)
+        addressIds = (try? c.decodeIfPresent([String].self, forKey: .addressIds)) ?? []
         gersId = try? c.decodeIfPresent(String.self, forKey: .gersId)
         height = decodeDouble(.height, default: 10)
         heightM = (try? c.decodeIfPresent(Double.self, forKey: .heightM)) ?? (try? c.decodeIfPresent(Int.self, forKey: .heightM)).map(Double.init)
@@ -159,6 +169,7 @@ struct BuildingProperties: Codable {
         areaSqm = (try? c.decodeIfPresent(Double.self, forKey: .areaSqm)) ?? (try? c.decodeIfPresent(Int.self, forKey: .areaSqm)).map(Double.init)
         buildingType = try? c.decodeIfPresent(String.self, forKey: .buildingType)
         qrScanned = try? c.decodeIfPresent(Bool.self, forKey: .qrScanned)
+        isLinked = try? c.decodeIfPresent(Bool.self, forKey: .isLinked)
     }
 
     var statusColor: String {
@@ -175,6 +186,62 @@ struct BuildingProperties: Codable {
     /// while Silver still commonly keys by `gers_id`.
     var canonicalBuildingIdentifier: String? {
         buildingIdentifierCandidates.first
+    }
+
+    var effectiveIsLinked: Bool {
+        if let isLinked { return isLinked }
+        if let addressId, !addressId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return true }
+        if !addressUUIDs.isEmpty { return true }
+        if (addressCount ?? 0) > 0 { return true }
+        return featureStatus?.lowercased() == "matched"
+    }
+
+    var addressUUIDs: [UUID] {
+        let rawIds = addressIds + [addressId].compactMap { $0 }
+        var seen = Set<UUID>()
+        return rawIds.compactMap { UUID(uuidString: $0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+            .filter { seen.insert($0).inserted }
+    }
+
+    func mergedLinkMetadata(from richer: BuildingProperties) -> BuildingProperties {
+        let mergedAddressIds = {
+            var seen = Set<String>()
+            return (addressIds + richer.addressIds)
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty && seen.insert($0.lowercased()).inserted }
+        }()
+
+        return BuildingProperties(
+            id: id,
+            buildingId: buildingId ?? richer.buildingId,
+            addressId: addressId ?? richer.addressId,
+            addressIds: mergedAddressIds,
+            gersId: gersId ?? richer.gersId,
+            height: height,
+            heightM: heightM ?? richer.heightM,
+            minHeight: minHeight,
+            isTownhome: isTownhome || richer.isTownhome,
+            unitsCount: max(unitsCount, richer.unitsCount),
+            addressText: addressText ?? richer.addressText,
+            matchMethod: matchMethod ?? richer.matchMethod,
+            featureStatus: featureStatus ?? richer.featureStatus,
+            featureType: featureType ?? richer.featureType,
+            status: status,
+            scansToday: max(scansToday, richer.scansToday),
+            scansTotal: max(scansTotal, richer.scansTotal),
+            lastScanSecondsAgo: lastScanSecondsAgo ?? richer.lastScanSecondsAgo,
+            houseNumber: houseNumber ?? richer.houseNumber,
+            streetName: streetName ?? richer.streetName,
+            confidence: confidence ?? richer.confidence,
+            source: source ?? richer.source,
+            addressCount: max(addressCount ?? 0, richer.addressCount ?? 0) > 0
+                ? max(addressCount ?? 0, richer.addressCount ?? 0)
+                : nil,
+            areaSqm: areaSqm ?? richer.areaSqm,
+            buildingType: buildingType ?? richer.buildingType,
+            qrScanned: qrScanned ?? richer.qrScanned,
+            isLinked: isLinked ?? richer.isLinked
+        )
     }
 
     /// All known identifiers for matching a feature across Gold/Silver responses.

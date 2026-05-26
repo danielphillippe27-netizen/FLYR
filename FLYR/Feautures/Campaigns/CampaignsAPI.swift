@@ -62,11 +62,20 @@ struct GeoJSONPolygon: Codable {
 /// Payload for campaigns.update(territory_boundary).
 struct TerritoryBoundaryUpdate: Encodable {
     let territory_boundary: GeoJSONPolygon
+    let region: String?
+    let bbox: [Double]?
 }
 
 /// Payload for campaigns.update(status).
 struct CampaignStatusUpdate: Encodable {
     let status: String
+}
+
+/// Payload for campaigns.update(name/title/type).
+struct CampaignDetailsUpdate: Encodable {
+    let name: String
+    let title: String
+    let type: String
 }
 
 final class CampaignsAPI {
@@ -232,7 +241,7 @@ final class CampaignsAPI {
             seedCoordStr = "nil (e.g. polygon flow uses territory_boundary)"
         }
         print("🌐 [API DEBUG] Seed coordinates: \(seedCoordStr)")
-        print("🌐 [API DEBUG] Addresses JSON count: \(payload.addressesJSON.count)")
+        print("🌐 [API DEBUG] Ignoring client address payload count for server provision: \(payload.addressesJSON.count)")
 
         let shim = SupabaseClientShim()
         
@@ -265,9 +274,7 @@ final class CampaignsAPI {
 
         if let dbType {
             // Defensive check so we fail with a clear client-side message before DB constraint errors.
-            let allowedTypes: Set<String> = [
-                "flyer", "door_knock", "event", "survey", "gift", "pop_by", "open_house", "letters"
-            ]
+            let allowedTypes = Set(CampaignType.allCases.map(\.dbValue))
             if !allowedTypes.contains(dbType) {
                 throw NSError(
                     domain: "CampaignsAPI",
@@ -288,27 +295,18 @@ final class CampaignsAPI {
         }
         print("✅ [API DEBUG] Campaign inserted with ID: \(dbRow.id)")
         
-        // 3. Bulk insert addresses via RPC
         if !payload.addressesJSON.isEmpty {
-            print("🌐 [API DEBUG] Inserting \(payload.addressesJSON.count) addresses via RPC...")
-            let addressesJSON = payload.addressesJSON.map { $0.toDBJSON() }
-            let params: [String: Any] = [
-                "p_campaign_id": dbRow.id.uuidString,
-                "p_addresses": addressesJSON
-            ]
-            
-            try await shim.callRPC("add_campaign_addresses", params: params)
-            print("✅ [API DEBUG] Addresses inserted successfully")
+            print("⚠️ [API DEBUG] Client-provided addresses are ignored; backend provision owns Diamond/Bedrock lookup.")
         }
         
-        // 4. Return CampaignV2 model
+        // Return the campaign shell. Addresses arrive asynchronously from the backend provisioner.
         let campaign = CampaignV2(
             id: dbRow.id,
             name: dbRow.title,
             type: payload.type ?? dbRow.campaignType,
             addressSource: payload.addressSource,
-            addresses: payload.addressesJSON,
-            totalFlyers: payload.addressesJSON.count, // Use addresses count instead of DB field
+            addresses: [],
+            totalFlyers: 0,
             scans: dbRow.scans,
             conversions: dbRow.conversions,
             createdAt: dbRow.createdAt,
@@ -347,33 +345,22 @@ final class CampaignsAPI {
         return raw
     }
     
-    // Create Campaign V2 (legacy draft method)
+    // Create Campaign V2 from the draft compatibility shape without client address insertion.
     func createV2(_ draft: CampaignDraft) async throws -> CampaignV2 {
-        print("🌐 [API DEBUG] Creating campaign V2 with legacy draft")
-        print("🌐 [API DEBUG] Campaign name: '\(draft.name)'")
-        print("🌐 [API DEBUG] Campaign type: \(draft.type.rawValue)")
-        print("🌐 [API DEBUG] Address source: \(draft.addressSource.rawValue)")
-        print("🌐 [API DEBUG] Address count: \(draft.addresses.count)")
-        
-        // For now, create in memory - in production this would save to Supabase
-        let campaign = CampaignV2(
-            id: UUID(),
+        print("🌐 [API DEBUG] Creating campaign V2 from draft compatibility shell")
+        let payload = CampaignCreatePayloadV2(
             name: draft.name,
+            description: "",
             type: draft.type,
             addressSource: draft.addressSource,
-            addresses: draft.addresses,
-            createdAt: Date(),
-            status: .draft
+            addressTargetCount: draft.addresses.count,
+            seedQuery: nil,
+            seedLon: nil,
+            seedLat: nil,
+            addressesJSON: [],
+            workspaceId: nil
         )
-        
-        print("🌐 [API DEBUG] Campaign created with ID: \(campaign.id)")
-        print("🌐 [API DEBUG] Simulating network delay...")
-        
-        // Simulate network delay
-        try await Task.sleep(nanoseconds: 500_000_000) // 0.5 seconds
-        
-        print("✅ [API DEBUG] Legacy draft campaign creation completed")
-        return campaign
+        return try await createV2(payload)
     }
     
     // Fetch campaigns without addresses (lightweight for lists)
@@ -395,7 +382,7 @@ final class CampaignsAPI {
             primaryCampaigns = primary.value
         }
 
-        primaryCampaigns = primaryCampaigns.filter { !Self.isQuickStartCampaign(tags: $0.tags) }
+        primaryCampaigns = primaryCampaigns.filter { !Self.isHiddenFromCampaignLists($0) }
 
         guard !sharedIds.isEmpty else {
             print("✅ [API DEBUG] Fetched \(primaryCampaigns.count) campaigns metadata")
@@ -409,7 +396,7 @@ final class CampaignsAPI {
             .order("created_at", ascending: false)
             .execute()
 
-        let visibleSecondary = secondary.value.filter { !Self.isQuickStartCampaign(tags: $0.tags) }
+        let visibleSecondary = secondary.value.filter { !Self.isHiddenFromCampaignLists($0) }
         let merged = mergeUniqueCampaigns(primary: primaryCampaigns, secondary: visibleSecondary, id: \.id)
             .sorted { $0.createdAt > $1.createdAt }
         print("✅ [API DEBUG] Fetched \(merged.count) campaigns metadata")
@@ -433,6 +420,22 @@ final class CampaignsAPI {
 
     private static func isQuickStartCampaign(tags: String?) -> Bool {
         (tags ?? "").lowercased().contains("quick_start")
+    }
+
+    private static func isHiddenFromCampaignLists(_ row: CampaignDBRow) -> Bool {
+        isQuickStartCampaign(tags: row.tags) || isFarmBackedCampaign(description: row.description, tags: row.tags)
+    }
+
+    private static func isFarmBackedCampaign(description: String?, tags: String?) -> Bool {
+        let normalizedTags = (tags ?? "").lowercased()
+        if normalizedTags.contains("farm_backing") || normalizedTags.contains("farm_linked_campaign") {
+            return true
+        }
+
+        let normalizedDescription = (description ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        return normalizedDescription.hasPrefix("[farm:")
     }
 
     private func fetchCampaignsMetadataIncludingQuickStart(workspaceId: UUID? = nil) async throws -> [CampaignDBRow] {
@@ -470,70 +473,92 @@ final class CampaignsAPI {
     // Fetches campaign metadata and address counts so list shows correct house count
     func fetchCampaignsV2(workspaceId: UUID? = nil) async throws -> [CampaignV2] {
         print("🌐 [API DEBUG] Fetching campaigns V2 from Supabase (metadata + address counts)")
-        let dbRows: [CampaignDBRow]
-        let workspaceId = try await requireResolvedWorkspaceId(workspaceId)
-        let sharedIds = try await fetchSharedCampaignIds()
-        let includeWorkspaceCampaigns = try await isWorkspaceMember(workspaceId: workspaceId)
-
-        var primaryCampaigns: [CampaignDBRow] = []
-        if includeWorkspaceCampaigns {
-            let primary: PostgrestResponse<[CampaignDBRow]> = try await client
-                .from("campaigns")
-                .select()
-                .eq("workspace_id", value: workspaceId)
-                .order("created_at", ascending: false)
-                .execute()
-            primaryCampaigns = primary.value
-        }
-
-        if sharedIds.isEmpty {
-            dbRows = primaryCampaigns.filter { !Self.isQuickStartCampaign(tags: $0.tags) }
-        } else {
-            let secondary: PostgrestResponse<[CampaignDBRow]> = try await client
-                .from("campaigns")
-                .select()
-                .in("id", values: sharedIds.map(\.uuidString))
-                .order("created_at", ascending: false)
-                .execute()
-            let visiblePrimary = primaryCampaigns.filter { !Self.isQuickStartCampaign(tags: $0.tags) }
-            let visibleSecondary = secondary.value.filter { !Self.isQuickStartCampaign(tags: $0.tags) }
-            dbRows = mergeUniqueCampaigns(primary: visiblePrimary, secondary: visibleSecondary, id: \.id)
-                .sorted { $0.createdAt > $1.createdAt }
-        }
-        print("✅ [API DEBUG] Fetched \(dbRows.count) campaigns from DB")
-        
-        // 2. Fetch address counts per campaign (for house count in list)
-        var addressCountByCampaignId: [UUID: Int] = [:]
-        do {
-            struct CampaignCountRow: Decodable {
-                let campaignId: UUID
-                let addressCount: Int
-                enum CodingKeys: String, CodingKey {
-                    case campaignId = "campaign_id"
-                    case addressCount = "address_count"
-                }
+        if !NetworkMonitor.shared.isOnline {
+            let cachedCampaigns = await CampaignRepository.shared.getCachedCampaigns()
+            if !cachedCampaigns.isEmpty {
+                print("📴 [API DEBUG] Loaded \(cachedCampaigns.count) cached campaigns for offline list")
+                return cachedCampaigns
             }
-            let countRes: PostgrestResponse<[CampaignCountRow]> = try await client
-                .rpc("get_campaign_address_counts")
-                .execute()
-            addressCountByCampaignId = Dictionary(uniqueKeysWithValues: countRes.value.map { ($0.campaignId, $0.addressCount) })
-            print("✅ [API DEBUG] Fetched address counts for \(addressCountByCampaignId.count) campaigns")
+        }
+
+        do {
+            let dbRows: [CampaignDBRow]
+            let workspaceId = try await requireResolvedWorkspaceId(workspaceId)
+            let sharedIds = try await fetchSharedCampaignIds()
+            let includeWorkspaceCampaigns = try await isWorkspaceMember(workspaceId: workspaceId)
+
+            var primaryCampaigns: [CampaignDBRow] = []
+            if includeWorkspaceCampaigns {
+                let primary: PostgrestResponse<[CampaignDBRow]> = try await client
+                    .from("campaigns")
+                    .select()
+                    .eq("workspace_id", value: workspaceId)
+                    .order("created_at", ascending: false)
+                    .execute()
+                primaryCampaigns = primary.value
+            }
+
+            if sharedIds.isEmpty {
+                dbRows = primaryCampaigns.filter { !Self.isHiddenFromCampaignLists($0) }
+            } else {
+                let secondary: PostgrestResponse<[CampaignDBRow]> = try await client
+                    .from("campaigns")
+                    .select()
+                    .in("id", values: sharedIds.map(\.uuidString))
+                    .order("created_at", ascending: false)
+                    .execute()
+                let visiblePrimary = primaryCampaigns.filter { !Self.isHiddenFromCampaignLists($0) }
+                let visibleSecondary = secondary.value.filter { !Self.isHiddenFromCampaignLists($0) }
+                dbRows = mergeUniqueCampaigns(primary: visiblePrimary, secondary: visibleSecondary, id: \.id)
+                    .sorted { $0.createdAt > $1.createdAt }
+            }
+            print("✅ [API DEBUG] Fetched \(dbRows.count) campaigns from DB")
+
+            // 2. Fetch address counts per campaign (for house count in list)
+            var addressCountByCampaignId: [UUID: Int] = [:]
+            do {
+                struct CampaignCountRow: Decodable {
+                    let campaignId: UUID
+                    let addressCount: Int
+                    enum CodingKeys: String, CodingKey {
+                        case campaignId = "campaign_id"
+                        case addressCount = "address_count"
+                    }
+                }
+                let countRes: PostgrestResponse<[CampaignCountRow]> = try await client
+                    .rpc("get_campaign_address_counts")
+                    .execute()
+                addressCountByCampaignId = Dictionary(uniqueKeysWithValues: countRes.value.map { ($0.campaignId, $0.addressCount) })
+                print("✅ [API DEBUG] Fetched address counts for \(addressCountByCampaignId.count) campaigns")
+            } catch {
+                print("⚠️ [API DEBUG] Could not fetch address counts (list may show 0): \(error)")
+                // Continue with 0 counts so list still works
+            }
+
+            // 3. Convert each campaign to CampaignV2 with correct totalFlyers
+            var campaigns: [CampaignV2] = []
+            for dbRow in dbRows {
+                let totalFlyers = addressCountByCampaignId[dbRow.id] ?? 0
+                let status = dbRow.status ?? .draft
+                let campaign = campaignV2(from: dbRow, totalFlyers: totalFlyers, status: status)
+                campaigns.append(campaign)
+            }
+
+            await CampaignRepository.shared.upsertCampaignMetadataRows(
+                dbRows,
+                addressCounts: addressCountByCampaignId
+            )
+
+            print("✅ [API DEBUG] Converted \(campaigns.count) campaigns to CampaignV2 with house counts")
+            return campaigns
         } catch {
-            print("⚠️ [API DEBUG] Could not fetch address counts (list may show 0): \(error)")
-            // Continue with 0 counts so list still works
+            let cachedCampaigns = await CampaignRepository.shared.getCachedCampaigns()
+            if !cachedCampaigns.isEmpty {
+                print("⚠️ [API DEBUG] Campaign DB fetch failed, using \(cachedCampaigns.count) cached campaigns: \(error.localizedDescription) debug=\(String(describing: error))")
+                return cachedCampaigns
+            }
+            throw error
         }
-        
-        // 3. Convert each campaign to CampaignV2 with correct totalFlyers
-        var campaigns: [CampaignV2] = []
-        for dbRow in dbRows {
-            let totalFlyers = addressCountByCampaignId[dbRow.id] ?? 0
-            let status = dbRow.status ?? .draft
-            let campaign = campaignV2(from: dbRow, totalFlyers: totalFlyers, status: status)
-            campaigns.append(campaign)
-        }
-        
-        print("✅ [API DEBUG] Converted \(campaigns.count) campaigns to CampaignV2 with house counts")
-        return campaigns
     }
 
     private func campaignV2(
@@ -568,6 +593,26 @@ final class CampaignsAPI {
             standardModeRecommended: dbRow.standardModeRecommended,
             dataQualityReason: dbRow.dataQualityReason
         )
+    }
+
+    /// Lightweight count for the campaign list/creation flow.
+    /// This intentionally avoids fetching address geometries; renderable geometry is PMTiles-first.
+    func fetchCampaignAddressCount(campaignId: UUID) async throws -> Int {
+        struct CampaignCountRow: Decodable {
+            let campaignId: UUID
+            let addressCount: Int
+
+            enum CodingKeys: String, CodingKey {
+                case campaignId = "campaign_id"
+                case addressCount = "address_count"
+            }
+        }
+
+        let countRes: PostgrestResponse<[CampaignCountRow]> = try await client
+            .rpc("get_campaign_address_counts")
+            .execute()
+
+        return countRes.value.first { $0.campaignId == campaignId }?.addressCount ?? 0
     }
 
     /// Single RPC: centroid (lat/lon) per campaign for map markers. Skips campaigns with no addresses.
@@ -696,7 +741,7 @@ final class CampaignsAPI {
         )
     }
 
-    // MARK: - Provision (backend Lambda/S3 → Supabase)
+    // MARK: - Provision (Diamond/Bedrock backend)
 
     /// Backend base URL for provision API (e.g. https://flyrpro.app).
     private static var provisionBaseURL: String {
@@ -711,7 +756,7 @@ final class CampaignsAPI {
         return "https://www.flyrpro.app"
     }
 
-    /// Provision does a full backend pipeline (Lambda/S3 + ingest + linking + routing),
+    /// Provision does a full backend pipeline (Diamond/Bedrock + ingest + linking + routing),
     /// so give it a longer timeout than the default shared session.
     private static let provisionRequestTimeout: TimeInterval = 180
     private static let provisionResourceTimeout: TimeInterval = 300
@@ -725,16 +770,21 @@ final class CampaignsAPI {
     }
 
     private static func provisionResponse(from state: CampaignProvisionState) -> CampaignProvisionResponse {
-        CampaignProvisionResponse(
-            success: state.provisionStatus == .ready,
+        let isReady = state.provisionStatus == .ready
+        let isFailed = state.provisionStatus == .failed
+        return CampaignProvisionResponse(
+            success: isReady,
             addressesSaved: nil,
             buildingsSaved: nil,
             roadsCount: nil,
             roadsSaved: nil,
-            message: state.provisionStatus == .ready
+            message: isReady
                 ? "Campaign is map-ready."
-                : "Campaign provisioning is still in progress.",
-            error: nil,
+                : isFailed
+                    ? "Campaign provisioning failed on the server."
+                    : "Campaign provisioning is still in progress.",
+            error: isFailed ? "Campaign provisioning failed on the server." : nil,
+            accepted: false,
             dataConfidenceScore: nil,
             dataConfidenceLabel: nil,
             dataConfidenceReason: nil,
@@ -757,8 +807,8 @@ final class CampaignsAPI {
         )
     }
 
-    /// Update campaign's territory boundary (polygon). Backend reads this when provisioning (Lambda/S3 server-side).
-    func updateTerritoryBoundary(campaignId: UUID, polygonGeoJSON: String) async throws {
+    /// Update campaign's territory boundary (polygon). Backend reads this when provisioning server-side.
+    func updateTerritoryBoundary(campaignId: UUID, polygonGeoJSON: String, regionCode: String? = nil) async throws {
         guard let data = polygonGeoJSON.data(using: .utf8) else {
             throw NSError(domain: "CampaignsAPI", code: 400, userInfo: [NSLocalizedDescriptionKey: "Invalid GeoJSON polygon"])
         }
@@ -769,13 +819,58 @@ final class CampaignsAPI {
         } catch {
             throw NSError(domain: "CampaignsAPI", code: 400, userInfo: [NSLocalizedDescriptionKey: "Invalid GeoJSON polygon: \(error.localizedDescription)"])
         }
-        let territoryUpdate = TerritoryBoundaryUpdate(territory_boundary: polygon)
+        let normalizedRegion = regionCode?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .uppercased()
+        let territoryUpdate = TerritoryBoundaryUpdate(
+            territory_boundary: polygon,
+            region: normalizedRegion?.isEmpty == false ? normalizedRegion : nil,
+            bbox: Self.bbox(for: polygon)
+        )
         _ = try await client
             .from("campaigns")
             .update(territoryUpdate)
             .eq("id", value: campaignId.uuidString)
             .execute()
         print("✅ [API] Updated territory_boundary for campaign \(campaignId)")
+    }
+
+    private static func bbox(for polygon: GeoJSONPolygon) -> [Double]? {
+        let coordinates = polygon.coordinates.flatMap { $0 }
+        let lons = coordinates.compactMap { $0.first }
+        let lats = coordinates.compactMap { $0.count > 1 ? $0[1] : nil }
+        guard let minLon = lons.min(),
+              let minLat = lats.min(),
+              let maxLon = lons.max(),
+              let maxLat = lats.max() else {
+            return nil
+        }
+        return [minLon, minLat, maxLon, maxLat]
+    }
+
+    /// Update the user-facing campaign details after the territory-first create flow starts.
+    func updateCampaignDetails(campaignId: UUID, name: String, type: CampaignType) async throws {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else {
+            throw NSError(domain: "CampaignsAPI", code: 400, userInfo: [NSLocalizedDescriptionKey: "Campaign name is required"])
+        }
+
+        let allowedTypes = Set(CampaignType.allCases.map(\.dbValue))
+        guard allowedTypes.contains(type.dbValue) else {
+            throw NSError(domain: "CampaignsAPI", code: 400, userInfo: [NSLocalizedDescriptionKey: "Unsupported campaign type '\(type.dbValue)'"])
+        }
+
+        let detailsUpdate = CampaignDetailsUpdate(
+            name: trimmedName,
+            title: trimmedName,
+            type: type.dbValue
+        )
+        _ = try await client
+            .from("campaigns")
+            .update(detailsUpdate)
+            .eq("id", value: campaignId.uuidString)
+            .execute()
+        print("✅ [API] Updated campaign \(campaignId) details")
     }
 
     /// Fetch the campaign's territory boundary (same polygon used for addresses/buildings).
@@ -832,10 +927,13 @@ final class CampaignsAPI {
         print("✅ [API] Deleted \(uniqueIDs.count) campaign(s)")
     }
 
-    /// Trigger provision: backend reads territory_boundary, calls Lambda/S3, ingests into Supabase.
+    /// Trigger provision: backend reads territory_boundary and resolves Diamond first, then Bedrock S3.
     /// Returns decoded response when available so callers can inspect addresses/buildings counts.
     @discardableResult
-    func provisionCampaign(campaignId: UUID) async throws -> CampaignProvisionResponse? {
+    func provisionCampaign(
+        campaignId: UUID,
+        waitForLinker: Bool = false
+    ) async throws -> CampaignProvisionResponse? {
         let url = URL(string: "\(Self.provisionRequestBaseURL)/api/campaigns/provision")!
         print("🌐 [API DEBUG] Provision URL: \(url.absoluteString)")
         var request = URLRequest(url: url)
@@ -845,12 +943,14 @@ final class CampaignsAPI {
         if let session = try? await client.auth.session {
             request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
         }
-        request.httpBody = try JSONSerialization.data(withJSONObject: [
-            "campaign_id": campaignId.uuidString,
-            "geometry_tier": "diamond",
-            "allow_gold": true,
-            "linker_mode": "stable"
-        ])
+        var body: [String: Any] = [
+            "campaign_id": campaignId.uuidString
+        ]
+        if waitForLinker {
+            body["wait_for_linker"] = true
+            body["require_linked_homes"] = true
+        }
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         let data: Data
         let response: URLResponse
@@ -862,6 +962,7 @@ final class CampaignsAPI {
                 print("⚠️ [API DEBUG] Provision request timed out after \(Self.provisionRequestTimeout)s; polling campaign status...")
                 let state = try await waitForProvisionReady(
                     campaignId: campaignId,
+                    requireOptimized: waitForLinker,
                     timeoutSeconds: Self.provisionResourceTimeout,
                     pollIntervalSeconds: 2
                 )
@@ -902,9 +1003,30 @@ final class CampaignsAPI {
             let displayMessage = userMessage ?? bodyStr
             throw NSError(domain: "CampaignsAPI", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: "Provision failed: \(displayMessage.prefix(300))"])
         }
-        if var provisionResponse = try? JSONDecoder().decode(CampaignProvisionResponse.self, from: data) {
-            if provisionResponse.provisionSource == .gold {
-                print("✅ [API] Diamond request resolved through White Gold stable linker")
+        if let provisionResponse = try? JSONDecoder().decode(CampaignProvisionResponse.self, from: data) {
+            if provisionResponse.accepted == true || provisionResponse.provisionStatus == .pending {
+                print("🧭 [API] Provision accepted for campaign \(campaignId); polling until ready or failed...")
+                let state = try await waitForProvisionReady(
+                    campaignId: campaignId,
+                    requireOptimized: waitForLinker,
+                    timeoutSeconds: Self.provisionResourceTimeout,
+                    pollIntervalSeconds: 2
+                )
+                return Self.provisionResponse(from: state)
+            }
+            if waitForLinker,
+               provisionResponse.provisionPhase != .optimized || provisionResponse.postprocessDeferred == true {
+                print("🧭 [API] Waiting for campaign linker to finish before opening campaign \(campaignId)...")
+                let state = try await waitForProvisionReady(
+                    campaignId: campaignId,
+                    requireOptimized: true,
+                    timeoutSeconds: Self.provisionResourceTimeout,
+                    pollIntervalSeconds: 2
+                )
+                return Self.provisionResponse(from: state)
+            }
+            if provisionResponse.provisionSource == .diamond {
+                print("✅ [API] Provision resolved through Diamond")
             }
             let roadsLogged = provisionResponse.roadsCount ?? provisionResponse.roadsSaved ?? 0
             print("✅ [API] Provision completed for campaign \(campaignId): addresses=\(provisionResponse.addressesSaved ?? 0), buildings=\(provisionResponse.buildingsSaved ?? 0), roads=\(roadsLogged)")
@@ -915,169 +1037,10 @@ final class CampaignsAPI {
         }
     }
 
-    private func backfillGoldAddressesIfNeeded(campaignId: UUID) async -> Int {
-        do {
-            let shim = SupabaseClientShim()
-            let campaignRes = try await client
-                .from("campaigns")
-                .select("territory_boundary,region")
-                .eq("id", value: campaignId.uuidString)
-                .single()
-                .execute()
-
-            guard
-                let campaignJSON = try JSONSerialization.jsonObject(with: campaignRes.data) as? [String: Any],
-                let territory = campaignJSON["territory_boundary"]
-            else {
-                print("⚠️ [API DEBUG] Gold backfill skipped: missing territory_boundary")
-                return 0
-            }
-
-            let territoryData = try JSONSerialization.data(withJSONObject: territory)
-            guard let polygonGeoJSON = String(data: territoryData, encoding: .utf8), !polygonGeoJSON.isEmpty else {
-                print("⚠️ [API DEBUG] Gold backfill skipped: invalid polygon JSON")
-                return 0
-            }
-
-            let region = (campaignJSON["region"] as? String)?
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                .uppercased()
-
-            var goldRows: [[String: Any]] = []
-
-            if let region, !region.isEmpty {
-                do {
-                    let rawWithProvince = try await shim.callRPCData(
-                        "get_gold_addresses_in_polygon_geojson",
-                        params: [
-                            "p_polygon_geojson": polygonGeoJSON,
-                            "p_province": region
-                        ]
-                    )
-                    goldRows = Self.parseGoldAddressRPCPayload(rawWithProvince)
-                } catch {
-                    print("⚠️ [API DEBUG] Gold backfill province-filtered RPC failed: \(error.localizedDescription)")
-                }
-            }
-
-            if goldRows.isEmpty {
-                do {
-                    let rawUnfiltered = try await shim.callRPCData(
-                        "get_gold_addresses_in_polygon_geojson",
-                        params: ["p_polygon_geojson": polygonGeoJSON]
-                    )
-                    goldRows = Self.parseGoldAddressRPCPayload(rawUnfiltered)
-                } catch {
-                    print("⚠️ [API DEBUG] Gold backfill unfiltered RPC failed: \(error.localizedDescription)")
-                }
-            }
-
-            guard !goldRows.isEmpty else {
-                print("⚠️ [API DEBUG] Gold backfill found 0 rows")
-                return 0
-            }
-
-            let addressesPayload = goldRows.compactMap(Self.mapGoldRowToCampaignAddressPayload)
-            guard !addressesPayload.isEmpty else {
-                print("⚠️ [API DEBUG] Gold backfill produced 0 valid address payload rows")
-                return 0
-            }
-
-            let inserted = try await bulkAddAddresses(campaignID: campaignId, records: addressesPayload)
-
-            print("✅ [API DEBUG] Gold backfill inserted \(inserted) addresses for campaign \(campaignId)")
-            return inserted
-
-        } catch {
-            print("⚠️ [API DEBUG] Gold backfill skipped due to error: \(String(describing: error))")
-            return 0
-        }
-    }
-
-    private static func parseGoldAddressRPCPayload(_ data: Data) -> [[String: Any]] {
-        guard let json = try? JSONSerialization.jsonObject(with: data) else { return [] }
-
-        if let rows = json as? [[String: Any]] {
-            return rows
-        }
-
-        if let wrapper = json as? [String: Any] {
-            if let nestedRows = wrapper["get_gold_addresses_in_polygon_geojson"] as? [[String: Any]] {
-                return nestedRows
-            }
-            if wrapper["street_name"] != nil || wrapper["street_number"] != nil || wrapper["id"] != nil {
-                return [wrapper]
-            }
-        }
-
-        return []
-    }
-
-    private static func mapGoldRowToCampaignAddressPayload(_ row: [String: Any]) -> [String: Any]? {
-        let streetNumber = (row["street_number"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let streetName = (row["street_name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let city = (row["city"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let province = (row["province"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let zip = (row["zip"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let country = (row["country"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        var parts: [String] = []
-        if let streetNumber, !streetNumber.isEmpty { parts.append(streetNumber) }
-        if let streetName, !streetName.isEmpty { parts.append(streetName) }
-        if let city, !city.isEmpty { parts.append(city) }
-        if let province, !province.isEmpty { parts.append(province) }
-        if let zip, !zip.isEmpty { parts.append(zip) }
-        if let country, !country.isEmpty { parts.append(country) }
-        let formatted = parts.joined(separator: ", ")
-        if formatted.isEmpty { return nil }
-
-        var payload: [String: Any] = [
-            "formatted": formatted,
-            "source": "gold",
-            "seq": 0,
-            "visited": false
-        ]
-
-        if let lat = row["lat"] as? Double, let lon = row["lon"] as? Double {
-            payload["lat"] = lat
-            payload["lon"] = lon
-        }
-
-        if let geom = row["geom_geojson"] {
-            if let geomString = geom as? String {
-                payload["geom"] = geomString
-                if payload["lat"] == nil || payload["lon"] == nil,
-                   let geomData = geomString.data(using: .utf8),
-                   let geo = try? JSONSerialization.jsonObject(with: geomData) as? [String: Any],
-                   let coords = geo["coordinates"] as? [Double],
-                   coords.count >= 2 {
-                    payload["lon"] = coords[0]
-                    payload["lat"] = coords[1]
-                }
-            } else if JSONSerialization.isValidJSONObject(geom),
-                      let geomData = try? JSONSerialization.data(withJSONObject: geom),
-                      let geomString = String(data: geomData, encoding: .utf8) {
-                payload["geom"] = geomString
-                if payload["lat"] == nil || payload["lon"] == nil,
-                   let geo = geom as? [String: Any],
-                   let coords = geo["coordinates"] as? [Double],
-                   coords.count >= 2 {
-                    payload["lon"] = coords[0]
-                    payload["lat"] = coords[1]
-                }
-            }
-        }
-
-        guard payload["lat"] != nil, payload["lon"] != nil else {
-            return nil
-        }
-
-        return payload
-    }
-
     /// Poll campaign provision state until ready/failed/timeout so UI can gate map routing.
     func waitForProvisionReady(
         campaignId: UUID,
+        requireOptimized: Bool = false,
         timeoutSeconds: TimeInterval = 90,
         pollIntervalSeconds: TimeInterval = 2
     ) async throws -> CampaignProvisionState {
@@ -1089,7 +1052,7 @@ final class CampaignsAPI {
             let state = try await fetchProvisionState(campaignId: campaignId)
             print("🧭 [API] Provision state campaign=\(campaignId) status=\(state.provisionStatus?.rawValue ?? "nil") phase=\(state.provisionPhase?.rawValue ?? "nil")")
 
-            if state.provisionStatus == .ready {
+            if state.provisionStatus == .ready && (!requireOptimized || state.provisionPhase == .optimized) {
                 return state
             }
             if state.provisionStatus == .failed {
@@ -1173,18 +1136,19 @@ final class CampaignsAPI {
 // MARK: - Provision response (backend contract)
 
 /// Response from POST /api/campaigns/provision (optional decode for logging/UI).
-struct CampaignProvisionResponse: Codable {
-    var success: Bool?
-    var addressesSaved: Int?
-    var buildingsSaved: Int?
+    struct CampaignProvisionResponse: Codable {
+        var success: Bool?
+        var addressesSaved: Int?
+        var buildingsSaved: Int?
     /// Canonical road count from `campaign_road_metadata` when backend includes it.
     var roadsCount: Int?
     /// Legacy/alternate field name from some deploys.
-    var roadsSaved: Int?
-    var message: String?
-    var error: String?
-    var dataConfidenceScore: Double?
-    var dataConfidenceLabel: DataConfidenceLabel?
+        var roadsSaved: Int?
+        var message: String?
+        var error: String?
+        var accepted: Bool?
+        var dataConfidenceScore: Double?
+        var dataConfidenceLabel: DataConfidenceLabel?
     var dataConfidenceReason: String?
     var dataConfidenceSummary: CampaignDataConfidenceSummary?
     var provisionStatus: CampaignProvisionStatus?
@@ -1208,10 +1172,11 @@ struct CampaignProvisionResponse: Codable {
         case addressesSaved = "addresses_saved"
         case buildingsSaved = "buildings_saved"
         case roadsCount = "roads_count"
-        case roadsSaved = "roads_saved"
-        case message
-        case error
-        case dataConfidenceScore = "data_confidence_score"
+            case roadsSaved = "roads_saved"
+            case message
+            case error
+            case accepted
+            case dataConfidenceScore = "data_confidence_score"
         case dataConfidenceLabel = "data_confidence_label"
         case dataConfidenceReason = "data_confidence_reason"
         case dataConfidenceSummary = "data_confidence_summary"
@@ -1307,7 +1272,8 @@ final class CampaignsV2APIMock: CampaignsV2APIType {
             name: draft.name,
             type: draft.type,
             addressSource: draft.addressSource,
-            addresses: draft.addresses
+            addresses: [],
+            totalFlyers: 0
         )
         
         mockCampaigns.append(campaign)
@@ -1393,7 +1359,7 @@ final class CampaignsV2APISupabase: CampaignsV2APIType {
             seedQuery: nil,
             seedLon: nil,
             seedLat: nil,
-            addressesJSON: draft.addresses,
+            addressesJSON: [],
             workspaceId: workspaceId
         )
         return try await api.createV2(payload)

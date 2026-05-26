@@ -18,6 +18,7 @@ struct LegacyCampaignMapView: UIViewRepresentable {
 
     // Load custom light style
     mv.mapboxMap.loadStyle(StyleURI(rawValue: "mapbox://styles/fliper27/cml6z0dhg002301qo9xxc08k4")!)
+    MapTheme.hideBaseMapAddressNumberLayersWhenStyleLoads(on: mv.mapboxMap)
 
     _ = mv.mapboxMap.onMapLoaded.observeNext { _ in
       print("🗺️ [MAP] mapLoaded event fired - starting initialization")
@@ -191,14 +192,14 @@ struct LegacyCampaignMapView: UIViewRepresentable {
       
       // Text layer for house numbers - displayed on/above the pin
       pinLayer.textField = .expression(Exp(.get) { "number" })
-      pinLayer.textSize = .constant(11)
+      pinLayer.textSize = .constant(12.5)
       pinLayer.textColor = .constant(StyleColor(.white))
       pinLayer.textHaloColor = .constant(StyleColor(.black))
       pinLayer.textHaloWidth = .constant(1.5)
       pinLayer.textAllowOverlap = .constant(true)
       pinLayer.textIgnorePlacement = .constant(true)
       pinLayer.textAnchor = .constant(.center)
-      pinLayer.textOffset = .constant([0, -2.0]) // Position text in center of icon
+      pinLayer.textOffset = .constant([0, -2.25]) // Position text in center of icon
       pinLayer.textOptional = .constant(false) // Always show text if number exists
       
       // Add pin layer above building layers so pins are always visible

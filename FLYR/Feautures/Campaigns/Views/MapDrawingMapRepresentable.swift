@@ -16,6 +16,11 @@ struct MapDrawingMapRepresentable: UIViewRepresentable {
     var useDarkStyle: Bool = false
     /// When true, shows satellite imagery (with street labels). When false, shows streets (light or dark).
     var useSatellite: Bool = false
+    /// When false, map taps/polygon vertex drags are ignored so the user can freely navigate.
+    var isDrawingEnabled: Bool = true
+    /// Optional one-shot camera target for search/navigation controls.
+    var cameraFocusCoordinate: CLLocationCoordinate2D?
+    var cameraFocusID: Int = 0
     let onTap: (CLLocationCoordinate2D) -> Void
     let onMoveVertex: (Int, CLLocationCoordinate2D) -> Void
 
@@ -75,7 +80,7 @@ struct MapDrawingMapRepresentable: UIViewRepresentable {
     func makeUIView(context: Context) -> MapView {
         let mapView = MapView(frame: .zero)
         mapView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        mapView.ornaments.options.scaleBar.visibility = .visible
+        mapView.ornaments.options.scaleBar.visibility = .hidden
         mapView.ornaments.options.logo.margins = CGPoint(x: 8, y: 8)
         mapView.ornaments.options.compass.visibility = .adaptive
         mapView.gestures.options.pitchEnabled = false
@@ -125,6 +130,9 @@ struct MapDrawingMapRepresentable: UIViewRepresentable {
         context.coordinator.updateStartingAddressMarker(at: startingAddressCoordinate)
         context.coordinator.useSatellite = useSatellite
         context.coordinator.useDarkStyle = useDarkStyle
+        context.coordinator.isDrawingEnabled = isDrawingEnabled
+        context.coordinator.cameraFocusCoordinate = cameraFocusCoordinate
+        context.coordinator.cameraFocusID = cameraFocusID
         context.coordinator.bindStyleLoadedObserver(to: mapView)
         context.coordinator.applyStyleIfNeeded(on: mapView, force: true)
 
@@ -140,10 +148,14 @@ struct MapDrawingMapRepresentable: UIViewRepresentable {
         context.coordinator.polygonVertices = polygonVertices
         context.coordinator.useSatellite = useSatellite
         context.coordinator.useDarkStyle = useDarkStyle
+        context.coordinator.isDrawingEnabled = isDrawingEnabled
+        context.coordinator.cameraFocusCoordinate = cameraFocusCoordinate
+        context.coordinator.cameraFocusID = cameraFocusID
         context.coordinator.applyStyleIfNeeded(on: mapView)
         context.coordinator.updatePolygonAnnotation(polygonVertices)
         context.coordinator.updateVertexAnnotations(polygonVertices)
         context.coordinator.updateStartingAddressMarker(at: startingAddressCoordinate)
+        context.coordinator.applyCameraFocusIfNeeded(on: mapView)
         // Only set camera when no vertices yet (initial load). Once user starts drawing, don't recenter or zoom.
         if polygonVertices.isEmpty {
             context.coordinator.applyPreferredCamera(on: mapView)
@@ -170,9 +182,13 @@ struct MapDrawingMapRepresentable: UIViewRepresentable {
         private var draggingVertexIndex: Int?
         var useSatellite: Bool = false
         var useDarkStyle: Bool = false
+        var isDrawingEnabled: Bool = true
+        var cameraFocusCoordinate: CLLocationCoordinate2D?
+        var cameraFocusID: Int = 0
         private var styleLoadedObserver: AnyCancelable?
         private var loadedStyleRawValue: String?
         private var cameraToRestoreAfterStyleLoad: CameraSnapshot?
+        private var lastAppliedCameraFocusID: Int = 0
 
         private struct CameraSnapshot {
             let center: CLLocationCoordinate2D
@@ -288,16 +304,16 @@ struct MapDrawingMapRepresentable: UIViewRepresentable {
                 updateCamera(center: firstVertex, on: mapView, force: force)
                 return
             }
+            if let fallbackCenter {
+                updateCamera(center: fallbackCenter, on: mapView, force: force)
+                return
+            }
             if let startingAddressCoordinate {
                 updateCamera(center: startingAddressCoordinate, on: mapView, force: force)
                 return
             }
             if let userLocationCoordinate {
                 updateCamera(center: userLocationCoordinate, on: mapView, force: force)
-                return
-            }
-            if let fallbackCenter {
-                updateCamera(center: fallbackCenter, on: mapView, force: force)
             }
         }
 
@@ -311,6 +327,16 @@ struct MapDrawingMapRepresentable: UIViewRepresentable {
             }
             lastCameraCenter = center
             mapView.mapboxMap.setCamera(to: CameraOptions(center: center, zoom: 15, bearing: 0, pitch: 0))
+        }
+
+        func applyCameraFocusIfNeeded(on mapView: MapView) {
+            guard cameraFocusID != 0,
+                  cameraFocusID != lastAppliedCameraFocusID,
+                  let cameraFocusCoordinate else {
+                return
+            }
+            lastAppliedCameraFocusID = cameraFocusID
+            updateCamera(center: cameraFocusCoordinate, on: mapView, force: true)
         }
 
         private func setCameraToPolygonVertices(_ vertices: [CLLocationCoordinate2D], on mapView: MapView, force: Bool = false) {
@@ -349,6 +375,7 @@ struct MapDrawingMapRepresentable: UIViewRepresentable {
         }
 
         @objc func handleTap(_ sender: UITapGestureRecognizer) {
+            guard isDrawingEnabled else { return }
             guard sender.state == .ended,
                   let mapView = mapView ?? sender.view as? MapView,
                   let map = mapView.mapboxMap else { return }
@@ -359,6 +386,7 @@ struct MapDrawingMapRepresentable: UIViewRepresentable {
         }
 
         @objc func handlePan(_ sender: UIPanGestureRecognizer) {
+            guard isDrawingEnabled else { return }
             guard let mapView = mapView ?? sender.view as? MapView,
                   let map = mapView.mapboxMap else { return }
             let point = sender.location(in: mapView)
@@ -385,6 +413,7 @@ struct MapDrawingMapRepresentable: UIViewRepresentable {
                 return true
             }
 
+            guard isDrawingEnabled else { return false }
             let point = gestureRecognizer.location(in: mapView)
             return vertexIndexNear(point: point, in: mapView) != nil
         }

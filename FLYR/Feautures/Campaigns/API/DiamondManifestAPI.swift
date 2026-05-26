@@ -60,7 +60,7 @@ final class DiamondManifestAPI {
         while Date() < deadline {
             do {
                 let manifest = try await fetchManifest(campaignId: campaignId)
-                if manifest.hasRenderablePMTilesGeometry && manifest.hasRenderablePMTilesAddressCylinders {
+                if manifest.hasRenderablePMTilesGeometry || manifest.hasRenderablePMTilesAddresses {
                     return manifest
                 }
             } catch {

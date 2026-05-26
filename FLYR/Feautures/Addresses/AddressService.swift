@@ -4,7 +4,7 @@ import Combine
 
 // MARK: - Address Service
 
-/// Address service: backend (Lambda/S3) primary, Mapbox fallback.
+/// Address service for ad-hoc address lookup outside campaign provisioning.
 @MainActor
 final class AddressService: ObservableObject {
     static let shared = AddressService(overture: OvertureAddressProvider(), mapbox: MapboxProvider())
@@ -19,7 +19,7 @@ final class AddressService: ObservableObject {
     @Published var source: AddressSource = .overture
 
     enum AddressSource {
-        case overture  // Backend Lambda/S3 (generate-address-list)
+        case overture
         case mapbox
         case hybrid
     }
@@ -29,7 +29,7 @@ final class AddressService: ObservableObject {
         self.mapbox = mapbox
     }
 
-    /// Find nearest addresses: backend (generate-address-list) first when campaignId present, else Mapbox fallback
+    /// Find nearest addresses for non-provisioning flows.
     func fetchNearest(center: CLLocationCoordinate2D, target: Int, campaignId: UUID? = nil) async throws -> [AddressCandidate] {
         print("🔍 [ADDRESS SERVICE] Finding \(target) nearest addresses to \(center) (strategy: backend when campaignId set, else Mapbox fallback)")
 

@@ -52,6 +52,18 @@ enum OfflineMigrations {
                 t.column("updated_at", .text)
             }
 
+            try db.create(table: "local_fallback_buildings", ifNotExists: true) { t in
+                t.column("local_geometry_id", .text).primaryKey()
+                t.column("campaign_id", .text).notNull()
+                t.column("address_id", .text).notNull()
+                t.column("geometry_geojson", .text).notNull()
+                t.column("geometry_source", .text).notNull().defaults(to: "manual_fallback")
+                t.column("payload_json", .text)
+                t.column("created_at", .text)
+                t.column("updated_at", .text)
+                t.column("sync_status", .text).notNull().defaults(to: "pending")
+            }
+
             try db.create(table: "cached_address_statuses", ifNotExists: true) { t in
                 t.column("id", .text).primaryKey()
                 t.column("campaign_id", .text).notNull()
@@ -142,6 +154,9 @@ enum OfflineMigrations {
             try db.create(index: "idx_cached_buildings_campaign_id", on: "cached_buildings", columns: ["campaign_id"], ifNotExists: true)
             try db.create(index: "idx_cached_addresses_campaign_id", on: "cached_addresses", columns: ["campaign_id"], ifNotExists: true)
             try db.create(index: "idx_cached_links_campaign_id", on: "cached_building_address_links", columns: ["campaign_id"], ifNotExists: true)
+            try db.create(index: "idx_cached_links_campaign_address_unique", on: "cached_building_address_links", columns: ["campaign_id", "address_id"], unique: true, ifNotExists: true)
+            try db.create(index: "idx_local_fallback_buildings_campaign_id", on: "local_fallback_buildings", columns: ["campaign_id"], ifNotExists: true)
+            try db.create(index: "idx_local_fallback_buildings_campaign_address", on: "local_fallback_buildings", columns: ["campaign_id", "address_id"], ifNotExists: true)
             try db.create(index: "idx_cached_statuses_campaign_id", on: "cached_address_statuses", columns: ["campaign_id"], ifNotExists: true)
             try db.create(index: "idx_cached_statuses_campaign_address", on: "cached_address_statuses", columns: ["campaign_id", "address_id"], ifNotExists: true)
             try db.create(index: "idx_cached_roads_campaign_id", on: "cached_roads", columns: ["campaign_id"], ifNotExists: true)
@@ -254,6 +269,210 @@ enum OfflineMigrations {
             )
 
             try db.create(index: "idx_sync_outbox_dependency", on: "sync_outbox", columns: ["dependency_key", "created_at"], ifNotExists: true)
+        }
+
+        migrator.registerMigration("phase1_session_start_cache_v1") { db in
+            try db.create(table: "cached_session_farms", ifNotExists: true) { t in
+                t.column("id", .text).primaryKey()
+                t.column("user_id", .text).notNull()
+                t.column("workspace_id", .text)
+                t.column("is_active", .integer).notNull().defaults(to: 0)
+                t.column("created_at", .text)
+                t.column("payload_json", .text).notNull()
+                t.column("updated_at", .text)
+            }
+
+            try db.create(table: "cached_route_assignments", ifNotExists: true) { t in
+                t.column("id", .text).primaryKey()
+                t.column("workspace_id", .text).notNull()
+                t.column("status", .text)
+                t.column("updated_at", .text)
+                t.column("payload_json", .text).notNull()
+                t.column("cached_at", .text)
+            }
+
+            try db.create(table: "cached_route_assignment_details", ifNotExists: true) { t in
+                t.column("assignment_id", .text).primaryKey()
+                t.column("route_plan_id", .text).notNull()
+                t.column("payload_json", .text).notNull()
+                t.column("cached_at", .text)
+            }
+
+            try db.create(table: "cached_route_plan_details", ifNotExists: true) { t in
+                t.column("route_plan_id", .text).primaryKey()
+                t.column("payload_json", .text).notNull()
+                t.column("cached_at", .text)
+            }
+
+            try db.create(index: "idx_cached_session_farms_user", on: "cached_session_farms", columns: ["user_id", "workspace_id"], ifNotExists: true)
+            try db.create(index: "idx_cached_route_assignments_workspace", on: "cached_route_assignments", columns: ["workspace_id", "updated_at"], ifNotExists: true)
+            try db.create(index: "idx_cached_route_assignment_details_plan", on: "cached_route_assignment_details", columns: ["route_plan_id"], ifNotExists: true)
+        }
+
+        migrator.registerMigration("phase1_offline_farms_v1") { db in
+            try db.create(table: "cached_farms", ifNotExists: true) { t in
+                t.column("id", .text).primaryKey()
+                t.column("user_id", .text).notNull()
+                t.column("workspace_id", .text)
+                t.column("is_active", .integer).notNull().defaults(to: 0)
+                t.column("created_at", .text)
+                t.column("updated_at", .text)
+                t.column("payload_json", .text).notNull()
+                t.column("cached_at", .text)
+            }
+
+            try db.create(table: "cached_farm_touches", ifNotExists: true) { t in
+                t.column("id", .text).primaryKey()
+                t.column("farm_id", .text).notNull()
+                t.column("campaign_id", .text)
+                t.column("cycle_number", .integer)
+                t.column("date", .text)
+                t.column("order_index", .integer)
+                t.column("completed", .integer).notNull().defaults(to: 0)
+                t.column("dirty", .integer).notNull().defaults(to: 0)
+                t.column("payload_json", .text).notNull()
+                t.column("cached_at", .text)
+                t.column("synced_at", .text)
+            }
+
+            try db.create(table: "cached_farm_leads", ifNotExists: true) { t in
+                t.column("id", .text).primaryKey()
+                t.column("farm_id", .text).notNull()
+                t.column("touch_id", .text)
+                t.column("created_at", .text)
+                t.column("payload_json", .text).notNull()
+                t.column("cached_at", .text)
+            }
+
+            try db.create(table: "cached_farm_addresses", ifNotExists: true) { t in
+                t.column("id", .text).primaryKey()
+                t.column("farm_id", .text).notNull()
+                t.column("campaign_id", .text)
+                t.column("campaign_address_id", .text)
+                t.column("street_name", .text)
+                t.column("house_number", .text)
+                t.column("created_at", .text)
+                t.column("payload_json", .text).notNull()
+                t.column("cached_at", .text)
+            }
+
+            try db.create(table: "cached_farm_touch_address_statuses", ifNotExists: true) { t in
+                t.column("id", .text).primaryKey()
+                t.column("farm_id", .text).notNull()
+                t.column("farm_touch_id", .text)
+                t.column("cycle_number", .integer)
+                t.column("address_id", .text).notNull()
+                t.column("status", .text).notNull()
+                t.column("notes", .text)
+                t.column("occurred_at", .text).notNull()
+                t.column("dirty", .integer).notNull().defaults(to: 0)
+                t.column("payload_json", .text)
+                t.column("cached_at", .text)
+                t.column("synced_at", .text)
+            }
+
+            try db.create(index: "idx_cached_farms_user_workspace", on: "cached_farms", columns: ["user_id", "workspace_id"], ifNotExists: true)
+            try db.create(index: "idx_cached_farm_touches_farm", on: "cached_farm_touches", columns: ["farm_id", "date", "order_index"], ifNotExists: true)
+            try db.create(index: "idx_cached_farm_leads_farm", on: "cached_farm_leads", columns: ["farm_id", "created_at"], ifNotExists: true)
+            try db.create(index: "idx_cached_farm_addresses_farm", on: "cached_farm_addresses", columns: ["farm_id", "street_name", "house_number"], ifNotExists: true)
+            try db.create(index: "idx_cached_farm_statuses_cycle", on: "cached_farm_touch_address_statuses", columns: ["farm_id", "cycle_number", "address_id", "occurred_at"], ifNotExists: true)
+        }
+
+        migrator.registerMigration("phase1_offline_farm_leads_dirty_v2") { db in
+            let columns = try db.columns(in: "cached_farm_leads").map(\.name)
+            if !columns.contains("dirty") {
+                try db.alter(table: "cached_farm_leads") { t in
+                    t.add(column: "dirty", .integer).notNull().defaults(to: 0)
+                }
+            }
+            if !columns.contains("synced_at") {
+                try db.alter(table: "cached_farm_leads") { t in
+                    t.add(column: "synced_at", .text)
+                }
+            }
+
+            try db.create(index: "idx_cached_farm_leads_dirty", on: "cached_farm_leads", columns: ["dirty", "synced_at"], ifNotExists: true)
+        }
+
+        migrator.registerMigration("phase1_local_fallback_buildings_v1") { db in
+            try db.create(table: "local_fallback_buildings", ifNotExists: true) { t in
+                t.column("local_geometry_id", .text).primaryKey()
+                t.column("campaign_id", .text).notNull()
+                t.column("address_id", .text).notNull()
+                t.column("geometry_geojson", .text).notNull()
+                t.column("geometry_source", .text).notNull().defaults(to: "manual_fallback")
+                t.column("payload_json", .text)
+                t.column("created_at", .text)
+                t.column("updated_at", .text)
+                t.column("sync_status", .text).notNull().defaults(to: "pending")
+            }
+
+            try db.create(index: "idx_local_fallback_buildings_campaign_id", on: "local_fallback_buildings", columns: ["campaign_id"], ifNotExists: true)
+            try db.create(index: "idx_local_fallback_buildings_campaign_address", on: "local_fallback_buildings", columns: ["campaign_id", "address_id"], ifNotExists: true)
+        }
+
+        migrator.registerMigration("phase1_offline_address_orphans_v1") { db in
+            try db.create(table: "cached_address_orphans", ifNotExists: true) { t in
+                t.column("id", .text).primaryKey()
+                t.column("campaign_id", .text).notNull()
+                t.column("address_id", .text).notNull()
+                t.column("nearest_building_id", .text)
+                t.column("nearest_distance", .double)
+                t.column("status", .text)
+                t.column("suggested_street", .text)
+                t.column("address_street", .text)
+                t.column("coordinate_json", .text)
+                t.column("updated_at", .text)
+            }
+
+            try db.create(index: "idx_cached_orphans_campaign", on: "cached_address_orphans", columns: ["campaign_id"], ifNotExists: true)
+            try db.create(index: "idx_cached_orphans_campaign_building", on: "cached_address_orphans", columns: ["campaign_id", "nearest_building_id"], ifNotExists: true)
+            try db.create(index: "idx_cached_orphans_campaign_address", on: "cached_address_orphans", columns: ["campaign_id", "address_id"], ifNotExists: true)
+        }
+
+        migrator.registerMigration("phase1_client_link_cache_metadata_v1") { db in
+            try db.create(table: "cached_client_link_batches", ifNotExists: true) { t in
+                t.column("campaign_id", .text).primaryKey()
+                t.column("asset_signature", .text).notNull()
+                t.column("building_count", .integer).notNull().defaults(to: 0)
+                t.column("address_count", .integer).notNull().defaults(to: 0)
+                t.column("parcel_count", .integer).notNull().defaults(to: 0)
+                t.column("link_count", .integer).notNull().defaults(to: 0)
+                t.column("updated_at", .text)
+                t.column("published_at", .text)
+            }
+
+            try db.create(index: "idx_cached_client_link_batches_signature", on: "cached_client_link_batches", columns: ["campaign_id", "asset_signature"], ifNotExists: true)
+        }
+
+        migrator.registerMigration("phase1_cached_links_one_address_assignment_v1") { db in
+            try db.execute(sql: """
+                DELETE FROM cached_building_address_links
+                WHERE rowid NOT IN (
+                    SELECT rowid
+                    FROM (
+                        SELECT
+                            rowid,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY campaign_id, address_id
+                                ORDER BY
+                                    CASE LOWER(COALESCE(source, ''))
+                                        WHEN 'manual' THEN 40
+                                        WHEN 'manual_fallback' THEN 30
+                                        WHEN 'client_auto' THEN 20
+                                        ELSE 0
+                                    END DESC,
+                                    COALESCE(confidence, 0) DESC,
+                                    COALESCE(updated_at, '') DESC,
+                                    id DESC
+                            ) AS rn
+                        FROM cached_building_address_links
+                    )
+                    WHERE rn = 1
+                )
+                """)
+
+            try db.create(index: "idx_cached_links_campaign_address_unique", on: "cached_building_address_links", columns: ["campaign_id", "address_id"], unique: true, ifNotExists: true)
         }
 
         return migrator

@@ -95,6 +95,7 @@ final class AccessAPI {
         let url = URL(string: "\(requestBaseURL)/api/access/redirect")!
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
+        request.timeoutInterval = 8
 
         let (data, http) = try await dataForAuthorizedRequest(request)
         if http.statusCode == 401 {
@@ -121,6 +122,7 @@ final class AccessAPI {
         let url = URL(string: "\(requestBaseURL)/api/access/state")!
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
+        request.timeoutInterval = 8
 
         let (data, http) = try await dataForAuthorizedRequest(request)
         if http.statusCode == 401 {

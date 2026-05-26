@@ -147,28 +147,38 @@ final class BuildingLinkMapViewController: UIViewController {
     
     private func colorExpression() -> Exp {
         Exp(.switchCase) {
-            // Priority 1: QR Scanned (purple)
+            // Priority 1: QR code (purple)
             Exp(.gt) { Exp(.get) { "scans_total" }; 0 }
-            UIColor(hex: "#8b5cf6")!
+            MapStatusColor.qrScanned
             
-            // Priority 2: Lead outcomes (GOLD)
+            // Priority 2: Talked (green)
             Exp(.eq) { Exp(.get) { "status" }; "hot" }
-            UIColor(hex: "#facc15")!
+            MapStatusColor.conversations
 
+            Exp(.eq) { Exp(.get) { "status" }; "lead" }
+            MapStatusColor.lead
+
+            Exp(.eq) { Exp(.get) { "status" }; "hot_lead" }
+            MapStatusColor.lead
+
+            // Priority 3: Appointment/follow-up outcomes (yellow)
             Exp(.match) {
                 Exp(.get) { "status" }
-                ["lead", "appointment", "future_seller", "hot_lead"]
+                ["appointment", "future_seller", "follow_up"]
                 true
                 false
             }
-            UIColor(hex: "#facc15")!
+            MapStatusColor.hotLead
             
-            // Priority 3: Visited/Touched (GREEN)
+            // Priority 4: Visited/Touched (green)
             Exp(.eq) { Exp(.get) { "status" }; "visited" }
-            UIColor(hex: "#22c55e")!
+            MapStatusColor.touched
+
+            Exp(.eq) { Exp(.get) { "status" }; "no_answer" }
+            MapStatusColor.noOneHome
             
-            // Default: Not visited (RED)
-            UIColor(hex: "#ef4444")!
+            // Default: Not visited
+            MapStatusColor.untouched
         }
     }
     

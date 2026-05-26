@@ -11,7 +11,7 @@ final class UseCreateCampaign: ObservableObject {
         print("🎣 [HOOK DEBUG] UseCreateCampaign.createV2 called")
         print("🎣 [HOOK DEBUG] Payload name: '\(payload.name)'")
         print("🎣 [HOOK DEBUG] Payload type: \(payload.type?.rawValue ?? "nil")")
-        print("🎣 [HOOK DEBUG] Address count: \(payload.addressesJSON.count)")
+        print("🎣 [HOOK DEBUG] Client address count ignored for backend provision: \(payload.addressesJSON.count)")
         
         isCreating = true
         defer { 
@@ -35,10 +35,10 @@ final class UseCreateCampaign: ObservableObject {
     }
     
     func create(draft: CampaignDraft, store: CampaignV2Store, polygon: [CLLocationCoordinate2D]? = nil) async -> CampaignV2? {
-        print("🎣 [HOOK DEBUG] UseCreateCampaign.create called (legacy)")
+        print("🎣 [HOOK DEBUG] UseCreateCampaign.create called with draft compatibility shell")
         print("🎣 [HOOK DEBUG] Draft name: '\(draft.name)'")
         print("🎣 [HOOK DEBUG] Draft type: \(draft.type.rawValue)")
-        print("🎣 [HOOK DEBUG] Address count: \(draft.addresses.count)")
+        print("🎣 [HOOK DEBUG] Draft address count ignored for backend provision: \(draft.addresses.count)")
         
         isCreating = true
         defer { 
@@ -47,15 +47,15 @@ final class UseCreateCampaign: ObservableObject {
         }
         
         do {
-            print("🎣 [HOOK DEBUG] Calling CampaignsAPI.shared.createV2 with draft...")
+            print("🎣 [HOOK DEBUG] Calling CampaignsAPI.shared.createV2 with draft shell...")
             let created = try await CampaignsAPI.shared.createV2(draft)
             print("🎣 [HOOK DEBUG] API call successful, appending to store...")
             store.append(created)
-            print("✅ [HOOK DEBUG] Legacy campaign created and added to store successfully")
+            print("✅ [HOOK DEBUG] Campaign shell created and added to store successfully")
             
             return created
         } catch {
-            print("❌ [HOOK DEBUG] Legacy campaign creation failed: \(error)")
+            print("❌ [HOOK DEBUG] Campaign creation failed: \(error)")
             self.error = "\(error)"
             return nil
         }

@@ -266,7 +266,10 @@ class LeaderboardDebugViewModel: ObservableObject {
         let response: [Response] = try await SupabaseManager.shared.client
             .rpc("get_leaderboard", params: [
                 "p_metric": AnyCodable("doorknocks"),
-                "p_timeframe": AnyCodable("weekly")
+                "p_timeframe": AnyCodable("weekly"),
+                "p_workspace_id": AnyCodable(NSNull()),
+                "p_limit": AnyCodable(100),
+                "p_offset": AnyCodable(0)
             ])
             .execute()
             .value

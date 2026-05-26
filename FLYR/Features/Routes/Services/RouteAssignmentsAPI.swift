@@ -201,7 +201,7 @@ final class RouteAssignmentsAPI {
 
 // MARK: - Detail payload
 
-struct RouteAssignmentDetailPayload: Equatable, Sendable {
+struct RouteAssignmentDetailPayload: Codable, Equatable, Sendable {
     let assignmentId: UUID
     let status: String
     let assignedToUserId: UUID?

@@ -45,6 +45,50 @@ struct UserStats: Codable, Identifiable {
         case created_at
     }
 
+    init(
+        id: UUID = UUID(),
+        user_id: UUID,
+        day_streak: Int = 0,
+        best_streak: Int = 0,
+        doors_knocked: Int = 0,
+        flyers: Int = 0,
+        conversations: Int = 0,
+        leads_created: Int = 0,
+        appointments: Int = 0,
+        qr_codes_scanned: Int = 0,
+        distance_walked: Double = 0,
+        time_tracked: Int = 0,
+        conversation_per_door: Double = 0,
+        conversation_lead_rate: Double = 0,
+        qr_code_scan_rate: Double = 0,
+        qr_code_lead_rate: Double = 0,
+        streak_days: [String]? = nil,
+        xp: Int = 0,
+        updated_at: String = ISO8601DateFormatter().string(from: Date()),
+        created_at: String? = nil
+    ) {
+        self.id = id
+        self.user_id = user_id
+        self.day_streak = day_streak
+        self.best_streak = best_streak
+        self.doors_knocked = doors_knocked
+        self.flyers = flyers
+        self.conversations = conversations
+        self.leads_created = leads_created
+        self.appointments = appointments
+        self.qr_codes_scanned = qr_codes_scanned
+        self.distance_walked = distance_walked
+        self.time_tracked = time_tracked
+        self.conversation_per_door = conversation_per_door
+        self.conversation_lead_rate = conversation_lead_rate
+        self.qr_code_scan_rate = qr_code_scan_rate
+        self.qr_code_lead_rate = qr_code_lead_rate
+        self.streak_days = streak_days
+        self.xp = xp
+        self.updated_at = updated_at
+        self.created_at = created_at
+    }
+
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(UUID.self, forKey: .id)
@@ -111,4 +155,3 @@ struct UserStats: Codable, Identifiable {
         return "\(minutes)m"
     }
 }
-

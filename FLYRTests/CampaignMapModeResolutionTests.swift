@@ -13,25 +13,25 @@ final class CampaignMapModeResolutionTests: XCTestCase {
         )
     }
 
-    func testMissingConfigurationFallsBackToStandardPins() {
+    func testMissingConfigurationFallsBackToHybrid() {
         XCTAssertEqual(
             CampaignMapMode.resolved(
                 explicit: nil,
                 hasParcels: nil,
                 buildingLinkConfidence: nil
             ),
-            .standardPins
+            .hybrid
         )
     }
 
-    func testNoParcelsAndLowConfidenceUsesStandardPins() {
+    func testNoParcelsAndLowConfidenceStillUsesHybrid() {
         XCTAssertEqual(
             CampaignMapMode.resolved(
                 explicit: nil,
                 hasParcels: false,
                 buildingLinkConfidence: 45
             ),
-            .standardPins
+            .hybrid
         )
     }
 
@@ -46,10 +46,10 @@ final class CampaignMapModeResolutionTests: XCTestCase {
         )
     }
 
-    func testPresentationResolutionCoercesStandardPinsToHybrid() {
+    func testPresentationResolutionUsesHybrid() {
         XCTAssertEqual(
             CampaignMapMode.resolvedForPresentation(
-                explicit: .standardPins,
+                explicit: .hybrid,
                 hasParcels: false,
                 buildingLinkConfidence: 0,
                 provisionPhase: .mapReady
@@ -58,7 +58,7 @@ final class CampaignMapModeResolutionTests: XCTestCase {
         )
     }
 
-    func testCampaignPresentationMapModeCoercesStandardPinsToHybrid() {
+    func testCampaignPresentationMapModeUsesHybrid() {
         let campaign = CampaignV2(
             name: "Test Campaign",
             type: .flyer,
@@ -66,7 +66,7 @@ final class CampaignMapModeResolutionTests: XCTestCase {
             provisionPhase: .optimized,
             hasParcels: false,
             buildingLinkConfidence: 45,
-            mapMode: .standardPins
+            mapMode: .hybrid
         )
 
         XCTAssertEqual(campaign.presentationMapMode, .hybrid)

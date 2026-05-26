@@ -3,6 +3,7 @@ import Foundation
 struct OnboardingResponse: Codable, Equatable {
     var firstName: String = ""
     var lastName: String = ""
+    var countryCode: String?
     var profilePhotoURL: String?
     var contactPreference: ContactPreference?
     var industry: Industry?
@@ -14,7 +15,7 @@ struct OnboardingResponse: Codable, Equatable {
     var proExpectationsOther: String?
 
     enum CodingKeys: String, CodingKey {
-        case firstName, lastName, profilePhotoURL, contactPreference, industry, activityType
+        case firstName, lastName, countryCode, profilePhotoURL, contactPreference, industry, activityType
         case territoryType, experienceLevel, goals, proExpectations, proExpectationsOther
     }
 
@@ -22,6 +23,7 @@ struct OnboardingResponse: Codable, Equatable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         firstName = try c.decodeIfPresent(String.self, forKey: .firstName) ?? ""
         lastName = try c.decodeIfPresent(String.self, forKey: .lastName) ?? ""
+        countryCode = try c.decodeIfPresent(String.self, forKey: .countryCode)
         profilePhotoURL = try c.decodeIfPresent(String.self, forKey: .profilePhotoURL)
         contactPreference = try c.decodeIfPresent(ContactPreference.self, forKey: .contactPreference)
         industry = try c.decodeIfPresent(Industry.self, forKey: .industry)
@@ -39,6 +41,7 @@ struct OnboardingResponse: Codable, Equatable {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(firstName, forKey: .firstName)
         try c.encode(lastName, forKey: .lastName)
+        try c.encodeIfPresent(countryCode, forKey: .countryCode)
         try c.encodeIfPresent(profilePhotoURL, forKey: .profilePhotoURL)
         try c.encodeIfPresent(contactPreference, forKey: .contactPreference)
         try c.encodeIfPresent(industry, forKey: .industry)
@@ -53,6 +56,7 @@ struct OnboardingResponse: Codable, Equatable {
     var isComplete: Bool {
         !firstName.isEmpty &&
         !lastName.isEmpty &&
+        CountryOptions.normalize(countryCode) != nil &&
         contactPreference != nil &&
         industry != nil &&
         activityType != nil &&

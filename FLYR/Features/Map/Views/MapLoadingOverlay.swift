@@ -17,7 +17,10 @@ struct MapLoadingOverlayCard: View {
     }
 
     private var scrimColor: Color {
-        colorScheme == .dark ? .black.opacity(0.58) : .white.opacity(0.58)
+        if !usesCardBackground {
+            return .clear
+        }
+        return colorScheme == .dark ? Color.black.opacity(0.58) : Color.white.opacity(0.58)
     }
 
     private var cardFillColor: Color {
@@ -94,10 +97,14 @@ struct MapLoadingLottieView: UIViewRepresentable {
 
     func makeUIView(context: Context) -> UIView {
         let container = UIView()
+        container.backgroundColor = .clear
+        container.isOpaque = false
         container.clipsToBounds = true
         let lottie = LottieAnimationView(name: name, bundle: .main)
         lottie.loopMode = .loop
         lottie.contentMode = .scaleAspectFit
+        lottie.backgroundColor = .clear
+        lottie.isOpaque = false
         lottie.backgroundBehavior = .pauseAndRestore
         lottie.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(lottie)
@@ -113,7 +120,11 @@ struct MapLoadingLottieView: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: UIView, context: Context) {
+        uiView.backgroundColor = .clear
+        uiView.isOpaque = false
         context.coordinator.lottieView?.contentMode = .scaleAspectFit
+        context.coordinator.lottieView?.backgroundColor = .clear
+        context.coordinator.lottieView?.isOpaque = false
     }
 
     func makeCoordinator() -> Coordinator {

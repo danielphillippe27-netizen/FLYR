@@ -214,7 +214,7 @@ struct QRCard: View {
             }
             
             if let onUnlink = onUnlink, isLinked {
-                QRCardActionButton(title: "Unlink", icon: "link.badge.minus", action: onUnlink, isDestructive: true)
+                QRCardActionButton(title: "Unlink", icon: "link.slash", action: onUnlink, isDestructive: true)
             }
             
             if let onPrint = onPrint {
@@ -376,4 +376,3 @@ private struct QRCardActionButton: View {
     .padding()
     .background(Color.bg)
 }
-

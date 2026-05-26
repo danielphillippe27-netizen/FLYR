@@ -12,6 +12,7 @@ struct FarmMapView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var uiState: AppUIState
+    @ObservedObject private var sessionManager = SessionManager.shared
     @StateObject private var viewModel: FarmMapViewModel
     @State private var displayMode: DisplayMode = .buildings
     @State private var mapView: MapView?
@@ -29,7 +30,18 @@ struct FarmMapView: View {
     @State private var hasRenderedBuildings = false
     @State private var showRenderPendingOverlay = false
     @State private var buildingRenderCheckTask: Task<Void, Never>?
+    @State private var proximityAutoOpenTask: Task<Void, Never>?
+    @State private var proximityCandidateAddressId: UUID?
+    @State private var proximityCandidateStartedAt: Date?
+    @State private var lastProximityEvaluationAt: Date = .distantPast
+    @State private var autoOpenedAddressIdsThisSession: Set<UUID> = []
+    @State private var dismissedAddressIdsThisSession: Set<UUID> = []
     @State private var errorMessage: String?
+
+    private let proximityAutoOpenRadiusMeters: CLLocationDistance = 25
+    private let proximityStableDelaySeconds: TimeInterval = 2.5
+    private let proximityEvaluationThrottleSeconds: TimeInterval = 0.75
+    private let proximityMaxWalkingSpeedMetersPerSecond: CLLocationSpeed = 2.8
 
     init(
         farm: Farm,
@@ -101,6 +113,10 @@ struct FarmMapView: View {
             }
             .onDisappear {
                 buildingRenderCheckTask?.cancel()
+                proximityAutoOpenTask?.cancel()
+            }
+            .onReceive(sessionManager.$currentLocation.compactMap { $0 }) { location in
+                evaluateAddressHistoryProximity(location: location)
             }
             .alert("Couldn't Delete Building", isPresented: .init(
                 get: { errorMessage != nil },
@@ -221,7 +237,7 @@ struct FarmMapView: View {
     private func setupMap(_ map: MapView) {
         let manager = MapLayerManager(mapView: map)
         manager.includeBuildingsLayer = true
-        manager.includeAddressesLayer = true
+        manager.includeAddressesLayer = displayMode == .addresses
         manager.showRoadOverlay = false
         layerManager = manager
 
@@ -259,7 +275,12 @@ struct FarmMapView: View {
         )
 
         if let addressesData = filteredAddressesData() {
-            manager.updateAddresses(addressesData)
+            manager.updateAddresses(
+                addressesData,
+                addresses: visibleAddressFeatures,
+                buildings: visibleBuildingFeatures,
+                orderedAddressIdsByBuilding: resolvedAddressIdsByBuilding
+            )
         } else {
             manager.updateAddressesFromBuildingCentroids(buildingGeoJSONData: visibleBuildingsData)
         }
@@ -282,13 +303,28 @@ struct FarmMapView: View {
         let hasBuildingsLayer = map.allLayerIdentifiers.contains(where: { $0.id == MapLayerManager.buildingsLayerId })
         let hasTownhomeOverlayLayer = map.allLayerIdentifiers.contains(where: { $0.id == MapLayerManager.townhomeOverlayLayerId })
         let hasAddressesLayer = map.allLayerIdentifiers.contains(where: { $0.id == MapLayerManager.addressesLayerId })
+        let hasSelectedAddressesLayer = map.allLayerIdentifiers.contains(where: { $0.id == MapLayerManager.selectedAddressesLayerId })
+        let hasBuildingSelectedGlowLayer = map.allLayerIdentifiers.contains(where: { $0.id == MapLayerManager.buildingsSelectedGlowLayerId })
+        let hasBuildingLeadGlowLayer = map.allLayerIdentifiers.contains(where: { $0.id == MapLayerManager.buildingsLeadGlowLayerId })
+        let hasTownhomeLeadGlowLayer = map.allLayerIdentifiers.contains(where: { $0.id == MapLayerManager.townhomeLeadGlowLayerId })
 
         switch displayMode {
         case .buildings:
             manager.includeBuildingsLayer = true
             manager.includeAddressesLayer = false
+            manager.setDiamondGeometryVisibility(buildings: true, addresses: false)
             if hasBuildingsLayer {
                 try? map.updateLayer(withId: MapLayerManager.buildingsLayerId, type: FillExtrusionLayer.self) {
+                    $0.visibility = .constant(visibleBuildingFeatures.isEmpty ? .none : .visible)
+                }
+            }
+            if hasBuildingSelectedGlowLayer {
+                try? map.updateLayer(withId: MapLayerManager.buildingsSelectedGlowLayerId, type: LineLayer.self) {
+                    $0.visibility = .constant(visibleBuildingFeatures.isEmpty ? .none : .visible)
+                }
+            }
+            if hasBuildingLeadGlowLayer {
+                try? map.updateLayer(withId: MapLayerManager.buildingsLeadGlowLayerId, type: LineLayer.self) {
                     $0.visibility = .constant(visibleBuildingFeatures.isEmpty ? .none : .visible)
                 }
             }
@@ -297,18 +333,40 @@ struct FarmMapView: View {
                     $0.visibility = .constant(.none)
                 }
             }
+            if hasTownhomeLeadGlowLayer {
+                try? map.updateLayer(withId: MapLayerManager.townhomeLeadGlowLayerId, type: LineLayer.self) {
+                    $0.visibility = .constant(.none)
+                }
+            }
             if hasAddressesLayer {
                 try? map.updateLayer(withId: MapLayerManager.addressesLayerId, type: FillExtrusionLayer.self) {
                     $0.visibility = .constant(.none)
                 }
             }
-            manager.updateAddressNumberLabelVisibility(isVisible: shouldShowAddressNumberLabels())
+            if hasSelectedAddressesLayer {
+                try? map.updateLayer(withId: MapLayerManager.selectedAddressesLayerId, type: FillExtrusionLayer.self) {
+                    $0.visibility = .constant(.none)
+                }
+            }
+            manager.updateAddressHouseIconVisibility(isVisible: false)
+            manager.updateAddressNumberLabelVisibility(isVisible: false)
 
         case .addresses:
             manager.includeBuildingsLayer = false
             manager.includeAddressesLayer = true
+            manager.setDiamondGeometryVisibility(buildings: false, addresses: true)
             if hasBuildingsLayer {
                 try? map.updateLayer(withId: MapLayerManager.buildingsLayerId, type: FillExtrusionLayer.self) {
+                    $0.visibility = .constant(.none)
+                }
+            }
+            if hasBuildingSelectedGlowLayer {
+                try? map.updateLayer(withId: MapLayerManager.buildingsSelectedGlowLayerId, type: LineLayer.self) {
+                    $0.visibility = .constant(.none)
+                }
+            }
+            if hasBuildingLeadGlowLayer {
+                try? map.updateLayer(withId: MapLayerManager.buildingsLeadGlowLayerId, type: LineLayer.self) {
                     $0.visibility = .constant(.none)
                 }
             }
@@ -317,11 +375,22 @@ struct FarmMapView: View {
                     $0.visibility = .constant(.none)
                 }
             }
+            if hasTownhomeLeadGlowLayer {
+                try? map.updateLayer(withId: MapLayerManager.townhomeLeadGlowLayerId, type: LineLayer.self) {
+                    $0.visibility = .constant(.none)
+                }
+            }
             if hasAddressesLayer {
                 try? map.updateLayer(withId: MapLayerManager.addressesLayerId, type: FillExtrusionLayer.self) {
                     $0.visibility = .constant(.visible)
                 }
             }
+            if hasSelectedAddressesLayer {
+                try? map.updateLayer(withId: MapLayerManager.selectedAddressesLayerId, type: FillExtrusionLayer.self) {
+                    $0.visibility = .constant(.visible)
+                }
+            }
+            manager.updateAddressHouseIconVisibility(isVisible: true)
             manager.updateAddressNumberLabelVisibility(isVisible: shouldShowAddressNumberLabels())
             if let mapView, mapView.mapboxMap.cameraState.zoom < 16.2 {
                 mapView.camera.ease(
@@ -454,9 +523,25 @@ struct FarmMapView: View {
 
     private func presentBuildingSelection(_ building: BuildingProperties, tappedPoint: CGPoint? = nil) {
         selectedBuilding = building
-        selectedAddress = resolveAddressForBuilding(building: building, tappedPoint: tappedPoint)
+        selectedAddress = shouldOpenAddressListFirst(for: building)
+            ? nil
+            : resolveAddressForBuilding(building: building, tappedPoint: tappedPoint)
         selectedAddressIdForCard = nil
         withAnimation { showLocationCard = true }
+    }
+
+    private func shouldOpenAddressListFirst(for building: BuildingProperties) -> Bool {
+        if let addressCount = building.addressCount, addressCount > 1 {
+            return true
+        }
+        if building.unitsCount > 1 {
+            return true
+        }
+
+        let identifiers = building.buildingIdentifierCandidates
+            .map(normalizedBuildingId)
+            .filter { !$0.isEmpty }
+        return identifiers.contains { addressIdsForBuilding(gersId: $0).count > 1 }
     }
 
     private func presentAddressSelection(_ address: MapLayerManager.AddressTapResult) {
@@ -474,6 +559,122 @@ struct FarmMapView: View {
             selectedBuilding = nil
         }
         withAnimation { showLocationCard = true }
+    }
+
+    private func presentProximityAddressSelection(_ address: FarmAddressViewRow) {
+        guard addressHistoryPreview(for: address)?.hasHistory == true else { return }
+        presentAddressSelection(addressTapResult(from: address))
+        autoOpenedAddressIdsThisSession.insert(address.id)
+    }
+
+    private func closeLocationCard() {
+        if let selectedAddressIdForCard {
+            dismissedAddressIdsThisSession.insert(selectedAddressIdForCard)
+        } else if let selectedAddress {
+            dismissedAddressIdsThisSession.insert(selectedAddress.addressId)
+        }
+
+        showLocationCard = false
+        selectedBuilding = nil
+        selectedAddress = nil
+        selectedAddressIdForCard = nil
+    }
+
+    private func evaluateAddressHistoryProximity(location: CLLocation) {
+        guard farmExecutionContext != nil else { return }
+        guard !showLocationCard else { return }
+        guard location.horizontalAccuracy >= 0, location.horizontalAccuracy <= 80 else { return }
+        guard isWalkingSpeed(location.speed) else { return }
+        guard Date().timeIntervalSince(lastProximityEvaluationAt) >= proximityEvaluationThrottleSeconds else { return }
+        lastProximityEvaluationAt = Date()
+
+        guard let nearest = nearestHistoricFarmAddress(to: location, maxDistanceMeters: proximityAutoOpenRadiusMeters) else {
+            resetProximityCandidate()
+            return
+        }
+
+        guard !autoOpenedAddressIdsThisSession.contains(nearest.address.id),
+              !dismissedAddressIdsThisSession.contains(nearest.address.id) else {
+            resetProximityCandidate()
+            return
+        }
+
+        if proximityCandidateAddressId != nearest.address.id {
+            proximityCandidateAddressId = nearest.address.id
+            proximityCandidateStartedAt = Date()
+            proximityAutoOpenTask?.cancel()
+            proximityAutoOpenTask = Task { @MainActor in
+                try? await Task.sleep(nanoseconds: UInt64(proximityStableDelaySeconds * 1_000_000_000))
+                guard !Task.isCancelled else { return }
+                guard proximityCandidateAddressId == nearest.address.id else { return }
+                guard let currentLocation = sessionManager.currentLocation else { return }
+                guard isWalkingSpeed(currentLocation.speed) else { return }
+                guard let stableNearest = nearestHistoricFarmAddress(to: currentLocation, maxDistanceMeters: proximityAutoOpenRadiusMeters),
+                      stableNearest.address.id == nearest.address.id else { return }
+                guard !autoOpenedAddressIdsThisSession.contains(nearest.address.id),
+                      !dismissedAddressIdsThisSession.contains(nearest.address.id) else { return }
+                presentProximityAddressSelection(nearest.address)
+                resetProximityCandidate()
+            }
+            return
+        }
+
+        if let startedAt = proximityCandidateStartedAt,
+           Date().timeIntervalSince(startedAt) >= proximityStableDelaySeconds {
+            proximityAutoOpenTask?.cancel()
+            presentProximityAddressSelection(nearest.address)
+            resetProximityCandidate()
+        }
+    }
+
+    private func resetProximityCandidate() {
+        proximityCandidateAddressId = nil
+        proximityCandidateStartedAt = nil
+        proximityAutoOpenTask?.cancel()
+        proximityAutoOpenTask = nil
+    }
+
+    private func isWalkingSpeed(_ speed: CLLocationSpeed) -> Bool {
+        speed < 0 || speed <= proximityMaxWalkingSpeedMetersPerSecond
+    }
+
+    private func nearestHistoricFarmAddress(
+        to location: CLLocation,
+        maxDistanceMeters: CLLocationDistance
+    ) -> (address: FarmAddressViewRow, distance: CLLocationDistance)? {
+        var bestMatch: FarmAddressViewRow?
+        var bestDistance = CLLocationDistance.greatestFiniteMagnitude
+
+        for address in visibleAddresses {
+            guard addressHistoryPreview(for: address)?.hasHistory == true else { continue }
+            let candidate = CLLocation(
+                latitude: address.geom.coordinate.latitude,
+                longitude: address.geom.coordinate.longitude
+            )
+            let distance = location.distance(from: candidate)
+            if distance < bestDistance {
+                bestDistance = distance
+                bestMatch = address
+            }
+        }
+
+        guard let bestMatch, bestDistance <= maxDistanceMeters else { return nil }
+        return (bestMatch, bestDistance)
+    }
+
+    private func addressHistoryPreview(for address: FarmAddressViewRow?) -> LocationCardAddressHistoryPreview? {
+        guard let address else { return nil }
+        let latestNote: String? = nil
+        let contactName: String? = nil
+        let preview = LocationCardAddressHistoryPreview(
+            addressId: address.id,
+            touchCount: address.visitedCount,
+            lastTouchDate: address.lastVisitedAt,
+            latestNote: latestNote,
+            contactName: contactName,
+            currentFarmCycleTouchCount: nil
+        )
+        return preview.hasHistory ? preview : nil
     }
 
     private func resolveAddress(for tappedAddress: MapLayerManager.AddressTapResult) -> FarmAddressViewRow? {
@@ -678,15 +879,18 @@ struct FarmMapView: View {
            let building = selectedBuilding,
            let campId = selectedAddress.flatMap({ campaignIdForAddress($0.addressId) }) ?? defaultCampaignId {
             let gersIdString = building.canonicalBuildingIdentifier ?? building.id
-            let resolvedAddrId = selectedAddress?.addressId ?? building.addressId.flatMap(UUID.init(uuidString:))
-            let resolvedAddrText = nonEmptyAddressText(
-                formatted: selectedAddress?.formatted,
-                houseNumber: selectedAddress?.houseNumber,
-                streetName: selectedAddress?.streetName
-            ) ?? nonEmptyAddressText(
-                formatted: building.addressText,
-                houseNumber: building.houseNumber,
-                streetName: building.streetName
+            let shouldShowAddressList = selectedAddressIdForCard == nil && shouldOpenAddressListFirst(for: building)
+            let resolvedAddrId = shouldShowAddressList ? nil : (selectedAddress?.addressId ?? building.addressId.flatMap(UUID.init(uuidString:)))
+            let resolvedAddrText = shouldShowAddressList ? nil : (
+                nonEmptyAddressText(
+                    formatted: selectedAddress?.formatted,
+                    houseNumber: selectedAddress?.houseNumber,
+                    streetName: selectedAddress?.streetName
+                ) ?? nonEmptyAddressText(
+                    formatted: building.addressText,
+                    houseNumber: building.houseNumber,
+                    streetName: building.streetName
+                )
             )
             LocationCardView(
                 gersId: gersIdString,
@@ -699,6 +903,7 @@ struct FarmMapView: View {
                 buildingSource: building.source,
                 addressSource: selectedAddress?.source,
                 addressStatuses: addressStatuses,
+                farmAddressHistoryPreview: addressHistoryPreview(for: farmAddressRow(for: resolvedAddrId)),
                 onSelectAddress: { setSelectedAddressForCard($0) },
                 onAddressesResolved: { ids in
                     let key = normalizedBuildingId(gersIdString)
@@ -706,10 +911,7 @@ struct FarmMapView: View {
                     resolvedAddressIdsByBuilding[key] = ids
                 },
                 onClose: {
-                    showLocationCard = false
-                    selectedBuilding = nil
-                    selectedAddress = nil
-                    selectedAddressIdForCard = nil
+                    closeLocationCard()
                 },
                 onStatusUpdated: { addressId, status in
                     handleLocationCardStatusUpdated(
@@ -749,6 +951,7 @@ struct FarmMapView: View {
                 buildingSource: selectedBuilding?.source,
                 addressSource: address.source,
                 addressStatuses: addressStatuses,
+                farmAddressHistoryPreview: addressHistoryPreview(for: farmAddressRow(for: address.addressId)),
                 onSelectAddress: { setSelectedAddressForCard($0) },
                 onAddressesResolved: { ids in
                     let key = normalizedBuildingId(gersIdString)
@@ -756,10 +959,7 @@ struct FarmMapView: View {
                     resolvedAddressIdsByBuilding[key] = ids
                 },
                 onClose: {
-                    showLocationCard = false
-                    selectedBuilding = nil
-                    selectedAddress = nil
-                    selectedAddressIdForCard = nil
+                    closeLocationCard()
                 },
                 onStatusUpdated: { addressId, status in
                     handleLocationCardStatusUpdated(
@@ -804,6 +1004,11 @@ struct FarmMapView: View {
         visibleAddresses.first(where: { $0.id == addressId })?.campaignId
     }
 
+    private func farmAddressRow(for addressId: UUID?) -> FarmAddressViewRow? {
+        guard let addressId else { return nil }
+        return visibleAddresses.first(where: { $0.id == addressId })
+    }
+
     private func handleLocationCardStatusUpdated(gersId: String, addressId: UUID, status: AddressStatus) {
         addressStatuses[addressId] = status
 
@@ -817,12 +1022,16 @@ struct FarmMapView: View {
         let normalizedGersId = normalizedBuildingId(gersId)
         guard !normalizedGersId.isEmpty else { return }
 
+        let matchedBuilding = visibleBuildingFeatures.first(where: { building in
+            buildingIdentifierCandidates(for: building).contains(normalizedGersId)
+        })
+
         let buildingStatus = computeBuildingLayerStatus(
             gersId: normalizedGersId,
-            addressIds: addressIdsForBuilding(gersId: normalizedGersId)
+            addressIds: matchedBuilding.map(addressIdsForBuilding(building:)) ?? addressIdsForBuilding(gersId: normalizedGersId)
         )
-        layerManager?.updateBuildingState(
-            gersId: normalizedGersId,
+        updateBuildingState(
+            identifiers: matchedBuilding.map(buildingIdentifierCandidates(for:)) ?? [normalizedGersId],
             status: buildingStatus,
             scansTotal: 0
         )
@@ -863,6 +1072,63 @@ struct FarmMapView: View {
         if let selectedAddress,
            normalizedBuildingId(selectedAddress.buildingGersId ?? selectedAddress.gersId) == normalizedGersId {
             return [selectedAddress.addressId]
+        }
+
+        return []
+    }
+
+    private func addressIdsForBuilding(building: BuildingFeature) -> [UUID] {
+        let identifiers = buildingIdentifierCandidates(for: building)
+        guard !identifiers.isEmpty else { return [] }
+
+        for identifier in identifiers {
+            if let resolvedIds = resolvedAddressIdsByBuilding[identifier], !resolvedIds.isEmpty {
+                return resolvedIds
+            }
+        }
+
+        let matchedFeatureIds = visibleAddressFeatures
+            .filter { feature in
+                let candidates = [
+                    feature.properties.buildingGersId,
+                    feature.properties.gersId
+                ]
+                .compactMap(normalizedBuildingId)
+                return candidates.contains { identifiers.contains($0) }
+            }
+            .compactMap { feature -> UUID? in
+                guard let id = feature.properties.id ?? feature.id else { return nil }
+                return UUID(uuidString: id)
+            }
+
+        if !matchedFeatureIds.isEmpty {
+            let deduped = Array(NSOrderedSet(array: matchedFeatureIds)) as? [UUID] ?? matchedFeatureIds
+            cacheAddressIds(deduped, forBuildingIdentifiers: identifiers)
+            return deduped
+        }
+
+        let addressRows = visibleAddresses.filter { address in
+            identifiers.contains(normalizedBuildingId(address.gersId))
+        }
+        if !addressRows.isEmpty {
+            let ids = addressRows.map(\.id)
+            cacheAddressIds(ids, forBuildingIdentifiers: identifiers)
+            return ids
+        }
+
+        for identifier in identifiers {
+            if let rows = addressRowsForBuilding(gersId: identifier), !rows.isEmpty {
+                let ids = rows.map(\.id)
+                cacheAddressIds(ids, forBuildingIdentifiers: identifiers)
+                return ids
+            }
+        }
+
+        if let selectedAddress {
+            let selectedIdentifier = normalizedBuildingId(selectedAddress.buildingGersId ?? selectedAddress.gersId)
+            if identifiers.contains(selectedIdentifier) {
+                return [selectedAddress.addressId]
+            }
         }
 
         return []
@@ -930,6 +1196,32 @@ struct FarmMapView: View {
         (value ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
+    }
+
+    private func buildingIdentifierCandidates(for building: BuildingFeature) -> [String] {
+        let candidates = building.properties.buildingIdentifierCandidates
+            .map(normalizedBuildingId)
+            .filter { !$0.isEmpty }
+        return Array(NSOrderedSet(array: candidates)) as? [String] ?? candidates
+    }
+
+    private func cacheAddressIds(_ addressIds: [UUID], forBuildingIdentifiers identifiers: [String]) {
+        guard !addressIds.isEmpty else { return }
+        for identifier in identifiers where !identifier.isEmpty {
+            resolvedAddressIdsByBuilding[identifier] = addressIds
+        }
+    }
+
+    private func updateBuildingState(identifiers: [String], status: String, scansTotal: Int) {
+        let normalizedIdentifiers = (Array(NSOrderedSet(array: identifiers.map(normalizedBuildingId))) as? [String] ?? identifiers.map(normalizedBuildingId))
+            .filter { !$0.isEmpty }
+        for identifier in normalizedIdentifiers {
+            layerManager?.updateBuildingState(
+                gersId: identifier,
+                status: status,
+                scansTotal: scansTotal
+            )
+        }
     }
 
     private func filteredAddressesData() -> Data? {
@@ -1067,16 +1359,16 @@ struct FarmMapView: View {
         }
 
         for building in visibleBuildingFeatures {
-            let buildingId = normalizedBuildingId(building.properties.canonicalBuildingIdentifier ?? building.id)
-            guard !buildingId.isEmpty else { continue }
+            let identifiers = buildingIdentifierCandidates(for: building)
+            guard let buildingId = identifiers.first, !buildingId.isEmpty else { continue }
 
-            let addressIds = addressIdsForBuilding(gersId: buildingId)
+            let addressIds = addressIdsForBuilding(building: building)
             let buildingStatus = computeBuildingLayerStatus(
                 gersId: buildingId,
                 addressIds: addressIds
             )
-            manager.updateBuildingState(
-                gersId: buildingId,
+            updateBuildingState(
+                identifiers: identifiers,
                 status: buildingStatus,
                 scansTotal: building.properties.scansTotal
             )

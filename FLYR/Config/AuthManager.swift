@@ -51,17 +51,6 @@ final class AuthManager: ObservableObject {
 
     /// Restore session from Keychain and set on Supabase client. Call on app launch.
     func loadSession() async {
-        #if DEBUG
-        if ProcessInfo.processInfo.environment["SIMULATOR_DEVICE_NAME"] != nil {
-            user = nil
-            syncWorkspaceContext(for: nil)
-            #if DEBUG
-            print("🔍 DEBUG: Skipping Keychain session restore on Simulator")
-            #endif
-            return
-        }
-        #endif
-
         guard let pair = KeychainAuthStorage.loadSession() else {
             user = nil
             syncWorkspaceContext(for: nil)

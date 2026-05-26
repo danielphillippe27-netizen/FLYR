@@ -49,6 +49,7 @@ function summary(overrides: Partial<SpatialJoinSummary>): SpatialJoinSummary {
     coveragePercent: 92,
     matchBreakdown: {
       containmentVerified: 92,
+      semanticVerified: 0,
       containmentSuspect: 0,
       pointOnSurface: 0,
       parcelVerified: 0,
@@ -108,6 +109,7 @@ test('grades campaigns with no building links as weak', () => {
       coveragePercent: 0,
       matchBreakdown: {
         containmentVerified: 0,
+        semanticVerified: 0,
         containmentSuspect: 0,
         pointOnSurface: 0,
         parcelVerified: 0,

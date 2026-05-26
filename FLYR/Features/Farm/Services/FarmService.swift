@@ -8,6 +8,7 @@ actor FarmService {
     private var client: SupabaseClient {
         SupabaseManager.shared.client
     }
+    private let offlineRepository = FarmOfflineRepository.shared
     
     private init() {}
 
@@ -32,6 +33,10 @@ actor FarmService {
     
     func fetchFarms(userID: UUID) async throws -> [Farm] {
         let workspaceId = await MainActor.run { WorkspaceContext.shared.workspaceId }
+        if !NetworkMonitor.shared.isOnline {
+            return await offlineRepository.getCachedFarms(userId: userID, workspaceId: workspaceId)
+        }
+
         var query = client
             .from("farms_with_geojson")
             .select()
@@ -61,11 +66,17 @@ actor FarmService {
         
         let decoder = await MainActor.run { JSONDecoder.supabaseDates }
         let dbRows: [FarmDBRow] = try decoder.decode([FarmDBRow].self, from: responseData)
-        
-        return dbRows.map { $0.toFarm() }
+        let farms = dbRows.map { $0.toFarm() }
+        await offlineRepository.upsertFarms(farms, userId: userID, workspaceId: workspaceId)
+        await SessionStartCacheRepository.shared.upsertFarms(farms, userId: userID, workspaceId: workspaceId)
+        return farms
     }
     
     func fetchFarm(id: UUID) async throws -> Farm? {
+        if !NetworkMonitor.shared.isOnline {
+            return await offlineRepository.getCachedFarm(id: id)
+        }
+
         let response = try await client
             .from("farms_with_geojson")
             .select()
@@ -75,11 +86,16 @@ actor FarmService {
         
         let decoder = await MainActor.run { JSONDecoder.supabaseDates }
         let dbRow: FarmDBRow = try decoder.decode(FarmDBRow.self, from: response.data)
-        
-        return dbRow.toFarm()
+        let farm = dbRow.toFarm()
+        await offlineRepository.upsertFarm(farm)
+        return farm
     }
 
     func fetchAddresses(farmId: UUID) async throws -> [FarmAddressViewRow] {
+        if !NetworkMonitor.shared.isOnline {
+            return await offlineRepository.getCachedAddresses(farmId: farmId)
+        }
+
         let fullSelect = """
             id,
             campaign_address_id,
@@ -148,13 +164,19 @@ actor FarmService {
         let decoder = await MainActor.run { JSONDecoder.supabaseDates }
         let rows = try decoder.decode([FarmAddressDBRow].self, from: responseData)
         let linkedCampaignId = await fetchLinkedCampaignId(farmId: farmId)
-        return rows.compactMap { $0.toViewRow(campaignId: linkedCampaignId) }
+        let addresses = rows.compactMap { $0.toViewRow(campaignId: linkedCampaignId) }
+        await offlineRepository.upsertAddresses(addresses)
+        return addresses
     }
 
     func fetchCycleAddressStatuses(
         farmId: UUID,
         cycleNumber: Int
     ) async throws -> [UUID: AddressStatus] {
+        if !NetworkMonitor.shared.isOnline {
+            return await offlineRepository.getCachedCycleStatuses(farmId: farmId, cycleNumber: cycleNumber)
+        }
+
         let select = """
             farm_address_id,
             campaign_address_id,
@@ -183,6 +205,12 @@ actor FarmService {
             statuses[row.mapAddressId] = row.resolvedStatus
         }
 
+        await offlineRepository.upsertCycleStatuses(
+            farmId: farmId,
+            cycleNumber: cycleNumber,
+            statuses: statuses,
+            dirty: false
+        )
         return statuses
     }
     

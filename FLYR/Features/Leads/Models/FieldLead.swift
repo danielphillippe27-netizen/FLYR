@@ -13,7 +13,7 @@ enum FieldLeadStatus: String, Codable, CaseIterable {
         switch self {
         case .notHome: return "Not Home"
         case .interested: return "Interested"
-        case .qrScanned: return "QR Scanned"
+        case .qrScanned: return "QR code"
         case .noAnswer: return "No Answer"
         }
     }
@@ -22,7 +22,7 @@ enum FieldLeadStatus: String, Codable, CaseIterable {
         switch self {
         case .notHome: return .flyrPrimary
         case .interested: return .blue
-        case .qrScanned: return .blue
+        case .qrScanned: return .purple
         case .noAnswer: return .gray
         }
     }

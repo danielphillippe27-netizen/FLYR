@@ -238,6 +238,7 @@ export async function POST(request: Request): Promise<Response> {
       name: body.name.trim(),
       title: body.name.trim(),
       description: buildFarmCampaignDescription((farm as { id: string }).id, body.description),
+      tags: "farm_backing",
       type: "flyer",
       address_source: "map",
       bbox,

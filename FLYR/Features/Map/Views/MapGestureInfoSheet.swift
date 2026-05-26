@@ -4,10 +4,11 @@ import SwiftUI
 
 enum MapGestureInfoPalette {
     static let homeLegendItems: [(color: Color, label: String)] = [
-        (Color(red: 239/255, green: 68/255, blue: 68/255), "Untouched"),
-        (Color(red: 34/255, green: 197/255, blue: 94/255), "Touched"),
-        (Color(red: 59/255, green: 130/255, blue: 246/255), "Conversations"),
-        (Color(red: 139/255, green: 92/255, blue: 246/255), "QR Scanned")
+        (Color(red: 248/255, green: 113/255, blue: 113/255), "Attempted"),
+        (Color(red: 34/255, green: 197/255, blue: 94/255), "Talked"),
+        (Color(red: 37/255, green: 99/255, blue: 235/255), "Lead"),
+        (Color(red: 250/255, green: 204/255, blue: 21/255), "Appointment / follow up"),
+        (Color(red: 139/255, green: 92/255, blue: 246/255), "QR code")
     ]
 
     static let gestures: [(icon: String, text: String)] = [

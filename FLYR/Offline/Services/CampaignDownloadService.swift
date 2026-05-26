@@ -113,6 +113,13 @@ final class CampaignDownloadService: ObservableObject {
 
             let addresses = try await fetchAddresses(campaignId: campaignUUID)
             await campaignRepository.upsertAddresses(campaignId: campaignId, features: addresses.features)
+            await campaignRepository.updateDownloadState(campaignId: campaignId, status: "downloading", progress: 0.50, startedAt: startedAt)
+
+            let links = try await BuildingLinkService.shared.fetchLinks(campaignId: campaignId)
+            await campaignRepository.upsertBuildingAddressLinks(campaignId: campaignId, links: links)
+
+            let addressOrphans = try await fetchAddressOrphans(campaignId: campaignUUID)
+            await campaignRepository.upsertAddressOrphans(campaignId: campaignId, orphans: addressOrphans)
             await campaignRepository.updateDownloadState(campaignId: campaignId, status: "downloading", progress: 0.55, startedAt: startedAt)
 
             let addressMetadata = try await fetchCampaignAddressMetadata(campaignId: campaignUUID)
@@ -165,7 +172,7 @@ final class CampaignDownloadService: ObservableObject {
                 expected: OfflineExpectedCounts(
                     buildings: buildings.count,
                     addresses: addresses.features.count,
-                    buildingLinks: 0,
+                    buildingLinks: links.count,
                     statuses: statuses.count,
                     roads: corridors.count,
                     metadata: addressMetadata.count,
@@ -255,6 +262,54 @@ final class CampaignDownloadService: ObservableObject {
             .execute()
 
         return try JSONDecoder.supabaseDates.decode([CampaignAddressResponse].self, from: response.data)
+    }
+
+    private func fetchAddressOrphans(campaignId: UUID) async throws -> [CampaignAddressOrphanSnapshot] {
+        let response = try await SupabaseManager.shared.client
+            .from("address_orphans")
+            .select("address_id, coordinate, status, nearest_building_id, nearest_distance, suggested_street, address_street")
+            .eq("campaign_id", value: campaignId.uuidString)
+            .in("status", values: ["pending", "pending_review", "ambiguous_match"])
+            .execute()
+
+        let object = try JSONSerialization.jsonObject(with: response.data)
+        guard let rows = object as? [[String: Any]] else { return [] }
+
+        return rows.compactMap { row in
+            guard let addressId = row["address_id"] as? String,
+                  !addressId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return nil
+            }
+
+            return CampaignAddressOrphanSnapshot(
+                addressId: addressId,
+                nearestBuildingId: row["nearest_building_id"] as? String,
+                nearestDistance: Self.doubleValue(row["nearest_distance"]),
+                status: row["status"] as? String,
+                suggestedStreet: row["suggested_street"] as? String,
+                addressStreet: row["address_street"] as? String,
+                coordinateJSON: Self.jsonString(row["coordinate"])
+            )
+        }
+    }
+
+    private static func doubleValue(_ value: Any?) -> Double? {
+        if let double = value as? Double { return double }
+        if let int = value as? Int { return Double(int) }
+        if let string = value as? String { return Double(string) }
+        return nil
+    }
+
+    private static func jsonString(_ value: Any?) -> String? {
+        guard let value, !(value is NSNull) else { return nil }
+        if let string = value as? String {
+            return string
+        }
+        guard JSONSerialization.isValidJSONObject(value),
+              let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]) else {
+            return nil
+        }
+        return String(data: data, encoding: .utf8)
     }
 
     private func fetchCampaignContacts(campaignId: UUID) async throws -> [Contact] {

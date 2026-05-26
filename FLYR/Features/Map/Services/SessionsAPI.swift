@@ -321,6 +321,16 @@ final class SessionsAPI {
             .execute()
     }
 
+    /// Permanently remove a session owned by the current user.
+    /// Related session_events are removed by the database FK cascade.
+    func deleteSession(id: UUID) async throws {
+        _ = try await client
+            .from("sessions")
+            .delete()
+            .eq("id", value: id.uuidString)
+            .execute()
+    }
+
     /// Fetch active (unended) session for current user for restore-after-kill
     func fetchActiveSession(userId: UUID) async throws -> SessionRecord? {
         let response = try await client

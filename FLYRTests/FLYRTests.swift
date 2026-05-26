@@ -11,6 +11,63 @@ import Testing
 
 struct FLYRTests {
 
+    @Test func diamondManifestDecodesSeparateWinnipegTileTemplates() throws {
+        let json = """
+        {
+          "campaign_id": "fc1c992b-c0b4-48c0-9116-3c9e002196fd",
+          "diamond_mode": true,
+          "geometry_provider": "pmtiles",
+          "geometry_version": 1777777777,
+          "geometry_url": "https://example.test/buildings.pmtiles",
+          "geometry_etag": "winnipeg-test",
+          "tilejson_url": "https://example.test/buildings.json",
+          "vector_tile_url_template": "https://example.test/diamond-tiles/buildings/{z}/{x}/{y}.mvt",
+          "address_vector_tile_url_template": "https://example.test/address-tiles/{z}/{x}/{y}.mvt",
+          "address_source_layer": "addresses",
+          "address_promote_id": "address_id",
+          "address_minzoom": 10,
+          "address_maxzoom": 16,
+          "parcel_vector_tile_url_template": "https://example.test/parcel-tiles/{z}/{x}/{y}.mvt",
+          "parcel_source_layer": "parcels",
+          "parcel_promote_id": "parcel_id",
+          "parcel_minzoom": 10,
+          "parcel_maxzoom": 16,
+          "source_layers": {
+            "buildings": "buildings",
+            "addresses": "addresses",
+            "address_circles": null,
+            "parcels": "parcels"
+          },
+          "promote_ids": {
+            "buildings": "address_id",
+            "addresses": "address_id",
+            "address_circles": null,
+            "parcels": "parcel_id"
+          },
+          "join_key": "address_id",
+          "primary_state_layer": "buildings",
+          "bounds": [-97.35, 49.71, -96.95, 50.02],
+          "minzoom": 13,
+          "maxzoom": 18,
+          "state_source": "supabase",
+          "state_cursor": "2026-05-06T23:15:34Z",
+          "supports_feature_state": true,
+          "supports_differential_state_sync": true,
+          "supports_rep_scope": true,
+          "fallback_geometry_provider": null
+        }
+        """
+
+        let manifest = try JSONDecoder().decode(DiamondManifest.self, from: Data(json.utf8))
+
+        #expect(manifest.hasRenderablePMTilesGeometry)
+        #expect(manifest.hasRenderablePMTilesAddresses)
+        #expect(manifest.addressVectorTileUrlTemplate?.contains("address-tiles") == true)
+        #expect(manifest.parcelVectorTileUrlTemplate?.contains("parcel-tiles") == true)
+        #expect(manifest.addressSourceLayer == "addresses")
+        #expect(manifest.parcelSourceLayer == "parcels")
+    }
+
     @Test func beaconHeartbeatDeviceStatusEncodesAsJSON() throws {
         let timestamp = Date(timeIntervalSince1970: 1_712_734_400)
         let payload: [String: AnyCodable] = [

@@ -6,6 +6,7 @@ struct SessionMapView: View {
     @State private var statsExpanded = true
     @State private var dragOffset: CGFloat = 0
     @State private var showingTargets = false
+    @State private var sessionToolsExpanded = false
     @State private var showEndSessionConfirmation = false
 
     var body: some View {
@@ -74,6 +75,7 @@ struct SessionMapView: View {
                     sessionManager: manager,
                     showingTargets: $showingTargets,
                     statsExpanded: $statsExpanded,
+                    isExpanded: $sessionToolsExpanded,
                     menuVariant: .standard
                 )
                 .padding(.bottom, 8) // keep it close to the home indicator without floating high above it

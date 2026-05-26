@@ -89,6 +89,7 @@ final class CreateFarmViewModel: ObservableObject {
                     farmId: farmId,
                     date: touchDate,
                     type: touchType,
+                    mode: touchType.defaultModeRawValue,
                     title: "\(touchType.displayName) - \(formatDate(touchDate))",
                     orderIndex: touchIndex
                 )

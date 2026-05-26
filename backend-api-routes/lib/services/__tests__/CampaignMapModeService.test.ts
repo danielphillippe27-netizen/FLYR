@@ -43,24 +43,24 @@ function expectMode(
   );
 }
 
-test('Parcels present keeps low-confidence campaigns out of standard pins', () => {
+test('Parcels present and low confidence uses hybrid', () => {
   expectMode(true, 45, 'hybrid');
 });
 
-test('No parcels and low confidence uses standard pins', () => {
-  expectMode(false, 45, 'standard_pins');
+test('No parcels and low confidence uses hybrid', () => {
+  expectMode(false, 45, 'hybrid');
 });
 
 test('No parcels and mid confidence uses hybrid', () => {
   expectMode(false, 70, 'hybrid');
 });
 
-test('No parcels and high confidence uses smart buildings', () => {
-  expectMode(false, 92, 'smart_buildings');
+test('No parcels and high confidence uses hybrid', () => {
+  expectMode(false, 92, 'hybrid');
 });
 
-test('Parcels present and high confidence still uses smart buildings', () => {
-  expectMode(true, 92, 'smart_buildings');
+test('Parcels present and high confidence uses hybrid', () => {
+  expectMode(true, 92, 'hybrid');
 });
 
 if (testsFailed > 0) {

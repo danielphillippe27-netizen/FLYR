@@ -324,6 +324,23 @@ final class SessionRepository {
         }
     }
 
+    func discardSession(id: UUID) async {
+        try? await dbQueue.write { db in
+            try db.execute(
+                sql: "DELETE FROM local_session_events WHERE session_id = ?",
+                arguments: [id.uuidString]
+            )
+            try db.execute(
+                sql: "DELETE FROM local_session_points WHERE session_id = ?",
+                arguments: [id.uuidString]
+            )
+            try db.execute(
+                sql: "DELETE FROM local_sessions WHERE id = ?",
+                arguments: [id.uuidString]
+            )
+        }
+    }
+
     func markSessionSynced(id: UUID, at date: Date = Date()) async {
         let syncedAt = OfflineDateCodec.string(from: date)
         try? await dbQueue.write { db in

@@ -68,7 +68,7 @@ function mapRow(row: Record<string, unknown>): LeaderboardUser {
 }
 
 /**
- * Fetches leaderboard from Supabase RPC get_leaderboard(p_metric, p_timeframe).
+ * Fetches leaderboard from Supabase RPC get_leaderboard(p_metric, p_timeframe, p_workspace_id, p_limit, p_offset).
  */
 export async function fetchLeaderboard(
   metric: LeaderboardMetric,
@@ -80,6 +80,9 @@ export async function fetchLeaderboard(
   const { data, error } = await supabase.rpc('get_leaderboard', {
     p_metric: metric,
     p_timeframe: timeframe,
+    p_workspace_id: null,
+    p_limit: 100,
+    p_offset: 0,
   })
   if (error) throw error
   if (!Array.isArray(data)) return []

@@ -7,6 +7,7 @@ final class ProfileViewModel: ObservableObject {
     @Published var profile: UserProfile?
     @Published var firstName = ""
     @Published var lastName = ""
+    @Published var countryCode: String?
     @Published var quote = ""
     @Published var profileImage: UIImage?
     @Published var isLoading = false
@@ -26,10 +27,10 @@ final class ProfileViewModel: ObservableObject {
     
     private func setupAutoSave() {
         // Combine all text field publishers
-        let textFieldsPublisher = Publishers.CombineLatest3($firstName, $lastName, $quote)
+        let textFieldsPublisher = Publishers.CombineLatest4($firstName, $lastName, $countryCode, $quote)
         .debounce(for: .seconds(debounceInterval), scheduler: DispatchQueue.main)
         .dropFirst() // Skip initial value
-        .sink { [weak self] _, _, _ in
+        .sink { [weak self] _, _, _, _ in
             Task { @MainActor [weak self] in
                 await self?.saveProfile()
             }
@@ -62,6 +63,7 @@ final class ProfileViewModel: ObservableObject {
             self.profile = result
             self.firstName = result.firstName ?? ""
             self.lastName = result.lastName ?? ""
+            self.countryCode = CountryOptions.normalize(result.countryCode)
             self.quote = result.quote ?? ""
             
             // Load profile image if URL exists
@@ -93,6 +95,7 @@ final class ProfileViewModel: ObservableObject {
         // Add optional fields as nil
         newProfile["first_name"] = AnyCodable(NSNull())
         newProfile["last_name"] = AnyCodable(NSNull())
+        newProfile["country_code"] = AnyCodable(NSNull())
         newProfile["quote"] = AnyCodable(NSNull())
         newProfile["profile_image_url"] = AnyCodable(NSNull())
         
@@ -130,6 +133,7 @@ final class ProfileViewModel: ObservableObject {
         updates["full_name"] = fullName.isEmpty ? AnyCodable(NSNull()) : AnyCodable(fullName)
         updates["first_name"] = trimmedFirstName.isEmpty ? AnyCodable(NSNull()) : AnyCodable(trimmedFirstName)
         updates["last_name"] = trimmedLastName.isEmpty ? AnyCodable(NSNull()) : AnyCodable(trimmedLastName)
+        updates["country_code"] = CountryOptions.normalize(countryCode).map(AnyCodable.init) ?? AnyCodable(NSNull())
         updates["quote"] = trimmedQuote.isEmpty ? AnyCodable(NSNull()) : AnyCodable(trimmedQuote)
         updates["profile_image_url"] = profile.profileImageURL != nil ? AnyCodable(profile.profileImageURL!) : AnyCodable(NSNull())
         
@@ -144,10 +148,12 @@ final class ProfileViewModel: ObservableObject {
             var updatedProfile = profile
             updatedProfile.firstName = trimmedFirstName.isEmpty ? nil : trimmedFirstName
             updatedProfile.lastName = trimmedLastName.isEmpty ? nil : trimmedLastName
+            updatedProfile.countryCode = CountryOptions.normalize(countryCode)
             updatedProfile.quote = trimmedQuote.isEmpty ? nil : trimmedQuote
             self.profile = updatedProfile
             self.firstName = trimmedFirstName
             self.lastName = trimmedLastName
+            self.countryCode = CountryOptions.normalize(countryCode)
             self.quote = trimmedQuote
             syncCachedAppUserDisplayName(fullName)
             

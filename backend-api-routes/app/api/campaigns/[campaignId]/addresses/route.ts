@@ -3,8 +3,8 @@ import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
 import zlib from "zlib";
 
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY!;
+const SUPABASE_URL = process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL!;
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY ?? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 const AWS_REGION = process.env.AWS_REGION ?? "us-east-1";
 
@@ -103,7 +103,12 @@ function snapshotAddressFeature(feature: GeoJSONFeature): GeoJSONFeature | null 
     normalizedString(feature.id);
   if (!id) return null;
 
-  const houseNumber = normalizedString(props.house_number);
+  const houseNumber =
+    normalizedString(props.house_number) ??
+    normalizedString(props.house_number_label) ??
+    normalizedString(props.street_number) ??
+    normalizedString(props.number) ??
+    normalizedString(props.address_number);
   const streetName = normalizedString(props.street_name);
   const fallbackFormatted = [houseNumber, streetName].filter(Boolean).join(" ").trim();
   const formatted =
@@ -214,7 +219,7 @@ export async function GET(request: Request, context: RouteContext): Promise<Resp
       console.warn("[addresses] RPC error:", rpcError);
     }
 
-    if (provisionSource === "gold") {
+    if (provisionSource === "diamond") {
       return NextResponse.json(EMPTY_FEATURE_COLLECTION, { headers: JSON_NO_STORE_HEADERS });
     }
 

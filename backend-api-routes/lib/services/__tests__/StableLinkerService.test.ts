@@ -3,6 +3,7 @@
  *
  * Run with: npx tsx lib/services/__tests__/StableLinkerService.test.ts
  */
+/* eslint-disable @typescript-eslint/no-explicit-any */
 
 import { DataIntegrityError, StableLinkerService } from '../StableLinkerService';
 import { ParcelEnrichmentService } from '../ParcelEnrichmentService';
@@ -61,7 +62,13 @@ function rectangle(minLon: number, minLat: number, maxLon: number, maxLat: numbe
 function makeBuilding(
   id: string,
   ring: number[][],
-  options: { primaryStreet?: string | null; streetName?: string | null; name?: string | null } = {}
+  options: {
+    primaryStreet?: string | null;
+    streetName?: string | null;
+    name?: string | null;
+    houseNumber?: string | null;
+    addressText?: string | null;
+  } = {}
 ) {
   return {
     type: 'Feature' as const,
@@ -76,6 +83,8 @@ function makeBuilding(
       layer: 'building',
       primary_street: options.primaryStreet ?? null,
       street_name: options.streetName ?? null,
+      house_number: options.houseNumber ?? null,
+      address_text: options.addressText ?? null,
     },
   };
 }
@@ -242,22 +251,6 @@ async function run() {
     assertEqual(match.buildingId, 'building-1');
   });
 
-  test('Gold street inference: missing building street is inferred from contained address', () => {
-    const service = new StableLinkerService({} as any);
-    const building = makeBuilding(
-      'building-infer',
-      rectangle(-79.0002, 43.0000, -78.9998, 43.0003)
-    );
-    const address = makeAddress('101', -79.0000, 43.00015, 'Maple Avenue');
-
-    (service as any).inferMissingBuildingStreets([address], [building]);
-    const match = (service as any).matchAddressToBuilding(address, [building], new Set(), []);
-
-    assertEqual(building.properties.primary_street, 'Maple Avenue');
-    assertEqual(match.matchType, 'containment_verified');
-    assertEqual(match.streetMatchScore, 1);
-  });
-
   test('Gold parcel bridge: address outside footprint still links via shared parcel', () => {
     const service = new StableLinkerService({} as any);
     const building = makeBuilding(
@@ -290,199 +283,139 @@ async function run() {
     assertEqual(match.buildingId, 'building-3');
   });
 
-  await testAsync('Unsupported parcel region: inferSourceId reports no source and preserves unsupported localities', async () => {
-    const supabase = createMockSupabase({
-      campaignAddresses: [
-        { campaign_id: 'campaign-unsupported', locality: 'Vancouver' },
-        { campaign_id: 'campaign-unsupported', locality: 'Burnaby' },
-      ],
-    });
-    const service = new ParcelEnrichmentService(supabase as any);
+  test('Parcel bridge outranks point-on-surface for offset detached-home address points', () => {
+    const service = new StableLinkerService({} as any);
+    const parcelBuilding = makeBuilding(
+      'parcel-main-home',
+      rectangle(-79.00965, 43.01002, -79.00950, 43.01016),
+      { primaryStreet: 'Cedar Court' }
+    );
+    const boundaryNeighbor = makeBuilding(
+      'boundary-neighbor',
+      rectangle(-79.01000, 43.01000, -79.00980, 43.01020),
+      { primaryStreet: 'Cedar Court' }
+    );
+    const parcel = makeParcel(
+      'parcel-main',
+      rectangle(-79.00982, 43.00995, -79.00945, 43.01022)
+    );
+    const preparedParcels = (service as any).prepareParcelBridge([parcel], [parcelBuilding, boundaryNeighbor]);
+    const address = makeAddress('302', -79.00980, 43.01010, 'Cedar Court');
 
-    const resolution = await (service as any).inferSourceId('campaign-unsupported');
-    assertEqual(resolution.sourceId, null);
-    assertEqual(resolution.unsupportedLocalities, ['burnaby', 'vancouver']);
-  });
-
-  await testAsync('Toronto parcel alias: locality "to" resolves to Toronto parcels', async () => {
-    const supabase = createMockSupabase({
-      campaignAddresses: [
-        { campaign_id: 'campaign-toronto', locality: 'to' },
-      ],
-    });
-    const service = new ParcelEnrichmentService(supabase as any);
-
-    const resolution = await (service as any).inferSourceId('campaign-toronto');
-    assertEqual(resolution.sourceId, 'toronto_parcels');
-    assertEqual(resolution.unsupportedLocalities, []);
-  });
-
-  await testAsync('Oshawa parcel aliases: municipal locality names resolve to Oshawa parcels', async () => {
-    const supabase = createMockSupabase({
-      campaignAddresses: [
-        { campaign_id: 'campaign-oshawa', locality: 'City of Oshawa' },
-        { campaign_id: 'campaign-oshawa', locality: 'The Corporation of the City of Oshawa' },
-      ],
-    });
-    const service = new ParcelEnrichmentService(supabase as any);
-
-    const resolution = await (service as any).inferSourceId('campaign-oshawa');
-    assertEqual(resolution.sourceId, 'oshawa_parcels');
-    assertEqual(resolution.unsupportedLocalities, []);
-    assertEqual(resolution.localityCounts, [{ source_id: 'oshawa_parcels', count: 2 }]);
-  });
-
-  await testAsync('Oshawa parcel source falls back to campaign bbox when locality is absent', async () => {
-    const supabase = createMockSupabase({
-      campaignAddresses: [
-        { campaign_id: 'campaign-oshawa-bbox', locality: null },
-      ],
-    });
-    const service = new ParcelEnrichmentService(supabase as any);
-
-    const resolution = await (service as any).inferSourceId('campaign-oshawa-bbox', {
-      id: 'campaign-oshawa-bbox',
-      bbox: [-78.91, 43.88, -78.84, 43.93],
-      territory_boundary: null,
-      region: 'ON',
-    });
-    assertEqual(resolution.sourceId, 'oshawa_parcels');
-    assertEqual(resolution.unsupportedLocalities, []);
-    assertEqual(resolution.localityCounts, [{ source_id: 'oshawa_parcels', count: 0 }]);
-  });
-
-  await testAsync('Oshawa parcel loading parses EWKT geom and filters to campaign bbox', async () => {
-    const insideParcel = JSON.stringify({
-      external_id: 'oshawa-parcel-inside',
-      geom: 'SRID=4326;MULTIPOLYGON (((-78.86630 43.89708, -78.86597 43.89715, -78.86613 43.89750, -78.86643 43.89743, -78.86630 43.89708)))',
-    });
-    const outsideParcel = JSON.stringify({
-      external_id: 'oshawa-parcel-outside',
-      geom: 'SRID=4326;MULTIPOLYGON (((-79.50030 43.89708, -79.49997 43.89715, -79.50013 43.89750, -79.50043 43.89743, -79.50030 43.89708)))',
-    });
-    const body = {
-      async *[Symbol.asyncIterator]() {
-        yield Buffer.from(`${insideParcel}\n${outsideParcel}\n`);
-      },
-      async transformToString() {
-        throw new Error('streaming parser must not materialize full parcel file');
-      },
-    };
-    const supabase = createMockSupabase({
-      campaignAddresses: [
-        { campaign_id: 'campaign-oshawa-ewkt', locality: 'City of Oshawa' },
-      ],
-    });
-    const service = new ParcelEnrichmentService(supabase as any);
-    (service as any).s3 = {
-      async send(command: any) {
-        if (command.constructor.name === 'ListObjectsV2Command') {
-          return {
-            Contents: [
-              {
-                Key: 'gold-standard/canada/ontario/oshawa_parcels/20260424/oshawa_parcels_gold.ndjson',
-              },
-            ],
-            IsTruncated: false,
-          };
-        }
-
-        return { Body: body };
-      },
-    };
-
-    const result = await (service as any).loadCampaignParcels(
-      'campaign-oshawa-ewkt',
-      {
-        id: 'campaign-oshawa-ewkt',
-        bbox: [-78.87, 43.89, -78.86, 43.90],
-        territory_boundary: null,
-        region: 'ON',
-      }
+    const match = (service as any).matchAddressToBuilding(
+      address,
+      [parcelBuilding, boundaryNeighbor],
+      new Set(),
+      preparedParcels
     );
 
-    assertEqual(result.status, 'ready');
-    assertEqual(result.sourceId, 'oshawa_parcels');
-    assertEqual(result.parcelCount, 1);
-    assertEqual(result.parcels[0].externalId, 'oshawa-parcel-inside');
-    assertEqual(result.debug.scanned_lines, 2);
-    assertEqual(result.debug.parsed_records, 2);
-    assertEqual(result.debug.bbox_candidates, 1);
+    assertEqual(match.matchType, 'parcel_verified');
+    assertEqual(match.buildingId, 'parcel-main-home');
   });
 
-  await testAsync('Toronto parcel loading streams NDJSON and filters to campaign bbox', async () => {
-    const insideParcel = JSON.stringify({
-      type: 'Feature',
-      properties: { external_id: 'parcel-inside' },
-      geometry: {
-        type: 'Polygon',
-        coordinates: [rectangle(-79.00030, 42.99995, -78.99990, 43.00028)],
-      },
-    });
-    const outsideParcel = JSON.stringify({
-      type: 'Feature',
-      properties: { external_id: 'parcel-outside' },
-      geometry: {
-        type: 'Polygon',
-        coordinates: [rectangle(-80.00030, 42.99995, -79.99990, 43.00028)],
-      },
-    });
-    const ndjson = `${insideParcel}\n${outsideParcel}\n`;
-    const chunks = [
-      ndjson.slice(0, 37),
-      ndjson.slice(37, 113),
-      ndjson.slice(113),
-    ];
-    const body = {
-      async *[Symbol.asyncIterator]() {
-        for (const chunk of chunks) {
-          yield Buffer.from(chunk);
-        }
-      },
-      async transformToString() {
-        throw new Error('streaming parser must not materialize full parcel file');
-      },
-    };
-    const supabase = createMockSupabase({
-      campaignAddresses: [
-        { campaign_id: 'campaign-stream', locality: 'to' },
-      ],
-    });
-    const service = new ParcelEnrichmentService(supabase as any);
-    (service as any).s3 = {
-      async send(command: any) {
-        if (command.constructor.name === 'ListObjectsV2Command') {
-          return {
-            Contents: [
-              {
-                Key: 'gold-standard/canada/ontario/toronto_parcels/20260430/toronto_parcels_gold.ndjson',
-              },
-            ],
-            IsTruncated: false,
-          };
-        }
+  test('Parcel bridge: building footprint vertex inside parcel is eligible even when centroid is outside', () => {
+    const service = new StableLinkerService({} as any);
+    const building = makeBuilding(
+      'slightly-shifted-home',
+      rectangle(-79.03080, 43.03000, -79.03055, 43.03018),
+      { primaryStreet: 'Baylawn Drive' }
+    );
+    const parcel = makeParcel(
+      'parcel-shifted',
+      rectangle(-79.03062, 43.02995, -79.03035, 43.03025)
+    );
+    const preparedParcels = (service as any).prepareParcelBridge([parcel], [building]);
+    const address = makeAddress('870', -79.03048, 43.03012, 'Baylawn Drive');
 
-        return { Body: body };
-      },
-    };
-
-    const result = await (service as any).loadCampaignParcels(
-      'campaign-stream',
-      {
-        id: 'campaign-stream',
-        bbox: [-79.001, 42.999, -78.999, 43.001],
-        territory_boundary: null,
-        region: 'ON',
-      }
+    const match = (service as any).matchAddressToBuilding(
+      address,
+      [building],
+      new Set(),
+      preparedParcels
     );
 
-    assertEqual(result.status, 'ready');
-    assertEqual(result.sourceId, 'toronto_parcels');
-    assertEqual(result.parcelCount, 1);
-    assertEqual(result.parcels[0].externalId, 'parcel-inside');
-    assertEqual(result.debug.scanned_lines, 2);
-    assertEqual(result.debug.parsed_records, 2);
-    assertEqual(result.debug.bbox_candidates, 1);
+    assertEqual(match.matchType, 'parcel_verified');
+    assertEqual(match.buildingId, 'slightly-shifted-home');
+  });
+
+  test('Strong linker: exact house number and street beats nearer neighboring footprint', () => {
+    const service = new StableLinkerService({} as any);
+    const exactHome = makeBuilding(
+      'home-49',
+      rectangle(-79.00480, 43.00400, -79.00465, 43.00415),
+      { addressText: '49 Moyse Drive' }
+    );
+    const nearerNeighbor = makeBuilding(
+      'home-51',
+      rectangle(-79.00420, 43.00400, -79.00405, 43.00415),
+      { addressText: '51 Moyse Drive' }
+    );
+    const address = makeAddress('49', -79.00412, 43.00408, 'Moyse Drive');
+
+    const match = (service as any).matchAddressToBuilding(
+      address,
+      [nearerNeighbor, exactHome],
+      new Set(),
+      []
+    );
+
+    assertEqual(match.matchType, 'semantic_verified');
+    assertEqual(match.buildingId, 'home-49');
+  });
+
+  test('Parcel source selection: locality-specific dataset beats region-wide fallback', () => {
+    const service = new ParcelEnrichmentService({} as any);
+
+    const resolution = (service as any).selectBestParcelDataset(
+      ['burnaby'],
+      [
+        {
+          sourceId: 'bc_parcels',
+          key: 'gold-standard/canada/bc/bc_parcels/20260426/bc_parcels_gold.ndjson',
+          datePart: '20260426',
+          localityAliases: ['bc'],
+          isRegionWide: true,
+        },
+        {
+          sourceId: 'burnaby_parcels',
+          key: 'gold-standard/canada/bc/burnaby_parcels/20260426/burnaby_parcels_gold.ndjson',
+          datePart: '20260426',
+          localityAliases: ['burnaby'],
+          isRegionWide: false,
+        },
+      ]
+    );
+
+    assertEqual(resolution.dataset?.sourceId, 'burnaby_parcels');
+    assertEqual(resolution.localityCounts, [{ source_id: 'burnaby_parcels', count: 1 }]);
+    assertEqual(resolution.unsupportedLocalities, []);
+  });
+
+  test('Parcel source selection: region-wide dataset handles unsupported localities', () => {
+    const service = new ParcelEnrichmentService({} as any);
+
+    const resolution = (service as any).selectBestParcelDataset(
+      ['vancouver'],
+      [
+        {
+          sourceId: 'bc_parcels',
+          key: 'gold-standard/canada/bc/bc_parcels/20260426/bc_parcels_gold.ndjson',
+          datePart: '20260426',
+          localityAliases: ['bc'],
+          isRegionWide: true,
+        },
+        {
+          sourceId: 'burnaby_parcels',
+          key: 'gold-standard/canada/bc/burnaby_parcels/20260426/burnaby_parcels_gold.ndjson',
+          datePart: '20260426',
+          localityAliases: ['burnaby'],
+          isRegionWide: false,
+        },
+      ]
+    );
+
+    assertEqual(resolution.dataset?.sourceId, 'bc_parcels');
+    assertEqual(resolution.unsupportedLocalities, ['vancouver']);
   });
 
   test('Townhouse row: repeated building matches become multi-unit after post-processing', () => {
@@ -528,19 +461,19 @@ async function run() {
     assertEqual(match.buildingId, 'detached-b');
   });
 
-  test('Detached proximity: same-street proximity does not reuse an already matched building', () => {
+  test('Detached fallback: verified proximity does not reuse an already matched building', () => {
     const service = new StableLinkerService({} as any);
     const alreadyMatched = makeBuilding(
       'detached-a',
       rectangle(-79.00420, 43.00400, -79.00405, 43.00415),
-      { primaryStreet: 'Moyse Drive' }
+      { primaryStreet: 'Highland Avenue' }
     );
     const unusedNeighbor = makeBuilding(
       'detached-b',
       rectangle(-79.00455, 43.00400, -79.00440, 43.00415),
-      { primaryStreet: 'Moyse Drive' }
+      { primaryStreet: 'Highland Avenue' }
     );
-    const address = makeAddress('43', -79.00418, 43.00430, 'Moyse Drive');
+    const address = makeAddress('324', -79.00418, 43.00430, 'Highland Avenue');
 
     const match = (service as any).matchAddressToBuilding(
       address,
@@ -549,8 +482,89 @@ async function run() {
       []
     );
 
-    assertEqual(match.matchType, 'proximity_verified');
+    assertEqual(match.matchType, 'proximity_fallback');
     assertEqual(match.buildingId, 'detached-b');
+  });
+
+  test('Nearby same-street address: relaxed proximity links up to 75m', () => {
+    const service = new StableLinkerService({} as any);
+    const building = makeBuilding(
+      'nearby-home',
+      rectangle(-79.01010, 43.01000, -79.00990, 43.01020),
+      { primaryStreet: 'Maple Street' }
+    );
+    const address = makeAddress('600', -79.00920, 43.01010, 'Maple Street');
+
+    const match = (service as any).matchAddressToBuilding(
+      address,
+      [building],
+      new Set(),
+      []
+    );
+
+    assertEqual(match.matchType, 'proximity_verified');
+    assertEqual(match.buildingId, 'nearby-home');
+  });
+
+  test('Right-outside footprint address: footprint distance links even when centroid is far', () => {
+    const service = new StableLinkerService({} as any);
+    const building = makeBuilding(
+      'wide-building',
+      rectangle(-79.03400, 43.03000, -79.03000, 43.03100),
+      { primaryStreet: 'Long Hall Road' }
+    );
+    const address = makeAddress('601', -79.02994, 43.03050, 'Long Hall Road');
+
+    const match = (service as any).matchAddressToBuilding(
+      address,
+      [building],
+      new Set(),
+      []
+    );
+
+    assertEqual(match.matchType, 'proximity_verified');
+    assertEqual(match.buildingId, 'wide-building');
+    assertTrue(match.distanceMeters < 10, 'Expected footprint distance under 10m');
+  });
+
+  test('Right-outside footprint address: no street metadata still links by geometry', () => {
+    const service = new StableLinkerService({} as any);
+    const building = makeBuilding(
+      'no-street-building',
+      rectangle(-79.04020, 43.04000, -79.04000, 43.04020)
+    );
+    const address = makeAddress('601b', -79.03994, 43.04010, '');
+
+    const match = (service as any).matchAddressToBuilding(
+      address,
+      [building],
+      new Set(),
+      []
+    );
+
+    assertEqual(match.matchType, 'proximity_verified');
+    assertEqual(match.buildingId, 'no-street-building');
+    assertTrue(match.distanceMeters < 10, 'Expected footprint distance under 10m');
+    assertTrue(match.confidence >= 0.8, 'Expected high confidence from geometry alone');
+  });
+
+  test('Nearby fallback address: relaxed fallback links unused buildings up to 125m', () => {
+    const service = new StableLinkerService({} as any);
+    const building = makeBuilding(
+      'fallback-home',
+      rectangle(-79.02010, 43.02000, -79.01990, 43.02020)
+    );
+    const address = makeAddress('602', -79.01860, 43.02010, 'Fallback Road');
+
+    const match = (service as any).matchAddressToBuilding(
+      address,
+      [building],
+      new Set(),
+      []
+    );
+
+    assertEqual(match.matchType, 'proximity_fallback');
+    assertEqual(match.buildingId, 'fallback-home');
   });
 
   test('Detached fallback: weak proximity becomes orphan when every candidate is already matched', () => {
@@ -569,6 +583,366 @@ async function run() {
     );
 
     assertEqual(match.matchType, 'orphan');
+  });
+
+  test('Address candidates: direct link to the current building is excluded from nearby candidates', () => {
+    const service = new StableLinkerService({} as any);
+    const building = makeBuilding(
+      'municipal-buildings:39',
+      rectangle(-79.00420, 43.00400, -79.00405, 43.00415),
+      { primaryStreet: 'Moyse Drive' }
+    );
+    const selection = service.selectOfficialAddressCandidatesForBuilding({
+      building: {
+        rowId: 'building-39-row',
+        publicId: 'municipal-buildings:39',
+        geometry: building.geometry,
+        streetName: 'Moyse Drive',
+      },
+      addressRows: [
+        {
+          id: '00000000-0000-0000-0000-000000000039',
+          formatted: '39 Moyse Drive',
+          house_number: '39',
+          street_name: 'Moyse Drive',
+          source: 'gold',
+          building_id: null,
+          building_gers_id: 'municipal-buildings:39',
+          geom: {
+            type: 'Point',
+            coordinates: [-79.00403, 43.00408],
+          },
+        },
+      ],
+      linkRows: [],
+      radiusMeters: 60,
+      limit: 15,
+    });
+
+    assertEqual(selection.candidates.length, 0);
+  });
+
+  test('Address candidates: imported links to other nearby buildings remain eligible', () => {
+    const service = new StableLinkerService({} as any);
+    const building = makeBuilding(
+      'municipal-buildings:39',
+      rectangle(-79.00420, 43.00400, -79.00405, 43.00415),
+      { primaryStreet: 'Moyse Drive' }
+    );
+    const selection = service.selectOfficialAddressCandidatesForBuilding({
+      building: {
+        rowId: 'building-39-row',
+        publicId: 'municipal-buildings:39',
+        geometry: building.geometry,
+        streetName: 'Moyse Drive',
+      },
+      addressRows: [
+        {
+          id: '00000000-0000-0000-0000-000000000041',
+          formatted: '41 Moyse Drive',
+          house_number: '41',
+          street_name: 'Moyse Drive',
+          source: 'gold',
+          building_id: null,
+          building_gers_id: 'municipal-buildings:41',
+          geom: {
+            type: 'Point',
+            coordinates: [-79.00403, 43.00408],
+          },
+        },
+      ],
+      linkRows: [],
+      radiusMeters: 60,
+      limit: 15,
+    });
+
+    assertEqual(selection.candidates.length, 1);
+    assertEqual(selection.candidates[0].id, '00000000-0000-0000-0000-000000000041');
+  });
+
+  test('Address candidates: nearby unlinked address remains eligible without direct/link rows', () => {
+    const service = new StableLinkerService({} as any);
+    const building = makeBuilding(
+      'building-41',
+      rectangle(-79.00420, 43.00400, -79.00405, 43.00415),
+      { primaryStreet: 'Moyse Drive' }
+    );
+    const selection = service.selectOfficialAddressCandidatesForBuilding({
+      building: {
+        rowId: 'building-41-row',
+        publicId: 'building-41',
+        geometry: building.geometry,
+        streetName: 'Moyse Drive',
+      },
+      addressRows: [
+        {
+          id: '00000000-0000-0000-0000-000000000041',
+          formatted: '41 Moyse Drive',
+          house_number: '41',
+          street_name: 'Moyse Drive',
+          source: 'gold',
+          building_id: null,
+          building_gers_id: null,
+          geom: {
+            type: 'Point',
+            coordinates: [-79.00403, 43.00408],
+          },
+        },
+      ],
+      linkRows: [],
+      radiusMeters: 60,
+      limit: 15,
+    });
+
+    assertEqual(selection.candidates.length, 1);
+    assertEqual(selection.candidates[0].id, '00000000-0000-0000-0000-000000000041');
+    assertEqual(selection.candidates[0].reason, 'Nearby, same street');
+  });
+
+  test('Address candidates: orphan link rows do not hide nearby addresses', () => {
+    const service = new StableLinkerService({} as any);
+    const building = makeBuilding(
+      'building-43',
+      rectangle(-79.00420, 43.00400, -79.00405, 43.00415),
+      { primaryStreet: 'Moyse Drive' }
+    );
+    const selection = service.selectOfficialAddressCandidatesForBuilding({
+      building: {
+        rowId: 'building-43-row',
+        publicId: 'building-43',
+        geometry: building.geometry,
+        streetName: 'Moyse Drive',
+      },
+      addressRows: [
+        {
+          id: '00000000-0000-0000-0000-000000000043',
+          formatted: '43 Moyse Drive',
+          house_number: '43',
+          street_name: 'Moyse Drive',
+          source: 'gold',
+          building_id: null,
+          building_gers_id: null,
+          geom: {
+            type: 'Point',
+            coordinates: [-79.00403, 43.00408],
+          },
+        },
+      ],
+      linkRows: [
+        {
+          address_id: '00000000-0000-0000-0000-000000000043',
+          building_id: null,
+          confidence: 0,
+          match_type: 'orphan',
+        },
+      ],
+      radiusMeters: 60,
+      limit: 15,
+    });
+
+    assertEqual(selection.candidates.length, 1);
+    assertEqual(selection.candidates[0].id, '00000000-0000-0000-0000-000000000043');
+  });
+
+  test('Address candidates: pending orphan coordinate makes address eligible when campaign row geom is missing', () => {
+    const service = new StableLinkerService({} as any);
+    const building = makeBuilding(
+      'building-44',
+      rectangle(-79.00420, 43.00400, -79.00405, 43.00415),
+      { primaryStreet: 'Moyse Drive' }
+    );
+    const selection = service.selectOfficialAddressCandidatesForBuilding({
+      building: {
+        rowId: 'building-44-row',
+        publicId: 'building-44',
+        geometry: building.geometry,
+        streetName: 'Moyse Drive',
+      },
+      addressRows: [
+        {
+          id: '00000000-0000-0000-0000-000000000044',
+          formatted: '44 Moyse Drive',
+          house_number: '44',
+          street_name: null,
+          source: 'gold',
+          building_id: null,
+          building_gers_id: null,
+          geom: null,
+        },
+      ],
+      linkRows: [],
+      orphanRows: [
+        {
+          address_id: '00000000-0000-0000-0000-000000000044',
+          coordinate: {
+            type: 'Point',
+            coordinates: [-79.00403, 43.00408],
+          },
+          status: 'pending_review',
+          suggested_street: 'Moyse Drive',
+          address_street: null,
+        },
+      ],
+      radiusMeters: 60,
+      limit: 15,
+    });
+
+    assertEqual(selection.candidates.length, 1);
+    assertEqual(selection.candidates[0].id, '00000000-0000-0000-0000-000000000044');
+    assertEqual(selection.candidates[0].street_name, 'Moyse Drive');
+  });
+
+  test('Address candidates: assigned orphan coordinate is ignored', () => {
+    const service = new StableLinkerService({} as any);
+    const building = makeBuilding(
+      'building-47',
+      rectangle(-79.00420, 43.00400, -79.00405, 43.00415),
+      { primaryStreet: 'Moyse Drive' }
+    );
+    const selection = service.selectOfficialAddressCandidatesForBuilding({
+      building: {
+        rowId: 'building-47-row',
+        publicId: 'building-47',
+        geometry: building.geometry,
+        streetName: 'Moyse Drive',
+      },
+      addressRows: [
+        {
+          id: '00000000-0000-0000-0000-000000000047',
+          formatted: '47 Moyse Drive',
+          house_number: '47',
+          street_name: null,
+          source: 'gold',
+          building_id: null,
+          building_gers_id: null,
+          geom: null,
+        },
+      ],
+      linkRows: [],
+      orphanRows: [
+        {
+          address_id: '00000000-0000-0000-0000-000000000047',
+          coordinate: {
+            type: 'Point',
+            coordinates: [-79.00403, 43.00408],
+          },
+          status: 'assigned',
+          suggested_street: 'Moyse Drive',
+          address_street: null,
+        },
+      ],
+      radiusMeters: 60,
+      limit: 15,
+    });
+
+    assertEqual(selection.candidates.length, 0);
+  });
+
+  test('Address candidates: repair mode includes addresses linked to other buildings', () => {
+    const service = new StableLinkerService({} as any);
+    const building = makeBuilding(
+      'building-45',
+      rectangle(-79.00420, 43.00400, -79.00405, 43.00415),
+      { primaryStreet: 'Moyse Drive' }
+    );
+    const addressRows = [
+      {
+        id: '00000000-0000-0000-0000-000000000045',
+        formatted: '45 Moyse Drive',
+        house_number: '45',
+        street_name: 'Moyse Drive',
+        source: 'gold',
+        building_id: null,
+        building_gers_id: null,
+        geom: {
+          type: 'Point',
+          coordinates: [-79.00403, 43.00408],
+        },
+      },
+    ];
+    const linkRows = [
+      {
+        address_id: '00000000-0000-0000-0000-000000000045',
+        building_id: 'other-building-row',
+        confidence: 1,
+        match_type: 'manual',
+      },
+    ];
+
+    const normalSelection = service.selectOfficialAddressCandidatesForBuilding({
+      building: {
+        rowId: 'building-45-row',
+        publicId: 'building-45',
+        geometry: building.geometry,
+        streetName: 'Moyse Drive',
+      },
+      addressRows,
+      linkRows,
+      radiusMeters: 60,
+      limit: 15,
+    });
+    assertEqual(normalSelection.candidates.length, 0);
+
+    const repairSelection = service.selectOfficialAddressCandidatesForBuilding({
+      building: {
+        rowId: 'building-45-row',
+        publicId: 'building-45',
+        geometry: building.geometry,
+        streetName: 'Moyse Drive',
+      },
+      addressRows,
+      linkRows,
+      radiusMeters: 60,
+      limit: 15,
+      includeLinkedCandidates: true,
+    });
+    assertEqual(repairSelection.candidates.length, 1);
+    assertEqual(repairSelection.candidates[0].id, '00000000-0000-0000-0000-000000000045');
+  });
+
+  test('Address candidates: repair mode still hides addresses linked to the current building', () => {
+    const service = new StableLinkerService({} as any);
+    const building = makeBuilding(
+      'building-46',
+      rectangle(-79.00420, 43.00400, -79.00405, 43.00415),
+      { primaryStreet: 'Moyse Drive' }
+    );
+    const selection = service.selectOfficialAddressCandidatesForBuilding({
+      building: {
+        rowId: 'building-46-row',
+        publicId: 'building-46',
+        geometry: building.geometry,
+        streetName: 'Moyse Drive',
+      },
+      addressRows: [
+        {
+          id: '00000000-0000-0000-0000-000000000046',
+          formatted: '46 Moyse Drive',
+          house_number: '46',
+          street_name: 'Moyse Drive',
+          source: 'gold',
+          building_id: null,
+          building_gers_id: null,
+          geom: {
+            type: 'Point',
+            coordinates: [-79.00403, 43.00408],
+          },
+        },
+      ],
+      linkRows: [
+        {
+          address_id: '00000000-0000-0000-0000-000000000046',
+          building_id: 'building-46-row',
+          confidence: 1,
+          match_type: 'manual',
+        },
+      ],
+      radiusMeters: 60,
+      limit: 15,
+      includeLinkedCandidates: true,
+    });
+
+    assertEqual(selection.candidates.length, 0);
   });
 
   test('Dense ambiguity: equal-distance buildings raise DataIntegrityError instead of guessing', () => {
@@ -624,6 +998,93 @@ async function run() {
     assertEqual(state.addressOrphans?.[0].assigned_building_id, 'building-77');
     assertEqual(state.buildingAddressLinks?.length, 1);
     assertEqual(state.buildingAddressLinks?.[0].match_type, 'manual');
+  });
+
+  await testAsync('External persistence: static building IDs are saved on campaign address rows', async () => {
+    const state: MockState = {
+      campaignAddresses: [
+        {
+          id: 'address-1',
+          campaign_id: 'campaign-1',
+          building_id: null,
+          building_gers_id: null,
+          match_source: null,
+          confidence: null,
+        },
+      ],
+      buildingAddressLinks: [],
+    };
+    const service = new StableLinkerService(createMockSupabase(state) as any);
+
+    await (service as any).saveMatches(
+      'campaign-1',
+      [
+        {
+          addressId: 'address-1',
+          addressGersId: 'durham_addresses:1:202692',
+          buildingId: 'durham_buildings:1:905734',
+          matchType: 'containment_verified',
+          confidence: 1,
+          distanceMeters: 0,
+          streetMatchScore: 0,
+          buildingAreaSqm: 120,
+          buildingClass: 'building',
+          buildingHeight: null,
+          isMultiUnit: false,
+          unitCount: 1,
+          unitArrangement: 'single',
+        },
+      ],
+      'municipal-diamond-canada-on-durham',
+      'external'
+    );
+
+    assertEqual(state.buildingAddressLinks?.length, 0);
+    assertEqual(state.campaignAddresses?.[0].building_id, null);
+    assertEqual(state.campaignAddresses?.[0].building_gers_id, 'durham_buildings:1:905734');
+    assertEqual(state.campaignAddresses?.[0].match_source, 'gold_exact');
+    assertEqual(state.campaignAddresses?.[0].confidence, 1);
+  });
+
+  await testAsync('External manual assignment: municipal building ids stay out of UUID orphan fields', async () => {
+    const state: MockState = {
+      campaignAddresses: [
+        {
+          id: 'address-1',
+          campaign_id: 'campaign-1',
+          building_id: null,
+          building_gers_id: null,
+          match_source: null,
+          confidence: null,
+        },
+      ],
+      addressOrphans: [
+        {
+          id: 'orphan-1',
+          campaign_id: 'campaign-1',
+          address_id: 'address-1',
+          status: 'pending_review',
+          assigned_building_id: null,
+        },
+      ],
+      buildingAddressLinks: [],
+    };
+    const service = new StableLinkerService(createMockSupabase(state) as any);
+
+    const result = await service.assignAddressToExternalBuilding({
+      campaignId: 'campaign-1',
+      addressId: 'address-1',
+      buildingPublicId: 'durham_buildings:226859',
+      assignedBy: 'user-1',
+      coordinate: [-79.1, 43.1],
+    });
+
+    assertEqual(state.campaignAddresses?.[0].building_id, null);
+    assertEqual(state.campaignAddresses?.[0].building_gers_id, 'durham_buildings:226859');
+    assertEqual(state.campaignAddresses?.[0].match_source, 'manual');
+    assertEqual(state.addressOrphans?.[0].status, 'assigned');
+    assertEqual(state.addressOrphans?.[0].assigned_building_id, null);
+    assertEqual(result.linkedAddressIds, ['address-1']);
   });
 
   console.log(`\n${'='.repeat(50)}`);

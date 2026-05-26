@@ -180,17 +180,26 @@ actor LeaderboardService {
     func fetchLeaderboard(
         metric: String,
         timeframe: String,
-        workspaceId: UUID? = nil
+        workspaceId: UUID? = nil,
+        limit: Int = 100,
+        offset: Int = 0
     ) async throws -> [LeaderboardUser] {
-        var params: [String: AnyCodable] = [
-            "p_metric": AnyCodable(metric),
-            "p_timeframe": AnyCodable(timeframe)
-        ]
-        if let workspaceId = workspaceId {
-            params["p_workspace_id"] = AnyCodable(workspaceId.uuidString)
+        let workspaceIdParam: AnyCodable
+        if let workspaceId {
+            workspaceIdParam = AnyCodable(workspaceId.uuidString)
+        } else {
+            workspaceIdParam = AnyCodable(NSNull())
         }
+
+        let params: [String: AnyCodable] = [
+            "p_metric": AnyCodable(metric),
+            "p_timeframe": AnyCodable(timeframe),
+            "p_workspace_id": workspaceIdParam,
+            "p_limit": AnyCodable(limit),
+            "p_offset": AnyCodable(offset)
+        ]
         
-        print("📊 [LeaderboardService] Fetching leaderboard with params: metric=\(metric), timeframe=\(timeframe), workspaceId=\(workspaceId?.uuidString ?? "nil")")
+        print("📊 [LeaderboardService] Fetching leaderboard with params: metric=\(metric), timeframe=\(timeframe), workspaceId=\(workspaceId?.uuidString ?? "nil"), limit=\(limit), offset=\(offset)")
         
         do {
             let response = try await client
@@ -231,6 +240,7 @@ actor LeaderboardService {
                         id: dict["id"] as? String ?? "",
                         name: dict["name"] as? String ?? "User",
                         avatarUrl: dict["avatar_url"] as? String,
+                        countryCode: CountryOptions.normalize(dict["country_code"] as? String),
                         brokerage: dict["brokerage"] as? String,
                         rank: intValue(from: dict["rank"]) ?? 0,
                         doorknocks: topLevelDoorknocks,

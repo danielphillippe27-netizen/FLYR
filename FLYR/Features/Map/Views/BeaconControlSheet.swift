@@ -3,6 +3,7 @@ import CoreLocation
 
 struct BeaconControlSheet: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.colorScheme) private var colorScheme
     @ObservedObject var beaconService: SessionSafetyBeaconService
     let sessionLocation: CLLocation?
     let isSessionPaused: Bool
@@ -33,16 +34,72 @@ struct BeaconControlSheet: View {
             : "Send your live Beacon link from this device."
     }
 
+    private var isDarkMode: Bool {
+        colorScheme == .dark
+    }
+
+    private var sheetBackground: Color {
+        isDarkMode ? .black : Color(uiColor: .systemGroupedBackground)
+    }
+
+    private var navigationBackground: Color {
+        isDarkMode ? Color(hex: "1C1C1E") : Color(uiColor: .systemBackground)
+    }
+
+    private var cardBackground: Color {
+        isDarkMode ? Color(hex: "171717") : Color(uiColor: .secondarySystemGroupedBackground)
+    }
+
+    private var primaryText: Color {
+        isDarkMode ? .white : Color(uiColor: .label)
+    }
+
+    private var introTextColor: Color {
+        isDarkMode ? Color.white.opacity(0.85) : Color(uiColor: .label)
+    }
+
+    private var secondaryText: Color {
+        isDarkMode ? Color.white.opacity(0.72) : Color(uiColor: .secondaryLabel)
+    }
+
+    private var tertiaryText: Color {
+        isDarkMode ? Color.white.opacity(0.58) : Color(uiColor: .tertiaryLabel)
+    }
+
+    private var sectionText: Color {
+        isDarkMode ? Color.white.opacity(0.74) : Color(uiColor: .secondaryLabel)
+    }
+
+    private var dividerColor: Color {
+        isDarkMode ? Color.white.opacity(0.08) : Color(uiColor: .separator)
+    }
+
+    private var disabledActionBackground: Color {
+        isDarkMode ? Color(hex: "2A2A2C") : Color(uiColor: .tertiarySystemFill)
+    }
+
+    private var disabledActionText: Color {
+        isDarkMode ? .white : Color(uiColor: .secondaryLabel)
+    }
+
+    private var cardStroke: Color {
+        isDarkMode ? .clear : Color(uiColor: .separator).opacity(0.35)
+    }
+
+    private var outlineButtonStroke: Color {
+        isDarkMode ? Color.flyrPrimary.opacity(0.8) : Color.flyrPrimary.opacity(0.45)
+    }
+
     var body: some View {
         NavigationStack {
             ZStack {
-                Color.black.ignoresSafeArea()
+                sheetBackground.ignoresSafeArea()
 
                 ScrollView {
                     VStack(alignment: .leading, spacing: 22) {
                         Text(introText)
                             .font(.flyrBody)
-                            .foregroundStyle(Color.white.opacity(0.85))
+                            .foregroundStyle(introTextColor)
 
                         beaconToggleCard
                         messageCard
@@ -63,8 +120,10 @@ struct BeaconControlSheet: View {
             }
             .navigationTitle("Stay Safe")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(Color(hex: "1C1C1E"), for: .navigationBar)
+            .toolbarBackground(navigationBackground, for: .navigationBar)
             .toolbarBackground(.visible, for: .navigationBar)
+            .toolbarColorScheme(isDarkMode ? .dark : .light, for: .navigationBar)
+            .tint(isDarkMode ? .white : .black)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Close") { dismiss() }
@@ -115,10 +174,10 @@ struct BeaconControlSheet: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Beacon for Mobile")
                         .font(.flyrHeadline)
-                        .foregroundStyle(.white)
+                        .foregroundStyle(primaryText)
                     Text(beaconToggleSubtitle)
                         .font(.flyrSubheadline)
-                        .foregroundStyle(Color.white.opacity(0.72))
+                        .foregroundStyle(secondaryText)
                 }
             }
             .tint(.flyrPrimary)
@@ -126,15 +185,15 @@ struct BeaconControlSheet: View {
 
             if let url = beaconService.shareURL {
                 Divider()
-                    .overlay(Color.white.opacity(0.08))
+                    .overlay(dividerColor)
 
                 VStack(alignment: .leading, spacing: 8) {
                     Text("LIVE BEACON LINK")
                         .font(.caption.weight(.bold))
-                        .foregroundStyle(Color.white.opacity(0.58))
+                        .foregroundStyle(tertiaryText)
                     Text(url.absoluteString)
                         .font(.caption)
-                        .foregroundStyle(Color.white.opacity(0.78))
+                        .foregroundStyle(secondaryText)
                         .textSelection(.enabled)
                 }
 
@@ -155,14 +214,14 @@ struct BeaconControlSheet: View {
                 Spacer()
                 Text("\(messageText.count)")
                     .font(.caption)
-                    .foregroundStyle(Color.white.opacity(0.58))
+                    .foregroundStyle(tertiaryText)
             }
 
             beaconCard {
                 TextEditor(text: $messageText)
                     .scrollContentBackground(.hidden)
                     .frame(minHeight: 110)
-                    .foregroundStyle(.white)
+                    .foregroundStyle(primaryText)
             }
         }
     }
@@ -175,17 +234,17 @@ struct BeaconControlSheet: View {
                 if selectedRecipients.isEmpty {
                     Text("No safety contacts selected yet.")
                         .font(.flyrSubheadline)
-                        .foregroundStyle(Color.white.opacity(0.72))
+                        .foregroundStyle(secondaryText)
                 } else {
                     ForEach(selectedRecipients) { recipient in
                         HStack(spacing: 12) {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(recipient.name)
                                     .font(.flyrHeadline)
-                                    .foregroundStyle(.white)
+                                    .foregroundStyle(primaryText)
                                 Text(recipient.phoneNumber)
                                     .font(.flyrSubheadline)
-                                    .foregroundStyle(Color.white.opacity(0.72))
+                                    .foregroundStyle(secondaryText)
                             }
                             Spacer()
                             Image(systemName: "checkmark.circle.fill")
@@ -193,7 +252,7 @@ struct BeaconControlSheet: View {
                         }
                         if recipient.id != selectedRecipients.last?.id {
                             Divider()
-                                .overlay(Color.white.opacity(0.08))
+                                .overlay(dividerColor)
                         }
                     }
                 }
@@ -226,9 +285,9 @@ struct BeaconControlSheet: View {
                 }
                 Spacer()
             }
-            .foregroundStyle(.white)
+            .foregroundStyle(selectedRecipients.isEmpty ? disabledActionText : .white)
             .padding(.vertical, 16)
-            .background(selectedRecipients.isEmpty ? Color(hex: "2A2A2C") : Color.flyrPrimary)
+            .background(selectedRecipients.isEmpty ? disabledActionBackground : Color.flyrPrimary)
             .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         }
         .buttonStyle(.plain)
@@ -255,7 +314,7 @@ struct BeaconControlSheet: View {
 
                 Text("FLYR will ask if you're still good and raise a Beacon alert if the check-in is missed.")
                     .font(.caption)
-                    .foregroundStyle(Color.white.opacity(0.72))
+                    .foregroundStyle(secondaryText)
 
                 if beaconService.pendingCheckIn != nil {
                     Button {
@@ -290,14 +349,18 @@ struct BeaconControlSheet: View {
         VStack(alignment: .leading, spacing: 14, content: content)
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color(hex: "171717"))
+            .background(cardBackground)
             .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .stroke(cardStroke, lineWidth: 1)
+            )
     }
 
     private func beaconSectionTitle(_ title: String) -> some View {
         Text(title.uppercased())
             .font(.caption.weight(.bold))
-            .foregroundStyle(Color.white.opacity(0.74))
+            .foregroundStyle(sectionText)
     }
 
     private func beaconOutlineButtonLabel(_ title: String) -> some View {
@@ -308,7 +371,7 @@ struct BeaconControlSheet: View {
             .padding(.vertical, 16)
             .overlay(
                 RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .stroke(Color.flyrPrimary.opacity(0.8), lineWidth: 1)
+                    .stroke(outlineButtonStroke, lineWidth: 1)
             )
     }
 

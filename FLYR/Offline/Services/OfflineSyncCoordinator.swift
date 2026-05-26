@@ -96,6 +96,7 @@ final class OfflineSyncCoordinator: ObservableObject {
                         await outboxRepository.markSynced(id: entry.id, at: syncedAt)
                         continue
                     }
+                    await markLocalEntityFailedIfNeeded(for: entry)
                     let shouldDeadLetter = isNonRetryable(error) || entry.retryCount + 1 >= maxRetryAttempts
                     let retryAfter = shouldDeadLetter ? nil : Date().addingTimeInterval(retryDelaySeconds(for: entry))
                     await outboxRepository.markFailed(
@@ -110,6 +111,18 @@ final class OfflineSyncCoordinator: ObservableObject {
                 }
             }
         }
+    }
+
+    private func markLocalEntityFailedIfNeeded(for entry: OutboxEntry) async {
+        guard entry.operation == OutboxOperation.fallbackBuildingCreated.rawValue,
+              let payload = entry.decodedPayload(FallbackBuildingCreatedOutboxPayload.self),
+              let addressId = UUID(uuidString: payload.addressId) else {
+            return
+        }
+        await campaignRepository.markFallbackBuildingFailed(
+            campaignId: payload.campaignId,
+            addressId: addressId
+        )
     }
 
     private func process(entry: OutboxEntry) async throws {
@@ -146,7 +159,22 @@ final class OfflineSyncCoordinator: ObservableObject {
             if returnedRows.isEmpty {
                 await campaignRepository.markStatusRowsSynced(campaignId: campaignId, addressIds: addressIds)
             } else {
-                await campaignRepository.upsertStatuses(rows: returnedRows)
+                await campaignRepository.upsertStatuses(rows: returnedRows, preserveDirty: false)
+            }
+            if let context = payload.farmExecutionContext?.makeContext() {
+                for addressId in addressIds {
+                    try await VisitsAPI.shared.performRemoteRecordFarmAddressOutcome(
+                        context: context,
+                        addressId: addressId,
+                        status: status,
+                        notes: payload.notes,
+                        occurredAt: payload.occurredAt
+                    )
+                    await FarmOfflineRepository.shared.markAddressOutcomeSynced(
+                        context: context,
+                        addressId: addressId
+                    )
+                }
             }
             await CampaignDownloadService.shared.recordSuccessfulSync(campaignId: payload.campaignId)
 
@@ -230,6 +258,97 @@ final class OfflineSyncCoordinator: ObservableObject {
             )
             await sessionRepository.markSessionRemoteCreated(sessionId: sessionId)
             await CampaignDownloadService.shared.recordSuccessfulSync(campaignId: payload.campaignId)
+
+        case .createFarmTouch:
+            guard let payload = entry.decodedPayload(FarmTouchOutboxPayload.self) else {
+                throw OutboxProcessingError.invalidPayload(operation: entry.operation, entryId: entry.id)
+            }
+
+            let syncedTouch = try await FarmTouchService.shared.performRemoteCreateTouch(payload.touch)
+            await FarmOfflineRepository.shared.markTouchSynced(id: syncedTouch.id, touch: syncedTouch)
+            if let campaignId = syncedTouch.campaignId {
+                await CampaignDownloadService.shared.recordSuccessfulSync(campaignId: campaignId.uuidString)
+            }
+
+        case .markFarmTouchExecuted:
+            guard let payload = entry.decodedPayload(FarmTouchExecutedOutboxPayload.self),
+                  let touchId = UUID(uuidString: payload.touchId),
+                  let sessionId = UUID(uuidString: payload.sessionId),
+                  let userId = UUID(uuidString: payload.completedByUserId),
+                  let completedAt = OfflineDateCodec.date(from: payload.completedAt) else {
+                throw OutboxProcessingError.invalidPayload(operation: entry.operation, entryId: entry.id)
+            }
+
+            let syncedTouch = try await FarmTouchService.shared.performRemoteMarkExecuted(
+                touchId: touchId,
+                cycleNumber: payload.cycleNumber,
+                sessionId: sessionId,
+                completedByUserId: userId,
+                completedAt: completedAt,
+                metrics: payload.metrics
+            )
+            await FarmOfflineRepository.shared.markTouchSynced(id: syncedTouch.id, touch: syncedTouch)
+            if let campaignId = syncedTouch.campaignId {
+                await CampaignDownloadService.shared.recordSuccessfulSync(campaignId: campaignId.uuidString)
+            }
+
+        case .markFarmTouchComplete:
+            guard let payload = entry.decodedPayload(FarmTouchCompleteOutboxPayload.self),
+                  let touchId = UUID(uuidString: payload.touchId) else {
+                throw OutboxProcessingError.invalidPayload(operation: entry.operation, entryId: entry.id)
+            }
+
+            let syncedTouch = try await FarmTouchService.shared.performRemoteMarkComplete(
+                touchId: touchId,
+                completed: payload.completed,
+                completedAt: OfflineDateCodec.date(from: payload.completedAt)
+            )
+            await FarmOfflineRepository.shared.markTouchSynced(id: syncedTouch.id, touch: syncedTouch)
+            if let campaignId = syncedTouch.campaignId {
+                await CampaignDownloadService.shared.recordSuccessfulSync(campaignId: campaignId.uuidString)
+            }
+
+        case .recordFarmAddressOutcome:
+            guard let payload = entry.decodedPayload(FarmAddressOutcomeOutboxPayload.self),
+                  let context = payload.farmExecutionContext.makeContext(),
+                  let addressId = UUID(uuidString: payload.addressId) else {
+                throw OutboxProcessingError.invalidPayload(operation: entry.operation, entryId: entry.id)
+            }
+
+            try await VisitsAPI.shared.performRemoteRecordFarmAddressOutcome(
+                context: context,
+                addressId: addressId,
+                status: AddressStatus(rawValue: payload.status) ?? .none,
+                notes: payload.notes,
+                occurredAt: payload.occurredAt
+            )
+            await FarmOfflineRepository.shared.markAddressOutcomeSynced(context: context, addressId: addressId)
+            await CampaignDownloadService.shared.recordSuccessfulSync(campaignId: context.campaignId.uuidString)
+
+        case .createFarmLead:
+            guard let payload = entry.decodedPayload(FarmLeadOutboxPayload.self) else {
+                throw OutboxProcessingError.invalidPayload(operation: entry.operation, entryId: entry.id)
+            }
+
+            let syncedLead = try await FarmLeadService.shared.performRemoteAddLead(payload.lead)
+            await FarmOfflineRepository.shared.markLeadSynced(id: syncedLead.id, lead: syncedLead)
+
+        case .updateFarmLead:
+            guard let payload = entry.decodedPayload(FarmLeadOutboxPayload.self) else {
+                throw OutboxProcessingError.invalidPayload(operation: entry.operation, entryId: entry.id)
+            }
+
+            let syncedLead = try await FarmLeadService.shared.performRemoteUpdateLead(payload.lead)
+            await FarmOfflineRepository.shared.markLeadSynced(id: syncedLead.id, lead: syncedLead)
+
+        case .deleteFarmLead:
+            guard let payload = entry.decodedPayload(DeleteFarmLeadOutboxPayload.self),
+                  let leadId = UUID(uuidString: payload.leadId) else {
+                throw OutboxProcessingError.invalidPayload(operation: entry.operation, entryId: entry.id)
+            }
+
+            try await FarmLeadService.shared.performRemoteDeleteLead(id: leadId)
+            await FarmOfflineRepository.shared.deleteCachedLead(id: leadId)
 
         case .updateSessionProgress, .endSession:
             guard let payload = entry.decodedPayload(SessionProgressOutboxPayload.self),
@@ -352,6 +471,32 @@ final class OfflineSyncCoordinator: ObservableObject {
             )
             await CampaignDownloadService.shared.recordSuccessfulSync(campaignId: payload.campaignId)
 
+        case .deleteAddress, .deleteManualAddress:
+            guard let payload = entry.decodedPayload(DeleteAddressOutboxPayload.self),
+                  let addressId = UUID(uuidString: payload.addressId) else {
+                throw OutboxProcessingError.invalidPayload(operation: entry.operation, entryId: entry.id)
+            }
+
+            try await BuildingLinkService.shared.performRemoteDeleteAddress(
+                campaignId: payload.campaignId,
+                addressId: addressId
+            )
+            await CampaignDownloadService.shared.recordSuccessfulSync(campaignId: payload.campaignId)
+
+        case .unlinkAddressFromBuilding:
+            guard let payload = entry.decodedPayload(UnlinkAddressFromBuildingOutboxPayload.self),
+                  let addressId = UUID(uuidString: payload.addressId) else {
+                throw OutboxProcessingError.invalidPayload(operation: entry.operation, entryId: entry.id)
+            }
+
+            _ = try await BuildingLinkService.shared.performRemoteUnlinkAddressFromBuilding(
+                campaignId: payload.campaignId,
+                buildingId: payload.buildingId,
+                addressId: addressId,
+                deleteManualAddress: payload.deleteManualAddress
+            )
+            await CampaignDownloadService.shared.recordSuccessfulSync(campaignId: payload.campaignId)
+
         case .moveAddress:
             guard let payload = entry.decodedPayload(MoveAddressOutboxPayload.self),
                   let addressId = UUID(uuidString: payload.addressId) else {
@@ -381,6 +526,78 @@ final class OfflineSyncCoordinator: ObservableObject {
                 campaignId: payload.campaignId,
                 buildingId: payload.buildingId,
                 geometry: geometry
+            )
+            await CampaignDownloadService.shared.recordSuccessfulSync(campaignId: payload.campaignId)
+
+        case .createManualAddress:
+            guard let payload = entry.decodedPayload(ManualAddressCreateOutboxPayload.self),
+                  let addressId = UUID(uuidString: payload.addressId) else {
+                throw OutboxProcessingError.invalidPayload(operation: entry.operation, entryId: entry.id)
+            }
+
+            try await BuildingLinkService.shared.performRemoteCreateManualAddress(
+                campaignId: payload.campaignId,
+                input: ManualAddressCreateInput(
+                    coordinate: CLLocationCoordinate2D(
+                        latitude: payload.latitude,
+                        longitude: payload.longitude
+                    ),
+                    formatted: payload.formatted,
+                    houseNumber: payload.houseNumber,
+                    streetName: payload.streetName,
+                    locality: payload.locality,
+                    region: payload.region,
+                    postalCode: payload.postalCode,
+                    country: payload.country,
+                    buildingId: payload.buildingId,
+                    addressProvenance: payload.addressProvenance,
+                    userConfirmed: payload.userConfirmed
+                ),
+                addressId: addressId
+            )
+            await CampaignDownloadService.shared.recordSuccessfulSync(campaignId: payload.campaignId)
+
+        case .linkAddressToBuilding:
+            guard let payload = entry.decodedPayload(LinkAddressToBuildingOutboxPayload.self),
+                  let addressId = UUID(uuidString: payload.addressId) else {
+                throw OutboxProcessingError.invalidPayload(operation: entry.operation, entryId: entry.id)
+            }
+
+            let coordinate: CLLocationCoordinate2D?
+            if let latitude = payload.latitude, let longitude = payload.longitude {
+                coordinate = CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+            } else {
+                coordinate = nil
+            }
+
+            try await BuildingLinkService.shared.performRemoteLinkAddressToBuilding(
+                campaignId: payload.campaignId,
+                buildingId: payload.buildingId,
+                addressId: addressId,
+                coordinate: coordinate
+            )
+            await CampaignDownloadService.shared.recordSuccessfulSync(campaignId: payload.campaignId)
+
+        case .fallbackBuildingCreated:
+            guard let payload = entry.decodedPayload(FallbackBuildingCreatedOutboxPayload.self),
+                  let addressId = UUID(uuidString: payload.addressId),
+                  let geometry = OfflineJSONCodec.decode(
+                    MapFeatureGeoJSONGeometry.self,
+                    from: payload.geometryJSON
+                  ) else {
+                throw OutboxProcessingError.invalidPayload(operation: entry.operation, entryId: entry.id)
+            }
+
+            try await BuildingLinkService.shared.performRemoteCreateFallbackBuilding(
+                campaignId: payload.campaignId,
+                addressId: addressId,
+                fallbackBuildingId: payload.fallbackBuildingId,
+                geometry: geometry,
+                clientMutationId: entry.clientMutationId
+            )
+            await campaignRepository.markFallbackBuildingSynced(
+                campaignId: payload.campaignId,
+                addressId: addressId
             )
             await CampaignDownloadService.shared.recordSuccessfulSync(campaignId: payload.campaignId)
         }

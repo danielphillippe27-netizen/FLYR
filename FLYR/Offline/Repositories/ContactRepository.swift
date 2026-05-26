@@ -323,6 +323,30 @@ final class ContactRepository {
         }) ?? []
     }
 
+    func fetchActivities(
+        contactIds: [UUID],
+        type: ActivityType? = nil,
+        limit: Int
+    ) async -> [ContactActivity] {
+        let contactIdStrings = contactIds.map(\.uuidString)
+        guard !contactIdStrings.isEmpty else { return [] }
+
+        return (try? await dbQueue.read { db in
+            var request = CachedContactActivityRecord
+                .filter(contactIdStrings.contains(Column("contact_id")))
+
+            if let type {
+                request = request.filter(Column("type") == type.rawValue)
+            }
+
+            return try request
+                .order(Column("timestamp").desc)
+                .limit(limit)
+                .fetchAll(db)
+                .compactMap(Self.makeActivity(from:))
+        }) ?? []
+    }
+
     func getOfflineCounts(campaignId: UUID) async -> CampaignOfflineContactCounts {
         (try? await dbQueue.read { db in
             let contactRecords = try CachedContactRecord

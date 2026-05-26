@@ -11,7 +11,7 @@ public protocol AddressRepository {
     ///   - location: Center coordinate for search
     ///   - limit: Maximum number of addresses to return
     ///   - radiusMeters: Search radius in meters
-    ///   - campaignId: Optional; when set, backend uses it for generate-address-list (Lambda/S3)
+    ///   - campaignId: Optional campaign context for server address lookup.
     /// - Returns: Array of address candidates sorted by distance
     func nearestAddresses(
         at location: CLLocationCoordinate2D,
@@ -30,5 +30,4 @@ public protocol AddressRepository {
         limit: Int
     ) async throws -> [AddressCandidate]
 }
-
 

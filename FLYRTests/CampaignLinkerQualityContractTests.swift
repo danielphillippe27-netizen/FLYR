@@ -11,7 +11,7 @@ final class CampaignLinkerQualityContractTests: XCTestCase {
           "standard_mode_recommended": false,
           "reason": "low building-address confidence",
           "building_link_confidence": 91.5,
-          "map_mode": "smart_buildings",
+          "map_mode": "hybrid",
           "provision_status": "ready",
           "provision_phase": "optimized"
         }
@@ -24,7 +24,7 @@ final class CampaignLinkerQualityContractTests: XCTestCase {
         XCTAssertEqual(decoded.standardModeRecommended, false)
         XCTAssertEqual(decoded.dataQualityReason, "low building-address confidence")
         XCTAssertEqual(decoded.buildingLinkConfidence, 91.5)
-        XCTAssertEqual(decoded.mapMode, .smartBuildings)
+        XCTAssertEqual(decoded.mapMode, .hybrid)
     }
 
     func testCampaignRowCarriesQualityGradeIntoCampaignModel() throws {
@@ -41,7 +41,7 @@ final class CampaignLinkerQualityContractTests: XCTestCase {
           "tags": null,
           "status": "draft",
           "provision_status": "ready",
-          "provision_source": "gold",
+          "provision_source": "diamond",
           "provision_phase": "optimized",
           "addresses_ready_at": null,
           "map_ready_at": null,

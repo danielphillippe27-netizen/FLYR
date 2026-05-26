@@ -14,8 +14,21 @@ enum OutboxOperation: String, Codable, Sendable {
     case createContactActivity = "create_contact_activity"
     case deleteContact = "delete_contact"
     case deleteBuilding = "delete_building"
+    case deleteAddress = "delete_address"
+    case deleteManualAddress = "delete_manual_address"
+    case unlinkAddressFromBuilding = "unlink_address_from_building"
+    case createManualAddress = "create_manual_address"
     case moveAddress = "move_address"
     case moveBuilding = "move_building"
+    case linkAddressToBuilding = "link_address_to_building"
+    case fallbackBuildingCreated = "fallback_building_created"
+    case createFarmTouch = "create_farm_touch"
+    case markFarmTouchExecuted = "mark_farm_touch_executed"
+    case markFarmTouchComplete = "mark_farm_touch_complete"
+    case recordFarmAddressOutcome = "record_farm_address_outcome"
+    case createFarmLead = "create_farm_lead"
+    case updateFarmLead = "update_farm_lead"
+    case deleteFarmLead = "delete_farm_lead"
 }
 
 struct OfflineFarmExecutionPayload: Codable, Sendable {
@@ -81,6 +94,41 @@ struct OfflineSessionPayload: Codable, Sendable {
     let startedAt: String
 }
 
+struct FarmTouchOutboxPayload: Codable, Sendable {
+    let touch: FarmTouch
+}
+
+struct FarmTouchExecutedOutboxPayload: Codable, Sendable {
+    let touchId: String
+    let cycleNumber: Int?
+    let sessionId: String
+    let completedByUserId: String
+    let completedAt: String
+    let metrics: [String: AnyCodable]
+}
+
+struct FarmTouchCompleteOutboxPayload: Codable, Sendable {
+    let touchId: String
+    let completed: Bool
+    let completedAt: String?
+}
+
+struct FarmAddressOutcomeOutboxPayload: Codable, Sendable {
+    let farmExecutionContext: OfflineFarmExecutionPayload
+    let addressId: String
+    let status: String
+    let notes: String?
+    let occurredAt: String
+}
+
+struct FarmLeadOutboxPayload: Codable, Sendable {
+    let lead: FarmLead
+}
+
+struct DeleteFarmLeadOutboxPayload: Codable, Sendable {
+    let leadId: String
+}
+
 struct AddressStatusOutboxPayload: Codable, Sendable {
     let campaignId: String
     let addressIds: [String]
@@ -93,6 +141,7 @@ struct AddressStatusOutboxPayload: Codable, Sendable {
     let latitude: Double?
     let longitude: Double?
     let occurredAt: String
+    let farmExecutionContext: OfflineFarmExecutionPayload?
 }
 
 struct BuildingTouchOutboxPayload: Codable, Sendable {
@@ -175,6 +224,20 @@ struct DeleteBuildingOutboxPayload: Codable, Sendable {
     let buildingId: String
 }
 
+struct DeleteAddressOutboxPayload: Codable, Sendable {
+    let campaignId: String
+    let addressId: String
+}
+
+typealias DeleteManualAddressOutboxPayload = DeleteAddressOutboxPayload
+
+struct UnlinkAddressFromBuildingOutboxPayload: Codable, Sendable {
+    let campaignId: String
+    let buildingId: String
+    let addressId: String
+    let deleteManualAddress: Bool
+}
+
 struct MoveAddressOutboxPayload: Codable, Sendable {
     let campaignId: String
     let addressId: String
@@ -186,6 +249,40 @@ struct MoveBuildingOutboxPayload: Codable, Sendable {
     let campaignId: String
     let buildingId: String
     let geometryJSON: String
+}
+
+struct ManualAddressCreateOutboxPayload: Codable, Sendable {
+    let campaignId: String
+    let addressId: String
+    let formatted: String
+    let houseNumber: String?
+    let streetName: String?
+    let locality: String?
+    let region: String?
+    let postalCode: String?
+    let country: String?
+    let buildingId: String?
+    let addressProvenance: String?
+    let userConfirmed: Bool
+    let latitude: Double
+    let longitude: Double
+}
+
+struct LinkAddressToBuildingOutboxPayload: Codable, Sendable {
+    let campaignId: String
+    let buildingId: String
+    let addressId: String
+    let latitude: Double?
+    let longitude: Double?
+}
+
+struct FallbackBuildingCreatedOutboxPayload: Codable, Sendable {
+    let campaignId: String
+    let addressId: String
+    let fallbackBuildingId: String
+    let geometryJSON: String
+    let geometrySource: String
+    let createdAt: String
 }
 
 struct OutboxEntry: Codable, FetchableRecord, PersistableRecord, Sendable {
@@ -419,6 +516,20 @@ final class OutboxRepository {
                 WHERE id = ?
                 """,
                 arguments: [attemptedAt, status, retryAfterString, errorMessage, deadLetteredAt, id]
+            )
+        }
+    }
+
+    func discardPendingSessionEntries(sessionId: UUID) async {
+        let dependencyKey = "session:\(sessionId.uuidString.lowercased())"
+        try? await dbQueue.write { db in
+            try db.execute(
+                sql: """
+                DELETE FROM sync_outbox
+                WHERE synced_at IS NULL
+                  AND COALESCE(dependency_key, entity_type || ':' || entity_id) = ?
+                """,
+                arguments: [dependencyKey]
             )
         }
     }

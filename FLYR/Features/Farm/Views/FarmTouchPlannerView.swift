@@ -97,11 +97,11 @@ struct TouchCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Image(systemName: touch.type.iconName)
-                    .foregroundColor(colorForType(touch.type))
+                Image(systemName: touch.effectiveIconName)
+                    .foregroundColor(colorForTouch(touch))
                 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(touch.title)
+                    Text(touch.effectiveDisplayTitle)
                         .font(.flyrSubheadline)
                     Text(touch.date, style: .date)
                         .font(.flyrCaption)
@@ -132,7 +132,7 @@ struct TouchCard: View {
                     }
                 } label: {
                     HStack {
-                        Text(touch.type == .flyer ? "Start planned flyer session" : "Start planned session")
+                        Text(touch.effectiveModeRawValue == "flyer" ? "Start planned flyer touch" : "Start planned touch")
                         Spacer()
                         Image(systemName: "arrow.right.circle.fill")
                     }
@@ -163,14 +163,16 @@ struct TouchCard: View {
         }
     }
     
-    private func colorForType(_ type: FarmTouchType) -> Color {
-        switch type {
-        case .flyer: return .blue
-        case .doorKnock: return .green
-        case .event: return .flyrPrimary
-        case .newsletter: return .purple
-        case .ad: return .yellow
-        case .custom: return .gray
+    private func colorForTouch(_ touch: FarmTouch) -> Color {
+        switch touch.effectiveColorName {
+        case "blue": return .blue
+        case "green": return .green
+        case "orange": return .flyrPrimary
+        case "purple": return .purple
+        case "yellow": return .yellow
+        case "teal": return .teal
+        case "indigo": return .indigo
+        default: return .gray
         }
     }
 }

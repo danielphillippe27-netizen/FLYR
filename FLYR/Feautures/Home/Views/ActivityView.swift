@@ -3,17 +3,32 @@ import SwiftUI
 struct ActivityView: View {
     @StateObject private var auth = AuthManager.shared
     @ObservedObject private var workspace = WorkspaceContext.shared
-    @State private var selectedFilter: ActivityFeedFilter = .activity
+    @State private var selectedFilter: ActivityFeedFilter
     @State private var items: [ActivityFeedItem] = []
     @State private var isLoading = true
     @State private var errorMessage: String?
     @State private var selectedSummaryItem: EndSessionSummaryItem?
     @State private var loadingSessionItemId: String?
     @State private var showSummaryError = false
+    private let filters: [ActivityFeedFilter]
+    private let navigationTitle: String
+
+    init(
+        initialFilter: ActivityFeedFilter = .activity,
+        filters: [ActivityFeedFilter] = ActivityFeedFilter.allCases,
+        navigationTitle: String = "Activity"
+    ) {
+        let resolvedFilters = filters.isEmpty ? ActivityFeedFilter.allCases : filters
+        self.filters = resolvedFilters
+        self.navigationTitle = navigationTitle
+        _selectedFilter = State(initialValue: resolvedFilters.contains(initialFilter) ? initialFilter : resolvedFilters[0])
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            filterTabs
+            if filters.count > 1 {
+                filterTabs
+            }
             Group {
                 if isLoading {
                     loadingView
@@ -30,7 +45,7 @@ struct ActivityView: View {
         .padding(.top, 8)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.bg)
-        .navigationTitle("Activity")
+        .navigationTitle(navigationTitle)
         .navigationBarTitleDisplayMode(.inline)
         .refreshable {
             await loadItems()
@@ -59,7 +74,7 @@ struct ActivityView: View {
         HStack {
             Spacer(minLength: 0)
             HStack(spacing: 8) {
-                ForEach(ActivityFeedFilter.allCases) { filter in
+                ForEach(filters) { filter in
                     Button {
                         selectedFilter = filter
                     } label: {
@@ -219,7 +234,7 @@ struct ActivityView: View {
         case .appointments:
             return "calendar"
         case .followUp:
-            return "arrow.uturn.left.circle"
+            return "arrow.uturn.right.circle"
         }
     }
 
@@ -230,7 +245,7 @@ struct ActivityView: View {
         case .appointment:
             return "calendar.badge.clock"
         case .followUp:
-            return "arrow.uturn.left.circle.fill"
+            return "arrow.uturn.right.circle.fill"
         }
     }
 

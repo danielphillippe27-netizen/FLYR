@@ -43,6 +43,27 @@ final class HomesService {
         return campaign
     }
 
+    func quickStartCampaignForCurrentLocation(
+        center: CLLocationCoordinate2D,
+        radiusMeters: Int,
+        limitHomes: Int,
+        workspaceId: UUID
+    ) async throws -> (campaign: CampaignV2, isNew: Bool) {
+        if let existing = try await CampaignsAPI.shared.fetchQuickStartMapCampaign(workspaceId: workspaceId) {
+            print("✅ [QuickStart] Reusing existing campaign \(existing.id)")
+            try await updateQuickStartBoundary(campaignId: existing.id, center: center, radiusMeters: radiusMeters)
+            return (existing, false)
+        }
+
+        let campaign = try await createQuickStartCampaignShell(
+            center: center,
+            radiusMeters: radiusMeters,
+            limitHomes: limitHomes,
+            workspaceId: workspaceId
+        )
+        return (campaign, true)
+    }
+
     private func updateQuickStartBoundary(
         campaignId: UUID,
         center: CLLocationCoordinate2D,
@@ -58,8 +79,13 @@ final class HomesService {
 
     func prepareQuickStartCampaignData(
         campaignId: UUID,
+        center: CLLocationCoordinate2D? = nil,
         radiusMeters: Int
     ) async throws {
+        if let center, CLLocationCoordinate2DIsValid(center) {
+            try await updateQuickStartBoundary(campaignId: campaignId, center: center, radiusMeters: radiusMeters)
+        }
+
         let provision = try await CampaignsAPI.shared.provisionCampaign(campaignId: campaignId)
         let finalProvisionStatus: CampaignProvisionStatus?
         if provision?.provisionStatus == .ready {

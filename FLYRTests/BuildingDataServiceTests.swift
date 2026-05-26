@@ -90,9 +90,85 @@ final class BuildingDataServiceTests: XCTestCase {
         let data = try JSONSerialization.data(withJSONObject: payload, options: [])
         return try JSONDecoder().decode(AddressFeature.self, from: data)
     }
+
+    private func makeBuildingGeoJSONFeature(properties: [String: AnyCodable]) -> GeoJSONFeature {
+        GeoJSONFeature(
+            id: properties["building_id"]?.value as? String,
+            geometry: GeoJSONGeometry(
+                type: "Polygon",
+                coordinates: AnyCodable([[[
+                    [-79.0, 43.0],
+                    [-78.999, 43.0],
+                    [-78.999, 43.001],
+                    [-79.0, 43.001],
+                    [-79.0, 43.0]
+                ]]])
+            ),
+            properties: properties
+        )
+    }
     
     // Note: These tests require a mock Supabase client for full testing
     // For now, we'll test the data models and logic
+
+    // MARK: - Linker Fallback Tests
+
+    func testCampaignBuildingSnapshotWithAddressIdCountsAsLinked() {
+        let feature = makeBuildingGeoJSONFeature(properties: [
+            "building_id": AnyCodable("external-building-1"),
+            "address_id": AnyCodable("11111111-1111-1111-1111-111111111111")
+        ])
+
+        let collection = GeoJSONFeatureCollection(features: [feature])
+
+        XCTAssertTrue(NewCampaignScreen.featureCollectionHasLinkedAddressIdentity(collection))
+    }
+
+    func testCampaignBuildingSnapshotWithAddressIdsCountsAsLinked() {
+        let feature = makeBuildingGeoJSONFeature(properties: [
+            "building_id": AnyCodable("external-building-1"),
+            "address_ids": AnyCodable(["22222222-2222-2222-2222-222222222222"])
+        ])
+
+        let collection = GeoJSONFeatureCollection(features: [feature])
+
+        XCTAssertTrue(NewCampaignScreen.featureCollectionHasLinkedAddressIdentity(collection))
+    }
+
+    func testCampaignBuildingSnapshotWithoutAddressIdentityTriggersFallback() {
+        let feature = makeBuildingGeoJSONFeature(properties: [
+            "building_id": AnyCodable("external-building-1"),
+            "gers_id": AnyCodable("external-building-1")
+        ])
+
+        let collection = GeoJSONFeatureCollection(features: [feature])
+
+        XCTAssertFalse(NewCampaignScreen.featureCollectionHasLinkedAddressIdentity(collection))
+    }
+
+    func testDirectBuildingGersLinksAreExcludedFromLocalPickerCandidates() throws {
+        let linkedId = UUID()
+        let unlinkedId = UUID()
+        let collection = AddressFeatureCollection(type: "FeatureCollection", features: [
+            try makeAddressFeature(
+                id: linkedId,
+                buildingGersId: "external-building-1",
+                houseNumber: "18",
+                formatted: "18 Merino Street, Christchurch"
+            ),
+            try makeAddressFeature(
+                id: unlinkedId,
+                buildingGersId: "",
+                houseNumber: "77",
+                formatted: "77 Aviemore Drive, Christchurch"
+            )
+        ])
+
+        let directlyLinked = BuildingLinkService.directlyLinkedAddressIds(in: collection)
+
+        XCTAssertTrue(directlyLinked.contains(linkedId.uuidString.lowercased()))
+        XCTAssertFalse(directlyLinked.contains(unlinkedId.uuidString.lowercased()))
+    }
     
     // MARK: - ResolvedAddress Tests
     
@@ -447,6 +523,39 @@ final class BuildingDataServiceTests: XCTestCase {
 
         XCTAssertEqual(statuses, ["visited", "hot"])
         XCTAssertFalse(statuses.contains("not_visited"))
+    }
+
+    func testTownhomeOverlayKeepsSeparateSectionsWhenStatusesMatch() throws {
+        let building = try makeBuildingFeature(gersId: "townhome-3")
+        let firstId = UUID()
+        let secondId = UUID()
+        let addresses = try [
+            makeAddressFeature(id: firstId, buildingGersId: "townhome-3", houseNumber: "55", formatted: "55 Richfield Square"),
+            makeAddressFeature(id: secondId, buildingGersId: "townhome-3", houseNumber: "57", formatted: "57 Richfield Square")
+        ]
+
+        let data = MapLayerManager.buildTownhomeStatusOverlayGeoJSON(
+            buildings: [building],
+            addresses: addresses,
+            orderedAddressIdsByBuilding: ["townhome-3": [firstId, secondId]],
+            addressStatuses: [
+                firstId: .delivered,
+                secondId: .delivered
+            ]
+        )
+
+        let json = try XCTUnwrap(data)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: json) as? [String: Any])
+        let features = try XCTUnwrap(object["features"] as? [[String: Any]])
+        let properties = features.compactMap { $0["properties"] as? [String: Any] }
+
+        XCTAssertEqual(features.count, 2)
+        XCTAssertEqual(properties.compactMap { $0["segment_status"] as? String }, ["visited", "visited"])
+        XCTAssertEqual(properties.compactMap { $0["unit_count"] as? Int }, [2, 2])
+        XCTAssertEqual(properties.compactMap { $0["address_id"] as? String }, [
+            firstId.uuidString.lowercased(),
+            secondId.uuidString.lowercased()
+        ])
     }
 
     func testAutomaticDeliveredStatusPreservesConversationStatuses() {

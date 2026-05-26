@@ -12,8 +12,8 @@ struct FlyerAddress {
 /// Manages flyer mode with direct proximity+dwell completion against address points.
 @MainActor
 final class FlyerModeManager: ObservableObject {
-    static let proximityThresholdMeters: Double = 10.0
-    static let maxProximityThresholdMeters: Double = 20.0
+    static let proximityThresholdMeters: Double = 15.0
+    static let maxProximityThresholdMeters: Double = 25.0
     static let dwellSeconds: TimeInterval = 5.0
     static let maxCompletionSpeedMPS: Double = 2.5
 

@@ -17,7 +17,7 @@ enum GoalType: String, Codable, CaseIterable, Identifiable {
         case .knocks: return "Homes"
         case .conversations: return "Conversations"
         case .leads: return "Leads"
-        case .appointments: return "Appointment"
+        case .appointments: return "Appointments"
         case .time: return "Time"
         }
     }
@@ -29,7 +29,7 @@ enum GoalType: String, Codable, CaseIterable, Identifiable {
         case .conversations:
             return "Have conversations"
         case .appointments:
-            return "Get an appointment"
+            return "Book appointments"
         case .time:
             return "Work for time"
         case .flyers:
@@ -46,7 +46,7 @@ enum GoalType: String, Codable, CaseIterable, Identifiable {
         case .conversations:
             return "Track progress by live conversations."
         case .appointments:
-            return "Treat one booked appointment as the win."
+            return "Track progress by booked appointments."
         case .time:
             return "Run the session for a set amount of minutes."
         case .flyers:
@@ -95,14 +95,7 @@ enum GoalType: String, Codable, CaseIterable, Identifiable {
         fixedGoalAmount == nil
     }
 
-    var fixedGoalAmount: Int? {
-        switch self {
-        case .appointments:
-            return 1
-        default:
-            return nil
-        }
-    }
+    var fixedGoalAmount: Int? { nil }
 
     func minimumAmount(for mode: SessionMode) -> Int {
         switch self {
@@ -119,8 +112,6 @@ enum GoalType: String, Codable, CaseIterable, Identifiable {
         switch self {
         case .time:
             return 240
-        case .appointments:
-            return 1
         default:
             return max(1, targetCount)
         }
@@ -167,12 +158,7 @@ enum GoalType: String, Codable, CaseIterable, Identifiable {
     }
 
     func goalLabelText(amount: Int) -> String {
-        switch self {
-        case .appointments:
-            return "Goal: get an appointment"
-        default:
-            return "Goal: \(formattedGoalAmount(amount))"
-        }
+        "Goal: \(formattedGoalAmount(amount))"
     }
 
     static func goalPickerCases(for mode: SessionMode) -> [GoalType] {

@@ -15,6 +15,8 @@ struct ResolvedAddress: Codable, Identifiable, Sendable {
     let streetName: String
     /// Overture GERS ID string (not a UUID)
     let gersId: String
+    /// Capture metadata status from campaign_addresses, used as a display fallback before address_statuses hydrate.
+    let leadStatus: String?
     
     enum CodingKeys: String, CodingKey {
         case id
@@ -26,9 +28,10 @@ struct ResolvedAddress: Codable, Identifiable, Sendable {
         case houseNumber = "house_number"
         case streetName = "street_name"
         case gersId = "gers_id"
+        case leadStatus = "lead_status"
     }
     
-    init(id: UUID, street: String, formatted: String, locality: String, region: String, postalCode: String, houseNumber: String, streetName: String, gersId: String) {
+    init(id: UUID, street: String, formatted: String, locality: String, region: String, postalCode: String, houseNumber: String, streetName: String, gersId: String, leadStatus: String? = nil) {
         self.id = id
         self.street = street
         self.formatted = formatted
@@ -38,6 +41,7 @@ struct ResolvedAddress: Codable, Identifiable, Sendable {
         self.houseNumber = houseNumber
         self.streetName = streetName
         self.gersId = gersId
+        self.leadStatus = leadStatus
     }
     
     init(from decoder: Decoder) throws {
@@ -51,6 +55,7 @@ struct ResolvedAddress: Codable, Identifiable, Sendable {
         houseNumber = try c.decode(String.self, forKey: .houseNumber)
         streetName = try c.decode(String.self, forKey: .streetName)
         gersId = CampaignAddressDecoding.decodeStringIfPresent(c, forKey: .gersId) ?? ""
+        leadStatus = try c.decodeIfPresent(String.self, forKey: .leadStatus)
     }
     
     func encode(to encoder: Encoder) throws {
@@ -64,6 +69,7 @@ struct ResolvedAddress: Codable, Identifiable, Sendable {
         try c.encode(houseNumber, forKey: .houseNumber)
         try c.encode(streetName, forKey: .streetName)
         try c.encode(gersId, forKey: .gersId)
+        try c.encodeIfPresent(leadStatus, forKey: .leadStatus)
     }
     
     /// Returns a compact display address (street only)
@@ -332,6 +338,46 @@ struct CampaignAddressResponse: Codable {
         case rawTranscript = "raw_transcript"
         case aiSummary = "ai_summary"
     }
+
+    init(
+        id: UUID,
+        houseNumber: String? = nil,
+        streetName: String? = nil,
+        formatted: String? = nil,
+        locality: String? = nil,
+        region: String? = nil,
+        postalCode: String? = nil,
+        gersId: String? = nil,
+        buildingGersId: String? = nil,
+        scans: Int? = nil,
+        lastScannedAt: Date? = nil,
+        qrCodeBase64: String? = nil,
+        contactName: String? = nil,
+        leadStatus: String? = nil,
+        productInterest: String? = nil,
+        followUpDate: Date? = nil,
+        rawTranscript: String? = nil,
+        aiSummary: String? = nil
+    ) {
+        self.id = id
+        self.houseNumber = houseNumber
+        self.streetName = streetName
+        self.formatted = formatted
+        self.locality = locality
+        self.region = region
+        self.postalCode = postalCode
+        self.gersId = gersId
+        self.buildingGersId = buildingGersId
+        self.scans = scans
+        self.lastScannedAt = lastScannedAt
+        self.qrCodeBase64 = qrCodeBase64
+        self.contactName = contactName
+        self.leadStatus = leadStatus
+        self.productInterest = productInterest
+        self.followUpDate = followUpDate
+        self.rawTranscript = rawTranscript
+        self.aiSummary = aiSummary
+    }
     
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -407,7 +453,8 @@ struct CampaignAddressResponse: Codable {
             postalCode: postalCode ?? "",
             houseNumber: house,
             streetName: street,
-            gersId: gersId ?? buildingGersId ?? fallbackGersId
+            gersId: gersId ?? buildingGersId ?? fallbackGersId,
+            leadStatus: leadStatus
         )
     }
     

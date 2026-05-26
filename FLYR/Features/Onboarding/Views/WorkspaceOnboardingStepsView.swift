@@ -135,6 +135,31 @@ private struct NameStepView: View {
                                     .textFieldStyle(OnboardingTextFieldStyle())
                             }
 
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("Country")
+                                    .font(.subheadline.weight(.medium))
+                                    .foregroundColor(OnboardingStyle.textPrimary)
+                                Picker("Country", selection: Binding(
+                                    get: { viewModel.countryCode ?? "" },
+                                    set: { viewModel.countryCode = $0.isEmpty ? nil : $0 }
+                                )) {
+                                    Text("Select your country").tag("")
+                                    ForEach(CountryOptions.all) { country in
+                                        Text(country.label).tag(country.code)
+                                    }
+                                }
+                                .pickerStyle(.menu)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 12)
+                                .background(OnboardingStyle.fieldBackground)
+                                .clipShape(RoundedRectangle(cornerRadius: 10))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 10)
+                                        .stroke(OnboardingStyle.fieldBorder, lineWidth: 1)
+                                )
+                            }
+
                             Button(action: onContinue) {
                                 Text("Continue")
                                     .font(.headline)
@@ -160,6 +185,7 @@ private struct NameStepView: View {
     private var canContinueName: Bool {
         !viewModel.firstName.trimmingCharacters(in: .whitespaces).isEmpty
             && !viewModel.lastName.trimmingCharacters(in: .whitespaces).isEmpty
+            && CountryOptions.normalize(viewModel.countryCode) != nil
     }
 }
 

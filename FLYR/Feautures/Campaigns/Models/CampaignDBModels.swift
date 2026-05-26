@@ -65,6 +65,52 @@ struct CampaignDBRow: Codable {
         case ownerId = "owner_id"
     }
 
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+
+        id = try container.decode(UUID.self, forKey: .id)
+        title = try container.decode(String.self, forKey: .title)
+        description = try container.decodeIfPresent(String.self, forKey: .description)
+        typeRaw = try container.decodeIfPresent(String.self, forKey: .typeRaw)
+        addressSourceRaw = try container.decodeIfPresent(String.self, forKey: .addressSourceRaw)
+        scans = try container.decodeIfPresent(Int.self, forKey: .scans) ?? 0
+        conversions = try container.decodeIfPresent(Int.self, forKey: .conversions) ?? 0
+        region = try container.decodeIfPresent(String.self, forKey: .region)
+        tags = Self.decodeTags(from: container)
+        status = try container.decodeIfPresent(CampaignStatus.self, forKey: .status)
+        provisionStatus = try container.decodeIfPresent(CampaignProvisionStatus.self, forKey: .provisionStatus)
+        provisionSource = try container.decodeIfPresent(CampaignProvisionSource.self, forKey: .provisionSource)
+        provisionPhase = try container.decodeIfPresent(CampaignProvisionPhase.self, forKey: .provisionPhase)
+        addressesReadyAt = try container.decodeIfPresent(Date.self, forKey: .addressesReadyAt)
+        mapReadyAt = try container.decodeIfPresent(Date.self, forKey: .mapReadyAt)
+        optimizedAt = try container.decodeIfPresent(Date.self, forKey: .optimizedAt)
+        hasParcels = try container.decodeIfPresent(Bool.self, forKey: .hasParcels)
+        buildingLinkConfidence = try container.decodeIfPresent(Double.self, forKey: .buildingLinkConfidence)
+        mapMode = try container.decodeIfPresent(CampaignMapMode.self, forKey: .mapMode)
+        coverageScore = try container.decodeIfPresent(Int.self, forKey: .coverageScore)
+        dataQuality = try container.decodeIfPresent(CampaignDataQuality.self, forKey: .dataQuality)
+        standardModeRecommended = try container.decodeIfPresent(Bool.self, forKey: .standardModeRecommended)
+        dataQualityReason = try container.decodeIfPresent(String.self, forKey: .dataQualityReason)
+        dataConfidenceScore = try container.decodeIfPresent(Double.self, forKey: .dataConfidenceScore)
+        dataConfidenceLabel = try container.decodeIfPresent(DataConfidenceLabel.self, forKey: .dataConfidenceLabel)
+        dataConfidenceReason = try container.decodeIfPresent(String.self, forKey: .dataConfidenceReason)
+        dataConfidenceSummary = try container.decodeIfPresent(CampaignDataConfidenceSummary.self, forKey: .dataConfidenceSummary)
+        dataConfidenceUpdatedAt = try container.decodeIfPresent(Date.self, forKey: .dataConfidenceUpdatedAt)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+        ownerId = try container.decode(UUID.self, forKey: .ownerId)
+    }
+
+    private static func decodeTags(from container: KeyedDecodingContainer<CodingKeys>) -> String? {
+        if let tagString = try? container.decodeIfPresent(String.self, forKey: .tags) {
+            return tagString
+        }
+        if let tagArray = try? container.decodeIfPresent([String].self, forKey: .tags) {
+            return tagArray.joined(separator: ",")
+        }
+        return nil
+    }
+
     var campaignType: CampaignType {
         guard let typeRaw, let parsed = CampaignType(dbValue: typeRaw) else {
             return .flyer
@@ -387,7 +433,7 @@ struct AddressStatusRow: Decodable, Identifiable {
 // MARK: - GeoJSON Point
 
 /// GeoJSON Point structure returned by ST_AsGeoJSON
-struct GeoJSONPoint: Codable {
+struct GeoJSONPoint: Codable, Equatable {
     let type: String // "Point"
     let coordinates: [Double] // [lon, lat] - PostGIS order
     

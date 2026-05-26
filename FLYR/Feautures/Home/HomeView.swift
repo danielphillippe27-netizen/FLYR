@@ -1,34 +1,29 @@
 import SwiftUI
+import Combine
+import PostgREST
+import Storage
+import Supabase
 
 private enum HomeRoute: Hashable {
     case campaigns
-    case farm
     case activity
+    case appointments
+    case followUp
     case stats
-    case routes
     case challenges
     case support
 }
 
-private enum PendingAfterPaywall {
-    case none
-    case farm
-}
-
 private enum HomeGridTileIcon {
     case system(String)
-    case farmGlyph
-    case routesGlyph
 }
 
 struct HomeView: View {
     @Environment(\.colorScheme) private var colorScheme
-    @EnvironmentObject private var entitlementsService: EntitlementsService
+    @EnvironmentObject private var uiState: AppUIState
     @State private var selectedRoute: HomeRoute?
-    @State private var showingNewCampaign = false
-    @State private var showPaywall = false
-    @StateObject private var storeV2 = CampaignV2Store.shared
     @StateObject private var auth = AuthManager.shared
+    @StateObject private var profileImageLoader = HomeProfileImageLoader()
     @State private var dailyContent = DailyContentService.shared
 
     /// PNG from asset catalog: white logo for dark mode, black logo for light mode.
@@ -67,14 +62,10 @@ struct HomeView: View {
                     }
                     ToolbarItem(placement: .topBarTrailing) {
                         Button {
-                            createCampaignTapped()
+                            HapticManager.light()
+                            uiState.selectedTabIndex = 4
                         } label: {
-                            Image(systemName: "plus")
-                                .font(.system(size: 18, weight: .semibold))
-                                .foregroundColor(colorScheme == .dark ? .white : .black)
-                                .frame(width: 36, height: 36)
-                                .background(Color.red)
-                                .clipShape(Circle())
+                            profileToolbarIcon
                         }
                         .buttonStyle(.plain)
                     }
@@ -83,14 +74,26 @@ struct HomeView: View {
                     switch route {
                     case .campaigns:
                         CampaignsView()
-                    case .farm:
-                        FarmsView()
                     case .activity:
-                        ActivityView()
+                        ActivityView(
+                            initialFilter: .activity,
+                            filters: [.activity],
+                            navigationTitle: "Activity"
+                        )
+                    case .appointments:
+                        ActivityView(
+                            initialFilter: .appointments,
+                            filters: [.appointments],
+                            navigationTitle: "Appointments"
+                        )
+                    case .followUp:
+                        ActivityView(
+                            initialFilter: .followUp,
+                            filters: [.followUp],
+                            navigationTitle: "Follow Up"
+                        )
                     case .stats:
                         YouStatsView()
-                    case .routes:
-                        RoutesListView()
                     case .challenges:
                         ChallengesHomeView()
                     case .support:
@@ -105,35 +108,40 @@ struct HomeView: View {
         .onAppear {
             selectedRoute = nil
         }
-        .fullScreenCover(isPresented: $showingNewCampaign) {
-            NavigationStack {
-                NewCampaignScreen(store: storeV2)
-                    .toolbar {
-                        ToolbarItem(placement: .topBarLeading) {
-                            Button("Cancel") {
-                                showingNewCampaign = false
-                            }
-                        }
-                    }
-            }
-        }
-        .sheet(isPresented: $showPaywall, onDismiss: {
-            switch pendingAfterPaywall {
-            case .farm:
-                if entitlementsService.canUsePro, selectedRoute != .farm {
-                    selectedRoute = .farm
-                }
-            case .none:
-                break
-            }
-            pendingAfterPaywall = .none
-        }) {
-            PaywallView()
-                .environmentObject(entitlementsService)
+        .task(id: auth.user?.id) {
+            await profileImageLoader.load(for: auth.user?.id)
         }
     }
 
-    @State private var pendingAfterPaywall: PendingAfterPaywall = .none
+    @ViewBuilder
+    private var profileToolbarIcon: some View {
+        if let image = profileImageLoader.image {
+            Image(uiImage: image)
+                .resizable()
+                .scaledToFill()
+                .frame(width: 36, height: 36)
+                .clipShape(Circle())
+                .overlay(
+                    Circle()
+                        .stroke(colorScheme == .dark ? Color.white.opacity(0.35) : Color.black.opacity(0.12), lineWidth: 1)
+                )
+        } else if let user = auth.user {
+            ProfileAvatarView(
+                avatarUrl: user.photoURL?.absoluteString,
+                name: user.displayName ?? user.email,
+                size: 36
+            )
+            .overlay(
+                Circle()
+                    .stroke(colorScheme == .dark ? Color.white.opacity(0.35) : Color.black.opacity(0.12), lineWidth: 1)
+            )
+        } else {
+            Image(systemName: "person.crop.circle.fill")
+                .font(.system(size: 30, weight: .semibold))
+                .foregroundColor(colorScheme == .dark ? .white : .black)
+                .frame(width: 36, height: 36)
+        }
+    }
 
     private var homeGrid: some View {
         ScrollView {
@@ -154,20 +162,20 @@ struct HomeView: View {
                         ],
                         spacing: 16
                     ) {
-                        HomeGridTile(title: "Campaigns", icon: .system("scope")) {
+                        HomeGridTile(title: "Campaign", icon: .system("scope")) {
                             selectedRoute = .campaigns
-                        }
-                        HomeGridTile(title: "Farm", icon: .farmGlyph) {
-                            farmTapped()
-                        }
-                        HomeGridTile(title: "Activity", icon: .system("figure.walk")) {
-                            selectedRoute = .activity
                         }
                         HomeGridTile(title: "Stats", icon: .system("chart.bar.fill")) {
                             selectedRoute = .stats
                         }
-                        HomeGridTile(title: "Routes", icon: .routesGlyph) {
-                            selectedRoute = .routes
+                        HomeGridTile(title: "Activity", icon: .system("figure.walk")) {
+                            selectedRoute = .activity
+                        }
+                        HomeGridTile(title: "Follow Up", icon: .system("arrow.uturn.right.circle.fill")) {
+                            selectedRoute = .followUp
+                        }
+                        HomeGridTile(title: "Appointments", icon: .system("calendar.badge.clock")) {
+                            selectedRoute = .appointments
                         }
                         HomeGridTile(title: "Challenges", icon: .system("flag.fill")) {
                             selectedRoute = .challenges
@@ -185,21 +193,38 @@ struct HomeView: View {
             await dailyContent.fetch()
         }
     }
+}
 
-    private func farmTapped() {
-        if entitlementsService.canUsePro {
-            if selectedRoute != .farm {
-                selectedRoute = .farm
-            }
-            return
+@MainActor
+private final class HomeProfileImageLoader: ObservableObject {
+    @Published var image: UIImage?
+
+    private let supabase = SupabaseManager.shared.client
+
+    func load(for userID: UUID?) async {
+        image = nil
+        guard let userID else { return }
+
+        do {
+            let profile: UserProfile = try await supabase
+                .from("profiles")
+                .select()
+                .eq("id", value: userID.uuidString)
+                .single()
+                .execute()
+                .value
+
+            guard let path = profile.profileImageURL, !path.isEmpty else { return }
+
+            let signedURL = try await supabase.storage
+                .from("profile_images")
+                .createSignedURL(path: path, expiresIn: 60 * 60 * 24 * 7)
+
+            let (data, _) = try await URLSession.shared.data(from: signedURL)
+            image = UIImage(data: data)
+        } catch {
+            image = nil
         }
-        pendingAfterPaywall = .farm
-        showPaywall = true
-    }
-
-    private func createCampaignTapped() {
-        HapticManager.light()
-        showingNewCampaign = true
     }
 }
 
@@ -283,14 +308,6 @@ private struct HomeGridTile: View {
                         Image(systemName: systemName)
                             .font(.system(size: 32, weight: .medium))
                             .foregroundStyle(foreground)
-                    case .farmGlyph:
-                        Image(systemName: "leaf")
-                            .font(.system(size: 32, weight: .medium))
-                            .foregroundStyle(foreground)
-                            .frame(width: 34, height: 28)
-                    case .routesGlyph:
-                        RoutesGlyph(color: foreground, lineWidth: 2.8)
-                            .frame(width: 34, height: 28)
                     }
                 }
                 Text(title)
@@ -316,7 +333,7 @@ private struct HomeGridTile: View {
     }
 }
 
-/// Matches FLYR-PRO’s Lucide `Route` icon (lucide-react `route`: 24×24 viewBox).
+/// Matches FLYR-PRO's Lucide `Route` icon (lucide-react `route`: 24x24 viewBox).
 struct RoutesGlyph: View {
     var color: Color
     var lineWidth: CGFloat = 2.5

@@ -347,10 +347,10 @@ final class UseCampaignMap: ObservableObject {
     }
   }
   
-  /// Load addresses within a drawn polygon via provision flow: save territory → backend (Lambda/S3) provisions → ingest to Supabase → refetch from Supabase.
+  /// Load addresses within a drawn polygon via provision flow: save territory, provision through Diamond/Bedrock, then refetch from Supabase.
   /// - Parameters:
   ///   - polygon: Array of coordinates forming the polygon
-  ///   - campaignId: Campaign ID (required). Backend reads territory_boundary and provisions via Lambda/S3.
+  ///   - campaignId: Campaign ID (required). Backend reads territory_boundary for server-side provisioning.
   func loadAddressesInPolygon(polygon: [CLLocationCoordinate2D], campaignId: UUID?) async {
     guard polygon.count >= 3 else {
       print("⚠️ [POLYGON] Polygon must have at least 3 points, got \(polygon.count)")

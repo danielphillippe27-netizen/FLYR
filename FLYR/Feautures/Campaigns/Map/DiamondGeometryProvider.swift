@@ -8,15 +8,21 @@ protocol DiamondGeometryProvider {
     func installGeometry(
         for campaignId: String,
         manifest: DiamondManifest,
-        on mapView: MapView
+        on mapView: MapView,
+        territoryBoundary: GeoJSONObject?
     ) async throws
+
+    func applyTerritoryBoundary(_ boundary: GeoJSONObject?, on mapView: MapView) throws
 
     func removeGeometry(from mapView: MapView) throws
 }
 
 @MainActor
 final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
-    static let sourceId = "diamond-buildings"
+    static let buildingSourceId = "diamond-buildings"
+    static let sourceId = buildingSourceId
+    static let addressSourceId = "diamond-addresses"
+    static let parcelSourceId = "diamond-parcels"
     static let parcelFillLayerId = "diamond-parcels-fill"
     static let parcelLineLayerId = "diamond-parcels-line"
     static let buildingFillLayerId = "diamond-buildings-fill"
@@ -27,7 +33,9 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
     static let selectedAddressCircleLayerId = "diamond-addresses-selected"
     static let addressNumberLayerId = "diamond-addresses-numbers"
 
-    private let sourceId = VectorTileDiamondGeometryProvider.sourceId
+    private let buildingSourceId = VectorTileDiamondGeometryProvider.buildingSourceId
+    private let addressSourceId = VectorTileDiamondGeometryProvider.addressSourceId
+    private let parcelSourceId = VectorTileDiamondGeometryProvider.parcelSourceId
     private let parcelFillLayerId = VectorTileDiamondGeometryProvider.parcelFillLayerId
     private let parcelLineLayerId = VectorTileDiamondGeometryProvider.parcelLineLayerId
     private let buildingFillLayerId = VectorTileDiamondGeometryProvider.buildingFillLayerId
@@ -37,64 +45,177 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
     private let addressCircleLayerId = VectorTileDiamondGeometryProvider.addressCircleLayerId
     private let selectedAddressCircleLayerId = VectorTileDiamondGeometryProvider.selectedAddressCircleLayerId
     private let addressNumberLayerId = VectorTileDiamondGeometryProvider.addressNumberLayerId
-    private let addressCylinderHeightMeters = 16.0
-    private let selectedAddressCylinderHeightMeters = 18.0
-    private let addressLabelCapClearanceMeters = 0.25
-    private let selectedBuildingHeightScale = 1.16
+    private let parcelOverviewMinZoom = 9.5
+    private let parcelOverviewMaxZoom = 12.25
+    private let buildingCapHeightMeters = 1.2
+    private let addressLayerMinZoom = 11.8
+    private let addressCylinderHeightMeters = 3.0
+    private let addressLabelCapClearanceMeters = 0.05
+    private let selectedBuildingHeightScale = 1.0
+    private var territoryBoundary: GeoJSONObject?
+    private var currentAddressUsesCirclePolygons = false
 
     func installGeometry(
         for campaignId: String,
         manifest: DiamondManifest,
-        on mapView: MapView
+        on mapView: MapView,
+        territoryBoundary: GeoJSONObject?
     ) async throws {
-        guard manifest.isPMTilesGeometryProvider,
-              let rawTileTemplate = manifest.vectorTileUrlTemplate,
-              let buildingLayer = manifest.sourceLayers?.buildings else {
+        guard manifest.isPMTilesGeometryProvider else {
+            throw DiamondGeometryProviderError.unsupportedManifest
+        }
+        let rawTileTemplate = nonEmpty(manifest.vectorTileUrlTemplate)
+        let buildingLayer = nonEmpty(manifest.sourceLayers?.buildings)
+        let addressCircleLayer = nonEmpty(manifest.sourceLayers?.addressCircles)
+        let addressPointLayer = nonEmpty(manifest.addressSourceLayer) ?? nonEmpty(manifest.sourceLayers?.addresses)
+        let addressLayer = addressCircleLayer ?? addressPointLayer
+        let rawAddressTileTemplate = nonEmpty(manifest.addressVectorTileUrlTemplate)
+        let parcelLayer = nonEmpty(manifest.parcelSourceLayer) ?? nonEmpty(manifest.sourceLayers?.parcels)
+        let rawParcelTileTemplate = nonEmpty(manifest.parcelVectorTileUrlTemplate)
+        let canRenderBuildings = rawTileTemplate != nil && buildingLayer != nil
+        let canRenderAddresses = rawAddressTileTemplate != nil && addressLayer != nil
+        let canRenderParcels = rawParcelTileTemplate != nil && parcelLayer != nil
+        guard canRenderBuildings || canRenderAddresses || canRenderParcels else {
             throw DiamondGeometryProviderError.unsupportedManifest
         }
 
-        let tileTemplate = await tileTemplateWithAccessToken(rawTileTemplate)
         guard let map = mapView.mapboxMap else {
             throw DiamondGeometryProviderError.mapUnavailable
         }
 
+        self.territoryBoundary = territoryBoundary
         try removeExistingDiamondLayers(from: map)
 
-        var source = VectorSource(id: sourceId)
-        source.tiles = [tileTemplate]
-        source.minzoom = manifest.minzoom ?? 13
-        source.maxzoom = manifest.maxzoom ?? 18
-        source.bounds = manifest.bounds
+        if let rawTileTemplate, let buildingLayer {
+            let buildingTileTemplate = await tileTemplateWithAccessToken(rawTileTemplate)
+            try addVectorSource(
+                map: map,
+                sourceId: buildingSourceId,
+                tileTemplate: buildingTileTemplate,
+                minzoom: manifest.minzoom ?? 13,
+                maxzoom: manifest.maxzoom ?? 18,
+                bounds: manifest.bounds,
+                promoteIds: [
+                    buildingLayer: manifest.promoteIds?.buildings ?? "building_id"
+                ]
+            )
+        }
 
-        var promoteIds: [String: Value<String>] = [
-            buildingLayer: .constant(manifest.promoteIds?.buildings ?? "address_id")
-        ]
-        if let parcelLayer = manifest.sourceLayers?.parcels {
-            promoteIds[parcelLayer] = .constant(manifest.promoteIds?.parcels ?? "parcel_id")
+        let parcelSourceForLayers: String
+        if let rawParcelTileTemplate,
+           let parcelLayer {
+            let parcelTileTemplate = await tileTemplateWithAccessToken(rawParcelTileTemplate)
+            try addVectorSource(
+                map: map,
+                sourceId: parcelSourceId,
+                tileTemplate: parcelTileTemplate,
+                minzoom: manifest.parcelMinzoom ?? 10,
+                maxzoom: manifest.parcelMaxzoom ?? 16,
+                bounds: manifest.bounds,
+                promoteIds: [
+                    parcelLayer: manifest.joinKey ?? manifest.parcelPromoteId ?? manifest.promoteIds?.parcels ?? "parcel_id"
+                ]
+            )
+            parcelSourceForLayers = parcelSourceId
+        } else {
+            parcelSourceForLayers = buildingSourceId
         }
-        if let addressCircleLayer = manifest.sourceLayers?.addressCircles {
-            promoteIds[addressCircleLayer] = .constant(manifest.promoteIds?.addressCircles ?? manifest.promoteIds?.addresses ?? "address_id")
-        }
-        if let addressLayer = manifest.sourceLayers?.addresses {
-            promoteIds[addressLayer] = .constant(manifest.promoteIds?.addresses ?? "address_id")
-        }
-        source.promoteId2 = .byLayer(promoteIds)
 
-        try map.addSource(source)
-
-        if let parcelLayer = manifest.sourceLayers?.parcels {
-            try addParcelLayers(map: map, sourceLayer: parcelLayer)
+        let addressSourceForLayers: String
+        if let rawAddressTileTemplate,
+           let addressLayer {
+            let addressTileTemplate = await tileTemplateWithAccessToken(rawAddressTileTemplate)
+            try addVectorSource(
+                map: map,
+                sourceId: addressSourceId,
+                tileTemplate: addressTileTemplate,
+                minzoom: manifest.addressMinzoom ?? 10,
+                maxzoom: manifest.addressMaxzoom ?? 16,
+                bounds: manifest.bounds,
+                promoteIds: [
+                    addressLayer: manifest.addressPromoteId ?? manifest.promoteIds?.addressCircles ?? manifest.promoteIds?.addresses ?? "address_id"
+                ]
+            )
+            addressSourceForLayers = addressSourceId
+        } else {
+            addressSourceForLayers = buildingSourceId
         }
-        try addBuildingLayers(map: map, sourceLayer: buildingLayer)
-        if let addressLayer = manifest.sourceLayers?.addressCircles,
-           !addressLayer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+
+        if let parcelLayer, map.allSourceIdentifiers.contains(where: { $0.id == parcelSourceForLayers }) {
+            try addParcelLayers(map: map, sourceId: parcelSourceForLayers, sourceLayer: parcelLayer)
+        }
+        if let buildingLayer, map.allSourceIdentifiers.contains(where: { $0.id == buildingSourceId }) {
+            try addBuildingLayers(map: map, sourceId: buildingSourceId, sourceLayer: buildingLayer)
+        }
+        if let addressCircleLayer {
             try addAddressLayers(
                 map: map,
-                sourceLayer: addressLayer,
+                sourceId: addressSourceForLayers,
+                sourceLayer: addressCircleLayer,
                 usesCirclePolygons: true
             )
-        } else if manifest.sourceLayers?.addresses?.isEmpty == false {
-            print("💎 [DIAMOND] Ignoring point-only PMTiles address layer; address cylinders require an address_circles polygon source layer")
+        } else if let addressPointLayer {
+            try addAddressLayers(
+                map: map,
+                sourceId: addressSourceForLayers,
+                sourceLayer: addressPointLayer,
+                usesCirclePolygons: false
+            )
+        }
+    }
+
+    func applyTerritoryBoundary(_ boundary: GeoJSONObject?, on mapView: MapView) throws {
+        guard let map = mapView.mapboxMap else {
+            throw DiamondGeometryProviderError.mapUnavailable
+        }
+
+        territoryBoundary = boundary
+
+        if map.allLayerIdentifiers.contains(where: { $0.id == buildingFillLayerId }) {
+            try map.updateLayer(withId: buildingFillLayerId, type: FillExtrusionLayer.self) {
+                $0.filter = diamondRenderableBuildingFilter()
+            }
+        }
+        if map.allLayerIdentifiers.contains(where: { $0.id == buildingLineLayerId }) {
+            try map.updateLayer(withId: buildingLineLayerId, type: LineLayer.self) {
+                $0.filter = diamondRenderableBuildingFilter()
+            }
+        }
+        if map.allLayerIdentifiers.contains(where: { $0.id == buildingAddressNumberLayerId }) {
+            try map.updateLayer(withId: buildingAddressNumberLayerId, type: SymbolLayer.self) {
+                $0.filter = singleAddressBuildingNumberFilter()
+            }
+        }
+        if map.allLayerIdentifiers.contains(where: { $0.id == parcelFillLayerId }) {
+            try map.updateLayer(withId: parcelFillLayerId, type: FillLayer.self) {
+                $0.filter = scopedPolygonFilter()
+            }
+        }
+        if map.allLayerIdentifiers.contains(where: { $0.id == parcelLineLayerId }) {
+            try map.updateLayer(withId: parcelLineLayerId, type: LineLayer.self) {
+                $0.filter = scopedPolygonFilter()
+            }
+        }
+        if map.allLayerIdentifiers.contains(where: { $0.id == addressCircleLayerId }) {
+            try? map.updateLayer(withId: addressCircleLayerId, type: FillExtrusionLayer.self) {
+                $0.filter = addressGeometryFilter(usesCirclePolygons: true)
+            }
+            try? map.updateLayer(withId: addressCircleLayerId, type: CircleLayer.self) {
+                $0.filter = addressGeometryFilter(usesCirclePolygons: false)
+            }
+        }
+        if map.allLayerIdentifiers.contains(where: { $0.id == selectedAddressCircleLayerId }) {
+            try? map.updateLayer(withId: selectedAddressCircleLayerId, type: FillExtrusionLayer.self) {
+                $0.filter = addressGeometryFilter(usesCirclePolygons: true)
+            }
+            try? map.updateLayer(withId: selectedAddressCircleLayerId, type: CircleLayer.self) {
+                $0.filter = addressGeometryFilter(usesCirclePolygons: false)
+            }
+        }
+        if map.allLayerIdentifiers.contains(where: { $0.id == addressNumberLayerId }) {
+            try map.updateLayer(withId: addressNumberLayerId, type: SymbolLayer.self) {
+                $0.filter = addressGeometryFilter(usesCirclePolygons: currentAddressUsesCirclePolygons)
+            }
         }
     }
 
@@ -121,9 +242,46 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
                 try map.removeLayer(withId: layerId)
             }
         }
-        if map.allSourceIdentifiers.contains(where: { $0.id == sourceId }) {
-            try map.removeSource(withId: sourceId)
+        for sourceId in [
+            addressSourceId,
+            parcelSourceId,
+            buildingSourceId
+        ] {
+            if map.allSourceIdentifiers.contains(where: { $0.id == sourceId }) {
+                try map.removeSource(withId: sourceId)
+            }
         }
+    }
+
+    private func addVectorSource(
+        map: MapboxMap,
+        sourceId: String,
+        tileTemplate: String,
+        minzoom: Double,
+        maxzoom: Double,
+        bounds: [Double]?,
+        promoteIds: [String: String]
+    ) throws {
+        var source = VectorSource(id: sourceId)
+        source.tiles = [tileTemplate]
+        source.minzoom = minzoom
+        source.maxzoom = maxzoom
+        source.bounds = bounds
+        source.promoteId2 = .byLayer(
+            promoteIds.reduce(into: [String: Value<String>]()) { result, entry in
+                result[entry.key] = .constant(entry.value)
+            }
+        )
+
+        try map.addSource(source)
+    }
+
+    private func nonEmpty(_ value: String?) -> String? {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty else {
+            return nil
+        }
+        return trimmed
     }
 
     private func tileTemplateWithAccessToken(_ tileTemplate: String) async -> String {
@@ -135,7 +293,7 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
         return "\(tileTemplate)\(separator)access_token=\(encodedToken)"
     }
 
-    private func addBuildingLayers(map: MapboxMap, sourceLayer: String) throws {
+    private func addBuildingLayers(map: MapboxMap, sourceId: String, sourceLayer: String) throws {
         let renderableFilter = diamondRenderableBuildingFilter()
 
         var fill = FillExtrusionLayer(id: buildingFillLayerId, source: sourceId)
@@ -143,18 +301,14 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
         fill.fillExtrusionColor = .expression(statusFillColorExpression(defaultColor: MapStatusColor.untouched))
         fill.fillExtrusionHeight = .expression(
             selectedBuildingHeightExpression(
-                base: Exp(.coalesce) {
-                    Exp(.get) { "height_m" }
-                    Exp(.get) { "height" }
-                    8
-                }
+                base: MapLayerManager.buildingExtrusionHeightExpression
             )
         )
         fill.fillExtrusionColorTransition = StyleTransition(duration: 0.18, delay: 0)
         fill.fillExtrusionHeightTransition = StyleTransition(duration: 0.18, delay: 0)
-        fill.fillExtrusionBase = .constant(0)
+        fill.fillExtrusionBase = .expression(MapLayerManager.buildingExtrusionBaseExpression)
         fill.fillExtrusionOpacity = .constant(1.0)
-        fill.fillExtrusionVerticalGradient = .constant(true)
+        fill.fillExtrusionVerticalGradient = .constant(false)
         fill.minZoom = 12
         fill.filter = renderableFilter
 
@@ -176,26 +330,21 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
             }
         )
         selectedGlow.lineBlur = .constant(4.0)
-        selectedGlow.lineOpacity = .expression(
-            Exp(.switchCase) {
-                isSelectedExpression()
-                0.72
-                0.0
-            }
-        )
+        // Selection is shown by recoloring the full extrusion; keep outline layers silent.
+        selectedGlow.lineOpacity = .constant(0.0)
         selectedGlow.lineOpacityTransition = StyleTransition(duration: 0.2, delay: 0)
         selectedGlow.minZoom = 12
         selectedGlow.filter = renderableFilter
 
         try map.addLayer(selectedGlow, layerPosition: .above(buildingFillLayerId))
 
-        try addBuildingAddressNumberLayer(map: map, sourceLayer: sourceLayer)
+        try addBuildingAddressNumberLayer(map: map, sourceId: sourceId, sourceLayer: sourceLayer)
 
         // Lead/follow-up states are shown through the fill color. The line layer above is
         // selection-only, so normal homes do not carry an always-on footprint outline.
     }
 
-    private func addBuildingAddressNumberLayer(map: MapboxMap, sourceLayer: String) throws {
+    private func addBuildingAddressNumberLayer(map: MapboxMap, sourceId: String, sourceLayer: String) throws {
         var labels = SymbolLayer(id: buildingAddressNumberLayerId, source: sourceId)
         labels.sourceLayer = sourceLayer
         labels.textField = .expression(houseNumberLabelExpression())
@@ -207,19 +356,19 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
                 Exp(.linear)
                 Exp(.zoom)
                 17
-                10
+                11.5
                 20
-                13
+                15
             }
         )
         labels.textAnchor = .constant(.center)
         labels.textJustify = .constant(.center)
-        labels.textOffset = .constant([0, 0])
+        labels.textOffset = .constant([0, -0.35])
         labels.textPitchAlignment = .constant(.viewport)
         labels.textRotationAlignment = .constant(.viewport)
         labels.textVariableAnchor = .constant([.center])
-        labels.textAllowOverlap = .constant(false)
-        labels.textIgnorePlacement = .constant(false)
+        labels.textAllowOverlap = .constant(true)
+        labels.textIgnorePlacement = .constant(true)
         labels.textOcclusionOpacity = .constant(1.0)
         labels.symbolPlacement = .constant(.point)
         labels.symbolZOrder = .constant(.auto)
@@ -227,11 +376,7 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
         labels.symbolElevationReference = .constant(.ground)
         labels.symbolZOffset = .expression(
             Exp(.sum) {
-                Exp(.coalesce) {
-                    Exp(.get) { "height_m" }
-                    Exp(.get) { "height" }
-                    8
-                }
+                MapLayerManager.buildingExtrusionHeightExpression
                 addressLabelCapClearanceMeters
             }
         )
@@ -245,6 +390,9 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
         Exp(.coalesce) {
             Exp(.get) { "house_number_label" }
             Exp(.get) { "house_number" }
+            Exp(.get) { "street_number" }
+            Exp(.get) { "number" }
+            Exp(.get) { "address_number" }
             ""
         }
     }
@@ -275,80 +423,64 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
         }
     }
 
-    private func addParcelLayers(map: MapboxMap, sourceLayer: String) throws {
-        let parcelFilter = Exp(.match) {
-            Exp(.geometryType)
-            "Polygon"
-            true
-            "MultiPolygon"
-            true
-            false
-        }
+    private func addParcelLayers(map: MapboxMap, sourceId: String, sourceLayer: String) throws {
+        let parcelFilter = scopedPolygonFilter()
 
         var fill = FillLayer(id: parcelFillLayerId, source: sourceId)
         fill.sourceLayer = sourceLayer
         fill.fillColor = .expression(statusFillColorExpression(defaultColor: MapStatusColor.untouched))
-        fill.fillOpacity = .constant(0.12)
+        fill.fillOpacity = .expression(parcelOverviewFillOpacityExpression())
         fill.fillAntialias = .constant(true)
-        fill.minZoom = 12
+        fill.minZoom = parcelOverviewMinZoom
+        fill.maxZoom = parcelOverviewMaxZoom
         fill.filter = parcelFilter
         try map.addLayer(fill)
 
         var line = LineLayer(id: parcelLineLayerId, source: sourceId)
         line.sourceLayer = sourceLayer
         line.lineColor = .expression(statusFillColorExpression(defaultColor: MapStatusColor.untouched))
-        line.lineOpacity = .constant(0.62)
+        line.lineOpacity = .expression(parcelLineOpacityExpression())
         line.lineWidth = .expression(
             Exp(.interpolate) {
                 Exp(.linear)
                 Exp(.zoom)
-                12
+                9.5
                 0.35
-                16
-                0.75
-                20
-                1.1
+                11.8
+                0.9
+                12.25
+                0.6
             }
         )
-        line.minZoom = 12
+        line.minZoom = parcelOverviewMinZoom
+        line.maxZoom = parcelOverviewMaxZoom
         line.filter = parcelFilter
         try map.addLayer(line, layerPosition: .above(parcelFillLayerId))
     }
 
-    private func addAddressLayers(map: MapboxMap, sourceLayer: String, usesCirclePolygons: Bool) throws {
-        let pointFilter = Exp(.match) {
-            Exp(.geometryType)
-            "Point"
-            true
-            false
-        }
-        let polygonFilter = Exp(.match) {
-            Exp(.geometryType)
-            "Polygon"
-            true
-            "MultiPolygon"
-            true
-            false
-        }
-        let addressFilter = usesCirclePolygons ? polygonFilter : pointFilter
+    private func addAddressLayers(map: MapboxMap, sourceId: String, sourceLayer: String, usesCirclePolygons: Bool) throws {
+        currentAddressUsesCirclePolygons = usesCirclePolygons
+        let pointFilter = scopedPointFilter()
+        let polygonFilter = scopedPolygonFilter()
+        let addressFilter = addressGeometryFilter(usesCirclePolygons: usesCirclePolygons)
 
         if usesCirclePolygons {
-            var cylinders = FillExtrusionLayer(id: addressCircleLayerId, source: sourceId)
-            cylinders.sourceLayer = sourceLayer
-            cylinders.fillExtrusionColor = .expression(statusFillColorExpression(defaultColor: MapStatusColor.addressMarker))
-            cylinders.fillExtrusionHeight = .constant(addressCylinderHeightMeters)
-            cylinders.fillExtrusionBase = .constant(0)
-            cylinders.fillExtrusionOpacity = .constant(0.98)
-            cylinders.fillExtrusionVerticalGradient = .constant(true)
-            cylinders.minZoom = 14
-            cylinders.filter = polygonFilter
-            try map.addLayer(cylinders)
+            var circles = FillExtrusionLayer(id: addressCircleLayerId, source: sourceId)
+            circles.sourceLayer = sourceLayer
+            circles.fillExtrusionColor = .expression(statusFillColorExpression(defaultColor: MapStatusColor.addressMarker))
+            circles.fillExtrusionOpacity = .constant(0.98)
+            circles.fillExtrusionHeight = .expression(addressCylinderHeightExpression())
+            circles.fillExtrusionBase = .expression(addressCylinderBaseExpression())
+            circles.fillExtrusionColorTransition = StyleTransition(duration: 0.18, delay: 0)
+            circles.fillExtrusionHeightTransition = StyleTransition(duration: 0.18, delay: 0)
+            circles.fillExtrusionVerticalGradient = .constant(false)
+            circles.minZoom = addressLayerMinZoom
+            circles.filter = polygonFilter
+            try map.addLayer(circles)
 
             var selected = FillExtrusionLayer(id: selectedAddressCircleLayerId, source: sourceId)
             selected.sourceLayer = sourceLayer
             selected.fillExtrusionColor = .constant(StyleColor(MapStatusColor.selectedHome))
-            selected.fillExtrusionHeight = .constant(selectedAddressCylinderHeightMeters)
-            selected.fillExtrusionBase = .constant(0)
             selected.fillExtrusionOpacity = .expression(
                 Exp(.switchCase) {
                     Exp(.eq) {
@@ -362,8 +494,12 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
                     0.0
                 }
             )
-            selected.fillExtrusionVerticalGradient = .constant(true)
-            selected.minZoom = 14
+            selected.fillExtrusionHeight = .expression(addressCylinderHeightExpression())
+            selected.fillExtrusionBase = .expression(addressCylinderBaseExpression())
+            selected.fillExtrusionColorTransition = StyleTransition(duration: 0.18, delay: 0)
+            selected.fillExtrusionHeightTransition = StyleTransition(duration: 0.18, delay: 0)
+            selected.fillExtrusionVerticalGradient = .constant(false)
+            selected.minZoom = addressLayerMinZoom
             selected.filter = polygonFilter
             try map.addLayer(selected, layerPosition: .above(addressCircleLayerId))
         } else {
@@ -374,6 +510,10 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
                 Exp(.interpolate) {
                     Exp(.linear)
                     Exp(.zoom)
+                    11.8
+                    2.5
+                    13
+                    3
                     14
                     4
                     17
@@ -385,7 +525,7 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
             circles.circleOpacity = .constant(1.0)
             circles.circleStrokeColor = .constant(StyleColor(.white))
             circles.circleStrokeWidth = .constant(1.4)
-            circles.minZoom = 14
+            circles.minZoom = addressLayerMinZoom
             circles.filter = pointFilter
             try map.addLayer(circles)
 
@@ -396,6 +536,10 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
                 Exp(.interpolate) {
                     Exp(.linear)
                     Exp(.zoom)
+                    11.8
+                    4
+                    13
+                    5
                     14
                     7
                     17
@@ -419,20 +563,14 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
             )
             selected.circleStrokeColor = .constant(StyleColor(.white))
             selected.circleStrokeWidth = .constant(2)
-            selected.minZoom = 14
+            selected.minZoom = addressLayerMinZoom
             selected.filter = pointFilter
             try map.addLayer(selected, layerPosition: .above(addressCircleLayerId))
         }
 
         var labels = SymbolLayer(id: addressNumberLayerId, source: sourceId)
         labels.sourceLayer = sourceLayer
-        labels.textField = .expression(
-            Exp(.coalesce) {
-                Exp(.get) { "house_number_label" }
-                Exp(.get) { "house_number" }
-                ""
-            }
-        )
+        labels.textField = .expression(houseNumberLabelExpression())
         labels.textColor = .constant(StyleColor(.white))
         labels.textHaloColor = .constant(StyleColor(.black))
         labels.textHaloWidth = .constant(1.4)
@@ -441,26 +579,31 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
                 Exp(.linear)
                 Exp(.zoom)
                 17
-                10
+                11.5
                 20
-                13
+                15
             }
         )
         labels.textAnchor = .constant(.center)
         labels.textJustify = .constant(.center)
-        labels.textOffset = .constant([0, 0])
+        labels.textOffset = .constant([0, -0.35])
         labels.textPitchAlignment = .constant(.viewport)
         labels.textRotationAlignment = .constant(.viewport)
         labels.textVariableAnchor = .constant([.center])
-        labels.textAllowOverlap = .constant(usesCirclePolygons)
-        labels.textIgnorePlacement = .constant(usesCirclePolygons)
+        labels.textAllowOverlap = .constant(true)
+        labels.textIgnorePlacement = .constant(true)
         labels.textOcclusionOpacity = .constant(1.0)
         labels.symbolPlacement = .constant(.point)
         labels.symbolZOrder = .constant(.auto)
         if usesCirclePolygons {
             labels.symbolZElevate = .constant(true)
             labels.symbolElevationReference = .constant(.ground)
-            labels.symbolZOffset = .constant(addressCylinderHeightMeters + addressLabelCapClearanceMeters)
+            labels.symbolZOffset = .expression(
+                Exp(.sum) {
+                    addressCylinderHeightExpression()
+                    addressLabelCapClearanceMeters
+                }
+            )
         }
         labels.symbolSortKey = .expression(
             Exp(.coalesce) {
@@ -473,31 +616,82 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
         try map.addLayer(labels, layerPosition: .above(selectedAddressCircleLayerId))
     }
 
-    private func diamondRenderableBuildingFilter() -> Exp {
-        Exp(.all) {
-            Exp(.match) {
-                Exp(.geometryType)
-                "Polygon"
-                true
-                "MultiPolygon"
-                true
-                false
+    private func scopedPointFilter() -> Exp {
+        scopedPointOrLineFilter(pointGeometryFilter())
+    }
+
+    private func scopedPolygonFilter() -> Exp {
+        polygonGeometryFilter()
+    }
+
+    private func addressGeometryFilter(usesCirclePolygons: Bool) -> Exp {
+        usesCirclePolygons ? scopedPolygonFilter() : scopedPointFilter()
+    }
+
+    private func scopedPointOrLineFilter(_ baseFilter: Exp) -> Exp {
+        guard let territoryBoundary else { return baseFilter }
+        return Exp(.all) {
+            baseFilter
+            Exp(.within) {
+                territoryBoundary
             }
-            Exp(.match) {
-                Exp(.downcase) {
-                    Exp(.toString) {
-                        Exp(.coalesce) {
-                            Exp(.get) { "building_type" }
-                            Exp(.get) { "subtype" }
-                            Exp(.get) { "class" }
-                            ""
-                        }
-                    }
+        }
+    }
+
+    private func pointGeometryFilter() -> Exp {
+        Exp(.match) {
+            Exp(.geometryType)
+            "Point"
+            true
+            false
+        }
+    }
+
+    private func polygonGeometryFilter() -> Exp {
+        Exp(.match) {
+            Exp(.geometryType)
+            "Polygon"
+            true
+            "MultiPolygon"
+            true
+            false
+        }
+    }
+
+    private func addressCylinderHeightExpression() -> Exp {
+        Exp(.max) {
+            Exp(.toNumber) {
+                Exp(.coalesce) {
+                    Exp(.featureState) { "height_m" }
+                    Exp(.get) { "height_m" }
+                    Exp(.featureState) { "height" }
+                    Exp(.get) { "height" }
+                    addressCylinderHeightMeters
                 }
-                ["shed", "garage", "garages", "carport", "parking", "parking_garage", "outbuilding", "accessory", "ancillary"]
-                false
-                true
             }
+            addressCylinderHeightMeters
+        }
+    }
+
+    private func addressCylinderBaseExpression() -> Exp {
+        Exp(.max) {
+            Exp(.toNumber) {
+                Exp(.coalesce) {
+                    Exp(.featureState) { "min_height" }
+                    Exp(.get) { "min_height" }
+                    0
+                }
+            }
+            0
+        }
+    }
+
+    private func diamondRenderableBuildingFilter() -> Exp {
+        // Mapbox iOS currently does not evaluate `within` for Polygon/MultiPolygon
+        // features. The PMTiles endpoints are already campaign-scoped; keep this
+        // filter to renderable footprint geometry and minimum area only.
+        Exp(.all) {
+            polygonGeometryFilter()
             Exp(.switchCase) {
                 Exp(.gt) {
                     Exp(.coalesce) {
@@ -529,6 +723,36 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
                 false
             }
             0.82
+            0.0
+        }
+    }
+
+    private func parcelLineOpacityExpression() -> Exp {
+        Exp(.interpolate) {
+            Exp(.linear)
+            Exp(.zoom)
+            9.5
+            0.2
+            11.8
+            Exp(.switchCase) {
+                isActiveStatusExpression()
+                0.9
+                0.62
+            }
+            12.25
+            0.0
+        }
+    }
+
+    private func parcelOverviewFillOpacityExpression() -> Exp {
+        Exp(.interpolate) {
+            Exp(.linear)
+            Exp(.zoom)
+            9.5
+            0.04
+            11.8
+            0.08
+            12.25
             0.0
         }
     }
@@ -565,7 +789,7 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
                 "future_seller"
                 MapStatusColor.hotLead
                 "hot_lead"
-                MapStatusColor.hotLead
+                MapStatusColor.lead
                 "appointment"
                 MapStatusColor.hotLead
                 "follow_up"
@@ -586,6 +810,15 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
                 false
             }
             true
+        }
+    }
+
+    private func isActiveStatusExpression() -> Exp {
+        Exp(.match) {
+            statusValueExpression(defaultStatus: "not_visited")
+            ["visited", "delivered", "talked", "hot", "conversation", "lead", "future_seller", "hot_lead", "appointment", "follow_up", "no_answer", "do_not_knock", "not_interested", "flyer_unvisited"]
+            true
+            false
         }
     }
 

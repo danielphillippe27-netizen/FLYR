@@ -3,6 +3,8 @@ import SwiftUI
 /// Shown when an active session is restored on launch. User must explicitly resume live tracking or end and save.
 struct StaleActiveSessionResolutionView: View {
     @ObservedObject var sessionManager: SessionManager
+    @State private var showDiscardConfirmation = false
+    @State private var isDiscarding = false
 
     private var elapsedText: String {
         let t = sessionManager.elapsedTime
@@ -30,7 +32,7 @@ struct StaleActiveSessionResolutionView: View {
                     .multilineTextAlignment(.center)
 
                 Text(
-                    "We found an open session from \(elapsedText) ago. Resume to keep tracking, or end it now and save your progress."
+                    "We found an open session from \(elapsedText) ago. Resume to keep tracking, end it now and save your progress, or discard it."
                 )
                 .font(.flyrSubheadline)
                 .foregroundStyle(Color.muted)
@@ -58,6 +60,17 @@ struct StaleActiveSessionResolutionView: View {
                             .frame(height: 54)
                     }
                     .buttonStyle(.bordered)
+
+                    Button(role: .destructive) {
+                        showDiscardConfirmation = true
+                    } label: {
+                        Text(isDiscarding ? "Discarding..." : "Discard session")
+                            .font(.system(size: 17, weight: .semibold))
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 54)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isDiscarding)
                 }
                 .padding(.top, 8)
             }
@@ -67,6 +80,18 @@ struct StaleActiveSessionResolutionView: View {
                     .fill(Color.bg)
             )
             .padding(.horizontal, 24)
+        }
+        .alert("Are you sure?", isPresented: $showDiscardConfirmation) {
+            Button("Cancel", role: .cancel) {}
+            Button("Discard", role: .destructive) {
+                isDiscarding = true
+                Task {
+                    await sessionManager.discardRestoredSession()
+                    isDiscarding = false
+                }
+            }
+        } message: {
+            Text("Discarding this session will erase it permanently.")
         }
     }
 }

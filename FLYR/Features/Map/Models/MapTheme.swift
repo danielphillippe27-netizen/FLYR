@@ -10,37 +10,52 @@ struct MapTheme {
     private static let lightAtmosphereHighBlueHex = "#b9e1ff"
     private static let lightAtmosphereHorizonHex = "#e6f5ff"
     private static let lightModeFlatPitchThreshold: CGFloat = 1.0
-    private static let lightModePitchedShadowIntensity = 0.18
     private static let transparentBasemapBuildingColor = StyleColor(red: 255, green: 255, blue: 255, alpha: 0)!
+    private static var retainedStyleObservers: [AnyCancelable] = []
     static let lightAtmosphereBlue = UIColor(red: 0.52, green: 0.78, blue: 0.95, alpha: 1.0)
 
+    /// Hosted style URIs cached by `MapboxOfflineService` for campaign field use (must stay in sync).
+    static let campaignOfflineLightStyleURI = StyleURI(rawValue: "mapbox://styles/mapbox/light-v11")!
+    static let campaignOfflineDarkStyleURI = StyleURI(rawValue: "mapbox://styles/mapbox/dark-v11")!
+
+    static var campaignOfflineStyleURIs: [StyleURI] {
+        [campaignOfflineLightStyleURI, campaignOfflineDarkStyleURI]
+    }
+
+    /// Load the campaign map basemap with the same Mapbox styling used before the
+    /// local-style experiment, so roads and basemap features remain visible.
+    static func loadCampaignMapStyle(
+        useDarkStyle: Bool,
+        preferOfflineStylePacks: Bool,
+        on map: MapboxMap
+    ) {
+        MapStatusColor.useLightMapBuildingDefault = !useDarkStyle
+
+        if useDarkStyle {
+            map.loadStyle(campaignOfflineDarkStyleURI)
+            hideBaseMapAddressNumberLayersWhenStyleLoads(on: map)
+        } else {
+            loadBlueStandardLightStyle(on: map)
+        }
+        print("📴 [MapTheme] Loaded campaign Mapbox style useDarkStyle=\(useDarkStyle) preferOfflineStylePacks=\(preferOfflineStylePacks)")
+    }
+
     static func loadBlueStandardLightStyle(on map: MapboxMap) {
-        map.load(mapStyle: blueStandardLightStyle)
+        map.loadStyle(campaignOfflineLightStyleURI)
         applyBlueLightAtmosphereWhenStyleLoads(on: map)
+        hideBaseMapAddressNumberLayersWhenStyleLoads(on: map)
     }
 
     static func loadStyle(for mode: MapMode, preferLightStyle: Bool = false, on map: MapboxMap) {
-        if mode == .light || (mode == .campaign3D && preferLightStyle) {
+        let usesLightStyle = mode == .light || (mode == .campaign3D && preferLightStyle)
+        MapStatusColor.useLightMapBuildingDefault = usesLightStyle
+
+        if usesLightStyle {
             loadBlueStandardLightStyle(on: map)
         } else {
             map.loadStyle(styleURI(for: mode, preferLightStyle: preferLightStyle))
             hideBaseMapAddressNumberLayersWhenStyleLoads(on: map)
         }
-    }
-
-    private static var blueStandardLightStyle: MapboxMaps.MapStyle {
-        .standard(
-            theme: .default,
-            lightPreset: .day,
-            show3dObjects: false,
-            colorBuildingHighlight: transparentBasemapBuildingColor,
-            colorBuildings: transparentBasemapBuildingColor,
-            colorBuildingSelect: transparentBasemapBuildingColor,
-            show3dBuildings: false,
-            show3dFacades: false,
-            show3dLandmarks: false,
-            show3dTrees: false
-        )
     }
 
     /// A daylight globe atmosphere for light-mode maps so the horizon/sky stays blue without flattening the projection.
@@ -65,12 +80,6 @@ struct MapTheme {
             print("⚠️ [MapTheme] Failed to apply blue light atmosphere: \(error)")
         }
 
-        do {
-            try disableStandard3DObjects(on: map)
-        } catch {
-            print("⚠️ [MapTheme] Failed to disable Standard 3D objects: \(error)")
-        }
-
         hideBaseMapBuildingLayers(on: map)
         hideBaseMapAddressNumberLayers(on: map)
 
@@ -92,13 +101,13 @@ struct MapTheme {
     static func applyLightModeShadowPolicy(to map: MapboxMap, pitch: CGFloat? = nil) {
         let currentPitch = pitch ?? map.cameraState.pitch
         let isFlat2D = currentPitch <= lightModeFlatPitchThreshold
-        let shadowIntensity = isFlat2D ? 0.0 : lightModePitchedShadowIntensity
-        let castsShadows = !isFlat2D
+        let shadowIntensity = 0.0
+        let castsShadows = false
 
         do {
             let directionalLight = DirectionalLight(id: "flyr-light-directional")
                 .color(.white)
-                .intensity(0.34)
+                .intensity(isFlat2D ? 0.12 : 0.18)
                 .direction(azimuthal: 210.0, polar: 38.0)
                 .directionTransition(.zero)
                 .castShadows(castsShadows)
@@ -107,7 +116,7 @@ struct MapTheme {
 
             let ambientLight = AmbientLight(id: "flyr-light-ambient")
                 .color(.white)
-                .intensity(isFlat2D ? 0.92 : 0.78)
+                .intensity(isFlat2D ? 0.94 : 0.9)
                 .intensityTransition(.zero)
 
             try map.setLights(ambient: ambientLight, directional: directionalLight)
@@ -188,16 +197,36 @@ struct MapTheme {
     private static func isAddressNumberToken(_ value: String) -> Bool {
         value.contains("housenum")
             || value.contains("house-num")
-            || value.contains("house_num")
+            || value.contains("house num")
+            || value.contains("housenumber")
             || value.contains("house-number")
-            || value.contains("house_number")
             || value.contains("house number")
+            || value.contains("house_number")
+            || value.contains("house_no")
+            || value.contains("house-no")
+            || value.contains("street_number")
+            || value.contains("street-number")
+            || value.contains("street number")
+            || value.contains("street_no")
+            || value.contains("street-no")
+            || value.contains("addr:housenumber")
+            || value.contains("addr_housenumber")
+            || value.contains("addressnum")
+            || value.contains("address-num")
+            || value.contains("address num")
             || value.contains("address-number")
-            || value.contains("address_number")
             || value.contains("address number")
+            || value.contains("address_number")
             || value.contains("building-number")
-            || value.contains("building_number")
             || value.contains("building number")
+            || value.contains("building_number")
+    }
+
+    private static func retainStyleObserver(_ observer: AnyCancelable) {
+        retainedStyleObservers.append(observer)
+        if retainedStyleObservers.count > 48 {
+            retainedStyleObservers.removeFirst(retainedStyleObservers.count - 48)
+        }
     }
 
     private static func flattenStyleValue(_ value: Any) -> String {
@@ -307,16 +336,28 @@ struct MapTheme {
 
     static func hideBaseMapAddressNumberLayersWhenStyleLoads(on map: MapboxMap) {
         if map.isStyleLoaded {
-            hideBaseMapAddressNumberLayers(on: map)
+            hideBaseMapAddressNumberLayersWithRetries(on: map)
         }
-        _ = map.onStyleLoaded.observeNext { _ in
-            hideBaseMapAddressNumberLayers(on: map)
-        }
-        _ = map.onMapLoaded.observeNext { _ in
-            hideBaseMapAddressNumberLayers(on: map)
-        }
-        _ = map.onMapIdle.observeNext { _ in
-            hideBaseMapAddressNumberLayers(on: map)
+        retainStyleObserver(map.onStyleLoaded.observeNext { _ in
+            hideBaseMapAddressNumberLayersWithRetries(on: map)
+        })
+        retainStyleObserver(map.onMapLoaded.observeNext { _ in
+            hideBaseMapAddressNumberLayersWithRetries(on: map)
+        })
+        retainStyleObserver(map.onMapIdle.observeNext { _ in
+            hideBaseMapAddressNumberLayersWithRetries(on: map)
+        })
+    }
+
+    private static func hideBaseMapAddressNumberLayersWithRetries(on map: MapboxMap) {
+        hideBaseMapAddressNumberLayers(on: map)
+
+        // Some Mapbox styles resolve imported symbol layers just after the first style
+        // callback. Re-assert only this address-number rule without changing app layers.
+        for delay in [0.15, 0.45, 0.9, 1.6] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                hideBaseMapAddressNumberLayers(on: map)
+            }
         }
     }
 
@@ -381,6 +422,6 @@ struct MapTheme {
         }
     }
 
-    private static let lightStyleURI = StyleURI(rawValue: "mapbox://styles/mapbox/streets-v11")!
+    private static let lightStyleURI = campaignOfflineLightStyleURI
     private static let darkStyleURI = StyleURI(rawValue: "mapbox://styles/mapbox/dark-v11")!
 }

@@ -137,14 +137,6 @@ final class FarmDetailViewModel: ObservableObject {
             ))
         }
         
-        // Phase analysis
-        if cycles.isEmpty {
-            recs.append(FarmRecommendation(
-                title: "Generate Cycles",
-                detail: "Cycles help track progress through your farm workflow. Generate cycles to get started."
-            ))
-        }
-        
         recommendations = recs
     }
     
@@ -235,18 +227,128 @@ final class FarmDetailViewModel: ObservableObject {
         generateRecommendations()
     }
 
+    private func actionTitle(for type: FarmTouchType) -> String {
+        switch type {
+        case .flyer:
+            return "Flyer Run"
+        case .doorKnock:
+            return "Door Knock"
+        case .event:
+            return "Community Event"
+        case .newsletter:
+            return "Homeowner Check-In"
+        case .ad:
+            return "Social Ad Campaign"
+        case .custom:
+            return "Pop-By"
+        }
+    }
+
+    private func displayTitle(for touch: FarmTouch) -> String {
+        let trimmed = touch.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty
+            || trimmed.localizedCaseInsensitiveContains("cycle")
+            || touch.type == .custom {
+            return actionTitle(for: touch.type)
+        }
+        return trimmed
+    }
+
     private func executionContext(for touch: FarmTouch, farm: Farm, cycle: FarmCycle, campaignId: UUID) -> FarmExecutionContext {
         FarmExecutionContext(
             farmId: farm.id,
             farmName: farm.name,
             touchId: touch.id,
-            touchTitle: touch.title,
+            touchTitle: displayTitle(for: touch),
             touchDate: touch.date,
             touchType: touch.type,
             campaignId: touch.campaignId ?? campaignId,
             cycleNumber: cycle.cycleNumber,
-            cycleName: cycle.cycleName
+            cycleName: nil
         )
+    }
+
+    func executionContext(for touch: FarmTouch, fallbackCampaignId: UUID?) -> FarmExecutionContext? {
+        guard let farm else {
+            errorMessage = "Farm details are still loading."
+            return nil
+        }
+
+        guard let campaignId = touch.campaignId ?? fallbackCampaignId else {
+            errorMessage = "This touch needs a linked campaign before you can start it."
+            return nil
+        }
+
+        let cycleNumber = FarmCycleResolver.resolveCycleNumber(
+            for: touch,
+            among: touches,
+            touchesPerInterval: max(1, farm.touchesPerInterval ?? farm.frequency)
+        )
+
+        return FarmExecutionContext(
+            farmId: farm.id,
+            farmName: farm.name,
+            touchId: touch.id,
+            touchTitle: displayTitle(for: touch),
+            touchDate: touch.date,
+            touchType: touch.type,
+            campaignId: campaignId,
+            cycleNumber: cycleNumber,
+            cycleName: nil
+        )
+    }
+
+    func ensureDefaultFieldExecutionContext(campaignId: UUID?) async -> FarmExecutionContext? {
+        await ensureSessionExecutionContext(type: .flyer, campaignId: campaignId)
+    }
+
+    func ensureSessionExecutionContext(type: FarmTouchType, campaignId: UUID?) async -> FarmExecutionContext? {
+        guard let farm else {
+            errorMessage = "Farm details are still loading."
+            return nil
+        }
+
+        guard let campaignId else {
+            errorMessage = "This farm needs a linked campaign before you can start a session."
+            return nil
+        }
+
+        let cycle = cycles
+            .sorted { $0.startDate < $1.startDate }
+            .last { $0.startDate <= Date() }
+            ?? cycles.sorted { $0.startDate < $1.startDate }.first
+
+        do {
+            let persisted = try await touchService.createTouch(
+                FarmTouch(
+                    farmId: farm.id,
+                    cycleNumber: cycle?.cycleNumber,
+                    date: Date(),
+                    type: type,
+                    mode: type.defaultModeRawValue,
+                    title: actionTitle(for: type),
+                    orderIndex: touches.count,
+                    completed: false,
+                    campaignId: campaignId
+                )
+            )
+            replaceOrAppendTouch(persisted)
+            return FarmExecutionContext(
+                farmId: farm.id,
+                farmName: farm.name,
+                touchId: persisted.id,
+                touchTitle: displayTitle(for: persisted),
+                touchDate: persisted.date,
+                touchType: persisted.type,
+                campaignId: campaignId,
+                cycleNumber: persisted.cycleNumber ?? cycle?.cycleNumber,
+                cycleName: nil
+            )
+        } catch {
+            errorMessage = "Failed to prepare session: \(error.localizedDescription)"
+            print("❌ [FarmDetailViewModel] Error creating farm session touch: \(error)")
+            return nil
+        }
     }
 
     func ensureExecutionContext(for cycle: FarmCycle, campaignId: UUID) async -> FarmExecutionContext? {
@@ -286,7 +388,8 @@ final class FarmDetailViewModel: ObservableObject {
                     cycleNumber: cycle.cycleNumber,
                     date: preferredTouchDate(for: cycle),
                     type: preferredTouchType(for: cycleTouches, campaignId: campaignId),
-                    title: cycle.cycleName,
+                    mode: preferredTouchType(for: cycleTouches, campaignId: campaignId).defaultModeRawValue,
+                    title: actionTitle(for: preferredTouchType(for: cycleTouches, campaignId: campaignId)),
                     orderIndex: nextOrderIndex(for: cycleTouches),
                     completed: false,
                     campaignId: campaignId
@@ -298,11 +401,11 @@ final class FarmDetailViewModel: ObservableObject {
             let message = error.localizedDescription
             if message.localizedCaseInsensitiveContains("row-level security"),
                message.localizedCaseInsensitiveContains("farm_touches") {
-                errorMessage = "Failed to prepare cycle map: Supabase is blocking farm touch inserts for this farm. The live database likely still needs the workspace-aware farm_touches policy."
+                errorMessage = "Failed to prepare touch: Supabase is blocking farm touch inserts for this farm. The live database likely still needs the workspace-aware farm_touches policy."
             } else {
-                errorMessage = "Failed to prepare cycle map: \(message)"
+                errorMessage = "Failed to prepare touch: \(message)"
             }
-            print("❌ [FarmDetailViewModel] Error ensuring cycle touch for map: \(error)")
+            print("❌ [FarmDetailViewModel] Error ensuring touch for map: \(error)")
             return nil
         }
     }

@@ -3,13 +3,15 @@ import SwiftUI
 enum MetricType: String, CaseIterable {
     case doors = "doorknocks"
     case conversations = "conversations"
-    case distance = "distance"
+
+    static var allCases: [MetricType] {
+        [.doors, .conversations]
+    }
     
     var displayName: String {
         switch self {
         case .doors: return "Doors"
         case .conversations: return "Convo's"
-        case .distance: return "Distance"
         }
     }
     

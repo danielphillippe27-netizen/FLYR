@@ -1,6 +1,6 @@
 import Foundation
 
-struct RouteAssignmentProgress: Equatable, Sendable {
+struct RouteAssignmentProgress: Codable, Equatable, Sendable {
     let completedStops: Int
     let lastStopOrder: Int?
     let lastEventAt: Date?
@@ -31,7 +31,7 @@ struct RouteAssignmentProgress: Equatable, Sendable {
     }
 }
 
-struct RouteAssignmentSummary: Identifiable, Equatable, Sendable {
+struct RouteAssignmentSummary: Identifiable, Codable, Equatable, Sendable {
     let id: UUID
     let routePlanId: UUID
     let name: String
@@ -140,7 +140,7 @@ struct RouteAssignmentSummary: Identifiable, Equatable, Sendable {
     }
 }
 
-struct RoutePlanDetail: Identifiable, Equatable, Sendable {
+struct RoutePlanDetail: Identifiable, Codable, Equatable, Sendable {
     let id: UUID
     let workspaceId: UUID?
     let campaignId: UUID?
@@ -201,7 +201,7 @@ struct RoutePlanDetail: Identifiable, Equatable, Sendable {
     }
 }
 
-struct RoutePlanSegment: Identifiable, Equatable, Sendable {
+struct RoutePlanSegment: Identifiable, Codable, Equatable, Sendable {
     let id: String
     let streetName: String
     let side: String
@@ -225,7 +225,7 @@ struct RoutePlanSegment: Identifiable, Equatable, Sendable {
     }
 }
 
-struct RoutePlanStop: Identifiable, Equatable, Sendable {
+struct RoutePlanStop: Identifiable, Codable, Equatable, Sendable {
     let id: String
     let stopOrder: Int
     let addressId: UUID?

@@ -5,7 +5,7 @@ import Supabase
 
 // MARK: - Overture Address Row (backend response)
 
-/// Address row returned by the backend (Lambda + S3 / Overture).
+/// Address row returned by the backend address lookup service.
 struct OvertureAddressRow: Codable {
     let gersId: String?
     let geometryJson: String?
@@ -128,7 +128,7 @@ struct GenerateAddressListPreviewItem: Codable {
 
 // MARK: - Overture Address Service
 
-/// Backend/API helper for address list generation (Lambda + S3). Frontend calls backend only.
+/// Backend/API helper for ad-hoc address list generation. Frontend calls backend only.
 final class OvertureAddressService {
     static let shared = OvertureAddressService()
 

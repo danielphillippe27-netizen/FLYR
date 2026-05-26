@@ -23,6 +23,10 @@ struct RecordHomeView: View {
         sessionManager.sessionId != nil || sessionManager.isActive
     }
 
+    private var showingCampaignMap: Bool {
+        recordTabMapCampaignId != nil
+    }
+
     var body: some View {
         Group {
             if sessionManager.isNetworkingSession {
@@ -42,7 +46,7 @@ struct RecordHomeView: View {
                 SessionStartView(showCancelButton: false)
             }
         }
-        .toolbar(inSessionMode ? .hidden : .visible, for: .navigationBar)
+        .toolbar((inSessionMode || showingCampaignMap) ? .hidden : .visible, for: .navigationBar)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .ignoresSafeArea(inSessionMode ? .all : [])
         // End session summary is presented from MainTabView.fullScreenCover so it always shows on top

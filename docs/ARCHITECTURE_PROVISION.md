@@ -2,6 +2,8 @@
 
 Short reference for how campaign provisioning works after the migration from MotherDuck to Lambda + S3.
 
+For the current strategic map geometry direction, see `docs/PMTILES_VECTOR_TILES_RECORD.md`: new renderable campaign geometry should use PMTiles-backed vector tiles, with GeoJSON retained as legacy fallback and for lightweight/editing boundaries.
+
 ## Flow Summary
 
 1. **User draws polygon** on the create-campaign map. The map control yields a GeoJSON polygon: `{ type: 'Polygon', coordinates: number[][][] }`.

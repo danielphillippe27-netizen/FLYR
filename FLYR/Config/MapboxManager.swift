@@ -39,10 +39,8 @@ final class MapboxOfflineService {
         addresses: [AddressFeature],
         onProgress: @escaping (Double) -> Void
     ) async throws {
-        let styleURIs = [
-            StyleURI(rawValue: "mapbox://styles/fliper27/cml6z0dhg002301qo9xxc08k4")!,
-            StyleURI(rawValue: "mapbox://styles/fliper27/cml6zc5pq002801qo4lh13o19")!
-        ]
+        // Must match `MapTheme.campaignOfflineStyleURIs` / `CampaignMapboxMapViewRepresentable` offline loads.
+        let styleURIs = MapTheme.campaignOfflineStyleURIs
 
         for (index, styleURI) in styleURIs.enumerated() {
             let baseProgress = Double(index) / Double(styleURIs.count)

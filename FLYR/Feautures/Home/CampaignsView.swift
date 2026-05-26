@@ -17,7 +17,7 @@ struct CampaignsView: View {
             VStack(spacing: 0) {
                 listContent
             }
-            .navigationTitle("Campaigns")
+            .navigationTitle("Campaign")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -170,7 +170,7 @@ private struct CampaignConfidenceDiagnosticsView: View {
 
             HStack(spacing: 12) {
                 summaryTile(
-                    title: "Campaigns",
+                    title: "Campaign",
                     value: "\(totalCampaignsRepresented)"
                 )
                 summaryTile(
@@ -326,7 +326,7 @@ private struct CampaignConfidenceDiagnosticsView: View {
             }
 
             HStack(spacing: 12) {
-                hotspotMetricTile(title: "Campaigns", value: "\(hotspot.campaignsCount)")
+                hotspotMetricTile(title: "Campaign", value: "\(hotspot.campaignsCount)")
                 hotspotMetricTile(title: "Confidence", value: "\(Int((hotspot.avgConfidenceScore * 100).rounded()))%")
                 hotspotMetricTile(title: "Linked", value: "\(Int((hotspot.avgLinkedCoverage * 100).rounded()))%")
             }

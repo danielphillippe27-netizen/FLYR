@@ -64,17 +64,20 @@ enum LeaderboardSortBy: String, CaseIterable {
     case leads = "leads"
     case distance = "distance"
     case time = "time"
+
+    static var allCases: [LeaderboardSortBy] {
+        [.flyers, .conversations]
+    }
     
     var displayName: String {
         switch self {
         case .flyers: return "Doors"
-        case .conversations: return "Conversations"
+        case .conversations: return "Convo's"
         case .leads: return "Leads"
         case .distance: return "Distance"
         case .time: return "Time"
         }
     }
 }
-
 
 

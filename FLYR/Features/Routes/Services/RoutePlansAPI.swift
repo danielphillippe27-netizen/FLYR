@@ -47,11 +47,7 @@ final class RoutePlansAPI {
             debugLog("🏢 [WORKSPACE] Access state workspaceId: \(state.workspaceId ?? "nil")")
             if let workspaceIdString = state.workspaceId,
                let parsedWorkspaceId = UUID(uuidString: workspaceIdString) {
-                WorkspaceContext.shared.update(
-                    workspaceId: parsedWorkspaceId,
-                    name: state.workspaceName,
-                    role: state.role
-                )
+                WorkspaceContext.shared.update(from: state)
                 return parsedWorkspaceId
             }
         } catch {

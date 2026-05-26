@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { SpatialJoinSummary } from '@/lib/services/StableLinkerService';
+import { fetchAllInPages } from '@/lib/supabase/fetchAllInPages';
 
 export type LinkQualityStatus = 'unknown' | 'healthy' | 'degraded' | 'repairing' | 'failed';
 export type CampaignDataQuality = 'strong' | 'usable' | 'weak';
@@ -164,6 +165,102 @@ export class CampaignLinkQualityService {
     if (error) {
       throw new Error(`Failed to persist link quality: ${error.message}`);
     }
+  }
+
+  async assessPersistedLinks(campaignId: string): Promise<LinkQualityAssessment> {
+    const [
+      { count: totalAddresses, error: totalError },
+    ] = await Promise.all([
+      this.supabase
+        .from('campaign_addresses')
+        .select('id', { count: 'exact', head: true })
+        .eq('campaign_id', campaignId),
+    ]);
+
+    if (totalError) {
+      throw new Error(`Failed to count campaign addresses: ${totalError.message}`);
+    }
+
+    const [campaignAddressLinks, buildingAddressLinks] = await Promise.all([
+      fetchAllInPages<{
+        id: string;
+        confidence: number | null;
+        building_id: string | null;
+        building_gers_id: string | null;
+      }>((from, to) =>
+        this.supabase
+          .from('campaign_addresses')
+          .select('id, confidence, building_id, building_gers_id')
+          .eq('campaign_id', campaignId)
+          .range(from, to)
+      ),
+      fetchAllInPages<{
+        address_id: string;
+        confidence: number | null;
+        match_type: string | null;
+      }>((from, to) =>
+        this.supabase
+          .from('building_address_links')
+          .select('address_id, confidence, match_type')
+          .eq('campaign_id', campaignId)
+          .range(from, to)
+      ),
+    ]);
+
+    const total = totalAddresses ?? 0;
+    const linkedAddressIds = new Set<string>();
+    const confidences: number[] = [];
+    let parcelBridgeCount = 0;
+
+    for (const row of campaignAddressLinks ?? []) {
+      if (
+        typeof row.id === 'string' &&
+        (typeof row.building_id === 'string' || typeof row.building_gers_id === 'string')
+      ) {
+        linkedAddressIds.add(row.id);
+        if (typeof row.confidence === 'number') {
+          confidences.push(row.confidence);
+        }
+      }
+    }
+
+    for (const row of buildingAddressLinks ?? []) {
+      if (typeof row.address_id === 'string') {
+        linkedAddressIds.add(row.address_id);
+      }
+      if (typeof row.confidence === 'number') {
+        confidences.push(row.confidence);
+      }
+      if (row.match_type === 'parcel_verified') {
+        parcelBridgeCount += 1;
+      }
+    }
+
+    const matched = linkedAddressIds.size;
+    const coveragePercent = total > 0 ? Math.round((matched / total) * 10000) / 100 : 0;
+    const avgConfidence = confidences.length > 0
+      ? Math.round((confidences.reduce((sum, value) => sum + value, 0) / confidences.length) * 100) / 100
+      : matched > 0 ? 1 : 0;
+
+    return CampaignLinkQualityService.assess(
+      {
+        matched,
+        orphans: Math.max(total - matched, 0),
+        suspect: 0,
+        avgConfidence,
+        coveragePercent,
+        matchBreakdown: {
+          containmentVerified: 0,
+          semanticVerified: 0,
+          containmentSuspect: 0,
+          pointOnSurface: 0,
+          parcelVerified: parcelBridgeCount,
+          proximityVerified: 0,
+          proximityFallback: 0,
+        },
+      },
+      total
+    );
   }
 
   async updateStatus(

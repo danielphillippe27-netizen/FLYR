@@ -5,6 +5,8 @@ struct MainTabView: View {
     @EnvironmentObject var uiState: AppUIState
     @Environment(\.scenePhase) private var scenePhase
     @ObservedObject private var sessionManager = SessionManager.shared
+    @StateObject private var storeV2 = CampaignV2Store.shared
+    @State private var showingNewCampaign = false
     /// Item-driven so cover only shows when we have data; no empty state.
     @State private var endSessionSummaryItem: EndSessionSummaryItem?
 
@@ -46,6 +48,10 @@ struct MainTabView: View {
                         HapticManager.tabSwitch()
                         uiState.selectedTabIndex = index
                     },
+                    onCreate: {
+                        HapticManager.light()
+                        showingNewCampaign = true
+                    },
                     recordHighlight: recordHighlight,
                     accentColor: campaignContext.accentColor
                 )
@@ -77,6 +83,18 @@ struct MainTabView: View {
         }
         .task {
             await sessionManager.restoreActiveSessionIfNeeded()
+        }
+        .fullScreenCover(isPresented: $showingNewCampaign) {
+            NavigationStack {
+                NewCampaignScreen(store: storeV2)
+                    .toolbar {
+                        ToolbarItem(placement: .topBarLeading) {
+                            Button("Cancel") {
+                                showingNewCampaign = false
+                            }
+                        }
+                    }
+            }
         }
         .fullScreenCover(isPresented: $sessionManager.staleActiveSessionNeedsResolution) {
             StaleActiveSessionResolutionView(sessionManager: sessionManager)

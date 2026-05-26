@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Mission Control hero: active session (progress + Resume/End) or idle (Start Session / Browse Campaigns).
+/// Mission Control hero: active session (progress + Resume/End) or idle (Start Session / Browse Campaign).
 struct CampaignHeroCard: View {
     @ObservedObject var sessionManager: SessionManager
     var onStartSession: () -> Void
@@ -117,7 +117,7 @@ struct CampaignHeroCard: View {
 
             if let onBrowse = onBrowseCampaigns {
                 Button(action: onBrowse) {
-                    Text("Browse Campaigns")
+                    Text("Browse Campaign")
                         .font(.system(size: 15, weight: .medium))
                         .foregroundColor(.muted)
                 }

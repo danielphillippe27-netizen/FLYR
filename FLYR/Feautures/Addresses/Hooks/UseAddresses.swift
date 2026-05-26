@@ -28,7 +28,7 @@ final class UseAddresses: ObservableObject {
     ///   - center: Center coordinate for search
     ///   - target: Target number of addresses to return
     ///   - radiusMeters: Search radius in meters (default: 30)
-    ///   - campaignId: Optional; when set, backend uses it for generate-address-list (New Campaign flow passes nil → Mapbox)
+    ///   - campaignId: Optional campaign context for server address lookup.
     func fetchNearest(center: CLLocationCoordinate2D, target: Int, radiusMeters: Double = 30, campaignId: UUID? = nil) {
         Task { [weak self] in
             guard let self else { return }

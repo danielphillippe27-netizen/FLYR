@@ -198,20 +198,21 @@ struct QuickStartMapView: View {
             }
 
             do {
-                let campaign = try await HomesService.shared.createQuickStartCampaignShell(
+                let quickStart = try await HomesService.shared.quickStartCampaignForCurrentLocation(
                     center: location.coordinate,
                     radiusMeters: radiusMeters,
                     limitHomes: limitHomes,
                     workspaceId: workspaceId
                 )
                 try await HomesService.shared.prepareQuickStartCampaignData(
-                    campaignId: campaign.id,
+                    campaignId: quickStart.campaign.id,
+                    center: location.coordinate,
                     radiusMeters: radiusMeters
                 )
 
                 await MainActor.run {
-                    print("✅ [QuickStart] Campaign created: \(campaign.id)")
-                    createdCampaignId = campaign.id
+                    print("✅ [QuickStart] Campaign ready: \(quickStart.campaign.id) new=\(quickStart.isNew)")
+                    createdCampaignId = quickStart.campaign.id
                     isPreparingCampaign = false
                 }
             } catch {

@@ -16,6 +16,8 @@ final class MapController {
     private let layerCrushedBuildings = "crushed-buildings"
     private let sourceCampaignGeo = "campaign-geo"
     private let sourceCampaignBuildings = "campaign-buildings"
+    private let simplifiedBuildingCapHeight: Double = 1.2
+    private var campaignBuildingFeatureIdByAddressId: [String: String] = [:]
     
     /// Apply a map mode to the map view. When mode is campaign3D, pass preferLightStyle: true to keep light base in light view.
     func applyMode(_ mode: MapMode, to mapView: MapView, campaignPolygon: [CLLocationCoordinate2D]? = nil, campaignId: UUID? = nil, preferLightStyle: Bool = false) {
@@ -81,7 +83,7 @@ final class MapController {
         print("✅ [MapController] Loading style: \(mode.rawValue) preferLight: \(preferLightStyle)")
     }
     
-    /// Add 3D building extrusions (all buildings, black in dark mode, white in light mode)
+    /// Add 3D building extrusions (all buildings, dark slate in dark mode, light slate in light mode)
     func add3DBuildings(to mapView: MapView) {
         guard let map = mapView.mapboxMap else { return }
         
@@ -95,16 +97,17 @@ final class MapController {
             layer.sourceLayer = "building"
             layer.minZoom = 13
             layer.fillExtrusionOpacity = .constant(0.9)
-            layer.fillExtrusionHeight = .expression(Exp(.get) { "height" })
-            layer.fillExtrusionBase = .expression(Exp(.get) { "min_height" })
+            layer.fillExtrusionHeight = .expression(MapLayerManager.buildingExtrusionHeightExpression)
+            layer.fillExtrusionBase = .expression(MapLayerManager.buildingExtrusionBaseExpression)
+            layer.fillExtrusionVerticalGradient = .constant(false)
             
             // Use feature-state to support building selection highlighting
             // Check if current style is dark by checking the style URI
             let isDarkMode = map.styleURI == .dark
-            let defaultBuildingColor: UIColor = isDarkMode ? .black : .white
+            let defaultBuildingColor: UIColor = isDarkMode ? MapStatusColor.untouchedDark : MapStatusColor.untouchedLight
             let selectedColor: UIColor = MapStatusColor.selectedHome
             
-            // Expression: if feature-state("selected") is true, use red, otherwise use default color
+            // Expression: if feature-state("selected") is true, use selected slate, otherwise use the map default.
             // Use match with boolean converted to string for matching
             layer.fillExtrusionColor = .expression(
                 Exp(.match) {
@@ -121,18 +124,18 @@ final class MapController {
             )
             
             try map.addLayer(layer)
-            print("✅ [MapController] Added 3D buildings layer with feature-state support (color: \(isDarkMode ? "black" : "white"), selected: light slate)")
+            print("✅ [MapController] Added 3D buildings layer with feature-state support (color: \(isDarkMode ? "dark slate" : "light slate"), selected: light slate)")
         } catch {
             print("❌ [MapController] Failed to add 3D buildings: \(error)")
         }
     }
     
-    /// Add white buildings for campaign addresses
-    /// Fetches building polygons for campaign addresses and displays them in white
+    /// Add highlighted buildings for campaign addresses.
+    /// Fetches building polygons for campaign addresses and displays them with the current map's default building color.
     /// 
     /// In 3D campaign mode, this creates a visual distinction:
-    /// - Campaign buildings (with pins/addresses): White, fully opaque, highlighted
-    /// - Non-campaign buildings: Black, dimmed (via crushSurroundings), lower opacity
+    /// - Campaign buildings (with pins/addresses): full opacity, highlighted
+    /// - Non-campaign buildings: dimmed (via crushSurroundings), lower opacity
     /// This makes campaign buildings stand out clearly against the dimmed surroundings.
     func addCampaignAddressBuildings(to mapView: MapView, campaignId: UUID) async {
         guard let map = mapView.mapboxMap else { return }
@@ -222,7 +225,7 @@ final class MapController {
             buildingsSource.promoteId2 = .constant("gers_id")
             try map.addSource(buildingsSource)
             
-            // Add white buildings layer (only buildings for campaign addresses)
+            // Add campaign buildings layer (only buildings for campaign addresses)
             if map.allLayerIdentifiers.contains(where: { $0.id == layerCampaign3D }) {
                 try map.removeLayer(withId: layerCampaign3D)
             }
@@ -231,17 +234,18 @@ final class MapController {
             layer.minZoom = 13
             // Full opacity for campaign buildings - they should stand out clearly
             layer.fillExtrusionOpacity = .constant(1.0)
-            layer.fillExtrusionHeight = .expression(Exp(.get) { "height" })
-            layer.fillExtrusionBase = .expression(Exp(.get) { "min_height" })
+            layer.fillExtrusionHeight = .expression(MapLayerManager.selectedBuildingExtrusionHeightExpression)
+            layer.fillExtrusionBase = .expression(MapLayerManager.buildingExtrusionBaseExpression)
+            layer.fillExtrusionVerticalGradient = .constant(false)
             
-            // Use feature-state to support building selection highlighting and status-based coloring
-            // Color priority: selected (red) > status (color by status) > default (white)
+            // Use feature-state to support building selection highlighting and status-based coloring.
+            // Selected unvisited homes go light grey; saved statuses keep their own color.
             let selectedColor: UIColor = MapStatusColor.selectedHome
-            let defaultColor: UIColor = .white // Campaign buildings default to white
+            let defaultColor: UIColor = MapStatusColor.untouched
             
-            // Status color mapping (conversation -> green, lead -> blue, appointment/follow-up -> gold)
+            // Status color mapping (talked -> green, lead -> blue, appointment/follow-up -> gold)
             let statusColors: [String: UIColor] = [
-                "none": .white,
+                "none": defaultColor,
                 "no_answer": MapStatusColor.noOneHome,
                 "delivered": MapStatusColor.touched,
                 "talked": MapStatusColor.conversations,
@@ -253,19 +257,27 @@ final class MapController {
                 "hot_lead": MapStatusColor.lead
             ]
             
-            // Build color expression with priority: selected > status > default
-            // Use match with boolean converted to string for boolean condition, match for string status
             layer.fillExtrusionColor = .expression(
-                Exp(.match) {
-                    Exp(.toString) {
+                Exp(.switchCase) {
+                    Exp(.all) {
                         Exp(.eq) {
-                            Exp(.featureState) { "selected" }
+                            Exp(.coalesce) {
+                                Exp(.featureState) { "selected" }
+                                false
+                            }
                             true
                         }
+                        Exp(.match) {
+                            Exp(.coalesce) {
+                                Exp(.featureState) { "status" }
+                                "none"
+                            }
+                            ["none", "not_visited", "unvisited", "flyer_unvisited"]
+                            true
+                            false
+                        }
                     }
-                    "true"  // label for true
-                    selectedColor  // output if true (red)
-                    // If not selected, check status and return status color
+                    selectedColor
                     Exp(.match) {
                         Exp(.featureState) { "status" }
                         "none"
@@ -288,15 +300,18 @@ final class MapController {
                         statusColors["follow_up"] ?? defaultColor
                         "hot_lead"
                         statusColors["hot_lead"] ?? defaultColor
-                        // Default fallback if status doesn't match
                         defaultColor
                     }
                 }
             )
             
             try map.addLayer(layer)
-            print("✅ [MapController] Added white buildings layer with feature-state support (\(mapboxFeatures.count) buildings) for campaign \(campaignId)")
+            print("✅ [MapController] Added campaign buildings layer with feature-state support (\(mapboxFeatures.count) buildings) for campaign \(campaignId)")
             
+            campaignBuildingFeatureIdByAddressId = gersIdByAddressId.reduce(into: [:]) { result, pair in
+                result[pair.key.lowercased()] = pair.value
+            }
+
             // Apply feature-state for each building based on status
             if let statuses = statuses {
                 // Convert [address_id: status] to [gers_id: status] to match feature IDs/promoteId.
@@ -341,7 +356,7 @@ final class MapController {
     }
     
     /// Add campaign-only 3D extrusions with polygon filter
-    /// Queries buildings within the polygon and displays them in white
+    /// Queries buildings within the polygon and displays them with the current map's default building color.
     func addCampaignExtrusions(to mapView: MapView, polygon: [CLLocationCoordinate2D]) async {
         guard let map = mapView.mapboxMap else { return }
         
@@ -384,7 +399,7 @@ final class MapController {
             buildingsSource.data = .featureCollection(buildingsInPolygon)
             try map.addSource(buildingsSource)
             
-            // Add white buildings layer (only buildings inside polygon)
+            // Add campaign buildings layer (only buildings inside polygon)
             if map.allLayerIdentifiers.contains(where: { $0.id == layerCampaign3D }) {
                 try map.removeLayer(withId: layerCampaign3D)
             }
@@ -392,14 +407,15 @@ final class MapController {
             var layer = FillExtrusionLayer(id: layerCampaign3D, source: sourceCampaignBuildings)
             layer.minZoom = 13
             layer.fillExtrusionOpacity = .constant(1.0)
-            layer.fillExtrusionHeight = .expression(Exp(.get) { "height" })
-            layer.fillExtrusionBase = .expression(Exp(.get) { "min_height" })
+            layer.fillExtrusionHeight = .expression(MapLayerManager.selectedBuildingExtrusionHeightExpression)
+            layer.fillExtrusionBase = .expression(MapLayerManager.buildingExtrusionBaseExpression)
+            layer.fillExtrusionVerticalGradient = .constant(false)
             
             // Use feature-state to support building selection highlighting
             let selectedColor: UIColor = MapStatusColor.selectedHome
-            let defaultColor: UIColor = .white
+            let defaultColor: UIColor = MapStatusColor.untouched
             
-            // Expression: if feature-state("selected") is true, use red, otherwise use white
+            // Expression: if feature-state("selected") is true, use selected slate, otherwise use the map default.
             // Use match with boolean converted to string for matching
             layer.fillExtrusionColor = .expression(
                 Exp(.match) {
@@ -410,13 +426,13 @@ final class MapController {
                         }
                     }
                     "true"  // label for true
-                    selectedColor  // output if true (red)
-                    defaultColor  // fallback if false (white)
+                    selectedColor  // output if true
+                    defaultColor  // fallback if false
                 }
             )
             
             try map.addLayer(layer)
-            print("✅ [MapController] Added white buildings layer with feature-state support (\(buildingsInPolygon.features.count) buildings)")
+            print("✅ [MapController] Added campaign buildings layer with feature-state support (\(buildingsInPolygon.features.count) buildings)")
         } catch {
             print("❌ [MapController] Failed to add campaign extrusions: \(error)")
         }
@@ -606,11 +622,11 @@ final class MapController {
         return feature
     }
     
-    /// Show all buildings in black/dimmed (for campaign mode - buildings outside target)
+    /// Show all surrounding buildings dimmed (for campaign mode - buildings outside target)
     /// 
     /// This dims all non-campaign buildings to create visual contrast:
-    /// - Non-campaign buildings: Black color, reduced opacity (0.7) for dimming effect
-    /// - Campaign buildings: White, full opacity (rendered above this layer)
+    /// - Non-campaign buildings: dark slate, reduced opacity for dimming effect
+    /// - Campaign buildings: full opacity (rendered above this layer)
     /// The reduced opacity helps campaign buildings stand out more clearly.
     func crushSurroundings(to mapView: MapView) {
         guard let map = mapView.mapboxMap else { return }
@@ -624,17 +640,18 @@ final class MapController {
             var layer = FillExtrusionLayer(id: layerCrushedBuildings, source: "composite")
             layer.sourceLayer = "building"
             layer.minZoom = 13
-            layer.fillExtrusionHeight = .expression(Exp(.get) { "height" })
-            layer.fillExtrusionBase = .expression(Exp(.get) { "min_height" })
+            layer.fillExtrusionHeight = .expression(MapLayerManager.buildingExtrusionHeightExpression)
+            layer.fillExtrusionBase = .expression(MapLayerManager.buildingExtrusionBaseExpression)
             // Dimmed opacity (0.3) to dim non-campaign buildings for better contrast
             layer.fillExtrusionOpacity = .constant(0.3)
+            layer.fillExtrusionVerticalGradient = .constant(false)
             
             // Use feature-state to support building selection highlighting
-            // Color priority: selected (red) > default (black for dimmed buildings)
+            // Color priority: selected > default (dark slate for dimmed buildings)
             let selectedColor: UIColor = MapStatusColor.selectedHome
-            let defaultColor: UIColor = .black // Non-campaign buildings are black and dimmed
+            let defaultColor: UIColor = MapStatusColor.untouchedDark
             
-            // Expression: if feature-state("selected") is true, use red, otherwise use black
+            // Expression: if feature-state("selected") is true, use selected slate, otherwise use dark slate.
             // Use match with boolean converted to string for matching
             layer.fillExtrusionColor = .expression(
                 Exp(.match) {
@@ -645,17 +662,17 @@ final class MapController {
                         }
                     }
                     "true"  // label for true
-                    selectedColor  // output if true (red)
-                    defaultColor  // fallback if false (black)
+                    selectedColor  // output if true
+                    defaultColor  // fallback if false
                 }
             )
             
             // Add layer first (campaign buildings layer will be added above it later)
             // This ensures campaign buildings appear on top of dimmed surroundings
             try map.addLayer(layer)
-            print("✅ [MapController] Added dimmed buildings layer (opacity 0.7) with feature-state support")
+            print("✅ [MapController] Added dimmed buildings layer (opacity 0.3) with feature-state support")
         } catch {
-            print("❌ [MapController] Failed to add black buildings: \(error)")
+            print("❌ [MapController] Failed to add dimmed buildings: \(error)")
         }
     }
     
@@ -692,6 +709,8 @@ final class MapController {
         }
         
         for (addressId, status) in statuses {
+            let normalizedAddressId = addressId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            let featureId = campaignBuildingFeatureIdByAddressId[normalizedAddressId] ?? addressId
             let state: [String: Any] = [
                 "status": status.rawValue,
                 "selected": false
@@ -700,11 +719,11 @@ final class MapController {
             map.setFeatureState(
                 sourceId: sourceCampaignBuildings,
                 sourceLayerId: nil,
-                featureId: addressId,
+                featureId: featureId,
                 state: state
             ) { result in
                 if case .failure(let error) = result {
-                    print("⚠️ [MapController] Failed to set feature-state for \(addressId): \(error)")
+                    print("⚠️ [MapController] Failed to set feature-state for \(featureId) address=\(addressId): \(error)")
                 }
             }
         }

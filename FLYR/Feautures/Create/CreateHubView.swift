@@ -8,7 +8,6 @@ struct CreateHubView: View {
     @StateObject private var storeV2 = CampaignV2Store.shared
     
     @State private var navigateToCampaign = false
-    @State private var navigateToFarm = false
     @State private var showPaywall = false
     
     var body: some View {
@@ -61,10 +60,6 @@ struct CreateHubView: View {
             .navigationDestination(isPresented: $navigateToCampaign) {
                 NewCampaignScreen(store: storeV2)
             }
-            .sheet(isPresented: $navigateToFarm) {
-                CreateFarmView()
-                    .environmentObject(AuthManager.shared)
-            }
             .sheet(isPresented: $showPaywall) {
                 PaywallView()
             }
@@ -84,8 +79,6 @@ struct CreateHubView: View {
                     }
                 }
             }
-        case .farm:
-            navigateToFarm = true
         }
     }
 
@@ -107,12 +100,11 @@ struct CreateHubView: View {
 }
 
 enum CreateHubOption: String, CaseIterable, Identifiable {
-    case campaign, farm
+    case campaign
     var id: String { rawValue }
     var title: String {
         switch self {
         case .campaign: "Campaign"
-        case .farm: "Farm"
         }
     }
 }
@@ -121,6 +113,5 @@ enum CreateHubOption: String, CaseIterable, Identifiable {
     CreateHubView()
         .environmentObject(AppUIState())
 }
-
 
 

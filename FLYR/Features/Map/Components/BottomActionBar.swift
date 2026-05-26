@@ -2,7 +2,7 @@ import SwiftUI
 import CoreLocation
 import UIKit
 
-/// Session tools bar: Pause/Resume only. Stats and Finish are in the map overlay; Next targets removed for now.
+/// Session utility tray. Pause/resume, stats, and finish are in the map overlay.
 struct BottomActionBar: View {
     enum MenuVariant {
         case standard
@@ -12,15 +12,29 @@ struct BottomActionBar: View {
     @ObservedObject var sessionManager: SessionManager
     @Binding var showingTargets: Bool
     @Binding var statsExpanded: Bool
+    @Binding var isExpanded: Bool
     var menuVariant: MenuVariant = .campaign
+    @Environment(\.colorScheme) private var colorScheme
     @StateObject private var beaconService = SessionSafetyBeaconService.shared
     @StateObject private var sharedLiveCanvassingService = SharedLiveCanvassingService.shared
     @State private var showingBeaconSheet = false
     @State private var showingInfoSheet = false
     @State private var showingCheckInAlert = false
-    @State private var isExpanded = false
     @State private var localErrorMessage: String?
     @State private var liveSessionShareSheet: BottomActionBarLiveSessionShareSheetPresentation?
+    private let cardCornerRadius: CGFloat = 34
+
+    private var isLightMode: Bool { colorScheme == .light }
+    private var cardBackground: Color { isLightMode ? .white : Color.black.opacity(0.98) }
+    private var expandedBackground: Color { isLightMode ? .white : Color.black.opacity(0.96) }
+    private var handleColor: Color { isLightMode ? Color.black.opacity(0.22) : Color.white.opacity(0.22) }
+    private var cardStroke: Color { isLightMode ? Color.black.opacity(0.08) : Color.white.opacity(0.08) }
+    private var dividerColor: Color { isLightMode ? Color.black.opacity(0.08) : Color.white.opacity(0.08) }
+    private var primaryText: Color { isLightMode ? .black : .white }
+    private var secondaryText: Color { isLightMode ? Color(uiColor: .secondaryLabel) : Color.white.opacity(0.68) }
+    private var defaultIconTint: Color { isLightMode ? .black : .white }
+    private var chevronTint: Color { isLightMode ? Color.black.opacity(0.34) : Color.white.opacity(0.38) }
+    private var cardShadow: Color { .black.opacity(isLightMode ? 0.18 : 0.26) }
 
     private var liveInviteAvailability: SharedLiveCanvassingAvailability {
         sharedLiveCanvassingService.inviteAvailability(for: sessionManager.campaignId)
@@ -74,16 +88,13 @@ struct BottomActionBar: View {
     var body: some View {
         VStack(spacing: 0) {
             Capsule()
-                .fill(Color.white.opacity(0.22))
-                .frame(width: 36, height: 5)
-                .padding(.top, 6)
-                .padding(.bottom, isExpanded ? 18 : 12)
+                .fill(handleColor)
+                .frame(width: 48, height: 5)
+                .padding(.top, 10)
+                .padding(.bottom, isExpanded ? 14 : 12)
                 .onTapGesture {
                     toggleExpanded()
                 }
-
-            pauseButton
-
             if isExpanded {
                 VStack(spacing: 0) {
                     if showsCampaignSessionTools {
@@ -91,75 +102,77 @@ struct BottomActionBar: View {
                             title: "Invite Users to Live Session",
                             subtitle: liveSessionInviteSubtitle,
                             systemImage: "person.badge.plus",
-                            tint: liveInviteUnavailable ? .orange : (sharedLiveCanvassingService.isJoined ? .green : .white),
+                            tint: liveInviteUnavailable ? .orange : (sharedLiveCanvassingService.isJoined ? .green : defaultIconTint),
                             trailingText: liveInviteUnavailable ? "Unavailable" : (sharedLiveCanvassingService.isJoined ? "Live" : "Invite"),
                             isDisabled: liveInviteUnavailable,
                             action: { inviteUsersToLiveSession() }
                         )
 
                         Divider()
-                            .overlay(Color.white.opacity(0.08))
+                            .overlay(dividerColor)
                     }
 
                     actionRow(
                         title: "Information",
                         subtitle: "Map tips, gestures, and session details",
                         systemImage: "info.circle",
-                        tint: .white,
+                        tint: defaultIconTint,
                         trailingText: nil,
                         action: { showingInfoSheet = true }
                     )
 
                     Divider()
-                        .overlay(Color.white.opacity(0.08))
+                        .overlay(dividerColor)
 
                     actionRow(
                         title: "Beacon",
                         subtitle: beaconEnabled ? "Sharing available for this session" : "Set up live location sharing",
                         systemImage: beaconEnabled ? "dot.radiowaves.right" : "dot.radiowaves.left.and.right",
-                        tint: beaconEnabled ? .green : .white,
+                        tint: beaconEnabled ? .green : defaultIconTint,
                         trailingText: beaconEnabled ? "On" : "Off",
                         action: { showingBeaconSheet = true }
                     )
 
                     Divider()
-                        .overlay(Color.white.opacity(0.08))
+                        .overlay(dividerColor)
 
                     if showsCampaignSessionTools {
                         toggleRow(
                             title: "GPS Proximity",
                             subtitle: gpsProximitySubtitle,
                             systemImage: "location.circle.fill",
-                            tint: .white,
+                            tint: defaultIconTint,
                             isOn: gpsProximityBinding
                         )
 
                         Divider()
-                            .overlay(Color.white.opacity(0.08))
+                            .overlay(dividerColor)
                     }
 
                     gpsRow
                 }
-                .background(Color.black.opacity(0.96))
-                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                .padding(.top, 16)
+                .background(expandedBackground)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
         }
-        .padding(.horizontal, 10)
-        .padding(.top, 8)
-        .padding(.bottom, isExpanded ? 14 : 12)
+        .padding(.horizontal, 12)
+        .padding(.top, 0)
+        .padding(.bottom, isExpanded ? 16 : 12)
         .frame(maxWidth: .infinity)
         .background(
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .fill(Color(hex: "141414").opacity(0.88))
+            RoundedRectangle(cornerRadius: cardCornerRadius, style: .continuous)
+                .fill(cardBackground)
                 .overlay {
-                    RoundedRectangle(cornerRadius: 22, style: .continuous)
-                        .stroke(Color.white.opacity(0.06), lineWidth: 1)
+                    RoundedRectangle(cornerRadius: cardCornerRadius, style: .continuous)
+                        .stroke(cardStroke, lineWidth: 1)
                 }
-                .shadow(color: .black.opacity(0.26), radius: 20, x: 0, y: 12)
+                .shadow(color: cardShadow, radius: 20, x: 0, y: 12)
         )
         .padding(.horizontal, 12)
         .padding(.bottom, 10)
+        .opacity(isExpanded ? 1 : 0)
+        .allowsHitTesting(isExpanded)
+        .accessibilityHidden(!isExpanded)
         .gesture(
             DragGesture(minimumDistance: 10)
                 .onEnded { value in
@@ -233,31 +246,6 @@ struct BottomActionBar: View {
         })
     }
 
-    private var pauseButton: some View {
-        Button {
-            if sessionManager.isPaused {
-                Task { await sessionManager.resume() }
-            } else {
-                Task { await sessionManager.pause() }
-            }
-        } label: {
-            HStack(spacing: 8) {
-                Image(systemName: sessionManager.isPaused ? "play.fill" : "pause.fill")
-                    .font(.system(size: 14, weight: .semibold))
-                Text(sessionManager.isPaused ? "Resume" : "Pause")
-                    .font(.flyrHeadline)
-            }
-            .foregroundStyle(.white)
-            .frame(maxWidth: .infinity, minHeight: 52)
-            .background(
-                Capsule()
-                    .fill(Color.flyrPrimary)
-                    .shadow(color: Color.flyrPrimary.opacity(0.2), radius: 10, x: 0, y: 4)
-            )
-        }
-        .buttonStyle(.plain)
-    }
-
     private var gpsRow: some View {
         HStack(spacing: 12) {
             Image(systemName: gpsStatus.systemImage)
@@ -268,10 +256,10 @@ struct BottomActionBar: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text("GPS Signal")
                     .font(.flyrSubheadline)
-                    .foregroundStyle(.white)
+                    .foregroundStyle(primaryText)
                 Text(gpsStatus.detail)
                     .font(.flyrCaption)
-                    .foregroundStyle(Color.white.opacity(0.68))
+                    .foregroundStyle(secondaryText)
                     .lineLimit(2)
             }
 
@@ -307,10 +295,10 @@ struct BottomActionBar: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(title)
                         .font(.flyrSubheadline)
-                        .foregroundStyle(.white)
+                        .foregroundStyle(primaryText)
                     Text(subtitle)
                         .font(.flyrCaption)
-                        .foregroundStyle(Color.white.opacity(0.68))
+                        .foregroundStyle(secondaryText)
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
@@ -324,7 +312,7 @@ struct BottomActionBar: View {
 
                 Image(systemName: "chevron.right")
                     .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Color.white.opacity(0.38))
+                    .foregroundStyle(chevronTint)
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 15)
@@ -351,10 +339,10 @@ struct BottomActionBar: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(title)
                     .font(.flyrSubheadline)
-                    .foregroundStyle(.white)
+                    .foregroundStyle(primaryText)
                 Text(subtitle)
                     .font(.flyrCaption)
-                    .foregroundStyle(Color.white.opacity(0.68))
+                    .foregroundStyle(secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
             }
 

@@ -1,15 +1,17 @@
 import { GetObjectCommand, ListObjectsV2Command, S3Client } from '@aws-sdk/client-s3';
 import { bbox as turfBbox, booleanIntersects, feature } from '@turf/turf';
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { gunzipSync } from 'zlib';
+import { createGunzip, gunzipSync } from 'zlib';
+import { Readable } from 'stream';
 import * as wkx from 'wkx';
 import { fetchAllInPages } from '@/lib/supabase/fetchAllInPages';
 import { StableLinkerService, type BuildingFeature as SnapshotBuildingFeature } from '@/lib/services/StableLinkerService';
 import { TownhouseSplitterService } from '@/lib/services/TownhouseSplitterService';
 import { CampaignMapModeService } from '@/lib/services/CampaignMapModeService';
+import regionBounds from '../../scripts/regions.json';
 
 const PARCEL_BUCKET = 'flyr-pro-addresses-2025';
-const PARCEL_PREFIX = 'gold-standard/canada/ontario';
+const PARCEL_ROOT_PREFIX = 'gold-standard';
 const PARCEL_BATCH_SIZE = 500;
 
 export type ParcelEnrichmentStatus =
@@ -20,12 +22,7 @@ export type ParcelEnrichmentStatus =
   | 'failed'
   | 'skipped';
 
-type SupportedParcelSourceId =
-  | 'toronto_parcels'
-  | 'ajax_parcels'
-  | 'pickering_parcels'
-  | 'oshawa_parcels'
-  | 'clarington_parcels';
+type SupportedParcelSourceId = string;
 
 type GeoJSONPolygon = {
   type: 'Polygon';
@@ -78,6 +75,7 @@ type ParcelEnrichmentDebug = {
   mode?: 'bbox_only' | 'polygon_intersects';
   source_id?: string | null;
   s3_key?: string | null;
+  available_source_ids?: string[];
   scanned_lines?: number;
   parsed_records?: number;
   bbox_candidates?: number;
@@ -102,81 +100,164 @@ type ParcelEnrichmentDebug = {
   completed_at?: string;
 };
 
-const LOCALITY_TO_SOURCE_ID: Record<string, SupportedParcelSourceId> = {
-  ajax: 'ajax_parcels',
-  bowmanville: 'clarington_parcels',
-  clarington: 'clarington_parcels',
-  courtice: 'clarington_parcels',
-  'city of ajax': 'ajax_parcels',
-  'city of oshawa': 'oshawa_parcels',
-  'city of pickering': 'pickering_parcels',
-  'east york': 'toronto_parcels',
-  etobicoke: 'toronto_parcels',
-  newcastle: 'clarington_parcels',
-  'north york': 'toronto_parcels',
-  oshawa: 'oshawa_parcels',
-  pickering: 'pickering_parcels',
-  scarborough: 'toronto_parcels',
-  toronto: 'toronto_parcels',
-  york: 'toronto_parcels',
+interface RegionBoundsRow {
+  code: string;
+  name: string;
+  country: string;
+  bbox: [number, number, number, number];
+}
+
+type RegionMetadata = {
+  regionCode: string;
+  countryCode: string;
+  countrySlug: string;
+  regionSlugCandidates: string[];
+  regionWideSourceIds: string[];
 };
 
-const SOURCE_BOUNDS: Record<SupportedParcelSourceId, [number, number, number, number]> = {
-  ajax_parcels: [-79.095, 43.79, -78.94, 43.93],
-  clarington_parcels: [-78.86, 43.79, -78.42, 44.12],
-  oshawa_parcels: [-78.99, 43.78, -78.74, 44.05],
-  pickering_parcels: [-79.22, 43.75, -78.95, 44.02],
-  toronto_parcels: [-79.65, 43.56, -79.10, 43.88],
+type ParcelDatasetRecord = {
+  regionCode: string;
+  countrySlug: string;
+  regionSlug: string;
+  sourceId: SupportedParcelSourceId;
+  key: string;
+  datePart: string;
+  localityAliases: string[];
+  isRegionWide: boolean;
 };
 
-const LOCALITY_ALIASES: Record<string, string> = {
-  to: 'toronto',
-  'the corporation of the city of ajax': 'ajax',
-  'the corporation of the city of oshawa': 'oshawa',
-  'the corporation of the city of pickering': 'pickering',
-  'the corporation of the municipality of clarington': 'clarington',
-  'municipality of clarington': 'clarington',
-  'town of ajax': 'ajax',
-  'town of pickering': 'pickering',
+const SOURCE_ID_LOCALITY_ALIASES: Record<string, string[]> = {
+  clarington_parcels: ['bowmanville', 'courtice', 'newcastle'],
+  strathcona_parcels: ['sherwood park'],
+  toronto_parcels: ['east york', 'etobicoke', 'north york', 'scarborough', 'york'],
+  york_region_parcels: [
+    'aurora',
+    'east gwillimbury',
+    'georgina',
+    'king',
+    'markham',
+    'newmarket',
+    'richmond hill',
+    'thornhill',
+    'vaughan',
+    'whitchurch-stouffville',
+  ],
 };
+
+const REGION_ROWS = regionBounds as RegionBoundsRow[];
+
+const REGION_METADATA_BY_CODE = new Map<string, RegionMetadata>(
+  REGION_ROWS.map((row) => {
+    const countrySlug = row.country === 'CA' ? 'canada' : row.country.toLowerCase();
+    const regionNameSlug = slugifyForS3(row.name);
+    const regionCodeSlug = row.code.toLowerCase();
+    const regionSlugCandidates = Array.from(new Set([regionNameSlug, regionCodeSlug]));
+
+    return [
+      row.code.toUpperCase(),
+      {
+        regionCode: row.code.toUpperCase(),
+        countryCode: row.country.toUpperCase(),
+        countrySlug,
+        regionSlugCandidates,
+        regionWideSourceIds: regionSlugCandidates.map((slug) => `${slug}_parcels`),
+      },
+    ] satisfies [string, RegionMetadata];
+  })
+);
+
+const REGION_CODE_BY_S3_PATH = new Map<string, string>();
+for (const metadata of REGION_METADATA_BY_CODE.values()) {
+  for (const regionSlug of metadata.regionSlugCandidates) {
+    REGION_CODE_BY_S3_PATH.set(`${metadata.countrySlug}/${regionSlug}`, metadata.regionCode);
+  }
+}
+
+function normalizePhrase(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[’']/g, '')
+    .replace(/&/g, ' and ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+function slugifyForS3(value: string): string {
+  return normalizePhrase(value).replace(/ /g, '_');
+}
 
 function normalizeLocality(value: string | null | undefined): string | null {
   if (!value) return null;
-  const normalized = value
-    .trim()
-    .toLowerCase()
-    .replace(/[.,]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-  if (!normalized) return null;
-  const aliased = LOCALITY_ALIASES[normalized] ?? normalized;
-  return aliased
-    .replace(/^the corporation of the city of\s+/, '')
-    .replace(/^the corporation of the town of\s+/, '')
-    .replace(/^the corporation of the municipality of\s+/, '')
-    .replace(/^city of\s+/, '')
-    .replace(/^town of\s+/, '')
-    .replace(/^municipality of\s+/, '')
-    .trim();
+  const normalized = normalizePhrase(value);
+  return normalized || null;
 }
 
-function inferSourceIdFromBbox(bbox: number[] | null): SupportedParcelSourceId | null {
-  if (!bbox || bbox.length !== 4) return null;
-  const [minLon, minLat, maxLon, maxLat] = bbox;
-  const lon = (minLon + maxLon) / 2;
-  const lat = (minLat + maxLat) / 2;
+function getRegionMetadata(regionCode: string | null | undefined): RegionMetadata | null {
+  if (!regionCode) return null;
+  return REGION_METADATA_BY_CODE.get(regionCode.trim().toUpperCase()) ?? null;
+}
 
-  const matches = Object.entries(SOURCE_BOUNDS)
-    .filter(([, [west, south, east, north]]) =>
-      lon >= west && lon <= east && lat >= south && lat <= north
-    )
-    .map(([sourceId, [west, south, east, north]]) => ({
-      sourceId: sourceId as SupportedParcelSourceId,
-      area: Math.abs((east - west) * (north - south)),
-    }))
-    .sort((a, b) => a.area - b.area);
+function deriveSourceAliases(sourceId: string): string[] {
+  const aliases = new Set<string>();
 
-  return matches[0]?.sourceId ?? null;
+  const parts = sourceId
+    .trim()
+    .toLowerCase()
+    .split('_')
+    .filter(Boolean)
+    .filter((part) => part !== 'gold');
+
+  while (parts.length > 0 && ['parcel', 'parcels'].includes(parts[parts.length - 1])) {
+    parts.pop();
+  }
+  while (parts.length > 0 && ['property', 'properties'].includes(parts[parts.length - 1])) {
+    parts.pop();
+  }
+
+  const derived = normalizeLocality(parts.join(' '));
+  if (derived) aliases.add(derived);
+
+  for (const extraAlias of SOURCE_ID_LOCALITY_ALIASES[sourceId] ?? []) {
+    const normalized = normalizeLocality(extraAlias);
+    if (normalized) aliases.add(normalized);
+  }
+
+  return Array.from(aliases);
+}
+
+function parseParcelDatasetKey(key: string): ParcelDatasetRecord | null {
+  const match = key.match(
+    /^gold-standard\/([^/]+)\/([^/]+)\/([^/]+)\/(\d{8})\/([^/]+_gold\.ndjson)$/
+  );
+  if (!match) return null;
+
+  const [, countrySlug, regionSlug, sourceId, datePart, filename] = match;
+  if (filename !== `${sourceId}_gold.ndjson`) {
+    return null;
+  }
+
+  const regionCode = REGION_CODE_BY_S3_PATH.get(`${countrySlug}/${regionSlug}`);
+  if (!regionCode) {
+    return null;
+  }
+
+  const regionMetadata = getRegionMetadata(regionCode);
+  if (!regionMetadata) {
+    return null;
+  }
+
+  return {
+    regionCode,
+    countrySlug,
+    regionSlug,
+    sourceId,
+    key,
+    datePart,
+    localityAliases: deriveSourceAliases(sourceId),
+    isRegionWide: regionMetadata.regionWideSourceIds.includes(sourceId),
+  };
 }
 
 function getCampaignBbox(campaign: CampaignRow): number[] | null {
@@ -268,6 +349,19 @@ function parseGeometryValue(geometry: unknown): GeoJSONMultiPolygon | null {
   }
 }
 
+function parseParcelJsonLine(line: string): { parsed: unknown; sanitizedNonFiniteNumber: boolean } {
+  try {
+    return { parsed: JSON.parse(line), sanitizedNonFiniteNumber: false };
+  } catch (error) {
+    if (!/\bNaN\b/.test(line)) {
+      throw error;
+    }
+
+    const sanitized = line.replace(/(:|,|\[)\s*NaN(?=\s*[,}\]])/g, '$1 null');
+    return { parsed: JSON.parse(sanitized), sanitizedNonFiniteNumber: true };
+  }
+}
+
 function normalizeParcelLine(raw: unknown): NormalizedParcelRecord | null {
   if (!raw || typeof raw !== 'object') return null;
 
@@ -286,6 +380,8 @@ function normalizeParcelLine(raw: unknown): NormalizedParcelRecord | null {
 
   const properties = isFeature
     ? featureProperties
+    : record.properties && typeof record.properties === 'object' && !Array.isArray(record.properties)
+      ? { ...(record.properties as Record<string, unknown>) }
     : Object.fromEntries(
         Object.entries(record).filter(([key]) => !['geometry', 'geom', 'geom_json'].includes(key))
       );
@@ -311,114 +407,49 @@ function normalizeParcelLine(raw: unknown): NormalizedParcelRecord | null {
   };
 }
 
+async function streamBodyToString(body: { transformToString?: () => Promise<string> } | undefined) {
+  if (!body?.transformToString) return '';
+  return body.transformToString();
+}
+
 async function streamBodyToBytes(body: { transformToByteArray?: () => Promise<Uint8Array> } | undefined) {
   if (!body?.transformToByteArray) return null;
   return body.transformToByteArray();
 }
 
-type S3ObjectBody =
-  | (AsyncIterable<Uint8Array | Buffer | string> & {
-      transformToByteArray?: () => Promise<Uint8Array>;
-      transformToString?: () => Promise<string>;
-      transformToWebStream?: () => ReadableStream<Uint8Array>;
-    })
-  | undefined;
+async function* streamBodyLines(body: unknown, options?: { compressed?: boolean }): AsyncGenerator<string> {
+  const asyncIterable = body as AsyncIterable<Uint8Array> | null;
+  if (asyncIterable && typeof asyncIterable[Symbol.asyncIterator] === 'function') {
+    const source = options?.compressed
+      ? Readable.from(asyncIterable).pipe(createGunzip())
+      : asyncIterable;
+    const decoder = new TextDecoder('utf-8');
+    let buffered = '';
 
-async function* iterateS3BodyChunks(body: S3ObjectBody): AsyncGenerator<Uint8Array | string> {
-  if (!body) return;
-
-  if (typeof body[Symbol.asyncIterator] === 'function') {
-    for await (const chunk of body) {
-      yield chunk;
-    }
-    return;
-  }
-
-  if (typeof body.transformToWebStream === 'function') {
-    const reader = body.transformToWebStream().getReader();
-    try {
-      while (true) {
-        const result = await reader.read();
-        if (result.done) break;
-        yield result.value;
+    for await (const chunk of source) {
+      buffered += decoder.decode(chunk, { stream: true });
+      const lines = buffered.split(/\r?\n/);
+      buffered = lines.pop() ?? '';
+      for (const line of lines) {
+        yield line;
       }
-    } finally {
-      reader.releaseLock();
+    }
+
+    buffered += decoder.decode();
+    if (buffered) {
+      yield buffered;
     }
     return;
   }
 
-  if (typeof body.transformToByteArray === 'function') {
-    yield await body.transformToByteArray();
-    return;
+  const normalizedText = options?.compressed
+    ? gunzipSync(Buffer.from(
+        (await streamBodyToBytes(body as { transformToByteArray?: () => Promise<Uint8Array> } | undefined)) ?? []
+      )).toString('utf8')
+    : await streamBodyToString(body as { transformToString?: () => Promise<string> } | undefined);
+  for (const line of normalizedText.split(/\r?\n/)) {
+    yield line;
   }
-
-  if (typeof body.transformToString === 'function') {
-    yield await body.transformToString();
-  }
-}
-
-async function collectMatchingParcelsFromNdjson(
-  body: S3ObjectBody,
-  bbox: number[],
-  campaignPolygon: GeoJSONPolygon | null
-): Promise<{
-  parcels: NormalizedParcelRecord[];
-  scannedLines: number;
-  parsedRecords: number;
-  bboxCandidates: number;
-  polygonMatches: number;
-}> {
-  const deduped = new Map<string, NormalizedParcelRecord>();
-  const decoder = new TextDecoder();
-  let pending = '';
-  let scannedLines = 0;
-  let parsedRecords = 0;
-  let bboxCandidates = 0;
-  let polygonMatches = 0;
-
-  const processLine = (line: string) => {
-    const trimmed = line.trim();
-    if (!trimmed) return;
-    scannedLines += 1;
-
-    try {
-      const parsed = JSON.parse(trimmed);
-      const parcel = normalizeParcelLine(parsed);
-      if (!parcel) return;
-      parsedRecords += 1;
-      if (!intersectsBbox(parcel.geometry, bbox)) return;
-      bboxCandidates += 1;
-      if (campaignPolygon && !isWithinCampaignPolygon(parcel.geometry, campaignPolygon)) return;
-      polygonMatches += 1;
-      deduped.set(parcel.externalId, parcel);
-    } catch (error) {
-      console.warn('[ParcelEnrichment] Skipping malformed parcel line:', error);
-    }
-  };
-
-  for await (const chunk of iterateS3BodyChunks(body)) {
-    pending += typeof chunk === 'string'
-      ? chunk
-      : decoder.decode(chunk, { stream: true });
-
-    const lines = pending.split(/\r?\n/);
-    pending = lines.pop() ?? '';
-    for (const line of lines) {
-      processLine(line);
-    }
-  }
-
-  pending += decoder.decode();
-  processLine(pending);
-
-  return {
-    parcels: Array.from(deduped.values()),
-    scannedLines,
-    parsedRecords,
-    bboxCandidates,
-    polygonMatches,
-  };
 }
 
 export class ParcelEnrichmentService {
@@ -566,6 +597,26 @@ export class ParcelEnrichmentService {
     debugOverride?: ParcelEnrichmentDebug
   ): Promise<ParcelPreparationResult> {
     const regionCode = (campaign.region || '').trim().toUpperCase();
+    const regionMetadata = getRegionMetadata(regionCode);
+    if (!regionMetadata) {
+      return {
+        status: 'skipped',
+        sourceId: null,
+        parcelCount: 0,
+        parcels: [],
+        error: regionCode
+          ? `Parcel enrichment could not resolve a parcel dataset region for campaign region ${regionCode}.`
+          : 'Parcel enrichment could not resolve a campaign region.',
+        debug: {
+          ...(debugOverride ?? {}),
+          skipped_reason: regionCode
+            ? `No region metadata found for campaign region ${regionCode}.`
+            : 'Campaign region missing.',
+          completed_at: new Date().toISOString(),
+        },
+      };
+    }
+
     const bbox = getCampaignBbox(campaign);
     const campaignPolygon = campaign.territory_boundary;
     if (!bbox) {
@@ -590,11 +641,28 @@ export class ParcelEnrichmentService {
       ...debugOverride,
     };
 
-    const sourceResolution = await this.inferSourceId(campaignId, campaign);
+    const regionDatasets = await this.listLatestParcelDatasetsForRegion(regionMetadata);
+    debug.available_source_ids = regionDatasets.map((dataset) => dataset.sourceId);
+    if (regionDatasets.length === 0) {
+      return {
+        status: 'skipped',
+        sourceId: null,
+        parcelCount: 0,
+        parcels: [],
+        error: `No parcel datasets were found in S3 for campaign region ${regionCode}.`,
+        debug: {
+          ...debug,
+          skipped_reason: `No parcel datasets found for region ${regionCode}.`,
+          completed_at: new Date().toISOString(),
+        },
+      };
+    }
+
+    const sourceResolution = await this.inferSourceId(campaignId, regionDatasets);
     debug.unsupported_localities = sourceResolution.unsupportedLocalities;
     debug.locality_counts = sourceResolution.localityCounts;
-    const sourceId = sourceResolution.sourceId;
-    if (!sourceId) {
+    const dataset = sourceResolution.dataset;
+    if (!dataset) {
       return {
         status: 'skipped',
         sourceId: null,
@@ -608,63 +676,80 @@ export class ParcelEnrichmentService {
         },
       };
     }
+    const sourceId = dataset.sourceId;
     debug.source_id = sourceId;
-
-    const key = await this.findLatestParcelKey(sourceId);
-    if (!key) {
-      return {
-        status: 'failed',
-        sourceId,
-        parcelCount: 0,
-        parcels: [],
-        error: `No parcel object found for source_id ${sourceId}.`,
-        debug: {
-          ...debug,
-          s3_key: null,
-          skipped_reason: `No parcel object found for source_id ${sourceId}.`,
-          completed_at: new Date().toISOString(),
-        },
-      };
-    }
-    debug.s3_key = key;
+    debug.s3_key = dataset.key;
 
     const response = await this.s3.send(
       new GetObjectCommand({
         Bucket: PARCEL_BUCKET,
-        Key: key,
+        Key: dataset.key,
       })
     );
-    const parcelScan = await collectMatchingParcelsFromNdjson(
-      response.Body as S3ObjectBody,
-      bbox,
-      campaignPolygon
-    );
-    if (parcelScan.scannedLines === 0) {
+
+    const deduped = new Map<string, NormalizedParcelRecord>();
+    let scannedLines = 0;
+    let parsedRecords = 0;
+    let bboxCandidates = 0;
+    let polygonMatches = 0;
+    let sanitizedNonFiniteNumberLines = 0;
+    let malformedLines = 0;
+    let firstMalformedLineError: unknown = null;
+    const isCompressed =
+      response.ContentEncoding === 'gzip' ||
+      response.Metadata?.content_encoding === 'gzip' ||
+      dataset.key.endsWith('.gz');
+    for await (const line of streamBodyLines(response.Body, { compressed: isCompressed })) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      scannedLines += 1;
+
+      try {
+        const { parsed, sanitizedNonFiniteNumber } = parseParcelJsonLine(trimmed);
+        if (sanitizedNonFiniteNumber) sanitizedNonFiniteNumberLines += 1;
+        const parcel = normalizeParcelLine(parsed);
+        if (!parcel) continue;
+        parsedRecords += 1;
+        if (!intersectsBbox(parcel.geometry, bbox)) continue;
+        bboxCandidates += 1;
+        if (campaignPolygon && !isWithinCampaignPolygon(parcel.geometry, campaignPolygon)) continue;
+        polygonMatches += 1;
+        deduped.set(parcel.externalId, parcel);
+      } catch (error) {
+        malformedLines += 1;
+        firstMalformedLineError ??= error;
+      }
+    }
+
+    const parcels = Array.from(deduped.values());
+    debug.scanned_lines = scannedLines;
+    debug.parsed_records = parsedRecords;
+    debug.bbox_candidates = bboxCandidates;
+    debug.polygon_matches = polygonMatches;
+    debug.inserted_count = parcels.length;
+    debug.completed_at = new Date().toISOString();
+    if (sanitizedNonFiniteNumberLines > 0) {
+      console.warn(
+        `[ParcelEnrichment] Replaced NaN numeric values with null in ${sanitizedNonFiniteNumberLines} parcel lines from ${dataset.key}`
+      );
+    }
+    if (malformedLines > 0) {
+      console.warn(
+        `[ParcelEnrichment] Skipped ${malformedLines} malformed parcel lines from ${dataset.key}:`,
+        firstMalformedLineError
+      );
+    }
+
+    if (scannedLines === 0) {
       return {
         status: 'failed',
         sourceId,
         parcelCount: 0,
         parcels: [],
-        error: `Parcel file ${key} was empty.`,
-        debug: {
-          ...debug,
-          scanned_lines: 0,
-          parsed_records: 0,
-          bbox_candidates: 0,
-          polygon_matches: 0,
-          inserted_count: 0,
-          completed_at: new Date().toISOString(),
-        },
+        error: `Parcel file ${dataset.key} was empty.`,
+        debug,
       };
     }
-
-    const parcels = parcelScan.parcels;
-    debug.scanned_lines = parcelScan.scannedLines;
-    debug.parsed_records = parcelScan.parsedRecords;
-    debug.bbox_candidates = parcelScan.bboxCandidates;
-    debug.polygon_matches = parcelScan.polygonMatches;
-    debug.inserted_count = parcels.length;
-    debug.completed_at = new Date().toISOString();
 
     return {
       status: 'ready',
@@ -704,8 +789,8 @@ export class ParcelEnrichmentService {
     }
   }
 
-  private async inferSourceId(campaignId: string, campaign?: CampaignRow): Promise<{
-    sourceId: SupportedParcelSourceId | null;
+  private async inferSourceId(campaignId: string, datasets: ParcelDatasetRecord[]): Promise<{
+    dataset: ParcelDatasetRecord | null;
     unsupportedLocalities: string[];
     localityCounts: Array<{ source_id: SupportedParcelSourceId; count: number }>;
   }> {
@@ -717,79 +802,94 @@ export class ParcelEnrichmentService {
         .range(from, to)
     );
 
+    const localities = rows
+      .map((row) => normalizeLocality((row as { locality?: string | null }).locality))
+      .filter((value): value is string => Boolean(value));
+
+    return this.selectBestParcelDataset(localities, datasets);
+  }
+
+  private selectBestParcelDataset(
+    localities: string[],
+    datasets: ParcelDatasetRecord[]
+  ): {
+    dataset: ParcelDatasetRecord | null;
+    unsupportedLocalities: string[];
+    localityCounts: Array<{ source_id: SupportedParcelSourceId; count: number }>;
+  } {
     const localityCounts = new Map<SupportedParcelSourceId, number>();
     const unsupportedLocalities = new Set<string>();
+    const localityScopedDatasets = datasets.filter((dataset) => !dataset.isRegionWide);
 
-    for (const row of rows) {
-      const locality = normalizeLocality((row as { locality?: string | null }).locality);
-      if (!locality) continue;
-      const sourceId = LOCALITY_TO_SOURCE_ID[locality];
-      if (!sourceId) {
+    for (const locality of localities) {
+      const matchingDatasets = localityScopedDatasets.filter((dataset) =>
+        dataset.localityAliases.includes(locality)
+      );
+
+      if (matchingDatasets.length === 0) {
         unsupportedLocalities.add(locality);
         continue;
       }
-      localityCounts.set(sourceId, (localityCounts.get(sourceId) || 0) + 1);
+
+      for (const dataset of matchingDatasets) {
+        localityCounts.set(dataset.sourceId, (localityCounts.get(dataset.sourceId) || 0) + 1);
+      }
     }
 
     const ranked = Array.from(localityCounts.entries()).sort((a, b) => b[1] - a[1]);
     const localitySummary = ranked.map(([source_id, count]) => ({ source_id, count }));
-    if (ranked.length === 0) {
-      const bboxSourceId = inferSourceIdFromBbox(campaign ? getCampaignBbox(campaign) : null);
-      if (bboxSourceId) {
-        return {
-          sourceId: bboxSourceId,
-          unsupportedLocalities: Array.from(unsupportedLocalities).sort(),
-          localityCounts: [{ source_id: bboxSourceId, count: 0 }],
-        };
-      }
 
-      if (unsupportedLocalities.size > 0) {
-        console.warn('[ParcelEnrichment] Unsupported localities:', Array.from(unsupportedLocalities));
-      }
-      return {
-        sourceId: null,
-        unsupportedLocalities: Array.from(unsupportedLocalities).sort(),
-        localityCounts: localitySummary,
-      };
+    const regionWideDataset = datasets.find((dataset) => dataset.isRegionWide) ?? null;
+    const selectedDataset =
+      (ranked.length > 0
+        ? datasets.find((dataset) => dataset.sourceId === ranked[0][0]) ?? null
+        : null) ??
+      regionWideDataset ??
+      (datasets.length === 1 ? datasets[0] : null);
+
+    if (!selectedDataset && unsupportedLocalities.size > 0) {
+      console.warn('[ParcelEnrichment] Unsupported localities:', Array.from(unsupportedLocalities));
     }
 
     return {
-      sourceId: ranked[0][0],
+      dataset: selectedDataset,
       unsupportedLocalities: Array.from(unsupportedLocalities).sort(),
       localityCounts: localitySummary,
     };
   }
 
-  private async findLatestParcelKey(sourceId: SupportedParcelSourceId): Promise<string | null> {
-    const prefix = `${PARCEL_PREFIX}/${sourceId}/`;
-    let continuationToken: string | undefined;
-    let latestKey: string | null = null;
-    let latestDate = '';
+  private async listLatestParcelDatasetsForRegion(regionMetadata: RegionMetadata): Promise<ParcelDatasetRecord[]> {
+    const latestBySourceId = new Map<string, ParcelDatasetRecord>();
 
-    do {
-      const response = await this.s3.send(
-        new ListObjectsV2Command({
-          Bucket: PARCEL_BUCKET,
-          Prefix: prefix,
-          ContinuationToken: continuationToken,
-        })
-      );
+    for (const regionSlug of regionMetadata.regionSlugCandidates) {
+      const prefix = `${PARCEL_ROOT_PREFIX}/${regionMetadata.countrySlug}/${regionSlug}/`;
+      let continuationToken: string | undefined;
 
-      for (const object of response.Contents || []) {
-        const key = object.Key || '';
-        const match = key.match(new RegExp(`/${sourceId}/(\\d{8})/${sourceId}_gold\\.ndjson$`));
-        if (!match) continue;
-        const datePart = match[1];
-        if (datePart > latestDate) {
-          latestDate = datePart;
-          latestKey = key;
+      do {
+        const response = await this.s3.send(
+          new ListObjectsV2Command({
+            Bucket: PARCEL_BUCKET,
+            Prefix: prefix,
+            ContinuationToken: continuationToken,
+          })
+        );
+
+        for (const object of response.Contents || []) {
+          const key = object.Key || '';
+          const dataset = parseParcelDatasetKey(key);
+          if (!dataset || dataset.regionCode !== regionMetadata.regionCode) continue;
+
+          const existing = latestBySourceId.get(dataset.sourceId);
+          if (!existing || dataset.datePart > existing.datePart) {
+            latestBySourceId.set(dataset.sourceId, dataset);
+          }
         }
-      }
 
-      continuationToken = response.IsTruncated ? response.NextContinuationToken : undefined;
-    } while (continuationToken);
+        continuationToken = response.IsTruncated ? response.NextContinuationToken : undefined;
+      } while (continuationToken);
+    }
 
-    return latestKey;
+    return Array.from(latestBySourceId.values()).sort((a, b) => a.sourceId.localeCompare(b.sourceId));
   }
 
   private async relinkCampaign(
@@ -826,7 +926,7 @@ export class ParcelEnrichmentService {
             geometry: parcel.geometry,
           })),
           resetExisting: true,
-          persistenceMode: 'gold',
+          persistenceMode: 'external',
         }
       );
 
@@ -874,6 +974,7 @@ export class ParcelEnrichmentService {
           geometry: parcel.geometry,
         })),
         resetExisting: true,
+        persistenceMode: 'external',
       }
     );
 
@@ -994,7 +1095,7 @@ export class ParcelEnrichmentService {
   } | null> {
     const { data: snapshot, error: snapshotError } = await this.supabase
       .from('campaign_snapshots')
-      .select('bucket, buildings_key, overture_release')
+      .select('bucket, buildings_key, overture_release, tile_metrics')
       .eq('campaign_id', campaignId)
       .maybeSingle();
 
@@ -1002,18 +1103,37 @@ export class ParcelEnrichmentService {
       return null;
     }
 
+    const tileMetrics =
+      snapshot.tile_metrics && typeof snapshot.tile_metrics === 'object'
+        ? snapshot.tile_metrics as Record<string, unknown>
+        : {};
+    const buildingsGeojsonKey =
+      typeof tileMetrics.buildings_geojson_key === 'string'
+        ? tileMetrics.buildings_geojson_key
+        : null;
+    const buildingsKey = buildingsGeojsonKey ?? snapshot.buildings_key;
+    if (!buildingsKey.endsWith('.geojson') && !buildingsKey.endsWith('.geojson.gz')) {
+      console.warn('[ParcelEnrichment] Snapshot buildings key is not GeoJSON; skipping snapshot relink:', {
+        campaignId,
+        buildingsKey,
+      });
+      return null;
+    }
+
     const response = await this.s3.send(
       new GetObjectCommand({
         Bucket: snapshot.bucket,
-        Key: snapshot.buildings_key,
+        Key: buildingsKey,
       })
     );
 
     const bytes = await streamBodyToBytes(response.Body);
     if (!bytes) return null;
 
-    const decompressed = gunzipSync(Buffer.from(bytes));
-    const buildingsGeoJSON = JSON.parse(decompressed.toString('utf-8')) as { features?: SnapshotBuildingFeature[] };
+    const text = buildingsKey.endsWith('.gz') || response.ContentEncoding === 'gzip'
+      ? gunzipSync(Buffer.from(bytes)).toString('utf-8')
+      : Buffer.from(bytes).toString('utf-8');
+    const buildingsGeoJSON = JSON.parse(text) as { features?: SnapshotBuildingFeature[] };
     if (!Array.isArray(buildingsGeoJSON.features) || buildingsGeoJSON.features.length === 0) {
       return null;
     }

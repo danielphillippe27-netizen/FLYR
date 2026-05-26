@@ -21,6 +21,12 @@ struct DailyQuote: Decodable {
     let text: String
     let author: String
     let category: String?
+
+    static let apiFallback = DailyQuote(
+        text: "Everything you've ever wanted is on the other side of fear.",
+        author: "George Addair",
+        category: "motivation"
+    )
 }
 
 /// Fetches quote of the day from GET /api/daily-content. Uses same base URL and auth as other API calls.
@@ -54,7 +60,7 @@ final class DailyContentService {
 
     private init() {}
 
-    /// Fetches daily content (quote of the day). On success or API fallback, quote is set. Auth sent when session exists.
+    /// Fetches daily content (quote of the day). Uses a motivational fallback when the API is unavailable.
     func fetch() async {
         isLoading = true
         error = nil
@@ -62,6 +68,7 @@ final class DailyContentService {
 
         guard let url = URL(string: "\(requestBaseURL)/api/daily-content") else {
             error = "Invalid URL"
+            quote = .apiFallback
             return
         }
 
@@ -76,6 +83,7 @@ final class DailyContentService {
             let (data, response) = try await URLSession.shared.data(for: request)
             guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
                 error = "Could not load quote."
+                quote = .apiFallback
                 return
             }
             let value = try decoder.decode(DailyContentResponse.self, from: data)
@@ -83,9 +91,11 @@ final class DailyContentService {
                 quote = value.quote
             } else {
                 error = "No quote available."
+                quote = .apiFallback
             }
         } catch {
             self.error = error.localizedDescription
+            quote = .apiFallback
         }
     }
 }
