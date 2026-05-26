@@ -1,4 +1,5 @@
 import { after, NextRequest, NextResponse } from 'next/server';
+import { createHash } from 'node:crypto';
 import { createAdminClient } from '@/lib/supabase/server';
 import type { LambdaSnapshotResponse } from '@/lib/services/TileLambdaService';
 import type { StandardCampaignAddress } from '@/lib/services/AddressAdapter';
@@ -13,6 +14,17 @@ import {
 } from '@/lib/services/ParcelEnrichmentService';
 import { isParcelRegionSupported } from '@/lib/geo/parcelRegions';
 import { sendCampaignReadyNotificationOnce } from '@/lib/notifications/campaign-ready';
+import {
+  ProvisionTimingRecorder,
+  buildAutoBuildingLinksFromMemory,
+  buildAutoBuildingLinksFromPreparedRows,
+  buildParcelAddressLinksFromPreparedRows,
+  prepareBuildingsFromRows,
+  type AutoBuildingLinkRow,
+  type AutoParcelAddressLinkRow,
+  type LinkerParcelRow,
+  type ProvisionTimingSnapshot,
+} from '@/lib/services/ProvisionPerformance';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -31,6 +43,7 @@ type AutoLinkCampaignAddressesResult = {
   linked?: unknown;
   skipped_manual?: unknown;
   unlinked?: unknown;
+  parcel_linked?: unknown;
 };
 
 type CampaignPostProcessingResult = {
@@ -39,7 +52,16 @@ type CampaignPostProcessingResult = {
   linkedAddressCount: number;
   skippedManualCount: number;
   unlinkedAddressCount: number;
+  linkerPath: 'in_memory' | 'in_process' | 'postgis_rpc' | 'deferred' | 'failed';
   message: string;
+};
+
+type ResolvedProvisionResult = {
+  addressSource: ProvisionSource;
+  snapshot: LambdaSnapshotResponse;
+  addressesToInsert: StandardCampaignAddress[];
+  bedrockLinkGeometry: BedrockLinkGeometry | null;
+  sourceMetrics?: unknown;
 };
 
 type ExistingCampaignAddressSignatureRow = {
@@ -53,12 +75,43 @@ type ExistingCampaignAddressSignatureRow = {
   gers_id: string | null;
 };
 
+type CampaignAddressLinkerRow = {
+  id: string;
+  source_id?: string | null;
+  coordinate?: { lon?: unknown; lat?: unknown } | null;
+  geom?: GeoJSON.Point | null;
+};
+
+type CampaignBuildingLinkerRow = {
+  id: string;
+  gers_id?: string | null;
+  geom?: GeoJSON.Polygon | GeoJSON.MultiPolygon | null;
+  height_m?: number | null;
+};
+
+type CampaignParcelLinkerRow = LinkerParcelRow;
+
+type AutoLinkRow = AutoBuildingLinkRow;
+type AutoParcelLinkRow = AutoParcelAddressLinkRow;
+
+type MaterializedBuildingResult = {
+  count: number;
+  buildings: CampaignBuildingLinkerRow[];
+};
+
+type CampaignAddressInsertResult = {
+  count: number;
+  addresses: CampaignAddressLinkerRow[];
+};
+
 const DEFAULT_STATIC_GEOMETRY_ADDRESS_HYDRATION_LIMIT = 5000;
 const FALLBACK_INSERT_BATCH_SIZE = 500;
 const BULK_ADDRESS_RPC = 'add_campaign_addresses';
 const POLISHED_BUILDING_GEOMETRY_VERSION = 8;
 const MAX_PROVISION_ERROR_LENGTH = 2000;
 const DEFAULT_SOURCE_RESOLUTION_TIMEOUT_MS = 240_000;
+const AUTO_LINK_DISTANCE_METERS = 15;
+const MIN_HYBRID_LINK_RATIO = 0.8;
 
 class ProvisionError extends Error {
   constructor(message: string, readonly status: number = 500) {
@@ -93,6 +146,25 @@ function sourceResolutionTimeoutMs() {
     : DEFAULT_SOURCE_RESOLUTION_TIMEOUT_MS;
 }
 
+function territoryHash(polygon: unknown): string {
+  return createHash('sha1').update(JSON.stringify(polygon)).digest('hex');
+}
+
+async function persistProvisionTimings(
+  supabase: ReturnType<typeof createAdminClient>,
+  campaignId: string,
+  timings: ProvisionTimingSnapshot
+): Promise<void> {
+  const { error } = await supabase
+    .from('campaigns')
+    .update({ provision_timings: timings })
+    .eq('id', campaignId);
+
+  if (error) {
+    console.warn('[Provision] Failed to persist provision timings:', error.message);
+  }
+}
+
 async function withTimeout<T>(
   promise: Promise<T>,
   timeoutMs: number,
@@ -119,17 +191,43 @@ async function markCampaignProvisionFailed(
   error: unknown
 ): Promise<void> {
   const message = provisionFailureMessage(error);
+  const failedPatch = {
+    provision_status: 'failed',
+    provision_phase: 'failed',
+    provision_error: message,
+    provision_message: message,
+  };
   const { error: updateError } = await supabase
     .from('campaigns')
-    .update({
-      provision_status: 'failed',
-      provision_phase: 'failed',
-      provision_error: message,
-      provision_message: message,
-    })
+    .update(failedPatch)
     .eq('id', campaignId);
 
   if (updateError) {
+    const missingErrorColumns =
+      updateError.code === '42703' ||
+      updateError.message.includes('provision_error') ||
+      updateError.message.includes('provision_message');
+
+    if (missingErrorColumns) {
+      const { error: fallbackError } = await supabase
+        .from('campaigns')
+        .update({
+          provision_status: 'failed',
+          provision_phase: 'failed',
+        })
+        .eq('id', campaignId);
+
+      if (!fallbackError) {
+        console.warn('[Provision] Failed state persisted without provision error text; apply provision error column migration.', {
+          campaignId,
+          message,
+        });
+        return;
+      }
+
+      throw new Error(`Failed to update failed provision state: ${fallbackError.message}`);
+    }
+
     throw new Error(`Failed to update failed provision state: ${updateError.message}`);
   }
 }
@@ -468,12 +566,117 @@ function isMissingPolishedCacheTable(error: unknown): boolean {
     message.includes('does not exist');
 }
 
+async function fetchCampaignLinkerBuildings(
+  supabase: ReturnType<typeof createAdminClient>,
+  campaignId: string
+): Promise<CampaignBuildingLinkerRow[]> {
+  return fetchAllCampaignRows<CampaignBuildingLinkerRow>(
+    supabase,
+    'buildings',
+    'id, gers_id, geom, height_m',
+    campaignId
+  );
+}
+
+async function fetchCampaignLinkerParcels(
+  supabase: ReturnType<typeof createAdminClient>,
+  campaignId: string
+): Promise<CampaignParcelLinkerRow[]> {
+  const rows = await fetchAllCampaignRows<{
+    id: string | null;
+    external_id: string | null;
+    geom: GeoJSON.Polygon | GeoJSON.MultiPolygon | string | null;
+  }>(
+    supabase,
+    'campaign_parcels',
+    'id, external_id, geom',
+    campaignId
+  );
+
+  return rows.flatMap((row) => {
+    const rawGeometry = row.geom;
+    const geometry = typeof rawGeometry === 'string'
+      ? (() => {
+        try {
+          return JSON.parse(rawGeometry) as GeoJSON.Polygon | GeoJSON.MultiPolygon;
+        } catch {
+          return null;
+        }
+      })()
+      : rawGeometry;
+    if (geometry?.type !== 'Polygon' && geometry?.type !== 'MultiPolygon') return [];
+    return [{
+      id: row.id,
+      externalId: row.external_id,
+      geometry,
+    }];
+  });
+}
+
+async function persistPreparedParcels(
+  supabase: ReturnType<typeof createAdminClient>,
+  campaignId: string,
+  parcels: NonNullable<BedrockLinkGeometry['parcels']>
+): Promise<number> {
+  const normalizedParcels = parcels.flatMap((parcel) => {
+    const geometry = parcel.geometry as GeoJSON.Polygon | GeoJSON.MultiPolygon | null | undefined;
+    if (geometry?.type !== 'Polygon' && geometry?.type !== 'MultiPolygon') return [];
+    return [{
+      externalId: parcel.externalId,
+      geometry,
+    }];
+  });
+
+  await supabase
+    .from('campaign_parcels')
+    .delete()
+    .eq('campaign_id', campaignId);
+
+  if (normalizedParcels.length === 0) {
+    return 0;
+  }
+
+  for (let index = 0; index < normalizedParcels.length; index += FALLBACK_INSERT_BATCH_SIZE) {
+    const chunk = normalizedParcels.slice(index, index + FALLBACK_INSERT_BATCH_SIZE);
+    const { error } = await supabase
+      .from('campaign_parcels')
+      .insert(chunk.map((parcel) => ({
+        campaign_id: campaignId,
+        external_id: parcel.externalId,
+        geom: JSON.stringify(parcel.geometry),
+        properties: {
+          source: 'bedrock_link_geometry',
+        },
+      })));
+
+    if (error) {
+      throw new Error(`Prepared parcel insert failed: ${error.message}`);
+    }
+  }
+
+  await updateCampaignProvision(supabase, campaignId, {
+    has_parcels: true,
+    parcel_enrichment_status: 'ready',
+    parcel_source_id: 'bedrock_link_geometry',
+    parcel_count: normalizedParcels.length,
+    parcel_enriched_at: new Date().toISOString(),
+    parcel_enrichment_error: null,
+    parcel_enrichment_debug: {
+      source_id: 'bedrock_link_geometry',
+      inserted_count: normalizedParcels.length,
+      completed_at: new Date().toISOString(),
+    },
+  });
+
+  return normalizedParcels.length;
+}
+
 async function cachePolishedBuildingGeoJSON(
   supabase: ReturnType<typeof createAdminClient>,
   campaignId: string,
   source: 'gold' | 'silver',
   featureCollection: unknown
-): Promise<number> {
+): Promise<MaterializedBuildingResult> {
   const features =
     featureCollection &&
     typeof featureCollection === 'object' &&
@@ -487,7 +690,7 @@ async function cachePolishedBuildingGeoJSON(
     return geometry?.type === 'Polygon' || geometry?.type === 'MultiPolygon';
   });
 
-  if (renderableFeatures.length === 0) return 0;
+  if (renderableFeatures.length === 0) return { count: 0, buildings: [] };
 
   const versionedFeatures = renderableFeatures.map((feature) => {
     const record = normalizeCachedBuildingIdentity(feature as Record<string, unknown>);
@@ -533,6 +736,10 @@ async function cachePolishedBuildingGeoJSON(
     });
   }
 
+  const materializedBuildings = materializeError
+    ? []
+    : await fetchCampaignLinkerBuildings(supabase, campaignId);
+
   const { error } = await supabase
     .from('campaign_polished_building_features')
     .upsert(
@@ -553,7 +760,7 @@ async function cachePolishedBuildingGeoJSON(
     if (!isMissingPolishedCacheTable(error)) {
       console.warn('[Provision] Polished building cache write failed:', error.message);
     }
-    return 0;
+    return { count: materializedBuildings.length, buildings: materializedBuildings };
   }
 
   console.log('[Provision] Cached polished building GeoJSON', {
@@ -561,7 +768,7 @@ async function cachePolishedBuildingGeoJSON(
     source,
     features: renderableFeatures.length,
   });
-  return renderableFeatures.length;
+  return { count: renderableFeatures.length, buildings: materializedBuildings };
 }
 
 async function materializeBuildingGeoJSONForMapReady(params: {
@@ -571,7 +778,7 @@ async function materializeBuildingGeoJSONForMapReady(params: {
   source: ProvisionSource;
   snapshot: LambdaSnapshotResponse | null;
   bedrockLinkGeometry?: BedrockLinkGeometry | null;
-}): Promise<number> {
+}): Promise<MaterializedBuildingResult> {
   const { supabase, campaignId, polygon, source, snapshot, bedrockLinkGeometry } = params;
 
   if (bedrockLinkGeometry?.buildings?.length) {
@@ -586,10 +793,12 @@ async function materializeBuildingGeoJSONForMapReady(params: {
     );
   }
 
-  if (!snapshot || !snapshotHasStaticBuildingPmtiles(snapshot)) return 0;
+  if (!snapshot || !snapshotHasStaticBuildingPmtiles(snapshot)) {
+    return { count: 0, buildings: [] };
+  }
 
   const bbox = bboxFromPolygon(polygon);
-  if (!bbox) return 0;
+  if (!bbox) return { count: 0, buildings: [] };
 
   try {
     const scopedBuildings = await fetchScopedPmtilesBuildingFeatures(
@@ -609,7 +818,7 @@ async function materializeBuildingGeoJSONForMapReady(params: {
       '[Provision] Failed to materialize building GeoJSON for map-ready cache:',
       error instanceof Error ? error.message : error
     );
-    return 0;
+    return { count: 0, buildings: [] };
   }
 }
 
@@ -629,11 +838,23 @@ async function countCampaignAddresses(
   return count ?? 0;
 }
 
+async function fetchCampaignLinkerAddresses(
+  supabase: ReturnType<typeof createAdminClient>,
+  campaignId: string
+): Promise<CampaignAddressLinkerRow[]> {
+  return fetchAllCampaignRows<CampaignAddressLinkerRow>(
+    supabase,
+    'campaign_addresses',
+    'id, source_id, coordinate, geom',
+    campaignId
+  );
+}
+
 async function bulkInsertAddresses(
   supabase: ReturnType<typeof createAdminClient>,
   campaignId: string,
   addresses: StandardCampaignAddress[]
-): Promise<number> {
+): Promise<CampaignAddressInsertResult> {
   const uniqueAddresses = deduplicateAddressesByProvisionKey(addresses).filter((address) => {
     const hasPoint =
       Number.isFinite(Number(address.lat)) &&
@@ -648,14 +869,16 @@ async function bulkInsertAddresses(
   });
 
   if (uniqueAddresses.length === 0) {
-    return countCampaignAddresses(supabase, campaignId);
+    const existingAddresses = await fetchCampaignLinkerAddresses(supabase, campaignId);
+    return { count: existingAddresses.length, addresses: existingAddresses };
   }
 
   const existingSignatures = await fetchCampaignAddressSignatures(supabase, campaignId);
   const addressesToWrite = filterAddressesAgainstExisting(uniqueAddresses, existingSignatures);
 
   if (addressesToWrite.length === 0) {
-    return countCampaignAddresses(supabase, campaignId);
+    const existingAddresses = await fetchCampaignLinkerAddresses(supabase, campaignId);
+    return { count: existingAddresses.length, addresses: existingAddresses };
   }
 
   const countBeforeRpc = await countCampaignAddresses(supabase, campaignId);
@@ -667,7 +890,8 @@ async function bulkInsertAddresses(
   if (!rpcError) {
     const countAfterRpc = await countCampaignAddresses(supabase, campaignId);
     if (countAfterRpc > countBeforeRpc) {
-      return countAfterRpc;
+      const insertedAddresses = await fetchCampaignLinkerAddresses(supabase, campaignId);
+      return { count: insertedAddresses.length, addresses: insertedAddresses };
     }
 
     console.warn(
@@ -701,7 +925,8 @@ async function bulkInsertAddresses(
     }
   }
 
-  return countCampaignAddresses(supabase, campaignId);
+  const insertedAddresses = await fetchCampaignLinkerAddresses(supabase, campaignId);
+  return { count: insertedAddresses.length, addresses: insertedAddresses };
 }
 
 async function upsertCampaignAddressBatch(
@@ -798,6 +1023,277 @@ async function updateCampaignProvision(
   }
 }
 
+async function fetchAllCampaignRows<T>(
+  supabase: ReturnType<typeof createAdminClient>,
+  table: string,
+  select: string,
+  campaignId: string
+): Promise<T[]> {
+  const rows: T[] = [];
+  const pageSize = 1000;
+
+  for (let from = 0; ; from += pageSize) {
+    const { data, error } = await supabase
+      .from(table)
+      .select(select)
+      .eq('campaign_id', campaignId)
+      .range(from, from + pageSize - 1);
+
+    if (error) {
+      throw new Error(`Failed to fetch ${table}: ${error.message}`);
+    }
+
+    rows.push(...((data ?? []) as T[]));
+    if (!data || data.length < pageSize) break;
+  }
+
+  return rows;
+}
+
+async function upsertAutoBuildingLinks(
+  supabase: ReturnType<typeof createAdminClient>,
+  links: AutoLinkRow[]
+): Promise<void> {
+  if (links.length === 0) return;
+
+  for (let index = 0; index < links.length; index += FALLBACK_INSERT_BATCH_SIZE) {
+    const chunk = links.slice(index, index + FALLBACK_INSERT_BATCH_SIZE);
+    const { error: rpcError } = await supabase.rpc('bulk_upsert_auto_building_links', {
+      p_campaign_id: chunk[0].campaign_id,
+      p_links: chunk,
+    });
+
+    if (!rpcError) {
+      continue;
+    }
+
+    console.warn('[Provision] bulk_upsert_auto_building_links RPC failed; falling back to Supabase upsert:', {
+      code: rpcError.code,
+      message: rpcError.message,
+    });
+
+    const { data: manualRows, error: manualError } = await supabase
+      .from('building_address_links')
+      .select('address_id')
+      .eq('campaign_id', chunk[0].campaign_id)
+      .eq('link_source', 'manual')
+      .in('address_id', chunk.map((link) => link.address_id));
+
+    if (manualError) {
+      throw new Error(`Failed to protect manual building links before fallback upsert: ${manualError.message}`);
+    }
+
+    const manualAddressIds = new Set((manualRows ?? []).map((row) => String(row.address_id)));
+    const autoLinks = chunk.filter((link) => !manualAddressIds.has(link.address_id));
+    if (autoLinks.length === 0) {
+      continue;
+    }
+
+    const { error } = await supabase
+      .from('building_address_links')
+      .upsert(autoLinks, {
+        onConflict: 'campaign_id,address_id',
+      });
+
+    if (error) {
+      throw new Error(`Failed to write building links: ${error.message}`);
+    }
+  }
+}
+
+async function upsertAutoParcelAddressLinks(
+  supabase: ReturnType<typeof createAdminClient>,
+  links: AutoParcelLinkRow[]
+): Promise<void> {
+  if (links.length === 0) return;
+
+  for (let index = 0; index < links.length; index += FALLBACK_INSERT_BATCH_SIZE) {
+    const chunk = links.slice(index, index + FALLBACK_INSERT_BATCH_SIZE);
+    const { data: manualRows, error: manualError } = await supabase
+      .from('parcel_address_links')
+      .select('address_id')
+      .eq('campaign_id', chunk[0].campaign_id)
+      .eq('link_source', 'manual')
+      .in('address_id', chunk.map((link) => link.address_id));
+
+    if (manualError) {
+      if (isMissingParcelAddressLinksTable(manualError)) {
+        console.warn('[Provision] parcel_address_links table unavailable; skipping parcel evidence persistence:', {
+          code: manualError.code,
+          message: manualError.message,
+        });
+        return;
+      }
+      throw new Error(`Failed to protect manual parcel links before upsert: ${manualError.message}`);
+    }
+
+    const manualAddressIds = new Set((manualRows ?? []).map((row) => String(row.address_id)));
+    const autoLinks = chunk.filter((link) => !manualAddressIds.has(link.address_id));
+    if (autoLinks.length === 0) {
+      continue;
+    }
+
+    const { error } = await supabase
+      .from('parcel_address_links')
+      .upsert(autoLinks, {
+        onConflict: 'campaign_id,address_id',
+      });
+
+    if (error) {
+      if (isMissingParcelAddressLinksTable(error)) {
+        console.warn('[Provision] parcel_address_links table unavailable; skipping parcel evidence persistence:', {
+          code: error.code,
+          message: error.message,
+        });
+        return;
+      }
+      throw new Error(`Failed to write parcel-address links: ${error.message}`);
+    }
+  }
+}
+
+function isMissingParcelAddressLinksTable(error: { code?: string; message?: string }) {
+  const message = error.message ?? '';
+  return error.code === '42P01' ||
+    error.code === 'PGRST205' ||
+    message.includes('parcel_address_links') && (
+      message.includes('does not exist') ||
+      message.includes('schema cache')
+    );
+}
+
+async function autoLinkCampaignAddressesFromMemory(params: {
+  supabase: ReturnType<typeof createAdminClient>;
+  campaignId: string;
+  totalAddresses: number;
+  addresses: CampaignAddressLinkerRow[];
+  materializedBuildings: CampaignBuildingLinkerRow[];
+  bedrockLinkGeometry: BedrockLinkGeometry;
+  timings?: ProvisionTimingRecorder;
+}): Promise<AutoLinkCampaignAddressesResult> {
+  const persistedParcels = await fetchCampaignLinkerParcels(params.supabase, params.campaignId).catch((error) => {
+    console.warn('[Provision] Persisted parcel evidence unavailable for in-memory linker:', {
+      campaignId: params.campaignId,
+      message: error instanceof Error ? error.message : String(error),
+    });
+    return [] as CampaignParcelLinkerRow[];
+  });
+  const parcelsForLinking = persistedParcels.length > 0
+    ? persistedParcels
+    : params.bedrockLinkGeometry.parcels ?? [];
+  const parcelAddressLinks = persistedParcels.length > 0
+    ? buildParcelAddressLinksFromPreparedRows({
+      campaignId: params.campaignId,
+      addresses: params.addresses,
+      parcels: persistedParcels,
+    })
+    : [];
+  const links = buildAutoBuildingLinksFromMemory({
+    campaignId: params.campaignId,
+    addresses: params.addresses,
+    materializedBuildings: params.materializedBuildings,
+    sourceBuildings: params.bedrockLinkGeometry.buildings ?? [],
+    parcels: parcelsForLinking,
+    distanceMeters: AUTO_LINK_DISTANCE_METERS,
+  });
+
+  await Promise.all([
+    params.timings
+      ? params.timings.measure('bulk_link_insert_ms', () => upsertAutoBuildingLinks(params.supabase, links), 'linker')
+      : upsertAutoBuildingLinks(params.supabase, links),
+    params.timings
+      ? params.timings.measure('bulk_parcel_link_insert_ms', () => upsertAutoParcelAddressLinks(params.supabase, parcelAddressLinks), 'linker')
+      : upsertAutoParcelAddressLinks(params.supabase, parcelAddressLinks),
+  ]);
+
+  return {
+    linked: links.length,
+    parcel_linked: parcelAddressLinks.length,
+    skipped_manual: 0,
+    unlinked: Math.max(params.totalAddresses - links.length, 0),
+  };
+}
+
+async function autoLinkCampaignAddressesInProcess(params: {
+  supabase: ReturnType<typeof createAdminClient>;
+  campaignId: string;
+  totalAddresses: number;
+  timings?: ProvisionTimingRecorder;
+}): Promise<AutoLinkCampaignAddressesResult> {
+  const [addresses, buildingRows, parcelRows] = await Promise.all([
+    fetchAllCampaignRows<CampaignAddressLinkerRow>(
+      params.supabase,
+      'campaign_addresses',
+      'id, coordinate, geom',
+      params.campaignId
+    ),
+    fetchAllCampaignRows<CampaignBuildingLinkerRow>(
+      params.supabase,
+      'buildings',
+      'id, geom, height_m',
+      params.campaignId
+    ),
+    fetchCampaignLinkerParcels(params.supabase, params.campaignId).catch((error) => {
+      console.warn('[Provision] Parcel linker enrichment unavailable:', {
+        campaignId: params.campaignId,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      return [] as CampaignParcelLinkerRow[];
+    }),
+  ]);
+
+  const links = buildAutoBuildingLinksFromPreparedRows({
+    campaignId: params.campaignId,
+    addresses,
+    buildings: prepareBuildingsFromRows(buildingRows),
+    parcels: parcelRows,
+    distanceMeters: AUTO_LINK_DISTANCE_METERS,
+  });
+  const parcelAddressLinks = buildParcelAddressLinksFromPreparedRows({
+    campaignId: params.campaignId,
+    addresses,
+    parcels: parcelRows,
+  });
+
+  await Promise.all([
+    params.timings
+      ? params.timings.measure('bulk_link_insert_ms', () => upsertAutoBuildingLinks(params.supabase, links), 'linker')
+      : upsertAutoBuildingLinks(params.supabase, links),
+    params.timings
+      ? params.timings.measure('bulk_parcel_link_insert_ms', () => upsertAutoParcelAddressLinks(params.supabase, parcelAddressLinks), 'linker')
+      : upsertAutoParcelAddressLinks(params.supabase, parcelAddressLinks),
+  ]);
+
+  return {
+    linked: links.length,
+    parcel_linked: parcelAddressLinks.length,
+    skipped_manual: 0,
+    unlinked: Math.max(params.totalAddresses - links.length, 0),
+  };
+}
+
+async function updateCampaignLinkSummary(params: {
+  supabase: ReturnType<typeof createAdminClient>;
+  campaignId: string;
+  readyAt: string;
+  linkedAddressCount: number;
+  totalAddressCount: number;
+}): Promise<void> {
+  const confidence = params.totalAddressCount > 0
+    ? Number(((params.linkedAddressCount / params.totalAddressCount) * 100).toFixed(2))
+    : 0;
+
+  await updateCampaignProvision(params.supabase, params.campaignId, {
+    provision_status: 'ready',
+    provision_phase: 'linked',
+    optimized_at: params.readyAt,
+    building_link_confidence: confidence,
+    map_mode: confidence >= 80 ? 'hybrid' : 'standard_pins',
+    standard_mode_recommended: confidence < 80,
+    link_quality_reason: `${params.linkedAddressCount}/${params.totalAddressCount} addresses linked to S3 building footprints`,
+  });
+}
+
 async function upsertSnapshotMetadata(
   supabase: ReturnType<typeof createAdminClient>,
   campaignId: string,
@@ -887,12 +1383,7 @@ async function resolveDiamondThenBedrock(options: {
   campaignId: string;
   polygon: GeoJSON.Polygon;
   regionCode: string;
-}): Promise<{
-  addressSource: ProvisionSource;
-  snapshot: LambdaSnapshotResponse;
-  addressesToInsert: StandardCampaignAddress[];
-  bedrockLinkGeometry: BedrockLinkGeometry | null;
-}> {
+}): Promise<ResolvedProvisionResult> {
   const { campaignId, polygon, regionCode } = options;
 
   if (DiamondMunicipalService.isSupportedRegion(regionCode)) {
@@ -940,6 +1431,7 @@ async function resolveDiamondThenBedrock(options: {
           snapshot: diamondResult.snapshot,
           addressesToInsert: addressesForInitialHydration(diamondResult.addresses),
           bedrockLinkGeometry: null,
+          sourceMetrics: diamondResult.metrics,
         };
       }
     }
@@ -973,6 +1465,7 @@ async function resolveDiamondThenBedrock(options: {
       snapshot: bedrockResult.snapshot,
       addressesToInsert: addressesForInitialHydration(bedrockResult.addresses),
       bedrockLinkGeometry: bedrockResult.linkGeometry,
+      sourceMetrics: bedrockResult.metrics,
     };
   }
 
@@ -989,8 +1482,72 @@ async function runCampaignPostProcessing(params: {
   insertedCount: number;
   readyAt: string;
   expectedBuildingCount: number;
+  materializedBuildings: CampaignBuildingLinkerRow[];
+  campaignAddresses: CampaignAddressLinkerRow[];
+  bedrockLinkGeometry?: BedrockLinkGeometry | null;
+  timings?: ProvisionTimingRecorder;
 }): Promise<CampaignPostProcessingResult> {
   const label = sourceDisplayName(params.source);
+
+  const completeWithLinkResult = async (
+    linkResult: AutoLinkCampaignAddressesResult | null,
+    linkerPath: CampaignPostProcessingResult['linkerPath']
+  ): Promise<CampaignPostProcessingResult> => {
+    const result = (linkResult ?? {}) as AutoLinkCampaignAddressesResult;
+    const linkedAddressCount = jsonNumber(result.linked);
+    const skippedManualCount = jsonNumber(result.skipped_manual);
+    const unlinkedAddressCount = jsonNumber(result.unlinked);
+    const parcelLinkedAddressCount = jsonNumber(result.parcel_linked);
+
+    if (linkedAddressCount === 0 && params.insertedCount > 0) {
+      await updateCampaignProvision(params.supabase, params.campaignId, {
+        provision_status: 'ready',
+        provision_phase: 'linking_failed',
+        optimized_at: params.readyAt,
+        building_link_confidence: 0,
+        map_mode: 'standard_pins',
+        standard_mode_recommended: true,
+        link_quality_reason: `0/${params.insertedCount} addresses linked to S3 building footprints`,
+      });
+
+      return {
+        optimized: false,
+        postprocessDeferred: false,
+        linkedAddressCount: 0,
+        skippedManualCount,
+        unlinkedAddressCount: params.insertedCount,
+        linkerPath,
+        message: `${label} campaign is map-ready, but building linking failed.`,
+      };
+    }
+
+    await updateCampaignLinkSummary({
+      supabase: params.supabase,
+      campaignId: params.campaignId,
+      readyAt: params.readyAt,
+      linkedAddressCount,
+      totalAddressCount: params.insertedCount,
+    });
+
+    console.log('[Provision] Backend auto-link completed.', {
+      campaignId: params.campaignId,
+      linkerPath,
+      linkedAddressCount,
+      parcelLinkedAddressCount,
+      skippedManualCount,
+      unlinkedAddressCount,
+    });
+
+    return {
+      optimized: true,
+      postprocessDeferred: false,
+      linkedAddressCount,
+      skippedManualCount,
+      unlinkedAddressCount,
+      linkerPath,
+      message: `${label} campaign is map-ready. ${linkedAddressCount} addresses auto-linked.`,
+    };
+  };
 
   const { count: materializedBuildingCount, error: buildingCountError } = await params.supabase
     .from('buildings')
@@ -1011,58 +1568,120 @@ async function runCampaignPostProcessing(params: {
       linkedAddressCount: 0,
       skippedManualCount: 0,
       unlinkedAddressCount: params.insertedCount,
+      linkerPath: 'deferred',
       message: `${label} campaign is map-ready. Linking deferred to device.`,
     };
   }
 
-  const { data, error } = await params.supabase.rpc('auto_link_campaign_addresses', {
-    p_campaign_id: params.campaignId,
-  });
+  let inMemoryResult: AutoLinkCampaignAddressesResult | null = null;
+  let inProcessError: unknown = null;
 
-  if (error) {
-    console.error('[Provision] Backend auto-link RPC failed; leaving iOS fallback enabled.', {
+  if (
+    params.bedrockLinkGeometry?.buildings?.length &&
+    params.materializedBuildings.length > 0 &&
+    params.campaignAddresses.length > 0
+  ) {
+    inMemoryResult = await (params.timings
+      ? params.timings.measure('in_memory_ms', () => autoLinkCampaignAddressesFromMemory({
+        supabase: params.supabase,
+        campaignId: params.campaignId,
+        totalAddresses: params.insertedCount,
+        addresses: params.campaignAddresses,
+        materializedBuildings: params.materializedBuildings,
+        bedrockLinkGeometry: params.bedrockLinkGeometry!,
+        timings: params.timings,
+      }), 'linker')
+      : autoLinkCampaignAddressesFromMemory({
+        supabase: params.supabase,
+        campaignId: params.campaignId,
+        totalAddresses: params.insertedCount,
+        addresses: params.campaignAddresses,
+        materializedBuildings: params.materializedBuildings,
+        bedrockLinkGeometry: params.bedrockLinkGeometry,
+      }));
+
+    const linkedAddressCount = jsonNumber(inMemoryResult.linked);
+    const linkRatio = params.insertedCount > 0 ? linkedAddressCount / params.insertedCount : 0;
+    console.log('[Provision] In-memory S3 footprint linker completed.', {
       campaignId: params.campaignId,
-      code: error.code,
-      message: error.message,
-      details: error.details,
-      hint: error.hint,
+      linkedAddressCount,
+      unlinkedAddressCount: jsonNumber(inMemoryResult.unlinked),
+      linkRatio: Number(linkRatio.toFixed(4)),
     });
 
-    return {
-      optimized: false,
-      postprocessDeferred: true,
-      linkedAddressCount: 0,
-      skippedManualCount: 0,
-      unlinkedAddressCount: params.insertedCount,
-      message: `${label} campaign is map-ready. Linking deferred to device.`,
-    };
+    if (linkRatio >= MIN_HYBRID_LINK_RATIO) {
+      return completeWithLinkResult(inMemoryResult, 'in_memory');
+    }
+
+    console.warn('[Provision] In-memory S3 footprint linker below quality gate; running in-process DB-row reconciliation.', {
+      campaignId: params.campaignId,
+      linkedAddressCount,
+      totalAddressCount: params.insertedCount,
+      minimumRatio: MIN_HYBRID_LINK_RATIO,
+    });
   }
 
-  const result = (data ?? {}) as AutoLinkCampaignAddressesResult;
-  const linkedAddressCount = jsonNumber(result.linked);
-  const skippedManualCount = jsonNumber(result.skipped_manual);
-  const unlinkedAddressCount = jsonNumber(result.unlinked);
+  try {
+    const inProcessResult = await (params.timings
+      ? params.timings.measure('in_process_ms', () => autoLinkCampaignAddressesInProcess({
+        supabase: params.supabase,
+        campaignId: params.campaignId,
+        totalAddresses: params.insertedCount,
+        timings: params.timings,
+      }), 'linker')
+      : autoLinkCampaignAddressesInProcess({
+        supabase: params.supabase,
+        campaignId: params.campaignId,
+        totalAddresses: params.insertedCount,
+      }));
 
-  await updateCampaignProvision(params.supabase, params.campaignId, {
-    provision_status: 'ready',
-    provision_phase: 'linked',
-    optimized_at: params.readyAt,
-  });
+    console.log('[Provision] In-process S3 footprint linker completed as primary path.', {
+      campaignId: params.campaignId,
+      linkedAddressCount: jsonNumber(inProcessResult.linked),
+      unlinkedAddressCount: jsonNumber(inProcessResult.unlinked),
+    });
 
-  console.log('[Provision] Backend auto-link RPC completed.', {
+    return completeWithLinkResult(inProcessResult, 'in_process');
+  } catch (fallbackError) {
+    inProcessError = fallbackError;
+    console.error('[Provision] Primary in-process linker failed; falling back to PostGIS RPC.', {
+      campaignId: params.campaignId,
+      message: fallbackError instanceof Error ? fallbackError.message : String(fallbackError),
+    });
+  }
+
+  const { data, error } = await (params.timings
+    ? params.timings.measure('postgis_rpc_ms', async () => await params.supabase.rpc('auto_link_campaign_addresses', {
+      p_campaign_id: params.campaignId,
+    }), 'linker')
+    : params.supabase.rpc('auto_link_campaign_addresses', {
+      p_campaign_id: params.campaignId,
+    }));
+
+  if (!error) {
+    console.log('[Provision] PostGIS auto-link RPC completed as fallback.', {
+      campaignId: params.campaignId,
+    });
+    return completeWithLinkResult(data as AutoLinkCampaignAddressesResult | null, 'postgis_rpc');
+  }
+
+  console.error('[Provision] PostGIS auto-link RPC fallback failed; leaving iOS fallback enabled.', {
     campaignId: params.campaignId,
-    linkedAddressCount,
-    skippedManualCount,
-    unlinkedAddressCount,
+    inProcessError: inProcessError instanceof Error ? inProcessError.message : String(inProcessError),
+    code: error.code,
+    message: error.message,
+    details: error.details,
+    hint: error.hint,
   });
 
   return {
-    optimized: true,
-    postprocessDeferred: false,
-    linkedAddressCount,
-    skippedManualCount,
-    unlinkedAddressCount,
-    message: `${label} campaign is map-ready. ${linkedAddressCount} addresses auto-linked.`,
+    optimized: false,
+    postprocessDeferred: true,
+    linkedAddressCount: jsonNumber(inMemoryResult?.linked),
+    skippedManualCount: 0,
+    unlinkedAddressCount: params.insertedCount,
+    linkerPath: 'failed',
+    message: `${label} campaign is map-ready. Linking deferred to device.`,
   };
 }
 
@@ -1070,6 +1689,7 @@ export async function POST(request: NextRequest) {
   console.log('[Provision] Starting Diamond/Bedrock S3 map-ready provisioning...');
 
   let campaignId: string | null = null;
+  const timings = new ProvisionTimingRecorder();
 
   try {
     const requestUser = await resolveUserFromRequest(request);
@@ -1128,12 +1748,15 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const regionResolution = await resolveCampaignRegion({
+    const regionResolution = await timings.measure('region_resolution_ms', () => resolveCampaignRegion({
       currentRegion: campaign.region,
       polygon,
       bbox: campaign.bbox,
-    });
+    }));
     const regionCode = regionResolution.regionCode;
+    const sourceCacheKey = `${campaignId}:${regionCode}:${territoryHash(polygon)}`;
+    let cachedSourceResult: ResolvedProvisionResult | null = null;
+    let cachedSourceKey: string | null = null;
 
     if (regionResolution.shouldPersist) {
       const { error: regionUpdateError } = await supabase
@@ -1163,6 +1786,7 @@ export async function POST(request: NextRequest) {
       link_quality_reason: null,
       link_quality_checked_at: null,
       link_quality_metrics: {},
+      provision_timings: timings.snapshot(),
     });
 
 	    const runProvisionWorker = async () => {
@@ -1178,40 +1802,58 @@ export async function POST(request: NextRequest) {
             provision_phase: 'source_probed',
           });
 
-          const existingAddressCount = await countCampaignAddresses(supabase, campaignId!);
-          const resolvedProvision = await withTimeout(
-            resolveDiamondThenBedrock({
-              campaignId: campaignId!,
-              polygon: polygon as GeoJSON.Polygon,
-              regionCode,
+          const [existingAddressCount, resolvedProvision] = await Promise.all([
+            timings.measure('existing_address_count_ms', () => countCampaignAddresses(supabase, campaignId!)),
+            timings.measure('source_resolution_ms', async () => {
+              if (cachedSourceKey === sourceCacheKey && cachedSourceResult) {
+                console.log('[Provision] Reusing retry-local S3 source scan cache.', {
+                  campaignId,
+                  regionCode,
+                });
+                return cachedSourceResult;
+              }
+
+              const result = await withTimeout(
+                resolveDiamondThenBedrock({
+                  campaignId: campaignId!,
+                  polygon: polygon as GeoJSON.Polygon,
+                  regionCode,
+                }),
+                sourceTimeoutMs,
+                `Provision source resolution exceeded ${Math.round(sourceTimeoutMs / 1000)}s before Diamond/Bedrock returned. Check S3/DuckDB/httpfs runtime logs.`
+              );
+              cachedSourceKey = sourceCacheKey;
+              cachedSourceResult = result;
+              return result;
             }),
-            sourceTimeoutMs,
-            `Provision source resolution exceeded ${Math.round(sourceTimeoutMs / 1000)}s before Diamond/Bedrock returned. Check S3/DuckDB/httpfs runtime logs.`
-          );
+          ]);
           const {
             addressSource,
             snapshot,
             addressesToInsert: resolvedAddresses,
             bedrockLinkGeometry,
+            sourceMetrics,
           } = resolvedProvision;
           let addressesToInsert = resolvedAddresses;
+          timings.sourceMetrics(sourceMetrics ?? snapshot.metadata?.tile_metrics ?? null);
+          timings.count('addresses_scanned', resolvedAddresses.length);
+          timings.count('buildings_scanned', bedrockLinkGeometry?.buildings.length ?? snapshot.counts.buildings ?? 0);
+          timings.count('parcels_scanned', bedrockLinkGeometry?.parcels.length ?? snapshot.counts.parcels ?? 0);
 
           await updateCampaignProvision(supabase, campaignId!, {
             provision_source: dbProvisionSource(addressSource),
             provision_phase: 'source_probed',
+            provision_timings: timings.snapshot(),
           });
 
           let finalAddressCount = existingAddressCount;
+          let campaignLinkerAddresses: CampaignAddressLinkerRow[] = [];
           await updateCampaignProvision(supabase, campaignId!, {
             provision_phase: 'addresses_loading',
           });
 
           addressesToInsert = deduplicateAddresses(addressesToInsert);
           const hasResolvedAddresses = addressesToInsert.length > 0;
-          if (hasResolvedAddresses) {
-            finalAddressCount = await bulkInsertAddresses(supabase, campaignId!, addressesToInsert);
-          }
-
           const hasStaticGeometry = snapshotHasStaticPmtilesGeometry(snapshot);
           if (!hasResolvedAddresses && !hasStaticGeometry) {
             throw new ProvisionError(
@@ -1219,15 +1861,6 @@ export async function POST(request: NextRequest) {
               422
             );
           }
-
-          if (finalAddressCount > 0) {
-            await updateCampaignProvision(supabase, campaignId!, {
-              provision_phase: 'addresses_ready',
-              addresses_ready_at: readyAt,
-            });
-          }
-
-          await upsertSnapshotMetadata(supabase, campaignId!, snapshot);
 
           const buildingLinkConfidence = 0;
           const mapMode = 'standard_pins';
@@ -1237,20 +1870,63 @@ export async function POST(request: NextRequest) {
               : snapshotHasStaticBuildingPmtiles(snapshot)
                 ? finalAddressCount
                 : 0;
-          const parcelEnrichmentStatus = isParcelRegionSupported(regionCode) ? 'queued' : 'skipped';
+          const hasPreparedParcels = (bedrockLinkGeometry?.parcels.length ?? 0) > 0;
+          const parcelEnrichmentStatus = hasPreparedParcels
+            ? 'ready'
+            : isParcelRegionSupported(regionCode)
+              ? 'queued'
+              : 'skipped';
 
-          if (parcelEnrichmentStatus === 'queued') {
-            await new ParcelEnrichmentService(supabase).markQueued(campaignId!);
+          const [
+            addressInsertResult,
+            materializedBuildingResult,
+            _snapshotMetadataResult,
+            preparedParcelCount,
+          ] = await Promise.all([
+            timings.measure('address_insert_ms', async () => {
+              if (hasResolvedAddresses) {
+                return bulkInsertAddresses(supabase, campaignId!, addressesToInsert);
+              }
+              const existingAddresses = await fetchCampaignLinkerAddresses(supabase, campaignId!);
+              return { count: existingAddresses.length, addresses: existingAddresses };
+            }),
+            timings.measure('building_materialization_ms', () => materializeBuildingGeoJSONForMapReady({
+              supabase,
+              campaignId: campaignId!,
+              polygon: polygon as GeoJSON.Polygon,
+              source: addressSource,
+              snapshot,
+              bedrockLinkGeometry,
+            })),
+            timings.measure('snapshot_metadata_ms', () => upsertSnapshotMetadata(supabase, campaignId!, snapshot)),
+            hasPreparedParcels && bedrockLinkGeometry
+              ? timings.measure('parcel_enrichment_ms', () => persistPreparedParcels(
+                supabase,
+                campaignId!,
+                bedrockLinkGeometry.parcels
+              ))
+              : parcelEnrichmentStatus === 'queued'
+              ? timings.measure('parcel_queue_ms', async () => {
+                await new ParcelEnrichmentService(supabase).markQueued(campaignId!);
+                return 0;
+              })
+              : Promise.resolve(0),
+          ]);
+
+          finalAddressCount = addressInsertResult.count;
+          campaignLinkerAddresses = addressInsertResult.addresses;
+          timings.count('addresses_inserted', finalAddressCount);
+          timings.count('buildings_materialized', materializedBuildingResult.buildings.length);
+          timings.count('parcels_inserted', preparedParcelCount ?? 0);
+
+          if (finalAddressCount > 0) {
+            await updateCampaignProvision(supabase, campaignId!, {
+              provision_phase: 'addresses_ready',
+              addresses_ready_at: readyAt,
+              provision_timings: timings.snapshot(),
+            });
           }
-
-          const cachedBuildingGeoJSONCount = await materializeBuildingGeoJSONForMapReady({
-            supabase,
-            campaignId: campaignId!,
-            polygon: polygon as GeoJSON.Polygon,
-            source: addressSource,
-            snapshot,
-            bedrockLinkGeometry,
-          });
+          const cachedBuildingGeoJSONCount = materializedBuildingResult.count;
 
           await updateCampaignProvision(supabase, campaignId!, {
             provision_status: 'pending',
@@ -1258,23 +1934,30 @@ export async function POST(request: NextRequest) {
             provision_source: dbProvisionSource(addressSource),
             provisioned_at: readyAt,
             map_ready_at: readyAt,
-            has_parcels: false,
+            has_parcels: (preparedParcelCount ?? 0) > 0,
             building_link_confidence: buildingLinkConfidence,
             map_mode: mapMode,
             parcel_enrichment_status: parcelEnrichmentStatus,
+            provision_timings: timings.snapshot(),
           });
 
           console.log('[Provision] Static S3 geometry is map-ready; no legacy Gold/Lambda/White Gold fallbacks will run.', {
             cachedBuildingGeoJSONCount,
           });
-          const postProcessing = await runCampaignPostProcessing({
+          const postProcessing = await timings.measure('postprocessing_ms', () => runCampaignPostProcessing({
             supabase,
             campaignId: campaignId!,
             source: addressSource,
             insertedCount: finalAddressCount,
             readyAt,
             expectedBuildingCount: cachedBuildingGeoJSONCount,
-          });
+            materializedBuildings: materializedBuildingResult.buildings,
+            campaignAddresses: campaignLinkerAddresses,
+            bedrockLinkGeometry,
+            timings,
+          }));
+          timings.count('links_created', postProcessing.linkedAddressCount);
+          await persistProvisionTimings(supabase, campaignId!, timings.snapshot());
 
           if (postProcessing.optimized) {
             await sendCampaignReadyNotificationOnce(campaignId!).catch((error) => {
@@ -1285,11 +1968,19 @@ export async function POST(request: NextRequest) {
           if (!postProcessing.optimized) {
             await updateCampaignProvision(supabase, campaignId!, {
               provision_status: 'ready',
-              provision_phase: 'map_ready',
+              provision_phase: postProcessing.linkedAddressCount === 0 && finalAddressCount > 0
+                ? 'linking_failed'
+                : 'map_ready',
               provisioned_at: readyAt,
               map_ready_at: readyAt,
+              provision_timings: timings.snapshot(),
             });
           }
+
+          const responseBuildingLinkConfidence = finalAddressCount > 0
+            ? Number(((postProcessing.linkedAddressCount / finalAddressCount) * 100).toFixed(2))
+            : 0;
+          const responseMapMode = responseBuildingLinkConfidence >= 80 ? 'hybrid' : 'standard_pins';
 
           return {
             success: true,
@@ -1299,15 +1990,21 @@ export async function POST(request: NextRequest) {
             source: addressSource,
             links_created: postProcessing.linkedAddressCount,
             units_created: 0,
-            has_parcels: false,
-            building_link_confidence: buildingLinkConfidence,
-            map_mode: mapMode,
+            has_parcels: (preparedParcelCount ?? 0) > 0,
+            parcel_count: preparedParcelCount ?? 0,
+            building_link_confidence: responseBuildingLinkConfidence,
+            map_mode: responseMapMode,
             linked_address_count: postProcessing.linkedAddressCount,
             skipped_manual_link_count: postProcessing.skippedManualCount,
             unlinked_address_count: postProcessing.unlinkedAddressCount,
             total_campaign_addresses: finalAddressCount,
+            linker_path: postProcessing.linkerPath,
             provision_status: 'ready',
-            provision_phase: postProcessing.optimized ? 'linked' : 'map_ready',
+            provision_phase: postProcessing.optimized
+              ? 'linked'
+              : postProcessing.linkedAddressCount === 0 && finalAddressCount > 0
+                ? 'linking_failed'
+                : 'map_ready',
             provision_source: dbProvisionSource(addressSource),
             map_ready: true,
             optimized: postProcessing.optimized,
@@ -1322,6 +2019,7 @@ export async function POST(request: NextRequest) {
               overture_release: snapshot.metadata?.overture_release,
               tile_metrics: snapshot.metadata?.tile_metrics,
             },
+            provision_timings: timings.snapshot(),
             warning: snapshot.warning ?? null,
             message: postProcessing.message,
           };
@@ -1332,6 +2030,7 @@ export async function POST(request: NextRequest) {
         try {
           const supabase = createAdminClient();
           await markCampaignProvisionFailed(supabase, campaignId!, error);
+          await persistProvisionTimings(supabase, campaignId!, timings.snapshot());
 	        } catch (updateError) {
 	          console.error('[Provision] Failed to update failed background provision state:', updateError);
 	        }
@@ -1355,6 +2054,7 @@ export async function POST(request: NextRequest) {
       campaign_id: campaignId,
       provision_status: 'pending',
       provision_phase: 'created',
+      provision_timings: timings.snapshot(),
     });
   } catch (error) {
     console.error('[Provision] Error:', error);
@@ -1364,6 +2064,7 @@ export async function POST(request: NextRequest) {
       try {
         const supabase = createAdminClient();
         await markCampaignProvisionFailed(supabase, campaignId, error);
+        await persistProvisionTimings(supabase, campaignId, timings.snapshot());
       } catch (updateError) {
         console.error('[Provision] Failed to update provision_status:', updateError);
       }
@@ -1375,6 +2076,7 @@ export async function POST(request: NextRequest) {
         error: message,
         provision_status: 'failed',
         provision_phase: 'failed',
+        provision_timings: timings.snapshot(),
       },
       { status }
     );

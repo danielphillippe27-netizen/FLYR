@@ -20,17 +20,20 @@ export interface LambdaSnapshotResponse {
   counts: {
     buildings: number;
     addresses: number;
+    parcels?: number;
     roads: number;
   };
   s3_keys: {
     buildings: string;
     addresses: string;
+    parcels?: string;
     metadata: string;
     roads?: string;
   };
   urls: {
     buildings: string;
     addresses: string;
+    parcels?: string;
     metadata: string;
     roads?: string;
   };

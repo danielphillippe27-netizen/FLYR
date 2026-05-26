@@ -14,6 +14,7 @@ struct TrackedCampaignProvision: Codable, Equatable {
     var campaignName: String
     var state: CampaignProvisionBadgeState
     var statusText: String
+    var progressPercent: Int?
 }
 
 @MainActor
@@ -30,23 +31,38 @@ final class CampaignProvisionMonitor: ObservableObject {
         }
     }
 
-    func track(campaign: CampaignV2, state: CampaignProvisionBadgeState = .queued, statusText: String = "Campaign setup is queued.") {
+    func track(
+        campaign: CampaignV2,
+        state: CampaignProvisionBadgeState = .queued,
+        statusText: String = CampaignProvisionMonitor.runningStatusText,
+        progressPercent: Int? = 0
+    ) {
         tracked = TrackedCampaignProvision(
             campaignId: campaign.id,
             campaignName: campaign.name,
             state: state,
-            statusText: statusText
+            statusText: statusText,
+            progressPercent: progressPercent
         )
         persist()
     }
 
-    func update(campaignId: UUID, campaignName: String? = nil, state: CampaignProvisionBadgeState, statusText: String) {
+    func update(
+        campaignId: UUID,
+        campaignName: String? = nil,
+        state: CampaignProvisionBadgeState,
+        statusText: String,
+        progressPercent: Int? = nil
+    ) {
         guard tracked?.campaignId == campaignId else { return }
         if let campaignName, !campaignName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             tracked?.campaignName = campaignName
         }
         tracked?.state = state
         tracked?.statusText = statusText
+        if let progressPercent {
+            tracked?.progressPercent = Self.clampedProgress(progressPercent)
+        }
         persist()
     }
 
@@ -62,7 +78,8 @@ final class CampaignProvisionMonitor: ObservableObject {
             update(
                 campaignId: tracked.campaignId,
                 state: Self.badgeState(status: state.provisionStatus, phase: state.provisionPhase),
-                statusText: Self.statusText(status: state.provisionStatus, phase: state.provisionPhase)
+                statusText: Self.statusText(status: state.provisionStatus, phase: state.provisionPhase),
+                progressPercent: Self.progressPercent(status: state.provisionStatus, phase: state.provisionPhase)
             )
         } catch {
             #if DEBUG
@@ -71,11 +88,13 @@ final class CampaignProvisionMonitor: ObservableObject {
         }
     }
 
-    static func badgeState(status: CampaignProvisionStatus?, phase: CampaignProvisionPhase?) -> CampaignProvisionBadgeState {
+    nonisolated static let runningStatusText = "Campaign setup is running in the background."
+
+    nonisolated static func badgeState(status: CampaignProvisionStatus?, phase: CampaignProvisionPhase?) -> CampaignProvisionBadgeState {
         if status == .failed || phase == .failed {
             return .needsAttention
         }
-        if status == .ready && phase?.isLinkComplete == true {
+        if status == .ready && phase?.isMapUsable == true {
             return .ready
         }
         if phase == .mapReady || phase == .optimizing {
@@ -87,23 +106,62 @@ final class CampaignProvisionMonitor: ObservableObject {
         return .queued
     }
 
-    static func statusText(status: CampaignProvisionStatus?, phase: CampaignProvisionPhase?) -> String {
+    nonisolated static func statusText(status: CampaignProvisionStatus?, phase: CampaignProvisionPhase?) -> String {
         if status == .failed || phase == .failed {
             return "Setup needs attention. Open the campaign to retry."
         }
-        if status == .ready && phase?.isLinkComplete == true {
-            return "Campaign is ready."
+        if status == .ready && phase?.isMapUsable == true {
+            return phase == .linkingFailed
+                ? "Campaign is ready in standard map mode."
+                : "Campaign is ready."
         }
         switch phase {
         case .sourceProbed, .addressesLoading, .addressesReady:
-            return "Preparing homes and map data."
+            return runningStatusText
         case .mapReady, .optimizing:
-            return "Optimizing homes and building links."
+            return runningStatusText
         case .created:
-            return "Campaign setup is queued."
+            return runningStatusText
         default:
-            return "Campaign setup is running in the background."
+            return runningStatusText
         }
+    }
+
+    nonisolated static func progressPercent(status: CampaignProvisionStatus?, phase: CampaignProvisionPhase?) -> Int? {
+        if status == .failed || phase == .failed {
+            return nil
+        }
+        if status == .ready && phase?.isMapUsable == true {
+            return 100
+        }
+        switch phase {
+        case .created:
+            return 5
+        case .sourceProbed:
+            return 18
+        case .addressesLoading:
+            return 35
+        case .addressesReady:
+            return 50
+        case .mapReady:
+            return 68
+        case .optimizing:
+            return 82
+        case .linkingFailed:
+            return 100
+        case .linked:
+            return 95
+        case .optimized:
+            return 100
+        case .failed:
+            return nil
+        case .none:
+            return status == .pending ? 8 : 0
+        }
+    }
+
+    nonisolated static func clampedProgress(_ progressPercent: Int) -> Int {
+        min(max(progressPercent, 0), 100)
     }
 
     private func persist() {

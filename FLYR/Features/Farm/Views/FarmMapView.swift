@@ -1159,16 +1159,16 @@ struct FarmMapView: View {
             return "no_answer"
         }
 
-        let anyLead = statuses.contains {
-            switch $0 {
-            case .appointment, .futureSeller, .hotLead:
-                return true
-            default:
-                return false
-            }
+        if statuses.contains(.appointment) {
+            return "appointment"
         }
-        if anyLead {
-            return "hot_lead"
+
+        if statuses.contains(.futureSeller) {
+            return "future_seller"
+        }
+
+        if statuses.contains(.hotLead) {
+            return "lead"
         }
 
         let anyHot = statuses.contains {

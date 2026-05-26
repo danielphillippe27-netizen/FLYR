@@ -35,6 +35,7 @@ struct NewCampaignScreen: View {
     @State private var provisionComplete = false
     @State private var provisionFailed = false
     @State private var provisionStatusText = ""
+    @State private var provisionProgressPercent = 0
     @State private var detailsSaving = false
     @State private var detailsSaved = false
     @State private var hasNavigatedToCampaign = false
@@ -346,7 +347,8 @@ struct NewCampaignScreen: View {
                 campaignId: campaign.id,
                 campaignName: campaign.name,
                 state: .needsAttention,
-                statusText: provisionStatusText.isEmpty ? "Setup needs attention." : provisionStatusText
+                statusText: provisionStatusText.isEmpty ? "Setup needs attention." : provisionStatusText,
+                progressPercent: provisionProgressPercent
             )
         }
         if isProvisioningCampaign {
@@ -354,7 +356,8 @@ struct NewCampaignScreen: View {
                 campaignId: campaign.id,
                 campaignName: campaign.name,
                 state: .preparingMap,
-                statusText: provisionStatusText.isEmpty ? "Preparing homes and map data." : provisionStatusText
+                statusText: CampaignProvisionMonitor.runningStatusText,
+                progressPercent: provisionProgressPercent
             )
         }
         if provisionComplete {
@@ -362,7 +365,8 @@ struct NewCampaignScreen: View {
                 campaignId: campaign.id,
                 campaignName: campaign.name,
                 state: campaignMapDataReady ? .ready : .optimizing,
-                statusText: provisionStatusText.isEmpty ? "Campaign setup is running in the background." : provisionStatusText
+                statusText: campaignMapDataReady ? "Campaign is ready." : CampaignProvisionMonitor.runningStatusText,
+                progressPercent: campaignMapDataReady ? 100 : provisionProgressPercent
             )
         }
         return nil
@@ -476,7 +480,8 @@ struct NewCampaignScreen: View {
                 campaignId: campaign.id,
                 campaignName: campaign.name,
                 state: .optimizing,
-                statusText: "Campaign setup is running in the background. We'll notify you when it's ready."
+                statusText: CampaignProvisionMonitor.runningStatusText,
+                progressPercent: provisionProgressPercent
             )
             detailsSaved = true
             createHook.error = nil
@@ -498,14 +503,159 @@ struct NewCampaignScreen: View {
         provisionComplete = false
         provisionFailed = false
         campaignMapDataReady = false
-        provisionStatusText = "Saving territory..."
+        provisionStatusText = CampaignProvisionMonitor.runningStatusText
+        updateProvisionProgress(5)
         CampaignProvisionMonitor.shared.track(
             campaign: campaign,
             state: .queued,
-            statusText: "Campaign setup is queued."
+            statusText: CampaignProvisionMonitor.runningStatusText,
+            progressPercent: provisionProgressPercent
         )
         provisioningTask = Task {
             await provisionCampaignInBackground(campaign: campaign, polygon: polygon, regionCode: regionCode)
+        }
+    }
+
+    @MainActor
+    private func updateProvisionProgress(_ percent: Int) {
+        let clamped = CampaignProvisionMonitor.clampedProgress(percent)
+        guard clamped >= provisionProgressPercent else { return }
+        provisionProgressPercent = clamped
+        guard let campaign = createdCampaign else { return }
+        CampaignProvisionMonitor.shared.update(
+            campaignId: campaign.id,
+            campaignName: campaign.name,
+            state: provisionBadgeState(forProgress: clamped),
+            statusText: clamped >= 100 ? "Campaign is ready." : CampaignProvisionMonitor.runningStatusText,
+            progressPercent: clamped
+        )
+    }
+
+    private func provisionBadgeState(forProgress progressPercent: Int) -> CampaignProvisionBadgeState {
+        if progressPercent >= 100 {
+            return .ready
+        }
+        if progressPercent >= 68 {
+            return .optimizing
+        }
+        if progressPercent >= 18 {
+            return .preparingMap
+        }
+        return .queued
+    }
+
+    @MainActor
+    private func updateProvisionProgress(
+        for state: CampaignProvisionState,
+        campaignId: UUID,
+        campaignName: String
+    ) {
+        let badgeState = CampaignProvisionMonitor.badgeState(
+            status: state.provisionStatus,
+            phase: state.provisionPhase
+        )
+        let statusText = CampaignProvisionMonitor.statusText(
+            status: state.provisionStatus,
+            phase: state.provisionPhase
+        )
+        let derivedProgress = CampaignProvisionMonitor.progressPercent(
+            status: state.provisionStatus,
+            phase: state.provisionPhase
+        )
+        if let derivedProgress {
+            updateProvisionProgress(derivedProgress)
+        }
+        CampaignProvisionMonitor.shared.update(
+            campaignId: campaignId,
+            campaignName: campaignName,
+            state: badgeState,
+            statusText: statusText,
+            progressPercent: provisionProgressPercent
+        )
+    }
+
+    private func continueMonitoringProvision(campaignId: UUID, campaignName: String) async {
+        do {
+            let state = try await CampaignsAPI.shared.waitForProvisionReady(
+                campaignId: campaignId,
+                requireOptimized: false,
+                timeoutSeconds: 300,
+                pollIntervalSeconds: 2,
+                onProgress: { state in
+                    updateProvisionProgress(
+                        for: state,
+                        campaignId: campaignId,
+                        campaignName: campaignName
+                    )
+                }
+            )
+            updateProvisionProgress(
+                for: state,
+                campaignId: campaignId,
+                campaignName: campaignName
+            )
+            guard isProvisionMapUsable(status: state.provisionStatus, phase: state.provisionPhase) else {
+                return
+            }
+
+            if var workingCampaign = createdCampaign, workingCampaign.id == campaignId {
+                workingCampaign.provisionStatus = state.provisionStatus
+                workingCampaign.provisionSource = state.provisionSource
+                workingCampaign.provisionPhase = state.provisionPhase
+                workingCampaign.addressesReadyAt = state.addressesReadyAt
+                workingCampaign.mapReadyAt = state.mapReadyAt
+                workingCampaign.optimizedAt = state.optimizedAt
+
+                let dbAddressCount = (try? await CampaignsAPI.shared.fetchCampaignAddressCount(campaignId: campaignId)) ?? 0
+                let campaignAddresses = (try? await fetchCampaignAddressesWithRetry(campaignId: campaignId)) ?? []
+                workingCampaign.totalFlyers = max(
+                    workingCampaign.totalFlyers,
+                    dbAddressCount,
+                    campaignAddresses.count
+                )
+                preserveCurrentDetails(in: &workingCampaign)
+                store.update(workingCampaign)
+                createdCampaign = workingCampaign
+            }
+
+            let prewarmedMapDataReadiness = await prewarmCampaignBuildingsAfterProvision(campaignId: campaignId)
+            await MapFeaturesService.shared.fetchAllCampaignFeatures(
+                campaignId: campaignId.uuidString,
+                forceRefresh: true
+            )
+            MapFeaturesService.shared.beginDiamondManifestPrewarm(
+                campaignId: campaignId.uuidString,
+                timeoutSeconds: 90
+            )
+            let mapDataReadiness: CampaignMapDataReadiness?
+            if let prewarmedMapDataReadiness {
+                mapDataReadiness = prewarmedMapDataReadiness
+            } else {
+                mapDataReadiness = await waitForCampaignMapDataReady(campaignId: campaignId)
+            }
+
+            if let mapDataReadiness {
+                campaignMapDataReady = true
+                provisionFailed = false
+                provisionStatusText = "Campaign is ready."
+                updateProvisionProgress(100)
+                CampaignProvisionMonitor.shared.update(
+                    campaignId: campaignId,
+                    campaignName: campaignName,
+                    state: .ready,
+                    statusText: "Campaign is ready.",
+                    progressPercent: provisionProgressPercent
+                )
+                print("🗺️ [CAMPAIGN DEBUG] Background map data ready: buildings=\(mapDataReadiness.buildingCount) addresses=\(mapDataReadiness.addressCount)")
+
+                if detailsSaved {
+                    await openCreatedCampaign()
+                }
+            }
+        } catch {
+            #if DEBUG
+            print("⚠️ [CAMPAIGN DEBUG] Background provision monitor failed: \(error.localizedDescription)")
+            #endif
         }
     }
 
@@ -520,11 +670,13 @@ struct NewCampaignScreen: View {
                 polygonGeoJSON: geoJSON,
                 regionCode: regionCode
             )
-            provisionStatusText = "Building the map..."
+            provisionStatusText = CampaignProvisionMonitor.runningStatusText
+            updateProvisionProgress(18)
             let provisionResponse = try await CampaignsAPI.shared.provisionCampaign(
                 campaignId: campaign.id,
                 waitUntilReady: false
             )
+            updateProvisionProgress(35)
             if let confidence = provisionResponse?.dataConfidenceSummary {
                 workingCampaign.dataConfidence = confidence
             }
@@ -546,12 +698,19 @@ struct NewCampaignScreen: View {
                     campaignId: campaign.id,
                     campaignName: workingCampaign.name,
                     state: .optimizing,
-                    statusText: "Campaign setup is running in the background. We'll notify you when it's ready."
+                    statusText: CampaignProvisionMonitor.runningStatusText,
+                    progressPercent: provisionProgressPercent
                 )
-                provisionStatusText = "We'll notify you when this campaign is ready."
+                provisionStatusText = CampaignProvisionMonitor.runningStatusText
                 isProvisioningCampaign = false
                 provisionComplete = true
                 provisionFailed = false
+                Task {
+                    await continueMonitoringProvision(
+                        campaignId: campaign.id,
+                        campaignName: workingCampaign.name
+                    )
+                }
                 Task {
                     await PushRegistrationService.shared.requestCampaignReadyPermissionAndRegister()
                 }
@@ -564,10 +723,17 @@ struct NewCampaignScreen: View {
             )
             var finalProvisionStatus = provisionResponse?.provisionStatus
             if needsProvisionWait {
-                provisionStatusText = "Waiting for map data..."
+                provisionStatusText = CampaignProvisionMonitor.runningStatusText
                 let provisionState = try await CampaignsAPI.shared.waitForProvisionReady(
                     campaignId: campaign.id,
-                    requireOptimized: false
+                    requireOptimized: false,
+                    onProgress: { state in
+                        updateProvisionProgress(
+                            for: state,
+                            campaignId: campaign.id,
+                            campaignName: workingCampaign.name
+                        )
+                    }
                 )
                 workingCampaign.provisionStatus = provisionState.provisionStatus
                 workingCampaign.provisionSource = provisionState.provisionSource
@@ -591,7 +757,8 @@ struct NewCampaignScreen: View {
                 preserveCurrentDetails(in: &workingCampaign)
                 store.update(workingCampaign)
                 createdCampaign = workingCampaign
-                provisionStatusText = "Waiting for homes and buildings..."
+                provisionStatusText = CampaignProvisionMonitor.runningStatusText
+                updateProvisionProgress(68)
                 let addressTask = Task {
                     (try? await fetchCampaignAddressesWithRetry(campaignId: campaign.id)) ?? []
                 }
@@ -605,16 +772,19 @@ struct NewCampaignScreen: View {
                     preserveCurrentDetails(in: &workingCampaign)
                     store.update(workingCampaign)
                     createdCampaign = workingCampaign
+                    updateProvisionProgress(75)
                 }
                 let prewarmedMapDataReadiness = await buildingTask.value
 
-                provisionStatusText = "Loading map data..."
+                provisionStatusText = CampaignProvisionMonitor.runningStatusText
+                updateProvisionProgress(82)
                 await MapFeaturesService.shared.fetchAllCampaignFeatures(
                     campaignId: campaign.id.uuidString,
                     forceRefresh: true
                 )
 
-                provisionStatusText = "Waiting for buildings..."
+                provisionStatusText = CampaignProvisionMonitor.runningStatusText
+                updateProvisionProgress(88)
                 MapFeaturesService.shared.beginDiamondManifestPrewarm(
                     campaignId: campaign.id.uuidString,
                     timeoutSeconds: 90
@@ -628,18 +798,40 @@ struct NewCampaignScreen: View {
                 }
                 if let mapDataReadiness {
                     campaignMapDataReady = true
-                    provisionStatusText = "Buildings are ready."
-                    print("🗺️ [CAMPAIGN DEBUG] Map data ready: buildings=\(mapDataReadiness.buildingCount)")
+                    provisionStatusText = "Campaign is ready."
+                    updateProvisionProgress(100)
+                    CampaignProvisionMonitor.shared.update(
+                        campaignId: campaign.id,
+                        campaignName: workingCampaign.name,
+                        state: .ready,
+                        statusText: "Campaign is ready.",
+                        progressPercent: provisionProgressPercent
+                    )
+                    print("🗺️ [CAMPAIGN DEBUG] Map data ready: buildings=\(mapDataReadiness.buildingCount) addresses=\(mapDataReadiness.addressCount)")
                 } else {
                     campaignMapDataReady = false
                     provisionFailed = true
                     provisionStatusText = "Created, but map data is still preparing."
                     createHook.error = "Campaign created, but buildings are not ready yet. Keep this screen open or retry from campaign details."
+                    CampaignProvisionMonitor.shared.update(
+                        campaignId: campaign.id,
+                        campaignName: workingCampaign.name,
+                        state: .optimizing,
+                        statusText: CampaignProvisionMonitor.runningStatusText,
+                        progressPercent: provisionProgressPercent
+                    )
                 }
             } else {
                 provisionFailed = true
                 provisionStatusText = "Created, but setup needs another try."
                 createHook.error = "Campaign created but provisioning did not complete (status: \(finalProvisionStatus?.rawValue ?? "unknown")). You can retry from campaign details."
+                CampaignProvisionMonitor.shared.update(
+                    campaignId: campaign.id,
+                    campaignName: workingCampaign.name,
+                    state: .needsAttention,
+                    statusText: "Setup needs attention. Open the campaign to retry.",
+                    progressPercent: provisionProgressPercent
+                )
             }
         } catch {
             if isDiamondGeometryReadinessError(error) {
@@ -648,12 +840,13 @@ struct NewCampaignScreen: View {
                     campaignId: campaign.id.uuidString,
                     timeoutSeconds: 90
                 )
-                provisionStatusText = "Map is warming up."
+                provisionStatusText = CampaignProvisionMonitor.runningStatusText
                 campaignMapDataReady = false
                 CampaignProvisionMonitor.shared.update(
                     campaignId: campaign.id,
                     state: .optimizing,
-                    statusText: "Map data is still warming in the background."
+                    statusText: CampaignProvisionMonitor.runningStatusText,
+                    progressPercent: provisionProgressPercent
                 )
             } else {
                 print("❌ [CAMPAIGN DEBUG] Provision failed: \(error)")
@@ -664,7 +857,8 @@ struct NewCampaignScreen: View {
                 CampaignProvisionMonitor.shared.update(
                     campaignId: campaign.id,
                     state: .needsAttention,
-                    statusText: "Setup needs attention. Open the campaign to retry."
+                    statusText: "Setup needs attention. Open the campaign to retry.",
+                    progressPercent: provisionProgressPercent
                 )
             }
         }
@@ -695,14 +889,14 @@ struct NewCampaignScreen: View {
     ) -> Bool {
         guard status == .ready else { return false }
         guard let phase else { return true }
-        return phase == .mapReady || phase.isLinkComplete
+        return phase.isMapUsable
     }
 
     @MainActor
     private func openCreatedCampaign() async {
         guard !hasNavigatedToCampaign, let campaign = createdCampaign else { return }
         guard campaignMapDataReady else {
-            provisionStatusText = "Waiting for homes and buildings..."
+            provisionStatusText = CampaignProvisionMonitor.runningStatusText
             showCampaignReadinessOverlay = true
             return
         }
@@ -874,6 +1068,11 @@ struct NewCampaignScreen: View {
 
     private struct CampaignMapDataReadiness {
         let buildingCount: Int
+        let addressCount: Int
+
+        var isUsable: Bool {
+            buildingCount > 0 || addressCount > 0
+        }
     }
 
     private func fetchCampaignAddressesWithRetry(
@@ -908,22 +1107,29 @@ struct NewCampaignScreen: View {
     }
 
     private func prewarmCampaignBuildingsAfterProvision(campaignId: UUID) async -> CampaignMapDataReadiness? {
-        do {
-            let buildings = try await BuildingLinkService.shared.fetchBuildings(campaignId: campaignId.uuidString)
+        async let buildingsResult: [BuildingFeature]? = try? BuildingLinkService.shared.fetchBuildings(campaignId: campaignId.uuidString)
+        async let addressesResult: [CampaignAddressRow]? = try? fetchCampaignAddressesWithRetry(
+            campaignId: campaignId,
+            attempts: 3,
+            delayMs: 250
+        )
+
+        let buildings = await buildingsResult ?? []
+        let addresses = await addressesResult ?? []
+
+        if !buildings.isEmpty {
             MapFeaturesService.shared.primeBuildingFeatures(
                 campaignId: campaignId.uuidString,
                 features: buildings
             )
-            let buildingCount = renderableBuildingCount(in: buildings)
-            print("✅ [CAMPAIGN DEBUG] Campaign building prewarm loaded \(buildingCount) renderable buildings")
-            if buildingCount > 0 {
-                return CampaignMapDataReadiness(buildingCount: buildingCount)
-            }
-        } catch {
-            print("⚠️ [CAMPAIGN DEBUG] Building prewarm skipped: \(error)")
         }
 
-        return nil
+        let readiness = CampaignMapDataReadiness(
+            buildingCount: renderableBuildingCount(in: buildings),
+            addressCount: addresses.count
+        )
+        print("✅ [CAMPAIGN DEBUG] Campaign map prewarm loaded buildings=\(readiness.buildingCount) addresses=\(readiness.addressCount)")
+        return readiness.isUsable ? readiness : nil
     }
 
     private func waitForCampaignMapDataReady(
@@ -936,20 +1142,31 @@ struct NewCampaignScreen: View {
 
         while Date().timeIntervalSince(startedAt) < timeoutSeconds {
             attempt += 1
-            do {
-                let buildings = try await BuildingLinkService.shared.fetchBuildings(campaignId: campaignId.uuidString)
+            async let buildingsResult: [BuildingFeature]? = try? BuildingLinkService.shared.fetchBuildings(campaignId: campaignId.uuidString)
+            async let addressesResult: [CampaignAddressRow]? = try? fetchCampaignAddressesWithRetry(
+                campaignId: campaignId,
+                attempts: 2,
+                delayMs: 200
+            )
+
+            let buildings = await buildingsResult ?? []
+            let addresses = await addressesResult ?? []
+
+            if !buildings.isEmpty {
                 MapFeaturesService.shared.primeBuildingFeatures(
                     campaignId: campaignId.uuidString,
                     features: buildings
                 )
-                let buildingCount = renderableBuildingCount(in: buildings)
+            }
 
-                print("🧭 [CAMPAIGN DEBUG] map_data_gate attempt=\(attempt) buildings=\(buildingCount)")
-                if buildingCount > 0 {
-                    return CampaignMapDataReadiness(buildingCount: buildingCount)
-                }
-            } catch {
-                print("⚠️ [CAMPAIGN DEBUG] map_data_gate attempt=\(attempt) failed: \(error.localizedDescription)")
+            let readiness = CampaignMapDataReadiness(
+                buildingCount: renderableBuildingCount(in: buildings),
+                addressCount: addresses.count
+            )
+
+            print("🧭 [CAMPAIGN DEBUG] map_data_gate attempt=\(attempt) buildings=\(readiness.buildingCount) addresses=\(readiness.addressCount)")
+            if readiness.isUsable {
+                return readiness
             }
 
             try? await Task.sleep(nanoseconds: UInt64(max(0.5, pollIntervalSeconds) * 1_000_000_000))
@@ -996,10 +1213,29 @@ struct NewCampaignScreen: View {
     }
 
     /// After successful creation/provision, close create flow and open the new campaign in the Session tab.
+    @MainActor
     private func routeToCampaignMap(
         _ campaign: CampaignV2,
         boundaryCoordinates: [CLLocationCoordinate2D] = []
     ) async {
+        provisionStatusText = "Preparing campaign map..."
+        let isMapReady: Bool
+        if campaignMapDataReady {
+            isMapReady = true
+        } else {
+            isMapReady = await CampaignDownloadService.shared.ensureUsableMapAssetsAvailable(
+                campaignId: campaign.id.uuidString
+            )
+        }
+        guard isMapReady else {
+            await MainActor.run {
+                createHook.error = "Campaign is ready, but the map has not fully downloaded to this device yet. Please keep this screen open and try again."
+                showCampaignReadinessOverlay = true
+                hasNavigatedToCampaign = false
+            }
+            return
+        }
+
         dismiss()
         try? await Task.sleep(nanoseconds: 300_000_000)
         await MainActor.run {

@@ -80,6 +80,7 @@ struct CampaignDetailsUpdate: Encodable {
 
 final class CampaignsAPI {
     static let shared = CampaignsAPI()
+    private static let campaignAddressPageSize = 1_000
     private let client = SupabaseManager.shared.client
 
     private struct WorkspaceMemberRow: Decodable {
@@ -681,14 +682,9 @@ final class CampaignsAPI {
             }
         }
         
-        // Use view campaign_addresses_v which includes geom_json (pre-computed GeoJSON)
-        let res: PostgrestResponse<[CampaignAddressViewRow]>
+        let dbRows: [CampaignAddressViewRow]
         do {
-            res = try await client
-                .from("campaign_addresses_v")
-                .select("id,campaign_id,formatted,postal_code,source,seq,visited,geom_json,created_at")
-                .eq("campaign_id", value: campaignId.uuidString)
-                .execute()
+            dbRows = try await fetchAllAddressViewRows(campaignId: campaignId)
         } catch {
             let cachedRows = await CampaignRepository.shared.getCachedAddressRows(campaignId: campaignId)
             if !cachedRows.isEmpty {
@@ -697,8 +693,7 @@ final class CampaignsAPI {
             }
             throw error
         }
-        
-        let dbRows = res.value
+
         print("✅ [API DEBUG] Fetched \(dbRows.count) addresses from DB")
         
         // Convert DB rows to CampaignAddressRow format
@@ -712,6 +707,31 @@ final class CampaignsAPI {
         }
         
         return addresses
+    }
+
+    private func fetchAllAddressViewRows(campaignId: UUID) async throws -> [CampaignAddressViewRow] {
+        var rows: [CampaignAddressViewRow] = []
+        var from = 0
+
+        while true {
+            let to = from + Self.campaignAddressPageSize - 1
+            let res: PostgrestResponse<[CampaignAddressViewRow]> = try await client
+                .from("campaign_addresses_v")
+                .select("id,campaign_id,formatted,postal_code,source,seq,visited,geom_json,created_at")
+                .eq("campaign_id", value: campaignId.uuidString)
+                .order("seq", ascending: true)
+                .range(from: from, to: to)
+                .execute()
+
+            let page = res.value
+            rows.append(contentsOf: page)
+            if page.count < Self.campaignAddressPageSize {
+                break
+            }
+            from += Self.campaignAddressPageSize
+        }
+
+        return rows
     }
     
     // Fetch a single address by ID
@@ -796,6 +816,8 @@ final class CampaignsAPI {
             optimized: state.provisionPhase?.isLinkComplete == true,
             postprocessDeferred: state.provisionPhase?.isLinkComplete != true,
             parcelEnrichmentStatus: nil,
+            provisionTimings: state.provisionTimings,
+            linkerPath: nil,
             warning: "Provision request timed out on the client, but the server kept working.",
             hasParcels: nil,
             buildingLinkConfidence: nil,
@@ -1047,7 +1069,8 @@ final class CampaignsAPI {
         campaignId: UUID,
         requireOptimized: Bool = false,
         timeoutSeconds: TimeInterval = 90,
-        pollIntervalSeconds: TimeInterval = 2
+        pollIntervalSeconds: TimeInterval = 2,
+        onProgress: ((CampaignProvisionState) async -> Void)? = nil
     ) async throws -> CampaignProvisionState {
         let timeoutNanos = UInt64(timeoutSeconds * 1_000_000_000)
         let pollNanos = UInt64(max(0.5, pollIntervalSeconds) * 1_000_000_000)
@@ -1055,6 +1078,7 @@ final class CampaignsAPI {
 
         while Date().timeIntervalSince(start) * 1_000_000_000 < Double(timeoutNanos) {
             let state = try await fetchProvisionState(campaignId: campaignId)
+            await onProgress?(state)
             print("🧭 [API] Provision state campaign=\(campaignId) status=\(state.provisionStatus?.rawValue ?? "nil") phase=\(state.provisionPhase?.rawValue ?? "nil")")
 
             if state.provisionStatus == .ready && (!requireOptimized || state.provisionPhase?.isLinkComplete == true) {
@@ -1067,13 +1091,15 @@ final class CampaignsAPI {
             try await Task.sleep(nanoseconds: pollNanos)
         }
 
-        return try await fetchProvisionState(campaignId: campaignId)
+        let state = try await fetchProvisionState(campaignId: campaignId)
+        await onProgress?(state)
+        return state
     }
 
     func fetchProvisionState(campaignId: UUID) async throws -> CampaignProvisionState {
         let res: PostgrestResponse<CampaignProvisionState> = try await client
             .from("campaigns")
-            .select("id,provision_status,provision_source,provision_phase,provisioned_at,addresses_ready_at,map_ready_at,optimized_at,snapshot_bucket,snapshot_prefix,snapshot_buildings_url,snapshot_roads_url,address_source")
+            .select("id,provision_status,provision_source,provision_phase,provisioned_at,addresses_ready_at,map_ready_at,optimized_at,snapshot_bucket,snapshot_prefix,snapshot_buildings_url,snapshot_roads_url,address_source,coverage_score,data_quality,standard_mode_recommended,data_quality_reason,provision_timings")
             .eq("id", value: campaignId.uuidString)
             .single()
             .execute()
@@ -1141,6 +1167,30 @@ final class CampaignsAPI {
 // MARK: - Provision response (backend contract)
 
 /// Response from POST /api/campaigns/provision (optional decode for logging/UI).
+struct CampaignProvisionTimings: Codable, Equatable {
+    let version: Int?
+    let totalMs: Int?
+    let stages: [String: Int]?
+    let linker: [String: Int]?
+    let counts: [String: Int]?
+    let updatedAt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case version
+        case totalMs = "total_ms"
+        case stages
+        case linker
+        case counts
+        case updatedAt = "updated_at"
+    }
+
+    var slowestStageDescription: String? {
+        let merged = (stages ?? [:]).merging(linker ?? [:]) { current, _ in current }
+        guard let slowest = merged.max(by: { $0.value < $1.value }) else { return nil }
+        return "\(slowest.key)=\(slowest.value)ms"
+    }
+}
+
     struct CampaignProvisionResponse: Codable {
         var success: Bool?
         var addressesSaved: Int?
@@ -1163,6 +1213,8 @@ final class CampaignsAPI {
     var optimized: Bool?
     var postprocessDeferred: Bool?
     var parcelEnrichmentStatus: String?
+    var provisionTimings: CampaignProvisionTimings?
+    var linkerPath: String?
     var warning: String?
     var hasParcels: Bool?
     var buildingLinkConfidence: Double?
@@ -1192,6 +1244,8 @@ final class CampaignsAPI {
         case optimized
         case postprocessDeferred = "postprocess_deferred"
         case parcelEnrichmentStatus = "parcel_enrichment_status"
+        case provisionTimings = "provision_timings"
+        case linkerPath = "linker_path"
         case warning
         case hasParcels = "has_parcels"
         case buildingLinkConfidence = "building_link_confidence"
@@ -1222,6 +1276,7 @@ struct CampaignProvisionState: Codable {
     let dataQuality: CampaignDataQuality?
     let standardModeRecommended: Bool?
     let dataQualityReason: String?
+    let provisionTimings: CampaignProvisionTimings?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -1241,6 +1296,7 @@ struct CampaignProvisionState: Codable {
         case dataQuality = "data_quality"
         case standardModeRecommended = "standard_mode_recommended"
         case dataQualityReason = "data_quality_reason"
+        case provisionTimings = "provision_timings"
     }
 }
 
@@ -1316,7 +1372,10 @@ final class CampaignsV2APISupabase: CampaignsV2APIType {
         }
         
         // Fetch addresses using the shared API instance
-        let addresses = try await CampaignsAPI.shared.fetchAddresses(campaignId: id)
+        async let addressesTask = CampaignsAPI.shared.fetchAddresses(campaignId: id)
+        async let addressCountTask = CampaignsAPI.shared.fetchCampaignAddressCount(campaignId: id)
+        let addresses = try await addressesTask
+        let addressCount = (try? await addressCountTask) ?? addresses.count
         let campaignAddresses = addresses.map { row in
             CampaignAddress(
                 address: row.formatted,
@@ -1331,7 +1390,7 @@ final class CampaignsV2APISupabase: CampaignsV2APIType {
             type: dbRow.campaignType,
             addressSource: dbRow.addressSource,
             addresses: campaignAddresses,
-            totalFlyers: campaignAddresses.count,
+            totalFlyers: max(campaignAddresses.count, addressCount),
             scans: dbRow.scans,
             conversions: dbRow.conversions,
             createdAt: dbRow.createdAt,

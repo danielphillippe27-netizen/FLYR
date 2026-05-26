@@ -16,7 +16,7 @@ struct CampaignProvisionStatusBanner: View {
                     .font(.flyrFootnote.weight(.semibold))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
-                Text(tracked.statusText)
+                Text(message)
                     .font(.flyrCaption)
                     .foregroundStyle(.secondary)
                     .lineLimit(compact ? 1 : 2)
@@ -53,16 +53,30 @@ struct CampaignProvisionStatusBanner: View {
     private var title: String {
         switch tracked.state {
         case .queued:
-            return "Queued: \(tracked.campaignName)"
+            return "Queued: \(progressLabel)"
         case .preparingMap:
-            return "Preparing: \(tracked.campaignName)"
+            return "Preparing: \(progressLabel)"
         case .optimizing:
-            return "Optimizing: \(tracked.campaignName)"
+            return "Optimizing: \(progressLabel)"
         case .ready:
             return "Ready: \(tracked.campaignName)"
         case .needsAttention:
             return "Needs attention: \(tracked.campaignName)"
         }
+    }
+
+    private var message: String {
+        switch tracked.state {
+        case .queued, .preparingMap, .optimizing:
+            return CampaignProvisionMonitor.runningStatusText
+        case .ready, .needsAttention:
+            return tracked.statusText
+        }
+    }
+
+    private var progressLabel: String {
+        let progressPercent = CampaignProvisionMonitor.clampedProgress(tracked.progressPercent ?? 0)
+        return "\(progressPercent)%"
     }
 
     @ViewBuilder

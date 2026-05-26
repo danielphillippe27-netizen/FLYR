@@ -149,6 +149,19 @@ type GoldBuildingRow = {
   geom?: unknown;
 };
 
+type MaterializedCampaignBuildingRow = {
+  id: string;
+  gers_id: string | null;
+  geom?: unknown;
+  height_m: number | null;
+  height: number | null;
+  latest_status: string | null;
+  is_hidden: boolean | null;
+  units_count: number | null;
+  addr_housenumber: string | null;
+  addr_street: string | null;
+};
+
 type CampaignAddressRow = {
   id: string;
   formatted: string | null;
@@ -236,6 +249,33 @@ function bboxFromPolygon(rawPolygon: unknown): [number, number, number, number] 
 function isPolygonFeature(feature: GeoJSONFeature): boolean {
   const geometryType = normalizedString(feature.geometry?.type);
   return geometryType === "Polygon" || geometryType === "MultiPolygon";
+}
+
+function stripGeometryCrs(geometry: GeoJSONGeometry): GeoJSONGeometry {
+  const { crs: _crs, ...cleanGeometry } = geometry as GeoJSONGeometry & { crs?: unknown };
+  return cleanGeometry;
+}
+
+function polygonGeometryFromValue(value: unknown): GeoJSONGeometry | null {
+  if (!value) return null;
+
+  if (typeof value === "object") {
+    const geometry = value as GeoJSONGeometry;
+    if (geometry.type === "Polygon" || geometry.type === "MultiPolygon") {
+      return stripGeometryCrs(geometry);
+    }
+    return null;
+  }
+
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+
+  try {
+    return polygonGeometryFromValue(JSON.parse(trimmed));
+  } catch {
+    return null;
+  }
 }
 
 function isManualFeature(feature: GeoJSONFeature): boolean {
@@ -836,6 +876,80 @@ async function appendMissingAddressProxyFeatures(
   return dedupeFeatures([...features, ...proxyFeatures]);
 }
 
+function materializedBuildingFeature(row: MaterializedCampaignBuildingRow): GeoJSONFeature | null {
+  if (row.is_hidden === true) return null;
+  const geometry = polygonGeometryFromValue(row.geom);
+  if (!geometry) return null;
+
+  const publicId = normalizedString(row.gers_id) ?? row.id;
+  const height = finiteNumber(row.height_m) ?? finiteNumber(row.height) ?? 9;
+  const unitsCount = Math.max(1, Math.round(finiteNumber(row.units_count) ?? 1));
+
+  return normalizeBuildingIdentityFeature({
+    type: "Feature",
+    id: publicId,
+    geometry,
+    properties: {
+      id: row.id,
+      building_id: row.id,
+      gers_id: publicId,
+      public_building_id: publicId,
+      canonical_building_id: publicId,
+      building_identifier_source: normalizedString(row.gers_id) ? "gers" : "materialized",
+      source: "silver",
+      height,
+      height_m: height,
+      min_height: 0,
+      units_count: unitsCount,
+      address_count: 0,
+      address_id: null,
+      address_ids: [],
+      address_text: null,
+      house_number: normalizedString(row.addr_housenumber),
+      street_name: normalizedString(row.addr_street),
+      feature_type: "orphan",
+      feature_status: "orphan_building",
+      is_linked: false,
+      status: normalizedString(row.latest_status) ?? "not_visited",
+      scans_today: 0,
+      scans_total: 0,
+      qr_scanned: false,
+      polished_geometry_version: POLISHED_BUILDING_GEOMETRY_VERSION,
+    },
+  });
+}
+
+async function fetchMaterializedCampaignBuildingFeatures(
+  supabase: any,
+  campaignId: string,
+  hiddenBuildingIds: Set<string>
+): Promise<GeoJSONFeature[]> {
+  try {
+    const rows = await fetchAllInPages<MaterializedCampaignBuildingRow>((from, to) =>
+      supabase
+        .from("buildings")
+        .select("id, gers_id, geom, height_m, height, latest_status, is_hidden, units_count, addr_housenumber, addr_street")
+        .eq("campaign_id", campaignId)
+        .range(from, to)
+    );
+
+    const features = filterHiddenBuildings(
+      rows
+        .map(materializedBuildingFeature)
+        .filter((feature): feature is GeoJSONFeature => feature !== null),
+      hiddenBuildingIds
+    );
+
+    return filterLinkableBuildingFeatures(features, "materialized-buildings");
+  } catch (error) {
+    console.warn(
+      "[buildings] Materialized building fallback failed:",
+      error instanceof Error ? error.message : error
+    );
+    return [];
+  }
+}
+
 function featureCollectionFromCache(raw: unknown): { type: "FeatureCollection"; features: GeoJSONFeature[] } | null {
   if (!raw || typeof raw !== "object") return null;
   const collection = raw as { type?: unknown; features?: unknown };
@@ -1389,6 +1503,25 @@ export async function GET(request: Request, context: RouteContext): Promise<Resp
         .filter((value) => value.length > 0)
     );
 
+    const materializedFeatures = await fetchMaterializedCampaignBuildingFeatures(
+      dataSupabase,
+      campaignId,
+      hiddenBuildingIds
+    );
+    if (materializedFeatures.length > 0) {
+      console.log(
+        `[buildings] Materialized table selected for ${campaignId}; returned ${materializedFeatures.length} features`
+      );
+      return await responseForSelectedSource(
+        dataSupabase,
+        campaignId,
+        "Silver",
+        materializedFeatures,
+        [],
+        []
+      );
+    }
+
     const { data: snapshot } = await dataSupabase
       .from("campaign_snapshots")
       .select("bucket, prefix, buildings_key, addresses_key, buildings_url, metadata_key, buildings_count, created_at, tile_metrics")
@@ -1430,20 +1563,6 @@ export async function GET(request: Request, context: RouteContext): Promise<Resp
         return null;
       }
     };
-
-    if (!manualBuildingsExist) {
-      const scopedFeatures = await loadScopedPmtilesBuildings("materialization");
-      if (scopedFeatures && scopedFeatures.length > 0) {
-        return await responseForSelectedSource(
-          dataSupabase,
-          campaignId,
-          "Silver",
-          scopedFeatures,
-          [],
-          []
-        );
-      }
-    }
 
     // -------------------------------------------------------------------------
     // Step 1: unified RPC, with Gold and Silver kept in separate buckets.
@@ -1534,7 +1653,7 @@ export async function GET(request: Request, context: RouteContext): Promise<Resp
         );
     }
 
-    if (snap?.buildings_key) {
+    if (snap?.buildings_key && !snap.buildings_key.toLowerCase().endsWith(".pmtiles")) {
       const silverSnapshotFeatures = await fetchSilverSnapshotFeatures(
         snap.bucket,
         snap.buildings_key,

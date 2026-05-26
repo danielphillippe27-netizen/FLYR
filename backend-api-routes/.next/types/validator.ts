@@ -207,10 +207,28 @@ type RouteHandlerConfig<Route extends AppRouteHandlerRoutes = AppRouteHandlerRou
   type __Unused = __Check
 }
 
+// Validate ../../app/api/campaigns/[campaignId]/provision-timings/route.ts
+{
+  type __IsExpected<Specific extends RouteHandlerConfig<"/api/campaigns/[campaignId]/provision-timings">> = Specific
+  const handler = {} as typeof import("../../app/api/campaigns/[campaignId]/provision-timings/route.js")
+  type __Check = __IsExpected<typeof handler>
+  // @ts-ignore
+  type __Unused = __Check
+}
+
 // Validate ../../app/api/campaigns/provision/route.ts
 {
   type __IsExpected<Specific extends RouteHandlerConfig<"/api/campaigns/provision">> = Specific
   const handler = {} as typeof import("../../app/api/campaigns/provision/route.js")
+  type __Check = __IsExpected<typeof handler>
+  // @ts-ignore
+  type __Unused = __Check
+}
+
+// Validate ../../app/api/devices/push-token/route.ts
+{
+  type __IsExpected<Specific extends RouteHandlerConfig<"/api/devices/push-token">> = Specific
+  const handler = {} as typeof import("../../app/api/devices/push-token/route.js")
   type __Check = __IsExpected<typeof handler>
   // @ts-ignore
   type __Unused = __Check

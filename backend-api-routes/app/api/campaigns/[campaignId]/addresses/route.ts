@@ -3,8 +3,8 @@ import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
 import zlib from "zlib";
 
-const SUPABASE_URL = process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY ?? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+const SUPABASE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL!;
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 const AWS_REGION = process.env.AWS_REGION ?? "us-east-1";
 
@@ -21,6 +21,21 @@ type GeoJSONFeature = {
     coordinates?: unknown;
   };
   properties?: Record<string, unknown>;
+};
+
+type CampaignAddressRow = {
+  id: string;
+  formatted: string | null;
+  house_number: string | null;
+  street_name: string | null;
+  postal_code: string | null;
+  locality: string | null;
+  source: string | null;
+  gers_id: string | null;
+  building_id: string | null;
+  building_gers_id: string | null;
+  geom?: unknown;
+  coordinate?: { lon?: unknown; lat?: unknown } | null;
 };
 
 const EMPTY_FEATURE_COLLECTION = { type: "FeatureCollection", features: [] };
@@ -91,6 +106,102 @@ function featureCollectionFromRPC(raw: unknown): { type: "FeatureCollection"; fe
 
 function isPointFeature(feature: GeoJSONFeature): boolean {
   return normalizedString(feature.geometry?.type) === "Point" && Array.isArray(feature.geometry?.coordinates);
+}
+
+function pointFromLonLat(lon: unknown, lat: unknown): [number, number] | null {
+  const longitude = Number(lon);
+  const latitude = Number(lat);
+  if (!Number.isFinite(longitude) || !Number.isFinite(latitude)) return null;
+  if (Math.abs(longitude) > 180 || Math.abs(latitude) > 90) return null;
+  return [longitude, latitude];
+}
+
+function pointFromGeometry(value: unknown): [number, number] | null {
+  if (!value) return null;
+
+  if (typeof value === "object") {
+    const geometry = value as { type?: unknown; coordinates?: unknown; geometry?: unknown };
+    if (geometry.type === "Point" && Array.isArray(geometry.coordinates)) {
+      return pointFromLonLat(geometry.coordinates[0], geometry.coordinates[1]);
+    }
+    if (geometry.geometry) return pointFromGeometry(geometry.geometry);
+    return null;
+  }
+
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+
+  try {
+    return pointFromGeometry(JSON.parse(trimmed));
+  } catch {
+    return null;
+  }
+}
+
+async function fetchDbAddressFeatures(
+  supabase: any,
+  campaignId: string
+): Promise<GeoJSONFeature[]> {
+  const pageSize = 1000;
+  const features: GeoJSONFeature[] = [];
+
+  for (let from = 0; ; from += pageSize) {
+    const to = from + pageSize - 1;
+    const { data, error } = await supabase
+      .from("campaign_addresses")
+      .select("id, formatted, house_number, street_name, postal_code, locality, source, gers_id, building_id, building_gers_id, geom, coordinate")
+      .eq("campaign_id", campaignId)
+      .range(from, to);
+
+    if (error) {
+      console.warn("[addresses] DB fallback query failed:", error.message);
+      return [];
+    }
+
+    const rows = (data ?? []) as CampaignAddressRow[];
+    for (const row of rows) {
+      const point =
+        pointFromGeometry(row.geom) ??
+        pointFromLonLat(row.coordinate?.lon, row.coordinate?.lat);
+      if (!point) continue;
+
+      const fallbackFormatted = [normalizedString(row.house_number), normalizedString(row.street_name)]
+        .filter(Boolean)
+        .join(" ")
+        .trim();
+      const formatted =
+        normalizedString(row.formatted) ??
+        (fallbackFormatted.length > 0 ? fallbackFormatted : "Address");
+
+      features.push({
+        type: "Feature",
+        id: row.id,
+        geometry: {
+          type: "Point",
+          coordinates: point,
+        },
+        properties: {
+          id: row.id,
+          gers_id: normalizedString(row.gers_id) ?? row.id,
+          building_gers_id:
+            normalizedString(row.building_gers_id) ??
+            normalizedString(row.building_id) ??
+            normalizedString(row.gers_id),
+          house_number: normalizedString(row.house_number),
+          street_name: normalizedString(row.street_name),
+          postal_code: normalizedString(row.postal_code),
+          locality: normalizedString(row.locality),
+          formatted,
+          source: normalizedString(row.source) ?? "campaign_addresses",
+        },
+      });
+    }
+
+    if (rows.length < pageSize) break;
+  }
+
+  return features;
 }
 
 function snapshotAddressFeature(feature: GeoJSONFeature): GeoJSONFeature | null {
@@ -219,6 +330,15 @@ export async function GET(request: Request, context: RouteContext): Promise<Resp
       console.warn("[addresses] RPC error:", rpcError);
     }
 
+    const dbFeatures = await fetchDbAddressFeatures(supabase, campaignId);
+    if (dbFeatures.length > 0) {
+      console.log(`[addresses] DB table fallback selected for ${campaignId}; returned ${dbFeatures.length} addresses`);
+      return NextResponse.json(
+        { type: "FeatureCollection", features: dbFeatures },
+        { headers: JSON_NO_STORE_HEADERS }
+      );
+    }
+
     if (provisionSource === "diamond") {
       return NextResponse.json(EMPTY_FEATURE_COLLECTION, { headers: JSON_NO_STORE_HEADERS });
     }
@@ -230,7 +350,7 @@ export async function GET(request: Request, context: RouteContext): Promise<Resp
       .maybeSingle();
     const snap = snapshot as { bucket: string | null; addresses_key: string | null } | null;
 
-    if (snap?.bucket && snap.addresses_key) {
+    if (snap?.bucket && snap.addresses_key && !snap.addresses_key.toLowerCase().endsWith(".pmtiles")) {
       const features = await fetchSilverSnapshotAddresses(snap.bucket, snap.addresses_key);
       if (features && features.length > 0) {
         console.log(`[addresses] Silver selected for ${campaignId}; returned ${features.length} addresses`);

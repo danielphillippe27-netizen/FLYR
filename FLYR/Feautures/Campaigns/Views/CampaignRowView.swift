@@ -5,6 +5,7 @@ struct CampaignRowView: View {
     let campaign: CampaignV2
     /// When set (e.g. duplicate names), show this instead of campaign.name in the title.
     var displayName: String?
+    var buildingProgressPercent: Int?
     var onPlayTapped: (() -> Void)?
     var isSelectionMode = false
     var isSelected = false
@@ -15,6 +16,10 @@ struct CampaignRowView: View {
 
     private var progressPct: Int {
         campaign.progressPct
+    }
+
+    private var isBuilding: Bool {
+        buildingProgressPercent != nil
     }
 
     var body: some View {
@@ -32,9 +37,20 @@ struct CampaignRowView: View {
                     .lineLimit(1)
                     .truncationMode(.tail)
 
-                Label("\(campaign.totalFlyers)", systemImage: "house.fill")
-                    .font(.flyrCaption)
-                    .foregroundColor(.secondary)
+                if let buildingProgressPercent {
+                    HStack(spacing: 6) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("Building... \(buildingProgressPercent)%")
+                            .font(.flyrCaption)
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                    }
+                } else {
+                    Label("\(campaign.totalFlyers)", systemImage: "house.fill")
+                        .font(.flyrCaption)
+                        .foregroundColor(.secondary)
+                }
             }
 
             Spacer(minLength: 8)
@@ -43,6 +59,9 @@ struct CampaignRowView: View {
                 Text(isSelected ? "Selected" : "Select")
                     .font(.flyrCaption)
                     .foregroundColor(isSelected ? .accentColor : .secondary)
+            } else if isBuilding {
+                ProgressView()
+                    .controlSize(.small)
             } else if campaign.status != .completed, onPlayTapped != nil {
                 Button {
                     onPlayTapped?()

@@ -45,8 +45,8 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
     private let addressCircleLayerId = VectorTileDiamondGeometryProvider.addressCircleLayerId
     private let selectedAddressCircleLayerId = VectorTileDiamondGeometryProvider.selectedAddressCircleLayerId
     private let addressNumberLayerId = VectorTileDiamondGeometryProvider.addressNumberLayerId
-    private let parcelOverviewMinZoom = 9.5
-    private let parcelOverviewMaxZoom = 12.25
+    private let parcelOverviewMinZoom = 15.8
+    private let parcelOverviewMaxZoom = 22.0
     private let buildingCapHeightMeters = 1.2
     private let addressLayerMinZoom = 11.8
     private let addressCylinderHeightMeters = 3.0
@@ -444,12 +444,12 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
             Exp(.interpolate) {
                 Exp(.linear)
                 Exp(.zoom)
-                9.5
-                0.35
-                11.8
-                0.9
-                12.25
-                0.6
+                15.8
+                0.25
+                16.8
+                0.85
+                19.0
+                1.2
             }
         )
         line.minZoom = parcelOverviewMinZoom
@@ -719,16 +719,22 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
         Exp(.interpolate) {
             Exp(.linear)
             Exp(.zoom)
-            9.5
-            0.2
-            11.8
+            15.8
+            0.0
+            16.2
+            0.48
+            17.4
             Exp(.switchCase) {
                 isActiveStatusExpression()
                 0.9
                 0.62
             }
-            12.25
-            0.0
+            20.0
+            Exp(.switchCase) {
+                isActiveStatusExpression()
+                0.82
+                0.5
+            }
         }
     }
 
@@ -736,12 +742,22 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
         Exp(.interpolate) {
             Exp(.linear)
             Exp(.zoom)
-            9.5
-            0.04
-            11.8
-            0.08
-            12.25
+            15.8
             0.0
+            16.2
+            0.10
+            17.4
+            Exp(.switchCase) {
+                isActiveStatusExpression()
+                0.18
+                0.12
+            }
+            20.0
+            Exp(.switchCase) {
+                isActiveStatusExpression()
+                0.14
+                0.08
+            }
         }
     }
 

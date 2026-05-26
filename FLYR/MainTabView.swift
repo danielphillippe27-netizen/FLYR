@@ -65,10 +65,16 @@ struct MainTabView: View {
                     tracked: tracked,
                     compact: true,
                     onTap: tracked.state == .ready ? {
-                        uiState.selectCampaign(id: tracked.campaignId, name: tracked.campaignName)
-                        uiState.selectedTabIndex = 1
                         Task {
-                            await CampaignDownloadService.shared.prefetchIfNeeded(campaignId: tracked.campaignId.uuidString)
+                            let isMapReady = await CampaignDownloadService.shared.ensureMapAssetsAvailable(
+                                campaignId: tracked.campaignId.uuidString
+                            )
+                            guard isMapReady else { return }
+                            uiState.selectCampaign(id: tracked.campaignId, name: tracked.campaignName)
+                            uiState.selectedTabIndex = 1
+                            await CampaignDownloadService.shared.prefetchIfNeeded(
+                                campaignId: tracked.campaignId.uuidString
+                            )
                         }
                     } : nil,
                     onDismiss: tracked.state == .ready || tracked.state == .needsAttention ? {

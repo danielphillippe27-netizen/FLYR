@@ -27,16 +27,45 @@ struct CampaignOfflineReadiness: Equatable, Sendable {
     }
 }
 
+struct CampaignMapAssetReadiness: Equatable, Sendable {
+    let campaignId: String
+    let isMapReady: Bool
+    let missingComponents: [String]
+    let buildingsCount: Int
+    let addressesCount: Int
+    let linksCount: Int
+    let roadsCount: Int
+    let hasLinkedAddressIdentity: Bool
+    let progressPercent: Int
+
+    var isMapUsable: Bool {
+        isMapReady || buildingsCount > 0 || addressesCount > 0
+    }
+
+    var summary: String {
+        if isMapReady {
+            return "\(addressesCount) homes + \(buildingsCount) buildings saved for the map."
+        }
+        if missingComponents.isEmpty {
+            return "Campaign map is still being verified."
+        }
+        return "Campaign map needs \(missingComponents.joined(separator: ", "))."
+    }
+}
+
 @MainActor
 final class CampaignDownloadService: ObservableObject {
     static let shared = CampaignDownloadService()
+    private static let pageSize = 1_000
 
     @Published private(set) var states: [String: CampaignDownloadState] = [:]
     @Published private(set) var readiness: [String: CampaignOfflineReadiness] = [:]
+    @Published private(set) var mapAssetReadiness: [String: CampaignMapAssetReadiness] = [:]
 
     private let campaignRepository = CampaignRepository.shared
     private let supabase = SupabaseClientShim()
     private var activeDownloads = Set<String>()
+    private var activeMapAssetDownloads = Set<String>()
 
     private init() {}
 
@@ -48,9 +77,18 @@ final class CampaignDownloadService: ObservableObject {
         readiness[campaignId]
     }
 
+    func mapReadiness(for campaignId: String) -> CampaignMapAssetReadiness? {
+        mapAssetReadiness[campaignId]
+    }
+
     func refreshState(campaignId: String) async {
         states[campaignId] = await campaignRepository.getDownloadState(campaignId: campaignId)
         readiness[campaignId] = await computeReadiness(campaignId: campaignId)
+        mapAssetReadiness[campaignId] = await computeMapAssetReadiness(campaignId: campaignId)
+    }
+
+    func refreshMapAssetReadiness(campaignId: String) async {
+        mapAssetReadiness[campaignId] = await computeMapAssetReadiness(campaignId: campaignId)
     }
 
     func recordSuccessfulSync(campaignId: String, at date: Date = Date()) async {
@@ -75,6 +113,276 @@ final class CampaignDownloadService: ObservableObject {
         }
 
         await makeAvailableOffline(campaignId: campaignId)
+    }
+
+    func ensureAvailableOffline(
+        campaignId: String,
+        timeoutSeconds: TimeInterval = 300,
+        pollIntervalSeconds: TimeInterval = 0.75
+    ) async -> Bool {
+        await prefetchIfNeeded(campaignId: campaignId)
+        if !NetworkMonitor.shared.isOnline {
+            await refreshState(campaignId: campaignId)
+            return states[campaignId]?.isAvailableOffline == true &&
+                readiness[campaignId]?.isVerified == true
+        }
+        return await waitUntilAvailableOffline(
+            campaignId: campaignId,
+            timeoutSeconds: timeoutSeconds,
+            pollIntervalSeconds: pollIntervalSeconds
+        )
+    }
+
+    func waitUntilAvailableOffline(
+        campaignId: String,
+        timeoutSeconds: TimeInterval = 300,
+        pollIntervalSeconds: TimeInterval = 0.75
+    ) async -> Bool {
+        let start = Date()
+        let pollNanos = UInt64(max(0.25, pollIntervalSeconds) * 1_000_000_000)
+
+        while Date().timeIntervalSince(start) < timeoutSeconds {
+            await refreshState(campaignId: campaignId)
+
+            if states[campaignId]?.status == "failed" {
+                return false
+            }
+
+            if states[campaignId]?.isAvailableOffline == true,
+               readiness[campaignId]?.isVerified == true {
+                return true
+            }
+
+            try? await Task.sleep(nanoseconds: pollNanos)
+        }
+
+        await refreshState(campaignId: campaignId)
+        return states[campaignId]?.isAvailableOffline == true &&
+            readiness[campaignId]?.isVerified == true
+    }
+
+    func ensureMapAssetsAvailable(
+        campaignId: String,
+        timeoutSeconds: TimeInterval = 180,
+        pollIntervalSeconds: TimeInterval = 0.5
+    ) async -> Bool {
+        await refreshMapAssetReadiness(campaignId: campaignId)
+        if mapAssetReadiness[campaignId]?.isMapReady == true {
+            return true
+        }
+
+        guard NetworkMonitor.shared.isOnline else { return false }
+
+        if !activeMapAssetDownloads.contains(campaignId) {
+            let startedDownload = await makeMapAssetsAvailable(campaignId: campaignId)
+            if !startedDownload {
+                return mapAssetReadiness[campaignId]?.isMapReady == true
+            }
+        }
+
+        return await waitUntilMapAssetsAvailable(
+            campaignId: campaignId,
+            timeoutSeconds: timeoutSeconds,
+            pollIntervalSeconds: pollIntervalSeconds
+        )
+    }
+
+    func ensureUsableMapAssetsAvailable(
+        campaignId: String,
+        timeoutSeconds: TimeInterval = 45,
+        pollIntervalSeconds: TimeInterval = 0.5
+    ) async -> Bool {
+        await refreshMapAssetReadiness(campaignId: campaignId)
+        if mapAssetReadiness[campaignId]?.isMapUsable == true {
+            return true
+        }
+
+        guard NetworkMonitor.shared.isOnline else { return false }
+
+        if !activeMapAssetDownloads.contains(campaignId) {
+            _ = await makeMapAssetsAvailable(campaignId: campaignId)
+            if mapAssetReadiness[campaignId]?.isMapUsable == true {
+                return true
+            }
+        }
+
+        let start = Date()
+        let pollNanos = UInt64(max(0.25, pollIntervalSeconds) * 1_000_000_000)
+        while Date().timeIntervalSince(start) < timeoutSeconds {
+            await refreshMapAssetReadiness(campaignId: campaignId)
+            if mapAssetReadiness[campaignId]?.isMapUsable == true {
+                return true
+            }
+            try? await Task.sleep(nanoseconds: pollNanos)
+        }
+
+        await refreshMapAssetReadiness(campaignId: campaignId)
+        return mapAssetReadiness[campaignId]?.isMapUsable == true
+    }
+
+    func waitUntilMapAssetsAvailable(
+        campaignId: String,
+        timeoutSeconds: TimeInterval = 180,
+        pollIntervalSeconds: TimeInterval = 0.5
+    ) async -> Bool {
+        let start = Date()
+        let pollNanos = UInt64(max(0.25, pollIntervalSeconds) * 1_000_000_000)
+
+        while Date().timeIntervalSince(start) < timeoutSeconds {
+            await refreshMapAssetReadiness(campaignId: campaignId)
+            if mapAssetReadiness[campaignId]?.isMapReady == true {
+                return true
+            }
+            try? await Task.sleep(nanoseconds: pollNanos)
+        }
+
+        await refreshMapAssetReadiness(campaignId: campaignId)
+        return mapAssetReadiness[campaignId]?.isMapReady == true
+    }
+
+    private func makeMapAssetsAvailable(campaignId: String) async -> Bool {
+        guard let campaignUUID = UUID(uuidString: campaignId) else { return false }
+        guard !activeMapAssetDownloads.contains(campaignId) else { return true }
+
+        activeMapAssetDownloads.insert(campaignId)
+        defer { activeMapAssetDownloads.remove(campaignId) }
+
+        mapAssetReadiness[campaignId] = CampaignMapAssetReadiness(
+            campaignId: campaignId,
+            isMapReady: false,
+            missingComponents: ["buildings", "addresses"],
+            buildingsCount: 0,
+            addressesCount: 0,
+            linksCount: 0,
+            roadsCount: 0,
+            hasLinkedAddressIdentity: false,
+            progressPercent: 5
+        )
+
+        do {
+            let metadata = try await fetchCampaignMetadata(campaignId: campaignUUID)
+            await campaignRepository.upsertCampaign(
+                id: campaignId,
+                name: metadata.name,
+                mode: metadata.mode,
+                boundaryGeoJSON: metadata.boundaryGeoJSON,
+                payloadJSON: metadata.payloadJSON,
+                downloadedAt: nil
+            )
+
+            async let buildingsTask = BuildingLinkService.shared.fetchBuildings(campaignId: campaignId)
+            async let addressesTask = fetchMapAddresses(campaignId: campaignUUID)
+            async let linksTask = fetchMapLinks(campaignId: campaignId)
+            async let roadsTask = CampaignRoadService.shared.getRoadsForSession(campaignId: campaignId)
+
+            let buildings = try await buildingsTask
+            await campaignRepository.upsertBuildings(campaignId: campaignId, features: buildings)
+            await updateMapAssetProgress(campaignId: campaignId, progressPercent: 35)
+
+            let addresses = try await addressesTask
+            await campaignRepository.upsertAddresses(campaignId: campaignId, features: addresses.features)
+            await updateMapAssetProgress(campaignId: campaignId, progressPercent: 65)
+
+            let links = await linksTask
+            await campaignRepository.upsertBuildingAddressLinks(campaignId: campaignId, links: links)
+
+            let corridors = await roadsTask
+            await campaignRepository.upsertRoads(campaignId: campaignId, corridors: corridors)
+            await updateMapAssetProgress(campaignId: campaignId, progressPercent: 90)
+
+            await refreshMapAssetReadiness(campaignId: campaignId)
+            return true
+        } catch {
+            await refreshMapAssetReadiness(campaignId: campaignId)
+            print("⚠️ [CampaignDownload] Map asset download failed for \(campaignId): \(error.localizedDescription)")
+            return false
+        }
+    }
+
+    private func updateMapAssetProgress(campaignId: String, progressPercent: Int) async {
+        let current = await computeMapAssetReadiness(campaignId: campaignId)
+        mapAssetReadiness[campaignId] = CampaignMapAssetReadiness(
+            campaignId: campaignId,
+            isMapReady: current.isMapReady,
+            missingComponents: current.missingComponents,
+            buildingsCount: current.buildingsCount,
+            addressesCount: current.addressesCount,
+            linksCount: current.linksCount,
+            roadsCount: current.roadsCount,
+            hasLinkedAddressIdentity: current.hasLinkedAddressIdentity,
+            progressPercent: max(current.progressPercent, min(max(progressPercent, 0), 100))
+        )
+    }
+
+    private func fetchMapAddresses(campaignId: UUID) async throws -> AddressFeatureCollection {
+        do {
+            return try await BuildingLinkService.shared.fetchCampaignAddresses(campaignId: campaignId.uuidString)
+        } catch {
+            print("⚠️ [CampaignDownload] Backend address endpoint failed; falling back to RPC for map assets")
+            return try await fetchAddresses(campaignId: campaignId)
+        }
+    }
+
+    private func fetchMapLinks(campaignId: String) async -> [BuildingAddressLink] {
+        do {
+            return try await BuildingLinkService.shared.fetchLinks(campaignId: campaignId)
+        } catch {
+            print("⚠️ [CampaignDownload] Building-address links unavailable for map assets: \(error.localizedDescription)")
+            return []
+        }
+    }
+
+    func computeMapAssetReadiness(campaignId: String) async -> CampaignMapAssetReadiness {
+        let assetCounts = await campaignRepository.getOfflineAssetCounts(campaignId: campaignId)
+        let bundle = await campaignRepository.getCampaignMapBundle(campaignId: campaignId)
+        let buildingsCount = bundle?.buildings.features.count ?? assetCounts.buildings
+        let addressesCount = bundle?.addresses.features.count ?? assetCounts.addresses
+        let roadsCount = bundle?.roads.features.count ?? assetCounts.roads
+        let hasLinkedAddressIdentity = Self.hasLinkedAddressIdentity(bundle: bundle)
+
+        var missing: [String] = []
+        if buildingsCount == 0 { missing.append("buildings") }
+        if addressesCount == 0 { missing.append("addresses") }
+
+        let progressPercent: Int
+        if missing.isEmpty {
+            progressPercent = 100
+        } else if buildingsCount > 0 || addressesCount > 0 {
+            progressPercent = 65
+        } else {
+            progressPercent = 0
+        }
+
+        return CampaignMapAssetReadiness(
+            campaignId: campaignId,
+            isMapReady: missing.isEmpty,
+            missingComponents: missing,
+            buildingsCount: buildingsCount,
+            addressesCount: addressesCount,
+            linksCount: assetCounts.buildingLinks,
+            roadsCount: roadsCount,
+            hasLinkedAddressIdentity: hasLinkedAddressIdentity,
+            progressPercent: progressPercent
+        )
+    }
+
+    private static func hasLinkedAddressIdentity(bundle: OfflineCampaignMapBundle?) -> Bool {
+        guard let bundle else { return false }
+
+        if bundle.addresses.features.contains(where: { feature in
+            let buildingId = feature.properties.buildingGersId?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return buildingId?.isEmpty == false
+        }) {
+            return true
+        }
+
+        return bundle.buildings.features.contains(where: { feature in
+            if feature.properties.isLinked == true { return true }
+            let addressId = feature.properties.addressId?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return addressId?.isEmpty == false
+        })
     }
 
     func makeAvailableOffline(campaignId: String) async {
@@ -236,32 +544,47 @@ final class CampaignDownloadService: ObservableObject {
     }
 
     private func fetchCampaignAddressMetadata(campaignId: UUID) async throws -> [CampaignAddressResponse] {
-        let response = try await SupabaseManager.shared.client
-            .from("campaign_addresses")
-            .select("""
-                id,
-                house_number,
-                street_name,
-                formatted,
-                locality,
-                region,
-                postal_code,
-                gers_id,
-                building_gers_id,
-                scans,
-                last_scanned_at,
-                qr_code_base64,
-                contact_name,
-                lead_status,
-                product_interest,
-                follow_up_date,
-                raw_transcript,
-                ai_summary
-            """)
-            .eq("campaign_id", value: campaignId.uuidString)
-            .execute()
+        var rows: [CampaignAddressResponse] = []
+        var from = 0
 
-        return try JSONDecoder.supabaseDates.decode([CampaignAddressResponse].self, from: response.data)
+        while true {
+            let to = from + Self.pageSize - 1
+            let response = try await SupabaseManager.shared.client
+                .from("campaign_addresses")
+                .select("""
+                    id,
+                    house_number,
+                    street_name,
+                    formatted,
+                    locality,
+                    region,
+                    postal_code,
+                    gers_id,
+                    building_gers_id,
+                    scans,
+                    last_scanned_at,
+                    qr_code_base64,
+                    contact_name,
+                    lead_status,
+                    product_interest,
+                    follow_up_date,
+                    raw_transcript,
+                    ai_summary
+                """)
+                .eq("campaign_id", value: campaignId.uuidString)
+                .order("created_at", ascending: true)
+                .range(from: from, to: to)
+                .execute()
+
+            let page = try JSONDecoder.supabaseDates.decode([CampaignAddressResponse].self, from: response.data)
+            rows.append(contentsOf: page)
+            if page.count < Self.pageSize {
+                break
+            }
+            from += Self.pageSize
+        }
+
+        return rows
     }
 
     private func fetchAddressOrphans(campaignId: UUID) async throws -> [CampaignAddressOrphanSnapshot] {

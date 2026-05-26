@@ -73,6 +73,22 @@ type CampaignAddressPoint = {
   lon: number;
 };
 
+type ParcelAddressLinkRow = {
+  parcel_id: string;
+  address_id: string;
+  match_type: string | null;
+  link_source: string | null;
+  confidence: number | null;
+};
+
+type PersistedParcelFeatureCollection = {
+  features?: Array<{
+    id?: string | number | null;
+    geometry?: GeoJSON.Polygon | GeoJSON.MultiPolygon | null;
+    properties?: Record<string, unknown> | null;
+  }>;
+};
+
 function getParcelFailureCacheKey(campaignId: string, pmtilesKey: string) {
   return `${campaignId}:${pmtilesKey}`;
 }
@@ -139,6 +155,101 @@ function parcelTilesFromSnapshot(snapshot: CampaignSnapshotRow | null): ParcelPm
     minzoom: numberMetric(snapshot.tile_metrics, 'parcel_minzoom') ?? 10,
     maxzoom: numberMetric(snapshot.tile_metrics, 'parcel_maxzoom') ?? 16,
   };
+}
+
+async function fetchPersistedCampaignParcels(
+  supabase: ReturnType<typeof createAdminClient>,
+  campaignId: string
+): Promise<CampaignParcelResponse[]> {
+  const { data, error } = await supabase.rpc('rpc_get_campaign_parcels', {
+    p_campaign_id: campaignId,
+  });
+
+  if (error) {
+    console.warn('[CampaignParcels] Failed to read persisted campaign parcels:', {
+      campaignId,
+      code: error.code,
+      message: error.message,
+    });
+    return [];
+  }
+
+  const featureCollection = data as PersistedParcelFeatureCollection | null;
+  const features = Array.isArray(featureCollection?.features) ? featureCollection.features : [];
+  const now = new Date().toISOString();
+
+  return features
+    .filter((feature) => feature.geometry?.type === 'Polygon' || feature.geometry?.type === 'MultiPolygon')
+    .map((feature) => {
+      const properties = feature.properties ?? {};
+      const id = String(feature.id ?? properties.id ?? properties.parcel_id ?? properties.external_id ?? '');
+      const externalId = String(properties.external_id ?? properties.parcel_id ?? id);
+
+      return {
+        id,
+        campaign_id: campaignId,
+        external_id: externalId,
+        geom: JSON.stringify(feature.geometry),
+        properties,
+        created_at: now,
+      };
+    })
+    .filter((parcel) => parcel.id.length > 0 && parcel.external_id.length > 0);
+}
+
+async function fetchPersistedParcelAddressLinks(
+  supabase: ReturnType<typeof createAdminClient>,
+  campaignId: string
+): Promise<ParcelAddressLinkRow[]> {
+  const { data, error } = await supabase
+    .from('parcel_address_links')
+    .select('parcel_id, address_id, match_type, link_source, confidence')
+    .eq('campaign_id', campaignId);
+
+  if (error) {
+    const message = error.message ?? '';
+    const isMissing =
+      error.code === '42P01' ||
+      error.code === 'PGRST205' ||
+      (message.includes('parcel_address_links') &&
+        (message.includes('does not exist') || message.includes('schema cache')));
+    if (!isMissing) {
+      console.warn('[CampaignParcels] Failed to read parcel-address links:', {
+        campaignId,
+        code: error.code,
+        message: error.message,
+      });
+    }
+    return [];
+  }
+
+  return (data ?? []) as ParcelAddressLinkRow[];
+}
+
+function parcelsLinkedFromEvidence(
+  parcels: CampaignParcelResponse[],
+  links: ParcelAddressLinkRow[]
+): CampaignParcelResponse[] {
+  if (parcels.length === 0 || links.length === 0) return [];
+
+  const parcelsById = new Map(parcels.map((parcel) => [parcel.id, parcel]));
+  return links.flatMap((link) => {
+    const parcel = parcelsById.get(link.parcel_id);
+    if (!parcel) return [];
+
+    return [{
+      ...parcel,
+      id: `${parcel.external_id}:${link.address_id}`,
+      properties: {
+        ...parcel.properties,
+        address_id: link.address_id,
+        parcel_link_id: link.parcel_id,
+        parcel_match_type: link.match_type ?? 'centroid_in_parcel',
+        parcel_link_source: link.link_source ?? 'auto',
+        parcel_confidence: link.confidence,
+      },
+    }];
+  });
 }
 
 function parseBbox(value: unknown): [number, number, number, number] | null {
@@ -583,19 +694,10 @@ export async function GET(
     return NextResponse.json({ error: 'Campaign not found' }, { status: 404 });
   }
 
-  if (!snapshot) {
-    return NextResponse.json([]);
-  }
-
   const campaignScope = campaign as CampaignScopeRow;
   const boundary = normalizeGeoJsonPolygon(campaignScope.territory_boundary);
   const bbox = parseBbox(campaignScope.bbox) ?? (boundary ? bboxFromPositions(flattenPositions(boundary)) : null);
   if (!bbox) {
-    return NextResponse.json([]);
-  }
-
-  const parcelTiles = parcelTilesFromSnapshot(snapshot);
-  if (!parcelTiles) {
     return NextResponse.json([]);
   }
 
@@ -617,6 +719,30 @@ export async function GET(
         Math.abs(address.lat) <= 90 &&
         Math.abs(address.lon) <= 180
     );
+
+  const persistedParcels = await fetchPersistedCampaignParcels(supabase, campaignId);
+  if (persistedParcels.length > 0) {
+    const parcelAddressLinks = await fetchPersistedParcelAddressLinks(supabase, campaignId);
+    const evidenceLinkedParcels = parcelsLinkedFromEvidence(persistedParcels, parcelAddressLinks);
+    const linkedParcels = evidenceLinkedParcels.length > 0
+      ? evidenceLinkedParcels
+      : linkParcelsOneToOneWithAddresses(persistedParcels, addressPoints);
+    return NextResponse.json(linkedParcels.length > 0 ? linkedParcels : persistedParcels, {
+      headers: {
+        'Cache-Control': 'private, max-age=60',
+        'X-FLYR-Parcels-Source': 'campaign_parcels',
+      },
+    });
+  }
+
+  if (!snapshot) {
+    return NextResponse.json([]);
+  }
+
+  const parcelTiles = parcelTilesFromSnapshot(snapshot);
+  if (!parcelTiles) {
+    return NextResponse.json([]);
+  }
 
   const failureCacheKey = getParcelFailureCacheKey(campaignId, parcelTiles.pmtilesKey);
   if (hasCachedParcelFailure(failureCacheKey)) {
@@ -648,6 +774,20 @@ export async function GET(
         headers: {
           'Cache-Control': 'private, max-age=60',
           'X-FLYR-Parcels-Suppressed': 'access-denied',
+        },
+      });
+    }
+
+    if (errorMessage.includes('404') || errorMessage.includes('Bad response code: 404')) {
+      cacheParcelFailure(failureCacheKey);
+      console.warn('[CampaignParcels] Parcel PMTiles unavailable; returning empty parcel set:', {
+        campaignId,
+        error: errorMessage,
+      });
+      return NextResponse.json([], {
+        headers: {
+          'Cache-Control': 'private, max-age=60',
+          'X-FLYR-Parcels-Suppressed': 'not-found',
         },
       });
     }

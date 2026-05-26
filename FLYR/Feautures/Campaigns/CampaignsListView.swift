@@ -507,6 +507,9 @@ enum CampaignFilter: String, CaseIterable, Identifiable {
 // MARK: - V2 Campaigns List Section
 
 struct V2CampaignsListSection: View {
+    @ObservedObject private var provisionMonitor = CampaignProvisionMonitor.shared
+    @ObservedObject private var campaignDownloadService = CampaignDownloadService.shared
+
     let store: CampaignV2Store
     let recentlyCreatedCampaignID: UUID?
     let filter: CampaignFilter
@@ -562,6 +565,25 @@ struct V2CampaignsListSection: View {
         return "\(campaign.name) - \(loc)"
     }
 
+    private func buildingProgressPercent(for campaign: CampaignV2) -> Int? {
+        if campaignDownloadService.mapReadiness(for: campaign.id.uuidString)?.isMapReady == true {
+            return nil
+        }
+
+        if let tracked = provisionMonitor.tracked,
+           tracked.campaignId == campaign.id,
+           tracked.state == .queued || tracked.state == .preparingMap || tracked.state == .optimizing {
+            return CampaignProvisionMonitor.clampedProgress(tracked.progressPercent ?? 0)
+        }
+
+        guard campaign.status != .completed && campaign.status != .archived else { return nil }
+        guard campaign.provisionStatus == .pending || campaign.provisionPhase == .created else { return nil }
+        return CampaignProvisionMonitor.progressPercent(
+            status: campaign.provisionStatus,
+            phase: campaign.provisionPhase
+        )
+    }
+
     private func archiveCampaign(_ campaign: CampaignV2) {
         guard campaign.status != .archived else { return }
         HapticManager.light()
@@ -592,6 +614,7 @@ struct V2CampaignsListSection: View {
                             CampaignRowView(
                                 campaign: campaign,
                                 displayName: displayName(for: campaign),
+                                buildingProgressPercent: buildingProgressPercent(for: campaign),
                                 onPlayTapped: !isSelectionMode && campaign.status != .completed ? { onPlayTapped?(campaign) } : nil,
                                 isSelectionMode: isSelectionMode,
                                 isSelected: selectedCampaignIDs.contains(campaign.id)
@@ -601,6 +624,9 @@ struct V2CampaignsListSection: View {
                                     .font(.system(size: 14, weight: .semibold))
                                     .foregroundColor(Color(.tertiaryLabel))
                             }
+                        }
+                        .task(id: campaign.id) {
+                            await campaignDownloadService.refreshMapAssetReadiness(campaignId: campaign.id.uuidString)
                         }
                         .background(
                             campaign.id == recentlyCreatedCampaignID

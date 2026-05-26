@@ -313,7 +313,8 @@ enum AddressStatus: String, Codable, CaseIterable {
         switch self {
         case .talked: return "hot"
         case .hotLead: return "lead"
-        case .appointment, .futureSeller: return "hot_lead"
+        case .appointment: return "appointment"
+        case .futureSeller: return "future_seller"
         case .doNotKnock: return "do_not_knock"
         case .noAnswer: return "no_answer"
         case .delivered: return "visited"

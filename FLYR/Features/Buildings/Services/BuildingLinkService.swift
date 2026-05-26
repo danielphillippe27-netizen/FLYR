@@ -2248,6 +2248,8 @@ struct BuildingAddressCandidate: Identifiable, Decodable {
     let candidateReason: String?
     let confidenceLabel: String?
     let requiresConfirmation: Bool
+    let trusted: Bool?
+    let rejectedReason: String?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -2270,6 +2272,8 @@ struct BuildingAddressCandidate: Identifiable, Decodable {
         case candidateReason = "candidate_reason"
         case confidenceLabel = "confidence_label"
         case requiresConfirmation = "requires_confirmation"
+        case trusted
+        case rejectedReason = "rejected_reason"
     }
 
     init(
@@ -2292,7 +2296,9 @@ struct BuildingAddressCandidate: Identifiable, Decodable {
         reason: String,
         candidateReason: String? = nil,
         confidenceLabel: String? = nil,
-        requiresConfirmation: Bool
+        requiresConfirmation: Bool,
+        trusted: Bool? = nil,
+        rejectedReason: String? = nil
     ) {
         self.id = id
         self.candidateType = candidateType
@@ -2314,6 +2320,8 @@ struct BuildingAddressCandidate: Identifiable, Decodable {
         self.candidateReason = candidateReason
         self.confidenceLabel = confidenceLabel
         self.requiresConfirmation = requiresConfirmation
+        self.trusted = trusted
+        self.rejectedReason = rejectedReason
     }
 
     init(from decoder: Decoder) throws {
@@ -2341,6 +2349,8 @@ struct BuildingAddressCandidate: Identifiable, Decodable {
         confidenceLabel = try? container.decodeIfPresent(String.self, forKey: .confidenceLabel)
         requiresConfirmation = (try? container.decodeIfPresent(Bool.self, forKey: CodingKeys.requiresConfirmation))
             ?? (decodedCandidateType == "reverse_geocode" || decodedIsSynthetic)
+        trusted = try? container.decodeIfPresent(Bool.self, forKey: .trusted)
+        rejectedReason = try? container.decodeIfPresent(String.self, forKey: .rejectedReason)
     }
 
     var isReverseGeocode: Bool {

@@ -4860,6 +4860,9 @@ struct CampaignMapView: View {
         }
         if !force, activeRouteWorkContext == nil, featuresService.hasUsableCampaignData(campaignId: campaignId) {
             lastLoadedDataKey = loadKey
+            Task {
+                await featuresService.fetchAllCampaignFeatures(campaignId: campaignId)
+            }
             return
         }
         lastLoadedDataKey = loadKey
@@ -5961,26 +5964,34 @@ struct CampaignMapView: View {
 
     /// Returns ordered address UUIDs for a building from live card resolution or direct building feature IDs.
     private func addressIdsForBuilding(gersId: String) -> [UUID] {
-        let gersLower = gersId.lowercased()
-        if let cached = buildingAddressMap[gersLower] {
+        let requestedIdentifiers = normalizedSelectionIdentifiers([gersId])
+        if let cached = cachedLinkedAddressIds(for: requestedIdentifiers), !cached.isEmpty {
             return cached
         }
 
-        let linkedAddressIds = addressIdsLinkedToBuilding(identifiers: [gersLower])
+        let matchingFeatures = buildingFeatures(matchingAnyOf: requestedIdentifiers)
+        let featureIdentifiers = matchingFeatures.flatMap { identifiersForBuildingFeature($0) }
+        let allIdentifiers = normalizedSelectionIdentifiers(requestedIdentifiers + featureIdentifiers)
+
+        if let cached = cachedLinkedAddressIds(for: allIdentifiers), !cached.isEmpty {
+            return cached
+        }
+
+        let embeddedAddressIds = deduplicatedAddressIds(matchingFeatures.flatMap { $0.properties.addressUUIDs })
+        if !embeddedAddressIds.isEmpty {
+            return embeddedAddressIds
+        }
+
+        let linkedAddressIds = addressIdsLinkedToBuilding(identifiers: allIdentifiers)
         if !linkedAddressIds.isEmpty {
             return linkedAddressIds
         }
 
         guard !visibleBuildingFeatures.isEmpty else { return [] }
         return deduplicatedAddressIds(visibleBuildingFeatures.flatMap { feature -> [UUID] in
-            let candidateIds = [
-                feature.properties.gersId,
-                feature.properties.buildingId,
-                feature.id
-            ]
-            .compactMap { $0?.lowercased() }
+            let candidateIds = Set(identifiersForBuildingFeature(feature))
 
-            guard candidateIds.contains(gersLower) else { return [] }
+            guard !candidateIds.isDisjoint(with: requestedIdentifiers) else { return [] }
             if !feature.properties.addressUUIDs.isEmpty {
                 return feature.properties.addressUUIDs
             }
@@ -5988,6 +5999,34 @@ struct CampaignMapView: View {
                   let uuid = UUID(uuidString: addressId) else { return [] }
             return [uuid]
         })
+    }
+
+    private func identifiersForBuildingFeature(_ feature: BuildingFeature) -> [String] {
+        normalizedSelectionIdentifiers(
+            feature.properties.buildingIdentifierCandidates.map(Optional.some)
+                + [
+                    feature.id,
+                    feature.properties.id,
+                    feature.properties.gersId,
+                    feature.properties.buildingId,
+                    feature.properties.publicBuildingId,
+                    feature.properties.canonicalBuildingId,
+                    feature.properties.canonicalBuildingIdentifier
+                ]
+        )
+    }
+
+    private func buildingFeatures(matchingAnyOf identifiers: [String]) -> [BuildingFeature] {
+        let identifierSet = Set(normalizedSelectionIdentifiers(identifiers))
+        guard !identifierSet.isEmpty else { return [] }
+
+        var seen = Set<String>()
+        return ((featuresService.buildings?.features ?? []) + visibleBuildingFeatures).filter { feature in
+            let featureIdentifiers = identifiersForBuildingFeature(feature)
+            guard featureIdentifiers.contains(where: { identifierSet.contains($0) }) else { return false }
+            let stableKey = (feature.id ?? feature.properties.canonicalBuildingIdentifier ?? feature.properties.id).lowercased()
+            return seen.insert(stableKey).inserted
+        }
     }
 
     private func cachedLinkedAddressIds(for identifiers: [String]) -> [UUID]? {
@@ -6076,6 +6115,20 @@ struct CampaignMapView: View {
                 buildingMap[target.id] = buildingId
             } else if let resolvedBuildingId = resolvedBuildingIdForSessionTarget(targetId: target.id, addressIds: addressIds) {
                 buildingMap[target.id] = resolvedBuildingId
+            }
+
+            guard !addressIds.isEmpty else { continue }
+            var aliasValues = [target.id]
+            if let buildingId = target.buildingId {
+                aliasValues.append(buildingId)
+                aliasValues.append(contentsOf: buildingFeatures(matchingAnyOf: [buildingId]).flatMap(identifiersForBuildingFeature))
+            }
+            let aliasIdentifiers = normalizedSelectionIdentifiers(aliasValues)
+            for alias in aliasIdentifiers where addressMap[alias] == nil {
+                addressMap[alias] = deduplicatedAddressIds(addressIds)
+                if let buildingId = target.buildingId {
+                    buildingMap[alias] = buildingId
+                }
             }
         }
 
@@ -6489,8 +6542,10 @@ struct CampaignMapView: View {
         switch status {
         case .talked:
             return "hot"
-        case .appointment, .futureSeller:
-            return "hot_lead"
+        case .appointment:
+            return "appointment"
+        case .futureSeller:
+            return "future_seller"
         case .hotLead:
             return "lead"
         case .doNotKnock:
@@ -6525,8 +6580,12 @@ struct CampaignMapView: View {
             return "visited"
         }
 
-        if statuses.contains(.appointment) || statuses.contains(.futureSeller) {
-            return "hot_lead"
+        if statuses.contains(.appointment) {
+            return "appointment"
+        }
+
+        if statuses.contains(.futureSeller) {
+            return "future_seller"
         }
 
         if statuses.contains(.hotLead) {
@@ -9953,6 +10012,23 @@ struct CampaignMapView: View {
             ?? location.coordinate
         let identifiers = buildingFeature?.properties.buildingIdentifierCandidates ?? [targetId]
 
+        if let addressIds = try await existingOfficialAddressIdsForAutoCompletion(
+            targetId: targetId,
+            buildingId: buildingId,
+            buildingFeature: buildingFeature,
+            buildingIdentifiers: identifiers,
+            seedCoordinate: seedCoordinate
+        ), !addressIds.isEmpty {
+            cacheResolvedAddressIdsForSessionTarget(
+                addressIds,
+                targetId: targetId,
+                buildingId: buildingId,
+                buildingFeature: buildingFeature,
+                buildingIdentifiers: identifiers
+            )
+            return addressIds
+        }
+
         let resolution = try await resolveUnlinkedHomeAddress(
             buildingId: buildingId,
             buildingIdentifiers: identifiers,
@@ -9961,6 +10037,88 @@ struct CampaignMapView: View {
         )
         applyUnlinkedAttemptedPreview(addressId: resolution.addressId, buildingId: buildingId)
         return [resolution.addressId]
+    }
+
+    @MainActor
+    private func existingOfficialAddressIdsForAutoCompletion(
+        targetId: String,
+        buildingId: String,
+        buildingFeature: BuildingFeature?,
+        buildingIdentifiers: [String],
+        seedCoordinate: CLLocationCoordinate2D
+    ) async throws -> [UUID]? {
+        let localAddressIds = resolvedAddressIdsForSessionTarget(targetId: targetId)
+        if !localAddressIds.isEmpty {
+            return localAddressIds
+        }
+
+        let identifierAddressIds = deduplicatedAddressIds(
+            normalizedSelectionIdentifiers([targetId, buildingId] + buildingIdentifiers)
+                .flatMap { addressIdsForBuilding(gersId: $0) }
+        )
+        if !identifierAddressIds.isEmpty {
+            return identifierAddressIds
+        }
+
+        if let buildingFeature {
+            let embeddedIds = deduplicatedAddressIds(buildingFeature.properties.addressUUIDs)
+            if !embeddedIds.isEmpty {
+                return embeddedIds
+            }
+        }
+
+        guard NetworkMonitor.shared.isOnline else { return nil }
+
+        do {
+            let response = try await BuildingLinkService.shared.fetchAddressCandidates(
+                campaignId: campaignId,
+                buildingId: buildingId,
+                buildingIdentifiers: normalizedSelectionIdentifiers([targetId] + buildingIdentifiers),
+                radiusMeters: 60,
+                limit: 15,
+                seedCoordinate: seedCoordinate,
+                forceReverseGeocode: false,
+                includeLinkedCandidates: true
+            )
+
+            let officialCandidates = response.candidates.filter { candidate in
+                let reason = candidate.candidateReason?.lowercased()
+                return !candidate.isReverseGeocode &&
+                !candidate.requiresConfirmation &&
+                candidate.trusted != false &&
+                candidate.rejectedReason == nil &&
+                reason != "nearby_seed_address" &&
+                candidate.distanceMeters <= 60
+            }
+            let ids = deduplicatedAddressIds(officialCandidates.map(\.id))
+            return ids.isEmpty ? nil : ids
+        } catch {
+            print("⚠️ [CampaignMap] Official auto-complete address lookup failed for \(targetId): \(error)")
+            return nil
+        }
+    }
+
+    @MainActor
+    private func cacheResolvedAddressIdsForSessionTarget(
+        _ addressIds: [UUID],
+        targetId: String,
+        buildingId: String,
+        buildingFeature: BuildingFeature?,
+        buildingIdentifiers: [String]
+    ) {
+        let linkedIds = deduplicatedAddressIds(addressIds)
+        guard !linkedIds.isEmpty else { return }
+
+        let featureIdentifiers = buildingFeature.map { identifiersForBuildingFeature($0) } ?? []
+        let identifiers = normalizedSelectionIdentifiers(
+            [targetId, buildingId] + buildingIdentifiers + featureIdentifiers
+        )
+        guard !identifiers.isEmpty else { return }
+
+        for identifier in identifiers {
+            buildingAddressMap[identifier] = linkedIds
+        }
+        updateBuildingLinkFeatureState(identifiers: identifiers, linkedAddressIds: linkedIds)
     }
 
     @MainActor

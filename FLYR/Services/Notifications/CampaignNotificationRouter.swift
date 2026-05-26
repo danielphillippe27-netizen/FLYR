@@ -36,13 +36,17 @@ final class CampaignNotificationRouter: NSObject, UNUserNotificationCenterDelega
     func applyPendingRouteIfPossible() {
         guard let pendingRoute, let uiState else { return }
         guard AuthManager.shared.user != nil else { return }
-        uiState.selectCampaign(id: pendingRoute.campaignId, name: pendingRoute.campaignName)
-        uiState.selectedTabIndex = 1
         Task {
+            let isMapReady = await CampaignDownloadService.shared.ensureMapAssetsAvailable(
+                campaignId: pendingRoute.campaignId.uuidString
+            )
+            guard isMapReady else { return }
+            uiState.selectCampaign(id: pendingRoute.campaignId, name: pendingRoute.campaignName)
+            uiState.selectedTabIndex = 1
             await CampaignDownloadService.shared.prefetchIfNeeded(campaignId: pendingRoute.campaignId.uuidString)
+            self.pendingRoute = nil
+            UserDefaults.standard.removeObject(forKey: pendingRouteKey)
         }
-        self.pendingRoute = nil
-        UserDefaults.standard.removeObject(forKey: pendingRouteKey)
     }
 
     nonisolated func userNotificationCenter(

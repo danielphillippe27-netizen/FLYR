@@ -995,13 +995,10 @@ final class MapFeaturesService: ObservableObject {
                 "buildingsGeoJSON=\(self.buildings?.features.count ?? 0) addressesGeoJSON=\(self.addresses?.features.count ?? 0)"
             )
             isLoading = false
-            let debugTotalMilliseconds = Int(Date().timeIntervalSince(debugLoadStartedAt) * 1000)
             print(
-                "🧪 [MAP_DEBUG] campaign_hydration_done campaign=\(campaignId) totalMs=\(debugTotalMilliseconds) " +
-                "renderer=cached_geojson buildingsGeoJSON=\(self.buildings?.features.count ?? 0) " +
-                "addressesGeoJSON=\(self.addresses?.features.count ?? 0) parcelsGeoJSON=\(self.parcels?.features.count ?? 0) roads=\(self.roads?.features.count ?? 0)"
+                "🧪 [MAP_DEBUG] cache_bundle_first_draw_refreshing campaign=\(campaignId) " +
+                "action=refresh_buildings_and_addresses"
             )
-            return
         }
 
         if let prewarmedBuildings = prewarmedBuildingsByCampaign[campaignIdLower],
@@ -1026,7 +1023,7 @@ final class MapFeaturesService: ObservableObject {
         )
         print("🧪 [MAP_DEBUG] map_bundle_skipped_for_first_draw campaign=\(campaignId) reason=map_channels_manifest")
 
-        if !cachedBundleHasBuildings || forceRefresh || cachedBundleNeedsLinkRefresh {
+        if !cachedBundleHasBuildings || forceRefresh || cachedBundleNeedsLinkRefresh || loadedCachedFirstDrawBundle {
             Task { [weak self] in
                 guard let self else { return }
                 guard self.isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else { return }
@@ -1036,7 +1033,7 @@ final class MapFeaturesService: ObservableObject {
         }
 
         await withTaskGroup(of: Void.self) { group in
-            if !cachedBundleHasAddresses || forceRefresh || cachedBundleNeedsLinkRefresh {
+            if !cachedBundleHasAddresses || forceRefresh || cachedBundleNeedsLinkRefresh || loadedCachedFirstDrawBundle {
                 group.addTask {
                     await self.fetchCampaignAddresses(campaignId: campaignId, requestId: requestId)
                 }

@@ -77,8 +77,8 @@ final class MapLayerManager {
     static let parcelsSourceId = "campaign-parcels-source"
     static let parcelsFillLayerId = "campaign-parcels-fill"
     static let parcelsLineLayerId = "campaign-parcels-line"
-    static let parcelsOverviewMinZoom: Double = 9.5
-    static let parcelsOverviewMaxZoom: Double = 12.25
+    static let parcelsOverviewMinZoom: Double = 15.8
+    static let parcelsOverviewMaxZoom: Double = 22.0
     
     // MARK: - Address markers zoom (3D cylinders + house number labels)
     
@@ -212,6 +212,15 @@ final class MapLayerManager {
                 true
                 false
             }
+        }
+    }
+
+    private static var isActiveStatusExpression: Exp {
+        Exp(.match) {
+            Self.layerStatusExpression
+            ["visited", "delivered", "talked", "hot", "conversation", "lead", "future_seller", "hot_lead", "appointment", "follow_up", "no_answer", "do_not_knock", "not_interested", "flyer_unvisited"]
+            true
+            false
         }
     }
 
@@ -408,12 +417,22 @@ final class MapLayerManager {
         Exp(.interpolate) {
             Exp(.linear)
             Exp(.zoom)
-            9.5
-            0.04
-            11.8
-            0.08
-            12.25
+            15.8
             0.0
+            16.2
+            0.10
+            17.4
+            Exp(.switchCase) {
+                Self.isActiveStatusExpression
+                0.18
+                0.12
+            }
+            20.0
+            Exp(.switchCase) {
+                Self.isActiveStatusExpression
+                0.14
+                0.08
+            }
         }
     }
 
@@ -1110,24 +1129,34 @@ final class MapLayerManager {
             Exp(.interpolate) {
                 Exp(.linear)
                 Exp(.zoom)
-                9.5
-                0.2
-                11.8
-                0.55
-                12.25
+                15.8
                 0.0
+                16.2
+                0.48
+                17.4
+                Exp(.switchCase) {
+                    Self.isActiveStatusExpression
+                    0.9
+                    0.62
+                }
+                20.0
+                Exp(.switchCase) {
+                    Self.isActiveStatusExpression
+                    0.82
+                    0.5
+                }
             }
         )
         lineLayer.lineWidth = .expression(
             Exp(.interpolate) {
                 Exp(.linear)
                 Exp(.zoom)
-                9.5
-                0.35
-                11.8
-                0.9
-                12.25
-                0.6
+                15.8
+                0.25
+                16.8
+                0.85
+                19.0
+                1.2
             }
         )
         lineLayer.minZoom = Self.parcelsOverviewMinZoom
@@ -2098,9 +2127,11 @@ final class MapLayerManager {
         for building in buildings {
             let gersId = (building.properties.canonicalBuildingIdentifier ?? building.id ?? "").lowercased()
             guard !gersId.isEmpty else { continue }
+            let buildingIdentifiers = normalizedBuildingIdentifiers(for: building)
 
             let linkedAddresses = orderedAddressesForTownhome(
-                gersId: gersId,
+                buildingIdentifiers: buildingIdentifiers,
+                embeddedAddressIds: building.properties.addressUUIDs,
                 fallbackAddressId: building.properties.addressId,
                 addressesById: addressContextsById,
                 orderedAddressIdsByBuilding: orderedAddressIdsByBuilding
@@ -3271,6 +3302,7 @@ final class MapLayerManager {
                 .flatMap { $0["features"] as? [[String: Any]] }?
                 .count ?? 0
             print("✅ [MapLayer] Updated parcels source features=\(featureCount)")
+            replayCachedAddressFeatureStates(reason: "parcels_source_update")
         } catch {
             print("❌ [MapLayer] Error updating parcels: \(error)")
         }
@@ -3913,17 +3945,20 @@ final class MapLayerManager {
     }
 
     private static func orderedAddressesForTownhome(
-        gersId: String,
+        buildingIdentifiers: [String],
+        embeddedAddressIds: [UUID],
         fallbackAddressId: String?,
         addressesById: [UUID: OverlayAddressContext],
         orderedAddressIdsByBuilding: [String: [UUID]]
     ) -> [OverlayAddressContext] {
-        let normalizedIds = dedupePreservingOrder(orderedAddressIdsByBuilding[gersId] ?? [])
+        let identifierSet = Set(buildingIdentifiers)
+        let mappedIds = buildingIdentifiers.flatMap { orderedAddressIdsByBuilding[$0] ?? [] }
+        let normalizedIds = dedupePreservingOrder(mappedIds + embeddedAddressIds)
         var ordered = normalizedIds.compactMap { addressesById[$0] }
         let seen = Set(ordered.map(\.id))
 
         let matchedAddresses = addressesById.values
-            .filter { $0.buildingGersId == gersId && !seen.contains($0.id) }
+            .filter { identifierSet.contains($0.buildingGersId) && !seen.contains($0.id) }
             .sorted(by: compareOverlayAddresses)
 
         ordered.append(contentsOf: matchedAddresses)
@@ -3938,6 +3973,23 @@ final class MapLayerManager {
         }
 
         return []
+    }
+
+    private static func normalizedBuildingIdentifiers(for building: BuildingFeature) -> [String] {
+        let rawValues = building.properties.buildingIdentifierCandidates.map(Optional.some) + [
+            building.id,
+            building.properties.id,
+            building.properties.gersId,
+            building.properties.buildingId,
+            building.properties.publicBuildingId,
+            building.properties.canonicalBuildingId,
+            building.properties.canonicalBuildingIdentifier
+        ]
+
+        var seen = Set<String>()
+        return rawValues
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            .filter { !$0.isEmpty && seen.insert($0).inserted }
     }
 
     private static func compareOverlayAddresses(_ lhs: OverlayAddressContext, _ rhs: OverlayAddressContext) -> Bool {
@@ -4027,8 +4079,10 @@ final class MapLayerManager {
         switch status {
         case .talked:
             return "hot"
-        case .appointment, .futureSeller:
-            return "hot_lead"
+        case .appointment:
+            return "appointment"
+        case .futureSeller:
+            return "future_seller"
         case .hotLead:
             return "lead"
         case .doNotKnock:
