@@ -281,8 +281,8 @@ final class MapLayerManager {
 
     private static var townhomeSegmentColorExpression: Exp {
         Exp(.switchCase) {
-            Self.isSelectedUnvisitedSegmentExpression
-            MapStatusColor.selectedHomeGlow
+            Self.isSelectedExpression
+            MapStatusColor.selectedHome
 
             Exp(.eq) {
                 Exp(.get) { "segment_status" }
@@ -708,6 +708,7 @@ final class MapLayerManager {
     private var diamondTerritoryBoundarySignature = "none"
     private var buildingFeatureStateCache: [String: [String: Any]] = [:]
     private var addressFeatureStateCache: [String: [String: Any]] = [:]
+    private var townhomeOverlayFeatureIdsByBuildingIdentifier: [String: Set<String>] = [:]
     
     /// When false, 3D building extrusion layer is not added (campaign map shows flat map + addresses/roads only).
     var includeBuildingsLayer: Bool = true
@@ -2168,13 +2169,66 @@ final class MapLayerManager {
             let geoJSON = try JSONDecoder().decode(GeoJSONObject.self, from: data)
             mapView.mapboxMap.updateGeoJSONSource(withId: Self.townhomeOverlaySourceId, geoJSON: geoJSON)
             lastTownhomeOverlaySignature = signature
+            townhomeOverlayFeatureIdsByBuildingIdentifier = Self.townhomeOverlayFeatureIdsByBuildingIdentifier(from: data)
             let overlayCount = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])
                 .flatMap { $0["features"] as? [[String: Any]] }?
                 .count ?? 0
             print("✅ [MapLayer] Updated townhouse overlay source (\(overlayCount) features)")
+            replayTownhomeOverlaySelectionStates(reason: "townhome_overlay_update")
         } catch {
             print("❌ [MapLayer] Error updating townhouse overlay: \(error)")
         }
+    }
+
+    private static func townhomeOverlayFeatureIdsByBuildingIdentifier(from data: Data) -> [String: Set<String>] {
+        guard let collection = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let features = collection["features"] as? [[String: Any]] else {
+            return [:]
+        }
+
+        var result: [String: Set<String>] = [:]
+        for feature in features {
+            guard let properties = feature["properties"] as? [String: Any],
+                  let geometry = feature["geometry"] as? [String: Any],
+                  let geometryType = normalizedStringValue(geometry["type"]),
+                  geometryType == "polygon" || geometryType == "multipolygon",
+                  let featureId = normalizedStringValue(feature["id"]) ?? normalizedStringValue(properties["address_id"]) else {
+                continue
+            }
+
+            let buildingIdentifiers = Set(
+                normalizedStringValues(properties["building_identifiers"])
+                    + [normalizedStringValue(properties["gers_id"])].compactMap { $0 }
+            )
+            for buildingId in buildingIdentifiers {
+                result[buildingId, default: []].insert(featureId)
+            }
+        }
+        return result
+    }
+
+    private static func normalizedStringValue(_ value: Any?) -> String? {
+        switch value {
+        case let string as String:
+            let normalized = string.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            return normalized.isEmpty ? nil : normalized
+        case let number as NSNumber:
+            let normalized = number.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            return normalized.isEmpty ? nil : normalized
+        case let int as Int:
+            return String(int)
+        case let double as Double where double.isFinite:
+            return double.rounded() == double ? String(Int(double)) : String(double)
+        default:
+            return nil
+        }
+    }
+
+    private static func normalizedStringValues(_ value: Any?) -> [String] {
+        if let values = value as? [Any] {
+            return values.compactMap(normalizedStringValue)
+        }
+        return normalizedStringValue(value).map { [$0] } ?? []
     }
 
 #if DEBUG
@@ -2237,7 +2291,7 @@ final class MapLayerManager {
             )
             let linkedAddresses = addressResolution.addresses
 
-            guard linkedAddresses.count >= Self.townhomeOverlayMinimumUnitCount else { continue }
+            guard shouldRenderTownhomeOverlay(for: linkedAddresses) else { continue }
 
             let polygons = polygonRings(from: building.geometry)
             guard !polygons.isEmpty else { continue }
@@ -2268,6 +2322,7 @@ final class MapLayerManager {
 
                 let properties: [String: Any] = [
                     "gers_id": gersId,
+                    "building_identifiers": buildingIdentifiers,
                     "address_id": address.id.uuidString.lowercased(),
                     "unit_index": index,
                     "unit_count": linkedAddresses.count,
@@ -3752,6 +3807,7 @@ final class MapLayerManager {
         for (featureId, state) in buildingFeatureStateCache {
             applyBuildingFeatureState(featureId: featureId, state: state, mapView: mapView, logSuccess: false)
         }
+        replayTownhomeOverlaySelectionStates(reason: reason)
         print("🧪 [MAP_DEBUG] feature_state_replay kind=buildings reason=\(reason) count=\(buildingFeatureStateCache.count)")
     }
 
@@ -3772,6 +3828,43 @@ final class MapLayerManager {
             return VectorTileDiamondGeometryProvider.sourceId
         }
         return nil
+    }
+
+    private func replayTownhomeOverlaySelectionStates(reason: String) {
+        guard let mapView,
+              mapView.mapboxMap.sourceExists(withId: Self.townhomeOverlaySourceId),
+              !townhomeOverlayFeatureIdsByBuildingIdentifier.isEmpty else {
+            return
+        }
+
+        let selectedBuildingIds = buildingFeatureStateCache.compactMap { featureId, state -> String? in
+            (state["selected"] as? Bool) == true ? featureId : nil
+        }
+        let selectedOverlayFeatureIds = overlayFeatureIds(forBuildingIdentifiers: selectedBuildingIds)
+        guard !selectedOverlayFeatureIds.isEmpty else { return }
+        applyTownhomeOverlaySelection(featureIds: selectedOverlayFeatureIds, isSelected: true, mapView: mapView)
+        print("🧪 [MAP_DEBUG] feature_state_replay kind=townhomes reason=\(reason) count=\(selectedOverlayFeatureIds.count)")
+    }
+
+    private func overlayFeatureIds(forBuildingIdentifiers buildingIdentifiers: [String]) -> [String] {
+        var seen = Set<String>()
+        return buildingIdentifiers
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            .flatMap { townhomeOverlayFeatureIdsByBuildingIdentifier[$0] ?? [] }
+            .filter { seen.insert($0).inserted }
+    }
+
+    private func applyTownhomeOverlaySelection(featureIds: [String], isSelected: Bool, mapView: MapView) {
+        guard mapView.mapboxMap.sourceExists(withId: Self.townhomeOverlaySourceId) else { return }
+        for featureId in featureIds {
+            mapView.mapboxMap.setFeatureState(
+                sourceId: Self.townhomeOverlaySourceId,
+                sourceLayerId: nil,
+                featureId: featureId,
+                state: ["selected": isSelected],
+                callback: { _ in }
+            )
+        }
     }
 
     private func updateDiamondParcelState(featureId: String, state: [String: Any], logSuccess: Bool = true) {
@@ -3819,6 +3912,9 @@ final class MapLayerManager {
             buildingFeatureStateCache[featureId] = state
             applyBuildingFeatureState(featureId: featureId, state: state, mapView: mapView, logSuccess: false)
         }
+
+        let overlayFeatureIds = overlayFeatureIds(forBuildingIdentifiers: featureIds)
+        applyTownhomeOverlaySelection(featureIds: overlayFeatureIds, isSelected: isSelected, mapView: mapView)
     }
 
     func updateAddressSelection(addressId: String, isSelected: Bool) {
@@ -4266,13 +4362,17 @@ final class MapLayerManager {
                 buildingId: buildingId,
                 source: resolution.source,
                 linkedCount: resolution.linkedCount,
-                renderedSliceCount: resolution.addresses.count >= Self.townhomeOverlayMinimumUnitCount
+                renderedSliceCount: shouldRenderTownhomeOverlay(for: resolution.addresses)
                     ? resolution.addresses.count
                     : 0
             )
         }
     }
 #endif
+
+    private static func shouldRenderTownhomeOverlay(for addresses: [OverlayAddressContext]) -> Bool {
+        Set(addresses.map(\.id)).count >= Self.townhomeOverlayMinimumUnitCount
+    }
 
     private static func normalizedBuildingIdentifiers(for building: BuildingFeature) -> [String] {
         let rawValues = building.properties.buildingIdentifierCandidates.map(Optional.some) + [

@@ -95,6 +95,13 @@ export interface TownhouseSplitSummary {
   units_created: number;
   errors_logged: number;
   avg_units_per_townhouse: number;
+  results: SplitterResult[];
+}
+
+export interface SplitterResult {
+  building_id: string;
+  is_townhouse: boolean;
+  units_count: number;
 }
 
 // ============================================================================
@@ -445,6 +452,7 @@ export class TownhouseSplitterService {
           units_created: 0,
           errors_logged: 0,
           avg_units_per_townhouse: 0,
+          results: [],
         };
       }
 
@@ -476,6 +484,7 @@ export class TownhouseSplitterService {
         units_created: 0,
         errors_logged: 0,
         avg_units_per_townhouse: 0,
+        results: [],
       };
 
       let totalTownhouseUnits = 0;
@@ -484,6 +493,11 @@ export class TownhouseSplitterService {
 
       for (const analysis of analyses) {
         console.log(`[TownhouseSplitter] Building ${analysis.building_id}: classification=${analysis.classification}, units=${analysis.unit_count}`);
+        summary.results.push({
+          building_id: analysis.building_id,
+          is_townhouse: analysis.classification === 'townhouse',
+          units_count: analysis.unit_count,
+        });
 
         if (analysis.classification === 'apartment') {
           // Analysis logged but persistence gated by feature flag
@@ -539,6 +553,7 @@ export class TownhouseSplitterService {
         units_created: 0,
         errors_logged: 1,
         avg_units_per_townhouse: 0,
+        results: [],
       };
     }
   }
@@ -776,6 +791,17 @@ export class TownhouseSplitterService {
       parent_type: result.parent_type,
       validation_status: u.validation,
     }));
+
+    const { error: deleteError } = await this.supabase
+      .from('building_units')
+      .delete()
+      .eq('campaign_id', campaignId)
+      .eq('parent_building_id', result.building_id);
+
+    if (deleteError) {
+      console.error('[TownhouseSplitter] Error clearing existing units:', deleteError.message);
+      return false;
+    }
 
     const { error } = await this.supabase.from('building_units').insert(records);
 

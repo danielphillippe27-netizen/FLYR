@@ -1,8 +1,15 @@
-# Android Campaign Creation, Linking, And Display Guide
+# Android Campaign Creation, Map Bundle, And Display Guide
 
-This guide explains the current iOS and backend campaign lifecycle so Android can implement the same behavior. It focuses on territory-drawn campaigns: create a draft campaign shell, attach a polygon boundary, let the backend provision addresses/buildings, then fetch and render map data.
+This is the Android handoff for matching the current iOS campaign creation and map-loading behavior one-to-one. The primary contract is now the canonical campaign map bundle:
 
-Legacy import/closest-home flows are intentionally out of scope except where they share models or display behavior.
+```http
+GET /api/campaigns/{campaignId}/map-bundle
+Authorization: Bearer <supabase-access-token>
+```
+
+Android should use this endpoint as the first-class map payload. The older buildings, addresses, parcels, and roads endpoints are fallback/debug paths only.
+
+Legacy import/closest-home flows are intentionally out of scope except where they share campaign metadata, visit status, or display behavior.
 
 ## Source Map
 
@@ -10,55 +17,40 @@ Use these files as the source of truth while building Android parity:
 
 | Area | Files |
 | --- | --- |
-| Campaign creation UI | `FLYR/Feautures/Campaigns/Views/NewCampaignScreen.swift`, `FLYR/Feautures/Campaigns/Views/MapDrawingView.swift` |
-| Create payload and campaign models | `FLYR/Feautures/Campaigns/API/CampaignCreatePayloadV2.swift`, `FLYR/Feautures/Campaigns/Models/CampaignV2.swift` |
-| iOS campaign API wrapper | `FLYR/Feautures/Campaigns/CampaignsAPI.swift` |
-| iOS create hook | `FLYR/Feautures/Campaigns/Hooks/UseCreateCampaign.swift` |
-| Backend provisioning | `backend-api-routes/app/api/campaigns/provision/route.ts` |
-| Provision data providers | `backend-api-routes/lib/services/BedrockProvisionService.ts` |
-| Stable address/building linker | `backend-api-routes/lib/services/StableLinkerService.ts` |
-| Backend building endpoint | `backend-api-routes/app/api/campaigns/[campaignId]/buildings/route.ts` |
-| Backend address endpoint | `backend-api-routes/app/api/campaigns/[campaignId]/addresses/route.ts` |
-| Diamond manifest endpoint | `backend-api-routes/app/api/campaigns/[campaignId]/diamond-manifest/route.ts` |
-| Client-generated link endpoint | `backend-api-routes/app/api/campaigns/[campaignId]/client-links/route.ts` |
-| iOS building/address API client | `FLYR/Features/Buildings/Services/BuildingLinkService.swift` |
+| Campaign creation UI and loading page | `FLYR/Feautures/Campaigns/Views/NewCampaignScreen.swift`, `FLYR/Feautures/Campaigns/Views/CampaignCreatingOverlayView.swift`, `FLYR/MainTabView.swift` |
+| Provision progress persistence | `FLYR/Services/Notifications/CampaignProvisionMonitor.swift`, `FLYR/Shared/AppUIState.swift` |
+| Campaign API wrapper | `FLYR/Feautures/Campaigns/CampaignsAPI.swift` |
+| Map bundle client models/API | `FLYR/Features/Buildings/Services/BuildingLinkService.swift` |
 | iOS map feature coordinator | `FLYR/Services/MapFeaturesService.swift` |
-| iOS Mapbox layer manager | `FLYR/Services/MapLayerManager.swift` |
-| iOS campaign map screen | `FLYR/Features/Map/Views/CampaignMapView.swift` |
-| iOS offline campaign cache | `FLYR/Offline/Repositories/CampaignRepository.swift` |
+| iOS offline campaign cache | `FLYR/Offline/Repositories/CampaignRepository.swift`, `FLYR/Offline/OfflineMigrations.swift` |
+| iOS Mapbox rendering | `FLYR/Features/Map/Views/CampaignMapView.swift`, `FLYR/Services/MapLayerManager.swift` |
+| Backend map bundle route | `backend-api-routes/app/api/campaigns/[campaignId]/map-bundle/route.ts` |
+| Backend map bundle builder | `backend-api-routes/lib/services/CampaignMapBundleService.ts` |
+| Bundle DB/RPC contract | `supabase/migrations/20260529120000_canonical_campaign_map_bundles.sql`, `supabase/migrations/20260529124500_include_polished_cache_in_map_source_version.sql` |
+| Auto-linking RPC | `supabase/migrations/20260526111000_create_auto_link_campaign_addresses.sql` |
 
 Note the existing repo path typo: campaign files live under `Feautures`, not `Features`.
 
 ## End-To-End Lifecycle
 
-Android should treat campaign creation as a staged asynchronous workflow:
+Android should treat territory campaign creation as an asynchronous map-bundle-first workflow:
 
 1. User draws a territory polygon.
 2. App creates a draft campaign shell in Supabase.
-3. App uploads the territory boundary GeoJSON to the campaign.
-4. App calls the backend provision endpoint.
-5. Backend resolves addresses and building geometry, writes snapshots, and links addresses to buildings.
-6. App polls campaign provision state until the map is usable.
-7. App fetches building and address GeoJSON.
-8. App renders buildings, addresses, labels, roads, parcels, and selected/highlight state.
-9. App caches map bundles for offline sessions.
+3. App writes the territory boundary GeoJSON, region, and bbox to the campaign.
+4. App calls `POST /api/campaigns/provision`.
+5. App shows the full-screen campaign loading page and tracks background progress.
+6. App polls campaign provision state until the campaign is map usable.
+7. App fetches `GET /api/campaigns/{campaignId}/map-bundle`.
+8. App atomically persists the returned bundle locally.
+9. App renders buildings, addresses, parcels, roads, and links from that bundle.
+10. On later opens, app draws from local cache first and refreshes the bundle in the background with the cached `asset_signature`.
 
-The critical rule: Android should not send client-side address lists for map-created campaigns. The current backend provisioner owns address and building discovery after receiving the campaign polygon.
+The critical rule: Android should not send client-side address lists for map-created campaigns. The backend owns address discovery, building geometry, roads/parcels, and canonical linking after it receives the campaign polygon.
 
-## Campaign Creation Flow
+## Campaign Creation
 
-### 1. Draw Polygon
-
-iOS implementation:
-
-- `MapDrawingView.swift`
-  - Tapping the map appends polygon vertices.
-  - Tapping near the first vertex closes the polygon.
-  - Finishing the polygon ensures the ring is closed before confirming.
-- `NewCampaignScreen.swift`
-  - Receives the drawn polygon.
-  - Requires at least 3 unique vertices.
-  - Converts the polygon into GeoJSON before backend provisioning.
+### Draw Polygon
 
 Android requirements:
 
@@ -66,7 +58,7 @@ Android requirements:
 - When serializing to GeoJSON, convert each point to `[longitude, latitude]`.
 - Close the ring by appending the first coordinate to the end if needed.
 - Reject polygons with fewer than 3 unique points.
-- Keep the polygon available locally until the boundary upload and provision call complete.
+- Keep the polygon locally until shell creation, boundary upload, and provisioning have all started successfully.
 
 GeoJSON shape:
 
@@ -84,458 +76,410 @@ GeoJSON shape:
 }
 ```
 
-### 2. Create Campaign Shell
+### Create Campaign Shell
 
-iOS source:
+iOS creates the campaign shell directly through Supabase. Android can mirror that table insert or use an equivalent backend endpoint if one is introduced later.
 
-- `CampaignCreatePayloadV2.swift`
-- `UseCreateCampaign.swift`
-- `CampaignsAPI.swift`
-- `NewCampaignScreen.swift`
+For territory campaigns, create the shell with:
 
-The current iOS flow creates a draft campaign shell before provisioning. The shell is inserted into the `campaigns` table with status `draft` and no addresses. Address rows arrive later from backend provisioning.
+- `address_source = "map"`
+- `address_target_count = 0`
+- `addresses_json = []`
+- user-entered name/details
+- selected workspace/team context where applicable
 
-Important create payload fields:
+Do not wait for addresses before creating the campaign shell. Address rows are produced during provisioning.
 
-| Field | Meaning |
-| --- | --- |
-| `name` | Initial name. iOS uses `Untitled Campaign` until details are saved. |
-| `description` | Optional campaign description. |
-| `type` | Optional campaign type, stored as a database enum/string. |
-| `addressSource` | For map-created campaigns, use `map`. |
-| `addressTargetCount` | Currently `0` for map-created campaigns because backend provisioning finds addresses. |
-| `seedQuery` | Region code or inferred region hint. |
-| `seedLon`, `seedLat` | Optional; current territory-first flow does not rely on them. |
-| `addressesJSON` | Present for compatibility, but ignored for backend-provisioned map campaigns. Send an empty list. |
-| `workspaceId` | Required when campaign belongs to a workspace. |
+### Upload Boundary
 
-Android create request model should match:
+Before provisioning, write the drawn territory to the campaign:
 
-```json
-{
-  "name": "Untitled Campaign",
-  "description": "",
-  "type": "seller",
-  "addressSource": "map",
-  "addressTargetCount": 0,
-  "seedQuery": "CA",
-  "seedLon": null,
-  "seedLat": null,
-  "tags": [],
-  "addressesJSON": [],
-  "workspaceId": "workspace-uuid"
-}
-```
+- `territory_boundary`: GeoJSON polygon
+- `region` / seed query: inferred region code, uppercased when available
+- bbox fields or equivalent boundary metadata used by the backend
 
-iOS currently creates this shell directly through Supabase in `CampaignsAPI.createV2`. Android can either mirror that Supabase insert or use an equivalent backend endpoint if one is introduced later. For parity today, read `CampaignsAPI.createV2` as the table contract.
+If boundary upload fails, keep the draft campaign and allow retry from the same polygon. Do not call provisioning without a saved boundary.
 
-Shell defaults to preserve:
+## Campaign Loading Page
 
-- `status`: `draft`
-- `address_source`: `map`
-- `scans`: `0`
-- `conversions`: `0`
-- `total_flyers`: `0`
-- campaign address list: empty
+iOS now shows a full-screen campaign creation overlay while provisioning and map preparation run. Android should mirror this page, not a small inline spinner.
 
-### 3. Save Details
+### UI Contract
 
-iOS lets the user rename and type the campaign after the shell exists. The details update is handled by `CampaignsAPI.updateCampaignDetails` and writes:
+Show:
 
-- `name`
-- `title`
-- `type`
+- Full-screen background that matches light/dark mode.
+- FLYR loading animation or Android-equivalent brand animation.
+- Title: `Creating campaign`.
+- Large percent text.
+- Activity text.
+- Destructive `Cancel` button while progress is below 100.
+- Footer text: `You can exit the app and come back when it's ready.`
+- Error text when cancel/provision fails.
+- Ready reveal when progress reaches 100 and a polygon is available.
 
-Android should support updating these fields independently from provisioning. Do not block provisioning on the details screen if the shell and polygon are already available.
+The Cancel button:
 
-### 4. Upload Territory Boundary
+- Starts disabled/loading state with label `Cancelling`.
+- Cancels local campaign creation/provisioning tasks.
+- If no campaign ID exists yet, dismisses the creation flow.
+- If a campaign ID exists, deletes the campaign row from Supabase, removes it from local stores, clears tracked provision state, clears selected map state if needed, then dismisses.
+- If delete fails, stays on the loading page and shows `Could not cancel campaign setup: <error>`.
 
-iOS source: `CampaignsAPI.updateTerritoryBoundary`.
+### Persisted Background Progress
 
-Before provisioning, Android must write the drawn polygon to the campaign:
+Android should persist the latest in-progress campaign setup so users can leave the app and return:
 
-```json
-{
-  "territory_boundary": {
-    "type": "Polygon",
-    "coordinates": [
-      [
-        [-79.4010, 43.6510],
-        [-79.4020, 43.6520],
-        [-79.4000, 43.6530],
-        [-79.4010, 43.6510]
-      ]
-    ]
-  },
-  "region": "CA",
-  "bbox": [-79.4020, 43.6510, -79.4000, 43.6530]
-}
-```
+- `campaignId`
+- `campaignName`
+- badge/state enum
+- user-facing status text
+- progress percent
 
-Behavior to mirror:
+Resume behavior:
 
-- Decode/validate GeoJSON polygon before writing it.
-- Normalize `region` to uppercase.
-- Store the computed bounding box.
-- Do not store placeholder strings like `Polygon (12 points)` as the region.
+- On app start/foreground, refresh the latest provision state.
+- If the tracked campaign is still running, re-open the campaign creation/loading screen.
+- If it is ready, let the ready reveal or normal campaign open flow finish.
+- If it failed, show needs-attention state with retry/error messaging.
+- Clear the tracked state after cancel, successful dismissal, or when the user handles the failure.
 
-### 5. Start Backend Provisioning
+### Progress Mapping
 
-Backend source: `backend-api-routes/app/api/campaigns/provision/route.ts`.
+Mirror iOS progress:
 
-Endpoint:
+| Backend phase/status | Progress | Activity text |
+| --- | ---: | --- |
+| `created` | 5 | `Creating campaign` |
+| `pending` with no phase | 8 | `Creating campaign` |
+| `source_probed` | 18 | `Finding homes` |
+| `addresses_loading` | 35 | `Saving addresses` |
+| `addresses_ready` | 50 | `Preparing map` |
+| `map_ready` | 68 | `Preparing map` |
+| `optimizing` | 82 | `Finalizing map` |
+| `linked` | 95 | `Finalizing map` |
+| `optimized` or ready/map usable | 100 | `Campaign is ready` |
+| `failed` | no percent | `Setup needs attention` |
+
+Clamp progress to `0..100` and never animate backwards unless restarting a brand-new campaign.
+
+## Provisioning
+
+Provision request:
 
 ```http
 POST /api/campaigns/provision
 Authorization: Bearer <supabase-access-token>
 Content-Type: application/json
-```
 
-Minimum body:
-
-```json
 {
   "campaign_id": "campaign-uuid"
 }
 ```
 
-Optional body fields supported by the backend:
+iOS supports accepted/background provisioning. Android should treat all of these as valid:
+
+- immediate `ready`
+- `accepted: true`
+- `provision_status: "pending"`
+- HTTP success with post-processing deferred
+
+After the request succeeds, poll campaign state from Supabase:
+
+```sql
+select id,
+       provision_status,
+       provision_source,
+       provision_phase,
+       provisioned_at,
+       addresses_ready_at,
+       map_ready_at,
+       optimized_at,
+       snapshot_bucket,
+       snapshot_prefix,
+       snapshot_buildings_url,
+       snapshot_roads_url,
+       address_source,
+       coverage_score,
+       data_quality,
+       standard_mode_recommended,
+       data_quality_reason,
+       provision_timings,
+       provision_error,
+       provision_message
+from campaigns
+where id = :campaignId
+```
+
+Map usable rule:
+
+- `provision_status = "ready"` and phase is map usable opens the campaign.
+- `linking_failed` can still open in standard/address mode when the campaign is otherwise ready.
+- `failed` stops polling and shows backend `provision_message` or `provision_error`.
+
+Recommended polling interval: 2 seconds while the loading screen is visible, with a longer backoff in background if Android needs to conserve work.
+
+## Canonical Map Bundle
+
+### Request
+
+```http
+GET /api/campaigns/{campaignId}/map-bundle
+Authorization: Bearer <supabase-access-token>
+```
+
+If Android has a cached bundle with an `asset_signature`, pass it:
+
+```http
+GET /api/campaigns/{campaignId}/map-bundle?signature={cachedAssetSignature}
+Authorization: Bearer <supabase-access-token>
+```
+
+Auth/access behavior:
+
+- `401`: refresh Supabase session or route to sign-in.
+- `403`: show no-access state and do not mutate local campaign data.
+- `500`: keep usable local cache if present; otherwise show map-data-not-ready/retry.
+
+The backend sends no-store JSON headers and may include `Server-Timing` for debugging.
+
+### Response Statuses
+
+| Status | Android behavior |
+| --- | --- |
+| `200` | Decode the bundle, atomically replace the local render cache, apply to map if this campaign is still active. |
+| `304` | Keep the local cached bundle exactly as-is and draw from it. Record local validation time if useful. |
+| `401` | Refresh auth or sign in. Do not clear cache. |
+| `403` | Show forbidden/no-access. Do not clear cache automatically. |
+| `500`/network error | Use cached bundle if available; otherwise show retry/error. |
+
+The `304` path is valid only when Android passed a signature. The body is empty.
+
+### Response Shape
+
+The `200` response body is:
 
 ```json
 {
   "campaign_id": "campaign-uuid",
-  "wait_for_linker": false,
-  "wait_for_postprocess": false,
-  "require_linked_homes": false
+  "asset_signature": "campaign:bundle:signature",
+  "source_version": "source-version-hash",
+  "display_mode_hint": "buildings",
+  "links_status": "fresh",
+  "addresses": { "type": "FeatureCollection", "features": [] },
+  "buildings": { "type": "FeatureCollection", "features": [] },
+  "parcels": { "type": "FeatureCollection", "features": [] },
+  "roads": { "type": "FeatureCollection", "features": [] },
+  "links": [],
+  "counts": {
+    "addresses": 0,
+    "buildings": 0,
+    "parcels": 0,
+    "roads": 0,
+    "links": 0
+  },
+  "layer_fetched_at": {
+    "addresses": "2026-05-29T16:00:00.000Z",
+    "buildings": "2026-05-29T16:00:00.000Z",
+    "parcels": "2026-05-29T16:00:00.000Z",
+    "roads": "2026-05-29T16:00:00.000Z"
+  },
+  "built_at": "2026-05-29T16:00:00.000Z",
+  "expires_at": "2026-05-29T16:15:00.000Z",
+  "updated_at": "2026-05-29T16:00:01.000Z"
 }
 ```
 
-iOS calls provisioning with `waitUntilReady: false`, which allows the backend to accept the job and continue in the background. Android should support both immediate ready responses and async accepted/pending responses.
+Required top-level fields Android must model:
 
-Expected accepted/pending response shape:
+- `campaign_id`
+- `asset_signature`
+- `source_version`
+- `display_mode_hint`
+- `links_status`
+- `addresses`
+- `buildings`
+- `parcels`
+- `roads`
+- `links`
+- `counts`
+- `layer_fetched_at`
+- `built_at`
+- `expires_at`
+- `updated_at`
+
+Enums:
+
+| Field | Values | Meaning |
+| --- | --- | --- |
+| `display_mode_hint` | `buildings`, `addresses` | Server recommendation for initial display mode. |
+| `links_status` | `fresh` | Backend refreshed links successfully. Android should not run client linking. |
+| `links_status` | `stale_reused` | Backend reused strict previous links after refresh budget expired. Render them and refresh later. |
+| `links_status` | `client_fallback_required` | Backend could not provide links. Android may run client linking if implemented. |
+
+### Link Shape
+
+Bundle links use this shape:
 
 ```json
 {
-  "success": true,
-  "accepted": true,
-  "provision_status": "pending",
-  "provision_phase": "created",
-  "message": "Provisioning started"
+  "id": "optional-link-id",
+  "building_id": "public-building-id",
+  "address_id": "campaign-address-id",
+  "match_type": "containment_verified",
+  "confidence": 1.0,
+  "distance_meters": 0.0
 }
 ```
 
-Expected ready-ish response fields may include:
+Android should treat `building_id` as the public/canonical building identifier used in the returned building features. Use `address_id` to update matching address features.
 
-```json
-{
-  "success": true,
-  "addresses_saved": 1240,
-  "buildings_saved": 980,
-  "roads_saved": 42,
-  "provision_status": "ready",
-  "provision_phase": "linked",
-  "provision_source": "diamond",
-  "map_ready": true,
-  "optimized": true,
-  "postprocess_deferred": false,
-  "linker_path": "in_memory",
-  "building_link_confidence": 86,
-  "map_mode": "hybrid",
-  "coverage_score": 0.92,
-  "data_quality": "good",
-  "standard_mode_recommended": false
-}
-```
+When applying links:
 
-Unsupported region or invalid campaign responses may return `422` with an error body. Android should surface a retry/error state and not create fake local map data.
+- Keep the highest-confidence link per address.
+- Add `building_gers_id` to linked address properties.
+- Add `address_ids`, `address_count`, and `is_linked` to linked building properties where useful for rendering/details.
+- Preserve manual local links over generated/bundle links for the same address.
 
-## Provisioning Internals Android Needs To Understand
+### Backend Bundle Freshness
 
-The backend performs the heavy work in `app/api/campaigns/provision/route.ts`.
+The backend rebuilds a bundle when:
 
-High-level worker stages:
+- source version changed
+- current bundle expired
+- map bundle cache version changed
+- parcel backfill is needed
+- polished building cache has newer/more complete features
 
-1. Authenticate the Supabase user.
-2. Verify campaign owner or workspace access.
-3. Require `territory_boundary`.
-4. Reset campaign provision fields to pending/created.
-5. Resolve the campaign source:
-   - Try Diamond when supported and address quality is acceptable.
-   - Fall back to Bedrock country providers when Diamond is unavailable or unsuitable.
-6. Insert campaign addresses through `add_campaign_addresses` RPC or fallback upserts.
-7. Materialize building geometry into `campaign_polished_building_features`.
-8. Write `campaign_snapshots` metadata and artifact URLs.
-9. Materialize parcels where supported.
-10. Auto-link addresses to buildings/parcels.
-11. Update campaign status, phase, map mode, quality, and confidence fields.
-12. Optionally send campaign-ready notification.
+Layer TTLs:
 
-Provider source names are defined in `BedrockProvisionService.ts`:
+- addresses: 15 minutes
+- buildings/parcels/roads: 24 hours
 
-- `bedrock_nz`
-- `bedrock_au`
-- `bedrock_ca`
-- `bedrock_us`
-- `bedrock_za`
-- `bedrock_uk`
+Android does not need to reimplement this freshness logic. It should send the cached `asset_signature` and trust `200`/`304`.
 
-Diamond source is represented as:
+### Local Cache Contract
 
-- `diamond`
+Android cache must be render-ready, not just raw fragments.
 
-## Provision State And Map Readiness
+Store:
 
-iOS source:
+- campaign ID
+- `asset_signature`
+- `source_version`
+- `display_mode_hint`
+- `links_status`
+- `counts`
+- `layer_fetched_at`
+- `built_at`
+- `expires_at`
+- `updated_at`
+- building GeoJSON features
+- address GeoJSON features
+- parcel GeoJSON features
+- road GeoJSON features
+- bundle links
+- manual links, if Android supports manual link editing
+- client-generated links, if Android creates them
 
-- `CampaignsAPI.fetchProvisionState`
-- `CampaignsAPI.waitForProvisionReady`
-- `CampaignV2.CampaignProvisionStatus`
-- `CampaignV2.CampaignProvisionPhase`
-- `NewCampaignScreen.isMapUsable`
+Atomic replace behavior for a `200` bundle:
 
-Campaign provision status values:
+1. Begin DB transaction.
+2. Read and protect manual links for this campaign.
+3. Delete old generated bundle/cache records for buildings, addresses, parcels, roads, and non-manual generated links.
+4. Insert bundle buildings, addresses, parcels, and roads.
+5. Insert bundle links, skipping any address protected by a manual link.
+6. Re-apply manual links to address/building render properties.
+7. Save bundle metadata.
+8. Commit.
 
-| Status | Meaning |
+Do not partially replace only one layer. A half-updated map bundle can desync buildings, addresses, and links.
+
+Cache-first load behavior:
+
+1. If a cached bundle exists, draw it immediately.
+2. If online, call `/map-bundle?signature=<cached asset_signature>` in the background.
+3. If response is `304`, keep the existing local bundle.
+4. If response is `200`, atomically replace cache and redraw.
+5. If offline and cache exists, open from cache.
+6. If offline and no cache exists, block with a clear offline-cache-missing reason.
+
+## Map Rendering
+
+Android should render from the canonical bundle first.
+
+Primary render order:
+
+1. `buildings` FeatureCollection
+2. `addresses` FeatureCollection
+3. `parcels` FeatureCollection
+4. `roads` FeatureCollection
+5. `links` applied to local feature state/properties
+6. visit/status/selected feature state
+
+### Display Modes
+
+iOS has two campaign display modes:
+
+- building mode
+- address mode
+
+Use `display_mode_hint` to choose the initial mode:
+
+- `buildings`: show building polygons/extrusions when more than one renderable building exists.
+- `addresses`: show address markers/proxies prominently and keep parcels/addresses visible across zoom levels.
+
+Rules:
+
+- If `display_mode_hint = "addresses"`, start in address mode.
+- If no renderable building features exist but addresses do, render address mode instead of a blank map.
+- If building mode is active, address layers may be hidden unless edit/linking/session UX needs them.
+- If address mode is active, keep addresses and parcels visible across the useful camera range.
+
+### Layers
+
+Android layer names do not need to match iOS, but responsibilities should.
+
+| Layer responsibility | iOS source/layer concept |
 | --- | --- |
-| `pending` | Provisioning is in progress. |
-| `ready` | Provisioning produced usable campaign data. |
-| `failed` | Provisioning failed. |
+| Building GeoJSON source | `buildings-source` |
+| Building extrusion/fill | `buildings-extrusion` |
+| Selected building overlay | selected building/glow layers |
+| Townhome/multi-unit overlay | townhome overlay layers |
+| Address point/proxy source | `campaign-address-points` |
+| Address point extrusion/fill | `campaign-address-points-extrusion` |
+| Selected address overlay | `campaign-address-points-selected-extrusion` |
+| Address number labels | address numbers source/layer |
+| Roads source/layer | `roads-source`, `roads-line` |
+| Parcels source/layers | parcel fill/line/selected layers |
 
-The decoder also treats legacy `complete` and `completed` values as `ready`.
+Road overlay note: iOS loads campaign roads into the source but currently hides the extra visual overlay on the main campaign map so the base map's native road styling stays clean. Android can do the same: keep road data available for GPS/session logic without forcing a visible overlay.
 
-Important provision phases:
+### Feature Properties To Preserve
 
-| Phase | Meaning |
-| --- | --- |
-| `created` | Job accepted/reset. |
-| `source_probed` | Backend chose/probed a data source. |
-| `addresses_loading` | Addresses are being inserted. |
-| `addresses_ready` | Address rows are available. |
-| `map_ready` | Map data is available. |
-| `optimizing` | Post-processing/linking is still improving data. |
-| `linking_failed` | Map can still be usable, but building links are incomplete. |
-| `linked` | Address/building links completed. |
-| `optimized` | Fully optimized map artifacts/links are ready. |
-| `failed` | Provision failed. |
-
-Map usability rule:
-
-```text
-provision_status == "ready"
-AND provision_phase is null or one of:
-  - map_ready
-  - linking_failed
-  - linked
-  - optimized
-```
-
-Android should keep polling while status is `pending`. Once the campaign is map usable, fetch buildings and addresses. If status is `failed`, stop polling and show the backend error/message if present.
-
-Provision state fields selected by iOS:
-
-- `id`
-- `provision_status`
-- `provision_source`
-- `provision_phase`
-- `provisioned_at`
-- `addresses_ready_at`
-- `map_ready_at`
-- `optimized_at`
-- `snapshot_bucket`
-- `snapshot_prefix`
-- `snapshot_buildings_url`
-- `snapshot_roads_url`
-- `address_source`
-- `coverage_score`
-- `data_quality`
-- `standard_mode_recommended`
-- `data_quality_reason`
-- `provision_timings`
-
-## Campaign List And Open Flow
-
-iOS source:
-
-- `CampaignsAPI.fetchCampaignsV2`
-- `CampaignV2Store`
-- `CampaignMapView.swift`
-- `MapFeaturesService.fetchAllCampaignFeatures`
-
-Android needs two separate flows:
-
-1. Campaign list display.
-2. Campaign map/session open.
-
-### Campaign List Display
-
-iOS loads campaign rows from Supabase and then enriches them with address counts and cached provision metadata.
-
-List behavior to mirror:
-
-- Fetch campaigns owned by the current user.
-- Include campaigns available through the active workspace/shared campaign IDs when workspace access applies.
-- Exclude hidden internal/demo campaigns the same way iOS does.
-- Fetch address counts separately through `get_campaign_address_counts` instead of trusting shell-create counts.
-- Cache campaign metadata locally so offline list display can show the latest known status.
-
-Fields Android should keep for list cards:
+Building features may include:
 
 ```json
 {
-  "id": "campaign-uuid",
-  "name": "Spring Listing Push",
-  "title": "Spring Listing Push",
-  "description": "Downtown west territory",
-  "type": "seller",
-  "status": "draft",
-  "address_source": "map",
-  "region": "CA",
-  "workspace_id": "workspace-uuid",
-  "total_flyers": 0,
-  "address_count": 1240,
-  "scans": 0,
-  "conversions": 0,
-  "provision_status": "ready",
-  "provision_phase": "linked",
-  "provision_source": "diamond",
-  "map_mode": "hybrid",
-  "building_link_confidence": 86,
-  "coverage_score": 0.92,
-  "data_quality": "good",
-  "standard_mode_recommended": false,
-  "snapshot_bucket": "bucket",
-  "snapshot_prefix": "prefix"
-}
-```
-
-List UI should distinguish:
-
-| Campaign state | Android list behavior |
-| --- | --- |
-| Draft shell with no boundary | Show as draft/setup incomplete. |
-| Boundary uploaded and `pending` | Show provisioning/loading state. |
-| `ready` and map usable | Allow opening map/session. |
-| `failed` | Show failed state and retry/recreate option. |
-| Offline with cached metadata | Show last known metadata and cached/offline badge if desired. |
-
-### Opening A Campaign
-
-When the user taps a campaign:
-
-1. Load the latest campaign metadata if online.
-2. If offline, load cached campaign metadata and cached map bundle.
-3. Check `CampaignsAPI.sessionStartBlockReason` equivalent rules:
-   - Online: block failed or not-ready campaigns unless the map is usable.
-   - Offline: require a cached campaign map bundle/downloaded state.
-4. Set the selected campaign in app state.
-5. Fetch all campaign map features.
-6. Render once buildings or addresses are usable.
-
-Android should avoid coupling the list card's address count to map readiness. A campaign can have address rows before building materialization/linking has finished, so opening should be gated by provision status/phase and cached map data, not by count alone.
-
-## Map Data Fetching
-
-Android should use the backend API base URL configured for the app and include the Supabase bearer token on every backend request.
-
-iOS base URL logic lives in `BuildingLinkService.swift` and `CampaignsAPI.swift`:
-
-- Read `FLYR_PRO_API_URL` from app config.
-- If the host is apex `flyrpro.app`, normalize to `https://www.flyrpro.app`.
-
-### Buildings
-
-iOS source: `BuildingLinkService.fetchBuildings`.
-
-Endpoint:
-
-```http
-GET /api/campaigns/{campaignId}/buildings
-Authorization: Bearer <supabase-access-token>
-```
-
-Retry behavior:
-
-- Use cached/offline bundle first when offline.
-- If the online response fails, is empty, or has no polygon features, retry once with cache bypass:
-
-```http
-GET /api/campaigns/{campaignId}/buildings?cache=bypass
-```
-
-Backend building endpoint behavior:
-
-- Authenticates user and campaign/workspace access.
-- Checks polished cache in `campaign_polished_building_features`.
-- Enriches features with persisted address/building links.
-- Uses materialized building rows where available.
-- Falls back through snapshots, RPCs, scoped PMTiles, S3 artifacts, and manual/address proxy features.
-- Returns a GeoJSON `FeatureCollection`.
-- Uses no-store JSON headers.
-
-Building feature properties Android should preserve:
-
-```json
-{
-  "id": "building-id",
-  "building_id": "building-id",
-  "building_gers_id": "gers-id",
-  "public_building_id": "public-id",
-  "canonical_building_id": "canonical-id",
-  "building_identifier_source": "gold",
+  "id": "building-row-or-public-id",
+  "building_id": "building-row-id",
+  "gers_id": "public-building-id",
+  "public_building_id": "public-building-id",
+  "canonical_building_id": "public-building-id",
   "address_id": "address-id",
   "address_ids": ["address-id-1", "address-id-2"],
-  "address_text": "123 Main St",
   "address_count": 2,
-  "house": "123",
-  "street": "Main St",
-  "confidence": 0.91,
-  "match_method": "stable_linker",
-  "source": "gold",
-  "status": "visited",
-  "scans": 1,
-  "height": 8,
-  "height_m": 8,
+  "units_count": 2,
+  "is_linked": true,
+  "status": "not_visited",
+  "height": 9,
+  "height_m": 9,
   "min_height": 0,
-  "is_townhome": false,
-  "units_count": 1,
-  "area": 120,
-  "building_type": "residential",
-  "qr_scanned": false,
-  "is_linked": true
+  "source": "silver"
 }
 ```
 
-Renderable building geometries:
-
-- `Polygon`
-- `MultiPolygon`
-
-iOS filters out tiny non-manual polygons below roughly 30 square meters before display. Android should apply a similar filter if the map becomes noisy.
-
-### Addresses
-
-iOS sources:
-
-- `BuildingLinkService.fetchCampaignAddresses`
-- `MapFeaturesService.fetchCampaignAddresses`
-- Backend: `app/api/campaigns/[campaignId]/addresses/route.ts`
-
-Endpoint:
-
-```http
-GET /api/campaigns/{campaignId}/addresses
-Authorization: Bearer <supabase-access-token>
-```
-
-Backend behavior:
-
-- Authenticates user and campaign/workspace access.
-- Reads addresses through `rpc_get_campaign_addresses`.
-- Falls back to direct `campaign_addresses` rows.
-- For non-Diamond campaigns, can fall back to S3 snapshot address artifacts.
-- Returns empty for Diamond when no address rows are available instead of fabricating data.
-
-Address feature properties Android should preserve:
+Address features may include:
 
 ```json
 {
@@ -546,204 +490,25 @@ Address feature properties Android should preserve:
   "house": "123",
   "street": "Main St",
   "city": "Toronto",
-  "state": "ON",
   "postal_code": "M5V 2T6",
   "longitude": -79.4010,
   "latitude": 43.6510,
-  "building_id": "building-id",
-  "building_gers_id": "gers-id",
-  "confidence": 0.91,
-  "match_method": "stable_linker",
+  "building_gers_id": "public-building-id",
   "status": "not_visited",
   "scans": 0
 }
 ```
 
-Android should de-duplicate address features for display, especially when both building-enriched and address endpoint data contain the same home.
+Renderable building geometries:
 
-### Parcels
+- `Polygon`
+- `MultiPolygon`
 
-iOS source: `BuildingLinkService.fetchCampaignParcels` and `MapFeaturesService.fetchCampaignParcels`.
+Filter out tiny non-manual building polygons if the Android map becomes noisy. iOS filters very small linkable footprints before display.
 
-Endpoint:
+### Status Colors And Feature State
 
-```http
-GET /api/campaigns/{campaignId}/parcels
-Authorization: Bearer <supabase-access-token>
-```
-
-The backend parcel route is not the main campaign contract, but Android should support parcel rendering when features are available. Parcels help linking and can support selected/highlight state.
-
-### Roads
-
-iOS source:
-
-- `MapFeaturesService.fetchCampaignRoads`
-- `CampaignRoadService.getRoadsForSession`
-
-Roads are fetched separately and cached with the campaign map bundle. They are useful visual context but should not block campaign map readiness.
-
-### Diamond Manifest And PMTiles
-
-Backend source: `app/api/campaigns/[campaignId]/diamond-manifest/route.ts`.
-
-Endpoint:
-
-```http
-GET /api/campaigns/{campaignId}/diamond-manifest
-Authorization: Bearer <supabase-access-token>
-```
-
-This endpoint can return address point manifests, backend vector tile URL templates, and PMTiles metadata. However, iOS currently has `diamondPMTilesRenderingEnabled = false` in `MapFeaturesService.swift`, so the production-equivalent Android path should render backend GeoJSON buildings and addresses first.
-
-Android can add manifest/PMTiles support later, but it should not be required for parity with the current iOS app.
-
-## Linking Model
-
-There are three linking layers Android needs to understand:
-
-1. Backend canonical/persisted links.
-2. Manual links.
-3. Optional client-generated links.
-
-### Backend Auto-Linking
-
-Backend sources:
-
-- `app/api/campaigns/provision/route.ts`
-- `StableLinkerService.ts`
-
-The stable linker uses a tiered matching strategy:
-
-- Direct building containment plus street verification.
-- Parcel bridge.
-- Point-on-surface.
-- Proximity plus semantic matching.
-- Fallback nearest candidate.
-
-Provisioning writes building/address links into persisted tables and enriches building GeoJSON with:
-
-- `address_id`
-- `address_ids`
-- `address_text`
-- `house`
-- `street`
-- `confidence`
-- `match_method`
-- `is_linked`
-- `address_count`
-
-Android display code should prefer these server-enriched properties when present.
-
-### Manual Links
-
-Manual links represent user-corrected address/building relationships. The backend and local cache protect them from being overwritten by auto-linking.
-
-Android rules:
-
-- Never overwrite a manual link with an auto/client-generated link.
-- When editing links locally, persist the manual link through the same backend/local contracts used by the app's manual linking feature.
-- After manual changes, refresh buildings/addresses so enriched properties match the latest link state.
-
-### Client-Generated Links
-
-iOS source:
-
-- `MapFeaturesService.scheduleClientLinkingIfReady`
-- `MapFeaturesService.applyClientLinks`
-- `BuildingLinkService.publishClientGeneratedLinks`
-- Backend: `app/api/campaigns/[campaignId]/client-links/route.ts`
-
-Endpoint:
-
-```http
-POST /api/campaigns/{campaignId}/client-links
-Authorization: Bearer <supabase-access-token>
-Content-Type: application/json
-```
-
-Payload:
-
-```json
-{
-  "links": [
-    {
-      "address_id": "address-uuid",
-      "building_gers_id": "building-gers-id",
-      "confidence": 0.87,
-      "match_source": "client_auto"
-    }
-  ]
-}
-```
-
-Backend behavior:
-
-- Authenticates user and campaign/workspace access.
-- Caps payloads to protect the endpoint.
-- Verifies addresses belong to the campaign.
-- Skips manual links.
-- Writes `building_gers_id`, `match_source = client_auto`, and confidence onto campaign addresses.
-
-Android does not need client linking for initial parity if backend links are present. If Android implements it, use the endpoint above and keep generated links separate from manual links in local cache.
-
-## Map Display Contract
-
-iOS display sources:
-
-- `CampaignMapView.swift`
-- `MapFeaturesService.swift`
-- `MapLayerManager.swift`
-- `BuildingLinkModels.swift`
-
-Primary Android rendering path:
-
-1. Fetch campaign metadata.
-2. Resolve `map_mode`, but default to GeoJSON building display.
-3. Fetch buildings and addresses.
-4. Render building polygons/extrusions when building features exist.
-5. Render address points/labels in address mode or edit mode.
-6. Render parcels and roads when available.
-7. Apply selected/highlight/visited/scanned state.
-
-Although `map_mode` may be `standard_pins`, iOS currently disables the standard pins renderer and still relies on the Mapbox GeoJSON route. Android should support address-only fallback for low-quality building links, but the first implementation should prioritize the GeoJSON building/address layer path.
-
-### Display Modes
-
-iOS has two primary campaign map modes:
-
-- Building mode.
-- Address mode.
-
-Behavior to mirror:
-
-- Building mode shows building polygons/extrusions.
-- Address mode shows address points more prominently.
-- In building mode, address layer is hidden unless edit/linking mode needs it.
-- If no building features exist but addresses do, Android should render address proxy markers/polygons instead of showing a blank map.
-
-### Layers
-
-Mapbox source/layer names in iOS are in `MapLayerManager.swift`. Android names do not need to match exactly, but the layer responsibilities should.
-
-| Layer responsibility | iOS source/layer concept |
-| --- | --- |
-| Building GeoJSON source | `buildings-source` |
-| Building extrusion/fill | `buildings-extrusion` |
-| Selected building overlay | selected building overlay layers |
-| Townhome overlay | townhome overlay layers |
-| Address point source | `campaign-address-points` |
-| Address point extrusion/fill | `campaign-address-points-extrusion` |
-| Selected address overlay | `campaign-address-points-selected-extrusion` |
-| Address number labels | address numbers source/layer |
-| Roads source/layer | `roads-source`, `roads-line` |
-| Parcels source/layers | parcel fill/line/selected layers |
-
-### Status Colors
-
-iOS status color logic is in `BuildingLinkModels.swift`.
-
-Android should preserve these meanings:
+Android should preserve the same display meanings:
 
 | State | Display intent |
 | --- | --- |
@@ -751,130 +516,196 @@ Android should preserve these meanings:
 | Hot lead / lead / appointment / future seller | Gold. |
 | Visited | Green. |
 | Default / not visited | Red. |
+| Orphan/unlinked | Gray or subdued. |
 | Selected/highlighted | Selected overlay or feature-state style. |
 
-Feature state updates should affect buildings, addresses, parcels, and any Diamond/vector layers Android later supports.
+Feature state updates should affect buildings, addresses, parcels, and future vector/PMTiles layers if Android adds them later.
 
-### Session Targets
+## Client Linking
 
-iOS target resolution lives in `MapFeaturesService.CampaignTargetResolver`.
+Android should not run client linking when `links_status` is `fresh` or `stale_reused` and the returned features already contain linked address identity.
 
-Rules to mirror:
+Run client linking only if:
 
-- Prefer building targets when buildings exist and building mode is active.
-- For flyer/address workflows, prefer address points.
-- If a building maps cleanly to a single address, Android may use the building centroid as a target fallback.
-- Coordinates should come from point geometry when available, otherwise from polygon centroid.
+- `links_status = "client_fallback_required"`, or
+- the cached bundle has buildings and addresses but no linked address identity, or
+- Android is in a manual repair/edit flow.
 
-## Offline And Cache Behavior
+If Android implements client linking:
 
-iOS offline source: `CampaignRepository.swift`.
+- Keep generated links separate from manual links.
+- Do not overwrite manual links.
+- Publish generated links to the backend client-links endpoint if parity with iOS client fallback is required.
+- Refresh `/map-bundle` after publishing so future clients hydrate from canonical state.
 
-Android should cache enough data to open a campaign session without network once it has been loaded successfully.
+For initial parity, rendering bundle links correctly is more important than implementing a full Android client linker.
 
-Cache these campaign-level records:
+## Legacy Fallback And Debug Endpoints
 
-- Campaign metadata.
-- Building GeoJSON features.
-- Address GeoJSON/features.
-- Building/address links.
-- Client-generated links if Android creates them.
-- Roads.
-- Parcels where available.
-- Provision metadata needed to decide whether the map is usable.
+These endpoints still exist and are useful for debugging, partial fallback, or client-fallback repair. They are not the primary Android map load path.
 
-iOS reconstructs an offline campaign map bundle from cached records and merges links back into features. Android should do the same: the cache should be render-ready, not just raw fragments.
+### Buildings Debug/Fallback
 
-Offline behavior:
+```http
+GET /api/campaigns/{campaignId}/buildings
+Authorization: Bearer <supabase-access-token>
+```
 
-- If online, fetch fresh data and update cache.
-- If offline and cached bundle exists, open the campaign from cache.
-- If offline and no cached map bundle exists, block the session with a clear reason.
-- Do not mark a failed/empty online provision as successful just to allow offline mode.
+Optional retry:
+
+```http
+GET /api/campaigns/{campaignId}/buildings?cache=bypass
+Authorization: Bearer <supabase-access-token>
+```
+
+Use only when:
+
+- no local bundle exists,
+- `/map-bundle` failed online,
+- Android needs a temporary visual fallback,
+- or debugging backend building output.
+
+### Addresses Debug/Fallback
+
+```http
+GET /api/campaigns/{campaignId}/addresses
+Authorization: Bearer <supabase-access-token>
+```
+
+Use only when bundle addresses are missing and Android needs an address-only fallback.
+
+### Parcels Debug/Fallback
+
+```http
+GET /api/campaigns/{campaignId}/parcels
+Authorization: Bearer <supabase-access-token>
+```
+
+Use only when bundle parcels are missing and parcel display/debugging is needed.
+
+### Roads Debug/Fallback
+
+Roads are included in the map bundle. If Android has an existing campaign road service, it can still fetch roads separately for GPS/session recovery, but campaign map rendering should prefer `bundle.roads`.
+
+### Diamond Manifest / PMTiles
+
+```http
+GET /api/campaigns/{campaignId}/diamond-manifest
+Authorization: Bearer <supabase-access-token>
+```
+
+Android can add PMTiles/vector rendering later. For parity with the current iOS flow, map-bundle GeoJSON is the required path. If a Diamond manifest says buildings render as `map_bundle`, Android must use the canonical bundle buildings.
+
+## Session Start And Offline Gating
+
+Online gating:
+
+- Fetch campaign session gate metadata.
+- If `provision_status = "failed"`, block with retry/support messaging.
+- If `provision_status != "ready"`, block with `Campaign is still provisioning`.
+- If ready, open and load bundle/cache.
+
+Offline gating:
+
+- If cached map bundle exists, allow session start.
+- If explicit offline download state says ready, allow session start.
+- Otherwise block with: `This campaign is not stored on this device yet. Reconnect for a moment so FLYR can prepare the area automatically, then try again.`
+
+Do not mark a failed/empty online provision as successful just to allow offline mode.
 
 ## Error Handling And Edge Cases
-
-Android should explicitly handle these states:
 
 | State | Android behavior |
 | --- | --- |
 | Polygon has fewer than 3 unique points | Keep user in drawing flow and show validation. |
-| Campaign shell create fails | Do not call boundary/provision; allow retry. |
-| Boundary upload fails | Keep campaign draft; allow retry from the same polygon. |
-| Provision returns `202`/accepted/pending | Start polling; show provisioning progress. |
-| Provision status stays `pending` | Keep polling with backoff and allow user to leave/reopen campaign. |
-| Provision status `failed` | Stop polling; show backend message/error and retry option. |
-| Unsupported region `422` | Show unsupported region message; do not retry automatically. |
-| Buildings endpoint empty | Retry with cache bypass; then fall back to address display if addresses exist. |
-| Addresses endpoint empty | Continue if buildings exist; otherwise show map-data-not-ready state. |
-| `linking_failed` phase | Still allow map display if status is `ready`; use address/building proxies as needed. |
-| Low `building_link_confidence` | Prefer hybrid/address fallback UI; do not block campaign. |
-| Auth `401` | Refresh session or send user to sign in. |
-| Access `403` | Show no-access state; do not mutate local campaign. |
+| Campaign shell create fails | Do not upload boundary or provision; allow retry. |
+| Boundary upload fails | Keep campaign draft and polygon; allow retry. |
+| Provision returns accepted/pending | Show loading page, persist tracking, poll state. |
+| Provision stays pending | Keep polling while visible; resume after foreground/reopen. |
+| Provision failed | Stop polling, show backend message/error, keep retry path. |
+| Unsupported region `422` | Show unsupported region message; do not fabricate local data. |
+| First online bundle load `200` | Persist atomically, render bundle. |
+| Cached first draw | Render local bundle immediately before network refresh. |
+| Bundle `304` | Keep local bundle; do not clear or rewrite features. |
+| Stale bundle | Draw local data, refresh `/map-bundle` in background. |
+| `client_fallback_required` | Render available data, optionally run Android client linker. |
+| Bundle has no buildings but has addresses | Start address mode and render address proxies. |
 | Offline with cache | Open cached bundle. |
-| Offline without cache | Block session with clear offline-cache-missing reason. |
+| Offline without cache | Block session with clear explanation. |
+| Cancel before campaign ID | Cancel local tasks and dismiss creation flow. |
+| Cancel after campaign ID | Delete campaign, remove local store/tracked state, dismiss. |
+| Cancel delete failure | Stay on loading page and show cancel error. |
+| Ready reveal | On 100 percent, reveal campaign map/territory then continue to the new campaign. |
+| Auth `401` | Refresh session or route to sign-in without corrupting cache. |
+| Access `403` | Show no-access; do not mutate local campaign. |
+| Manual link exists | Bundle/client-generated links do not overwrite it. |
 
 ## Android Implementation Checklist
 
-Creation:
+Creation/loading:
 
-- Implement polygon drawing, vertex editing, close-ring behavior, and validation.
-- Serialize GeoJSON polygons as `[longitude, latitude]`.
-- Create the campaign shell with `addressSource = map`, `addressTargetCount = 0`, and `addressesJSON = []`.
-- Upload `territory_boundary`, uppercase region, and bbox.
+- Implement polygon drawing, close-ring behavior, and validation.
+- Create campaign shell with map address source and empty address list.
+- Upload boundary, region, and bbox before provisioning.
 - POST `/api/campaigns/provision`.
-- Handle accepted/pending/ready/failed/422 responses.
-- Poll provision state until map usable.
+- Show the full-screen loading page with progress/activity text.
+- Persist tracked background provisioning state.
+- Implement destructive Cancel before and after campaign ID exists.
+- Poll provision state until map usable or failed.
+- Trigger ready reveal at 100 percent.
 
-Fetching:
+Map bundle:
 
-- Normalize API base URL from config.
+- Normalize backend API base URL from config.
 - Attach Supabase bearer token to every backend request.
-- Fetch buildings with cache-bypass retry on empty/non-polygon response.
-- Fetch addresses and de-duplicate for display.
-- Fetch parcels/roads as non-blocking enhancements.
-- Cache all successful map data.
+- Fetch `/api/campaigns/{id}/map-bundle` after provision is map usable.
+- Pass `?signature=<asset_signature>` for cached refreshes.
+- Handle `200`, `304`, `401`, `403`, network failure, and server failure.
+- Persist `200` bundles atomically.
+- Draw cached bundle first on repeat opens.
+- Respect `expires_at` as local staleness metadata, but trust server `304` when validating.
 
 Display:
 
-- Render building polygons/extrusions first.
-- Render address points/labels in address/edit/fallback modes.
-- Render roads/parcels when available.
-- Apply status colors and selected feature state.
-- Avoid blank maps by falling back to address proxies when buildings are unavailable.
+- Render bundle buildings, addresses, parcels, and roads.
+- Apply bundle links to feature state/properties.
+- Use `display_mode_hint` for initial building/address mode.
+- Avoid blank maps by falling back to address mode when buildings are unavailable.
+- Apply status colors and selected/highlighted feature state.
+- Keep road data available even if visual road overlay is hidden.
 
-Linking:
+Linking/offline:
 
-- Prefer backend-enriched links.
-- Preserve manual links.
-- Optionally run client linker and publish generated links to `/client-links`.
-- Refresh map features after manual or generated link updates.
-
-Offline:
-
-- Save render-ready campaign bundles.
-- Rehydrate buildings, addresses, links, roads, and parcels from cache.
-- Block offline sessions only when no usable cached bundle exists.
+- Prefer backend bundle links.
+- Preserve manual links over generated links.
+- Run client linking only for `client_fallback_required` or explicit repair flows.
+- Save render-ready campaign bundles for offline use.
+- Allow offline sessions only when a usable cached bundle/download exists.
 
 ## Test Matrix
 
 | Scenario | Expected result |
 | --- | --- |
-| Polygon campaign happy path | Shell create succeeds, boundary uploads, provision accepted, polling reaches map usable, buildings/addresses render. |
-| Async provision | Backend returns accepted/pending; Android shows progress and continues polling after leaving/reopening screen. |
-| Immediate provision ready | Android skips unnecessary waiting and fetches map data. |
-| Unsupported region | Android shows unsupported region error and does not fabricate map data. |
-| Provision failed | Android shows backend error/message and retry path. |
-| Buildings empty once | Android retries with `?cache=bypass`. |
-| Buildings empty but addresses present | Android renders address fallback/proxies. |
-| `linking_failed` with ready status | Android opens map using available features. |
-| Low link confidence | Android still opens campaign and favors address/hybrid fallback UI. |
+| Polygon campaign happy path | Shell create succeeds, boundary uploads, provision reaches map usable, `/map-bundle` returns `200`, bundle renders. |
+| Async provision | Loading page persists progress and resumes after leaving/reopening app. |
+| Immediate provision ready | Android skips unnecessary waiting and fetches map bundle. |
+| First online bundle load | `200` bundle is atomically cached and rendered. |
+| Cached first draw | Cached bundle renders before network refresh. |
+| Bundle `304` | Android keeps local cache unchanged and continues rendering. |
+| Stale bundle refresh | Android draws stale cache, fetches bundle, replaces cache on `200`. |
+| `client_fallback_required` | Android renders available bundle and runs/link-repair fallback only if implemented. |
 | Offline after prior successful load | Android opens cached map bundle. |
-| Offline before map cache exists | Android blocks campaign session with clear explanation. |
-| Auth expired | Android refreshes session or routes to sign-in without corrupting campaign state. |
+| Offline before map cache exists | Android blocks session with clear offline-cache-missing message. |
+| Cancel before campaign ID | Local tasks cancel and creation screen dismisses. |
+| Cancel after campaign ID | Campaign deletes, local/tracked state clears, screen dismisses. |
+| Cancel delete failure | Loading page remains visible and shows cancel error. |
+| Provision failed | Android shows backend message/error and retry path. |
+| Ready reveal | Progress hits 100, reveal runs, then app opens/returns to new campaign. |
+| Unsupported region | Android shows unsupported region error and does not fabricate map data. |
+| Auth expired | Android refreshes session or routes to sign-in without corrupting cached bundle. |
 | Workspace shared campaign | Android respects backend access and displays if authorized. |
-| Manual link exists | Auto/client-generated linking does not overwrite it. |
-| Visit/status update | Building/address colors update for visited, QR scanned, lead, appointment, selected. |
+| Manual link exists | Auto/client-generated links do not overwrite it. |
+| Visit/status update | Building/address/parcel colors update for visited, QR scanned, lead, appointment, selected. |
 
 ## Minimal Android Pseudocode
 
@@ -882,9 +713,9 @@ Offline:
 suspend fun createPolygonCampaign(input: CampaignInput, polygon: List<LatLng>): Campaign {
     require(uniquePointCount(polygon) >= 3)
 
-    val region = inferOrSelectRegion(polygon).uppercase()
-    val geoJson = polygon.toClosedGeoJsonLonLat()
-    val bbox = geoJson.computeBbox()
+    val region = inferOrSelectRegion(polygon)?.uppercase()
+    val boundary = polygon.toClosedGeoJsonLonLat()
+    val bbox = boundary.computeBbox()
 
     val campaign = campaignRepository.createShell(
         name = input.name.ifBlank { "Untitled Campaign" },
@@ -897,36 +728,95 @@ suspend fun createPolygonCampaign(input: CampaignInput, polygon: List<LatLng>): 
         workspaceId = input.workspaceId
     )
 
+    provisionTracker.track(
+        campaignId = campaign.id,
+        campaignName = campaign.name,
+        progressPercent = 5,
+        activityText = "Creating campaign"
+    )
+
     campaignRepository.updateTerritoryBoundary(
         campaignId = campaign.id,
-        territoryBoundary = geoJson,
+        territoryBoundary = boundary,
         region = region,
         bbox = bbox
     )
 
-    val provision = backend.provisionCampaign(campaign.id)
+    backend.provisionCampaign(campaign.id)
 
-    if (provision.isAcceptedOrPending || provision.isReady) {
-        waitUntilMapUsable(campaign.id)
-    } else {
-        throw CampaignProvisionException(provision.message)
-    }
-
-    val buildings = backend.fetchBuildings(campaign.id).retryWithCacheBypassIfEmpty()
-    val addresses = backend.fetchAddresses(campaign.id)
-    val parcels = backend.fetchParcelsOrNull(campaign.id)
-    val roads = backend.fetchRoadsOrNull(campaign.id)
-
-    val bundle = CampaignMapBundle(
-        campaign = campaignRepository.refreshCampaign(campaign.id),
-        buildings = buildings,
-        addresses = addresses.deduped(),
-        parcels = parcels,
-        roads = roads
+    val state = campaignRepository.pollProvisionUntilMapUsable(
+        campaignId = campaign.id,
+        intervalSeconds = 2,
+        onProgress = { provisionTracker.update(it.toAndroidProgress()) }
     )
 
-    campaignCache.save(bundle)
-    return bundle.campaign
+    if (state.isFailed) {
+        throw CampaignProvisionException(state.messageOrError)
+    }
+
+    val bundle = backend.fetchMapBundle(
+        campaignId = campaign.id,
+        cachedSignature = null
+    )
+
+    mapBundleCache.replaceAtomically(
+        campaignId = campaign.id,
+        bundle = bundle,
+        preserveManualLinks = true
+    )
+
+    provisionTracker.updateReady(campaign.id)
+    return campaignRepository.refreshCampaign(campaign.id)
+}
+
+suspend fun openCampaignMap(campaignId: UUID): CampaignMapBundle {
+    val cached = mapBundleCache.read(campaignId)
+
+    if (cached != null) {
+        mapRenderer.render(cached)
+        if (!network.isOnline()) return cached
+    } else if (!network.isOnline()) {
+        throw OfflineCampaignNotCachedException()
+    }
+
+    val response = backend.fetchMapBundleResponse(
+        campaignId = campaignId,
+        cachedSignature = cached?.assetSignature
+    )
+
+    return when (response) {
+        is BundleResponse.NotModified -> cached ?: throw MissingBundleAfter304Exception()
+        is BundleResponse.Bundle200 -> {
+            mapBundleCache.replaceAtomically(
+                campaignId = campaignId,
+                bundle = response.bundle,
+                preserveManualLinks = true
+            )
+            mapRenderer.render(response.bundle)
+            response.bundle
+        }
+    }
+}
+
+suspend fun cancelCampaignCreation(activeCampaignId: UUID?) {
+    campaignCreationJob?.cancel()
+    provisionJob?.cancel()
+
+    if (activeCampaignId == null) {
+        provisionTracker.clear()
+        navigation.dismissCreation()
+        return
+    }
+
+    try {
+        campaignRepository.deleteCampaign(activeCampaignId)
+        localCampaignStore.remove(activeCampaignId)
+        mapSelection.clearIfSelected(activeCampaignId)
+        provisionTracker.clear(activeCampaignId)
+        navigation.dismissCreation()
+    } catch (error: Throwable) {
+        loadingUi.showCancelError("Could not cancel campaign setup: ${error.message}")
+    }
 }
 ```
 
@@ -936,7 +826,8 @@ For first parity, Android should behave like current iOS:
 
 - Territory polygon is the creation input.
 - Supabase stores the campaign shell and provision metadata.
-- Backend provisioning creates addresses, buildings, snapshots, and links.
-- Android renders backend GeoJSON buildings/addresses first.
-- PMTiles/Diamond manifest support is optional future work, not required for current parity.
-- Offline sessions depend on a previously cached render-ready campaign bundle.
+- Backend provisioning creates addresses, buildings, roads, parcels, snapshots, and links.
+- Android shows the campaign creation loading page with cancellable background provisioning.
+- Android renders and caches `GET /api/campaigns/{campaignId}/map-bundle` first.
+- Legacy per-layer endpoints are fallback/debug tools, not the normal map path.
+- Offline sessions depend on a previously cached render-ready campaign map bundle.

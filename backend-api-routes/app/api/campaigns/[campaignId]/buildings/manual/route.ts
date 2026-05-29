@@ -1,5 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
+import { invalidateCampaignMapBundle } from "@/lib/services/CampaignMapBundleInvalidation";
 
 const SUPABASE_URL = process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY ?? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
@@ -171,6 +172,8 @@ export async function POST(request: Request, context: RouteContext): Promise<Res
           console.warn("[manual-building] fallback address sync warning:", syncError);
         }
 
+        await invalidateCampaignMapBundle(supabase, campaignId);
+
         return NextResponse.json({
           building: {
             id: publicBuildingId,
@@ -255,6 +258,8 @@ export async function POST(request: Request, context: RouteContext): Promise<Res
         console.warn("[manual-building] address sync warning:", syncError);
       }
     }
+
+    await invalidateCampaignMapBundle(supabase, campaignId);
 
     return NextResponse.json({
       building: {

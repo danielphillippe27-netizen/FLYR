@@ -1,6 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
 import { StableLinkerService } from "@/lib/services/StableLinkerService";
+import { invalidateCampaignMapBundle } from "@/lib/services/CampaignMapBundleInvalidation";
 import { resolveCampaignBuilding } from "@/app/api/campaigns/_utils/resolve-campaign-building";
 
 const SUPABASE_URL = process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL!;
@@ -346,6 +347,8 @@ export async function POST(request: Request, context: RouteContext): Promise<Res
         }
       }
     }
+
+    await invalidateCampaignMapBundle(supabase, campaignId);
 
     return NextResponse.json({
       address: responseAddress,

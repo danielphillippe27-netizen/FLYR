@@ -422,13 +422,14 @@ final class BuildingLinkService {
         return .bundle(bundle)
     }
 
-    /// Publishes locally generated auto-links back to the campaign so other clients can hydrate
-    /// from campaign_addresses.building_gers_id without running the linker again.
+    /// Publishes locally generated auto-links for debug/manual repair clients only.
     func publishClientGeneratedLinks(
         campaignId: String,
         links: [ClientBuildingAddressLink],
         assetSignature: String
     ) async throws {
+        // DISABLED in production. See: flyr-linking-restructure task 3
+        #if DEBUG
         guard !links.isEmpty else { return }
         guard let url = URL(string: "\(baseURL)/api/campaigns/\(campaignId)/client-links") else {
             throw BuildingLinkError.invalidURL
@@ -450,6 +451,9 @@ final class BuildingLinkService {
         let (responseData, response) = try await authorizedDataRequest(url: url, method: "POST", body: data)
         try ensureSuccessfulResponse(response, data: responseData)
         print("☁️ [BuildingLinkService] Published \(links.count) client-generated campaign links")
+        #else
+        return
+        #endif
     }
 
     private static func decodeAddressFeatureCollection(from data: Data) throws -> AddressFeatureCollection {

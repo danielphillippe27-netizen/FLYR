@@ -1157,7 +1157,7 @@ final class MapFeaturesService: ObservableObject {
             self.buildings = BuildingFeatureCollection(type: "FeatureCollection", features: [])
         }
 
-        let cachedBundleLinksFresh = cachedBundleMetadata?.linksStatus == "fresh"
+        let cachedBundleLinksFresh = Self.canonicalLinksAreFresh(cachedBundleMetadata?.linksStatus)
         let cachedBundleCanSkipLegacyGeoJSON = loadedCachedFirstDrawBundle
             && cachedBundleIsFresh
             && cachedBundleLinksFresh
@@ -1394,8 +1394,9 @@ final class MapFeaturesService: ObservableObject {
         storeCurrentFeatureSnapshot(campaignId: campaignId)
     }
 
-    private enum CanonicalBundleTimedResult {
-        case loaded(Bool)
+    private enum CanonicalBundleTimedResult: Sendable {
+        case fetched(CampaignMapBundleFetchResult)
+        case failed(String)
         case timedOut
     }
 
@@ -1450,15 +1451,20 @@ final class MapFeaturesService: ObservableObject {
     ) async -> Bool {
         if let timeoutNanoseconds {
             return await withTaskGroup(of: CanonicalBundleTimedResult.self) { group in
-                group.addTask { [weak self] in
-                    guard let self else { return .loaded(false) }
-                    let loaded = await self.fetchCanonicalCampaignMapBundleOnce(
-                        campaignId: campaignId,
-                        requestId: requestId,
-                        localSignature: localSignature,
-                        startedAt: debugStartedAt
-                    )
-                    return .loaded(loaded)
+                group.addTask {
+                    guard NetworkMonitor.shared.isOnline else {
+                        return .failed("offline")
+                    }
+
+                    do {
+                        let result = try await BuildingLinkService.shared.fetchCanonicalCampaignMapBundle(
+                            campaignId: campaignId,
+                            localSignature: localSignature
+                        )
+                        return .fetched(result)
+                    } catch {
+                        return .failed(error.localizedDescription)
+                    }
                 }
                 group.addTask {
                     try? await Task.sleep(nanoseconds: timeoutNanoseconds)
@@ -1471,8 +1477,20 @@ final class MapFeaturesService: ObservableObject {
                 }
                 group.cancelAll()
                 switch first {
-                case .loaded(let loaded):
-                    return loaded
+                case .fetched(let result):
+                    return await self.persistAndApplyCanonicalCampaignMapBundleResult(
+                        result,
+                        campaignId: campaignId,
+                        requestId: requestId,
+                        startedAt: debugStartedAt
+                    )
+                case .failed(let errorDescription):
+                    guard self.isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else { return false }
+                    print(
+                        "🧪 [MAP_DEBUG] canonical_map_bundle_failed campaign=\(campaignId) " +
+                        "ms=\(Int(Date().timeIntervalSince(debugStartedAt) * 1000)) error=\(errorDescription)"
+                    )
+                    return false
                 case .timedOut:
                     print(
                         "🧪 [MAP_DEBUG] canonical_map_bundle_timeout campaign=\(campaignId) " +
@@ -1504,36 +1522,12 @@ final class MapFeaturesService: ObservableObject {
                 campaignId: campaignId,
                 localSignature: localSignature
             )
-            guard isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else { return false }
-
-            switch result {
-            case .notModified:
-                print(
-                    "🧪 [MAP_DEBUG] canonical_map_bundle_304 campaign=\(campaignId) " +
-                    "ms=\(Int(Date().timeIntervalSince(debugStartedAt) * 1000)) action=keep_local_cache"
-                )
-                return true
-            case .bundle(let bundle):
-                let bundleToApply = await bundlePreservingLocalBuildingsIfNeeded(
-                    bundle,
-                    campaignId: campaignId
-                )
-                let persisted = await campaignRepository.replaceCampaignMapBundle(
-                    campaignId: campaignId,
-                    bundle: bundleToApply
-                )
-                guard persisted,
-                      isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else {
-                    return false
-                }
-                await applyCanonicalCampaignMapBundle(bundleToApply, campaignId: campaignId, requestId: requestId)
-                print(
-                    "🧪 [MAP_DEBUG] canonical_map_bundle_200 campaign=\(campaignId) " +
-                    "ms=\(Int(Date().timeIntervalSince(debugStartedAt) * 1000)) " +
-                    "signature=\(bundleToApply.assetSignature) linksStatus=\(bundleToApply.linksStatus ?? "unknown")"
-                )
-                return true
-            }
+            return await persistAndApplyCanonicalCampaignMapBundleResult(
+                result,
+                campaignId: campaignId,
+                requestId: requestId,
+                startedAt: debugStartedAt
+            )
         } catch {
             guard isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else { return false }
             print(
@@ -1541,6 +1535,45 @@ final class MapFeaturesService: ObservableObject {
                 "ms=\(Int(Date().timeIntervalSince(debugStartedAt) * 1000)) error=\(error.localizedDescription)"
             )
             return false
+        }
+    }
+
+    @discardableResult
+    private func persistAndApplyCanonicalCampaignMapBundleResult(
+        _ result: CampaignMapBundleFetchResult,
+        campaignId: String,
+        requestId: UUID?,
+        startedAt debugStartedAt: Date
+    ) async -> Bool {
+        guard isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else { return false }
+
+        switch result {
+        case .notModified:
+            print(
+                "🧪 [MAP_DEBUG] canonical_map_bundle_304 campaign=\(campaignId) " +
+                "ms=\(Int(Date().timeIntervalSince(debugStartedAt) * 1000)) action=keep_local_cache"
+            )
+            return true
+        case .bundle(let bundle):
+            let bundleToApply = await bundlePreservingLocalBuildingsIfNeeded(
+                bundle,
+                campaignId: campaignId
+            )
+            let persisted = await campaignRepository.replaceCampaignMapBundle(
+                campaignId: campaignId,
+                bundle: bundleToApply
+            )
+            guard persisted,
+                  isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else {
+                return false
+            }
+            await applyCanonicalCampaignMapBundle(bundleToApply, campaignId: campaignId, requestId: requestId)
+            print(
+                "🧪 [MAP_DEBUG] canonical_map_bundle_200 campaign=\(campaignId) " +
+                "ms=\(Int(Date().timeIntervalSince(debugStartedAt) * 1000)) " +
+                "signature=\(bundleToApply.assetSignature) linksStatus=\(bundleToApply.linksStatus ?? "unknown")"
+            )
+            return true
         }
     }
 
@@ -1731,6 +1764,10 @@ final class MapFeaturesService: ObservableObject {
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             return addressId?.isEmpty == false
         }) == true
+    }
+
+    private static func canonicalLinksAreFresh(_ status: String?) -> Bool {
+        status == "ok" || status == "fresh"
     }
 
     @discardableResult
@@ -2524,6 +2561,10 @@ final class MapFeaturesService: ObservableObject {
             }
 
             guard !Task.isCancelled, NetworkMonitor.shared.isOnline, !summary.links.isEmpty else { return }
+            // Client links are local-render-only in production.
+            // Canonical links are written exclusively by the backend provision linker.
+            // See: flyr-linking-restructure task 3
+            #if DEBUG
             do {
                 try await BuildingLinkService.shared.publishClientGeneratedLinks(
                     campaignId: campaignId,
@@ -2533,6 +2574,7 @@ final class MapFeaturesService: ObservableObject {
             } catch {
                 print("⚠️ [MapFeatures] Failed to publish client generated links: \(error.localizedDescription)")
             }
+            #endif
         }
     }
 

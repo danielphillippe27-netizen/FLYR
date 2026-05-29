@@ -161,6 +161,13 @@ export async function POST(request: Request, context: RouteContext): Promise<Res
       .map(normalizeLink)
       .filter((link): link is NonNullable<ReturnType<typeof normalizeLink>> => link !== null);
 
+    // DEPRECATED: client link publishing is disabled in production iOS builds.
+    // Retained for debug builds and manual repair only.
+    console.warn('client-links publish received - should only occur in debug builds', {
+      campaignId,
+      linkCount: links.length,
+    });
+
     if (links.length === 0) {
       return NextResponse.json({ campaign_id: campaignId, saved: 0, skipped: 0 });
     }
@@ -194,6 +201,8 @@ export async function POST(request: Request, context: RouteContext): Promise<Res
     let saved = 0;
     let skippedForUuidSchema = 0;
     let externalTextIdsUnsupported = false;
+    const clientLinkedAt = new Date();
+    const clientLinkExpiresAt = new Date(clientLinkedAt.getTime() + 24 * 60 * 60 * 1000);
     for (const link of acceptedLinks) {
       if (externalTextIdsUnsupported && !isUuid(link.buildingId)) {
         skippedForUuidSchema += 1;
@@ -206,6 +215,8 @@ export async function POST(request: Request, context: RouteContext): Promise<Res
           building_gers_id: link.buildingId,
           match_source: 'client_auto',
           confidence: link.confidence,
+          client_linked_at: clientLinkedAt.toISOString(),
+          client_link_expires_at: clientLinkExpiresAt.toISOString(),
         })
         .eq('campaign_id', campaignId)
         .eq('id', link.addressId)

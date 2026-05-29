@@ -926,6 +926,7 @@ export class ParcelEnrichmentService {
             geometry: parcel.geometry,
           })),
           resetExisting: true,
+          resetBuildingAddressLinks: false,
           persistenceMode: 'external',
         }
       );
@@ -974,6 +975,7 @@ export class ParcelEnrichmentService {
           geometry: parcel.geometry,
         })),
         resetExisting: true,
+        resetBuildingAddressLinks: false,
         persistenceMode: 'external',
       }
     );
@@ -1039,6 +1041,11 @@ export class ParcelEnrichmentService {
       };
     }
 
+    // NOTE: TownhouseSplitterService now runs as part of the canonical provision
+    // linker pipeline. This call is retained for manual parcel enrichment passes
+    // (e.g. re-enrichment after parcel geometry updates) but is no longer the
+    // primary execution path.
+    // See: flyr-linking-restructure task 6
     const splitter = new TownhouseSplitterService(this.supabase);
     await splitter.processCampaignTownhouses(
       campaignId,
@@ -1159,6 +1166,7 @@ export class ParcelEnrichmentService {
     await this.supabase
       .from('campaigns')
       .update({
+        has_parcels: status === 'ready' && (options.parcelCount ?? 0) > 0,
         parcel_enrichment_status: status,
         parcel_source_id: options.sourceId ?? null,
         parcel_count: options.parcelCount ?? 0,

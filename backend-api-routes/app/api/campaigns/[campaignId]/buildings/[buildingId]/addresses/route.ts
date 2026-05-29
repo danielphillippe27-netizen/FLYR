@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { StableLinkerService } from "@/lib/services/StableLinkerService";
+import { invalidateCampaignMapBundle } from "@/lib/services/CampaignMapBundleInvalidation";
 import { isUuid, resolveCampaignBuilding } from "@/app/api/campaigns/_utils/resolve-campaign-building";
 import { createAdminClient } from "@/lib/supabase/server";
 
@@ -362,6 +363,8 @@ export async function POST(request: Request, context: RouteContext) {
           coordinate,
         });
 
+    await invalidateCampaignMapBundle(supabase, campaignId);
+
     return NextResponse.json({
       linked: true,
       address_id: addressId,
@@ -433,6 +436,8 @@ export async function DELETE(request: Request, context: RouteContext) {
       buildingPublicId: resolvedBuilding.publicId,
       deleteManualAddress,
     });
+
+    await invalidateCampaignMapBundle(supabase, campaignId);
 
     return NextResponse.json({
       unlinked: true,

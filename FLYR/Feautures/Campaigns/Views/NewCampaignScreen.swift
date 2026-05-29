@@ -47,7 +47,6 @@ struct NewCampaignScreen: View {
     @State private var isCancellingProvision = false
     @State private var cancelProvisionError: String?
     @State private var hasLoadedResumedCampaign = false
-    @State private var readyRevealCompleted = false
     @State private var hasRegisteredCreationPresentation = false
     @State private var campaignCreationTask: Task<Void, Never>?
     @State private var provisioningTask: Task<Void, Never>?
@@ -140,17 +139,6 @@ struct NewCampaignScreen: View {
         cancelProvisionError ?? createHook.error
     }
 
-    private var creatingRevealPolygon: [CLLocationCoordinate2D] {
-        if let drawnPolygon, drawnPolygon.count >= 3 {
-            return drawnPolygon
-        }
-        if uiState.selectedMapCampaignId == activeCreatingCampaignId,
-           uiState.selectedMapCampaignBoundaryCoordinates.count >= 3 {
-            return uiState.selectedMapCampaignBoundaryCoordinates
-        }
-        return []
-    }
-
     private var territoryHelperText: String {
         if !hasDrawnTerritory {
             return hasMapCenterAddress
@@ -205,14 +193,13 @@ struct NewCampaignScreen: View {
                     useDarkStyle: colorScheme == .dark,
                     progressPercent: creatingProgressPercent,
                     activityText: creatingActivityText,
-                    polygonCoordinates: creatingRevealPolygon,
                     isCancelling: isCancellingProvision,
                     errorText: creatingErrorText,
                     onCancel: {
                         Task { await cancelCampaignCreation() }
                     },
-                    onReadyRevealComplete: {
-                        Task { await completeReadyReveal() }
+                    onReady: {
+                        Task { await handleCreatingOverlayReady() }
                     }
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -296,14 +283,13 @@ struct NewCampaignScreen: View {
                     useDarkStyle: colorScheme == .dark,
                     progressPercent: creatingProgressPercent,
                     activityText: creatingActivityText,
-                    polygonCoordinates: creatingRevealPolygon,
                     isCancelling: isCancellingProvision,
                     errorText: creatingErrorText,
                     onCancel: {
                         Task { await cancelCampaignCreation() }
                     },
-                    onReadyRevealComplete: {
-                        Task { await completeReadyReveal() }
+                    onReady: {
+                        Task { await handleCreatingOverlayReady() }
                     }
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -568,13 +554,11 @@ struct NewCampaignScreen: View {
     }
 
     @MainActor
-    private func completeReadyReveal() async {
-        guard !readyRevealCompleted,
-              creationStage == .creating,
+    private func handleCreatingOverlayReady() async {
+        guard creationStage == .creating,
               let campaignId = activeCreatingCampaignId else {
             return
         }
-        readyRevealCompleted = true
 
         if detailsSaved && campaignMapDataReady {
             await openCreatedCampaign()
@@ -658,7 +642,6 @@ struct NewCampaignScreen: View {
         }
 
         creationStage = .details
-        readyRevealCompleted = false
         cancelProvisionError = nil
         provisionStatusText = "Creating campaign"
         provisionProgressPercent = 0
@@ -754,7 +737,6 @@ struct NewCampaignScreen: View {
             if campaignMapDataReady {
                 await openCreatedCampaign()
             } else {
-                readyRevealCompleted = false
                 showCampaignReadinessOverlay = false
                 withAnimation(.easeInOut(duration: 0.22)) {
                     creationStage = .creating
@@ -911,53 +893,16 @@ struct NewCampaignScreen: View {
                 workingCampaign.addressesReadyAt = state.addressesReadyAt
                 workingCampaign.mapReadyAt = state.mapReadyAt
                 workingCampaign.optimizedAt = state.optimizedAt
-
-                let dbAddressCount = (try? await CampaignsAPI.shared.fetchCampaignAddressCount(campaignId: campaignId)) ?? 0
-                let campaignAddresses = (try? await fetchCampaignAddressesWithRetry(campaignId: campaignId)) ?? []
-                workingCampaign.totalFlyers = max(
-                    workingCampaign.totalFlyers,
-                    dbAddressCount,
-                    campaignAddresses.count
-                )
                 preserveCurrentDetails(in: &workingCampaign)
                 store.update(workingCampaign)
                 createdCampaign = workingCampaign
             }
 
-            let prewarmedMapDataReadiness = await prewarmCampaignBuildingsAfterProvision(campaignId: campaignId)
-            await MapFeaturesService.shared.fetchAllCampaignFeatures(
-                campaignId: campaignId.uuidString,
-                forceRefresh: true
+            await markCampaignReadyToOpen(
+                campaignId: campaignId,
+                campaignName: createdCampaign?.name ?? campaignName
             )
-            MapFeaturesService.shared.beginDiamondManifestPrewarm(
-                campaignId: campaignId.uuidString,
-                timeoutSeconds: 90
-            )
-            let mapDataReadiness: CampaignMapDataReadiness?
-            if let prewarmedMapDataReadiness {
-                mapDataReadiness = prewarmedMapDataReadiness
-            } else {
-                mapDataReadiness = await waitForCampaignMapDataReady(campaignId: campaignId)
-            }
-
-            if let mapDataReadiness {
-                campaignMapDataReady = true
-                provisionFailed = false
-                provisionStatusText = "Campaign is ready."
-                updateProvisionProgress(100)
-                CampaignProvisionMonitor.shared.update(
-                    campaignId: campaignId,
-                    campaignName: campaignName,
-                    state: .ready,
-                    statusText: "Campaign is ready.",
-                    progressPercent: provisionProgressPercent
-                )
-                print("🗺️ [CAMPAIGN DEBUG] Background map data ready: buildings=\(mapDataReadiness.buildingCount) addresses=\(mapDataReadiness.addressCount)")
-
-                if detailsSaved && creationStage != .creating {
-                    await openCreatedCampaign()
-                }
-            }
+            startMapWarmupAfterReady(campaignId: campaignId)
         } catch {
             guard !Task.isCancelled else { return }
             #if DEBUG
@@ -1057,83 +1002,21 @@ struct NewCampaignScreen: View {
                 finalProvisionStatus = provisionState.provisionStatus
             }
 
-            var mapDataReadiness: CampaignMapDataReadiness?
             if finalProvisionStatus == .ready {
-                let dbAddressCount = (try? await CampaignsAPI.shared.fetchCampaignAddressCount(campaignId: campaign.id)) ?? 0
-                let addressesSaved = max(provisionResponse?.addressesSaved ?? 0, dbAddressCount)
+                let addressesSaved = provisionResponse?.addressesSaved ?? workingCampaign.totalFlyers
                 let buildingsSaved = provisionResponse?.buildingsSaved ?? 0
-                print("🗺️ [CAMPAIGN DEBUG] Provision result: addresses=\(addressesSaved), buildings=\(buildingsSaved), dbAddresses=\(dbAddressCount)")
-                workingCampaign.totalFlyers = max(workingCampaign.totalFlyers, addressesSaved, dbAddressCount)
+                print("🗺️ [CAMPAIGN DEBUG] Provision result: addresses=\(addressesSaved), buildings=\(buildingsSaved)")
+                workingCampaign.totalFlyers = max(workingCampaign.totalFlyers, addressesSaved)
                 preserveCurrentDetails(in: &workingCampaign)
                 store.update(workingCampaign)
                 createdCampaign = workingCampaign
-                provisionStatusText = CampaignProvisionMonitor.runningStatusText
-                updateProvisionProgress(68)
-                let addressTask = Task {
-                    (try? await fetchCampaignAddressesWithRetry(campaignId: campaign.id)) ?? []
-                }
-                let buildingTask = Task {
-                    await prewarmCampaignBuildingsAfterProvision(campaignId: campaign.id)
-                }
 
-                let campaignAddresses = await addressTask.value
                 guard !Task.isCancelled else { return }
-                if !campaignAddresses.isEmpty {
-                    workingCampaign.totalFlyers = max(workingCampaign.totalFlyers, campaignAddresses.count)
-                    preserveCurrentDetails(in: &workingCampaign)
-                    store.update(workingCampaign)
-                    createdCampaign = workingCampaign
-                    updateProvisionProgress(75)
-                }
-                let prewarmedMapDataReadiness = await buildingTask.value
-                guard !Task.isCancelled else { return }
-
-                provisionStatusText = CampaignProvisionMonitor.runningStatusText
-                updateProvisionProgress(82)
-                await MapFeaturesService.shared.fetchAllCampaignFeatures(
-                    campaignId: campaign.id.uuidString,
-                    forceRefresh: true
+                await markCampaignReadyToOpen(
+                    campaignId: campaign.id,
+                    campaignName: workingCampaign.name
                 )
-                guard !Task.isCancelled else { return }
-
-                provisionStatusText = CampaignProvisionMonitor.runningStatusText
-                updateProvisionProgress(88)
-                MapFeaturesService.shared.beginDiamondManifestPrewarm(
-                    campaignId: campaign.id.uuidString,
-                    timeoutSeconds: 90
-                )
-                print("💎 [CAMPAIGN DEBUG] Diamond/Bedrock geometry will warm in the background")
-
-                if let prewarmedMapDataReadiness {
-                    mapDataReadiness = prewarmedMapDataReadiness
-                } else {
-                    mapDataReadiness = await waitForCampaignMapDataReady(campaignId: campaign.id)
-                }
-                if let mapDataReadiness {
-                    campaignMapDataReady = true
-                    provisionStatusText = "Campaign is ready."
-                    updateProvisionProgress(100)
-                    CampaignProvisionMonitor.shared.update(
-                        campaignId: campaign.id,
-                        campaignName: workingCampaign.name,
-                        state: .ready,
-                        statusText: "Campaign is ready.",
-                        progressPercent: provisionProgressPercent
-                    )
-                    print("🗺️ [CAMPAIGN DEBUG] Map data ready: buildings=\(mapDataReadiness.buildingCount) addresses=\(mapDataReadiness.addressCount)")
-                } else {
-                    campaignMapDataReady = false
-                    provisionFailed = true
-                    provisionStatusText = "Created, but map data is still preparing."
-                    createHook.error = "Campaign created, but buildings are not ready yet. Keep this screen open or retry from campaign details."
-                    CampaignProvisionMonitor.shared.update(
-                        campaignId: campaign.id,
-                        campaignName: workingCampaign.name,
-                        state: .optimizing,
-                        statusText: CampaignProvisionMonitor.runningStatusText,
-                        progressPercent: provisionProgressPercent
-                    )
-                }
+                startMapWarmupAfterReady(campaignId: campaign.id)
             } else {
                 provisionFailed = true
                 provisionStatusText = "Created, but setup needs another try."
@@ -1180,7 +1063,7 @@ struct NewCampaignScreen: View {
         isProvisioningCampaign = false
         provisionComplete = true
 
-        if detailsSaved && campaignMapDataReady && creationStage != .creating {
+        if detailsSaved && campaignMapDataReady {
             await openCreatedCampaign()
         }
     }
@@ -1204,6 +1087,34 @@ struct NewCampaignScreen: View {
         guard status == .ready else { return false }
         guard let phase else { return true }
         return phase.isMapUsable
+    }
+
+    @MainActor
+    private func markCampaignReadyToOpen(campaignId: UUID, campaignName: String) async {
+        campaignMapDataReady = true
+        provisionFailed = false
+        provisionStatusText = "Campaign is ready."
+        updateProvisionProgress(100)
+        CampaignProvisionMonitor.shared.update(
+            campaignId: campaignId,
+            campaignName: campaignName,
+            state: .ready,
+            statusText: "Campaign is ready.",
+            progressPercent: provisionProgressPercent
+        )
+
+        if detailsSaved {
+            await openCreatedCampaign()
+        }
+    }
+
+    @MainActor
+    private func startMapWarmupAfterReady(campaignId: UUID) {
+        MapFeaturesService.shared.beginDiamondManifestPrewarm(
+            campaignId: campaignId.uuidString,
+            timeoutSeconds: 90
+        )
+        print("💎 [CAMPAIGN DEBUG] Diamond/Bedrock geometry will warm while the campaign map opens")
     }
 
     @MainActor
@@ -1380,122 +1291,6 @@ struct NewCampaignScreen: View {
         return error.localizedDescription.localizedCaseInsensitiveContains("Diamond geometry was not ready")
     }
 
-    private struct CampaignMapDataReadiness {
-        let buildingCount: Int
-        let addressCount: Int
-
-        var isUsable: Bool {
-            buildingCount > 0 || addressCount > 0
-        }
-    }
-
-    private func fetchCampaignAddressesWithRetry(
-        campaignId: UUID,
-        attempts: Int = 8,
-        delayMs: UInt64 = 350
-    ) async throws -> [CampaignAddressRow] {
-        var lastError: Error?
-
-        for attempt in 1...max(attempts, 1) {
-            do {
-                let addresses = try await CampaignsAPI.shared.fetchAddresses(campaignId: campaignId)
-                if !addresses.isEmpty {
-                    print("✅ [CAMPAIGN DEBUG] Loaded \(addresses.count) addresses after provision (attempt \(attempt))")
-                    return addresses
-                }
-                print("⚠️ [CAMPAIGN DEBUG] No addresses yet for campaign \(campaignId) (attempt \(attempt)/\(attempts))")
-            } catch {
-                lastError = error
-                print("⚠️ [CAMPAIGN DEBUG] Address fetch attempt \(attempt)/\(attempts) failed: \(error)")
-            }
-
-            if attempt < attempts {
-                try? await Task.sleep(nanoseconds: delayMs * 1_000_000)
-            }
-        }
-
-        if let lastError {
-            throw lastError
-        }
-        return []
-    }
-
-    private func prewarmCampaignBuildingsAfterProvision(campaignId: UUID) async -> CampaignMapDataReadiness? {
-        async let buildingsResult: [BuildingFeature]? = try? BuildingLinkService.shared.fetchBuildings(campaignId: campaignId.uuidString)
-        async let addressesResult: [CampaignAddressRow]? = try? fetchCampaignAddressesWithRetry(
-            campaignId: campaignId,
-            attempts: 3,
-            delayMs: 250
-        )
-
-        let buildings = await buildingsResult ?? []
-        let addresses = await addressesResult ?? []
-
-        if !buildings.isEmpty {
-            MapFeaturesService.shared.primeBuildingFeatures(
-                campaignId: campaignId.uuidString,
-                features: buildings
-            )
-        }
-
-        let readiness = CampaignMapDataReadiness(
-            buildingCount: renderableBuildingCount(in: buildings),
-            addressCount: addresses.count
-        )
-        print("✅ [CAMPAIGN DEBUG] Campaign map prewarm loaded buildings=\(readiness.buildingCount) addresses=\(readiness.addressCount)")
-        return readiness.isUsable ? readiness : nil
-    }
-
-    private func waitForCampaignMapDataReady(
-        campaignId: UUID,
-        timeoutSeconds: TimeInterval = 150,
-        pollIntervalSeconds: TimeInterval = 2
-    ) async -> CampaignMapDataReadiness? {
-        let startedAt = Date()
-        var attempt = 0
-
-        while Date().timeIntervalSince(startedAt) < timeoutSeconds {
-            attempt += 1
-            async let buildingsResult: [BuildingFeature]? = try? BuildingLinkService.shared.fetchBuildings(campaignId: campaignId.uuidString)
-            async let addressesResult: [CampaignAddressRow]? = try? fetchCampaignAddressesWithRetry(
-                campaignId: campaignId,
-                attempts: 2,
-                delayMs: 200
-            )
-
-            let buildings = await buildingsResult ?? []
-            let addresses = await addressesResult ?? []
-
-            if !buildings.isEmpty {
-                MapFeaturesService.shared.primeBuildingFeatures(
-                    campaignId: campaignId.uuidString,
-                    features: buildings
-                )
-            }
-
-            let readiness = CampaignMapDataReadiness(
-                buildingCount: renderableBuildingCount(in: buildings),
-                addressCount: addresses.count
-            )
-
-            print("🧭 [CAMPAIGN DEBUG] map_data_gate attempt=\(attempt) buildings=\(readiness.buildingCount) addresses=\(readiness.addressCount)")
-            if readiness.isUsable {
-                return readiness
-            }
-
-            try? await Task.sleep(nanoseconds: UInt64(max(0.5, pollIntervalSeconds) * 1_000_000_000))
-        }
-
-        return nil
-    }
-
-    private func renderableBuildingCount(in buildings: [BuildingFeature]) -> Int {
-        buildings.filter { feature in
-            let type = feature.geometry.type.lowercased()
-            return type == "polygon" || type == "multipolygon"
-        }.count
-    }
-
     @MainActor
     private func applySelectedCenter(_ coordinate: CLLocationCoordinate2D, label: String) {
         selectedCenter = coordinate
@@ -1532,34 +1327,14 @@ struct NewCampaignScreen: View {
         _ campaign: CampaignV2,
         boundaryCoordinates: [CLLocationCoordinate2D] = []
     ) async {
-        provisionStatusText = "Preparing campaign map..."
-        let isMapReady: Bool
-        if campaignMapDataReady {
-            isMapReady = true
-        } else {
-            isMapReady = await CampaignDownloadService.shared.ensureUsableMapAssetsAvailable(
-                campaignId: campaign.id.uuidString
-            )
-        }
-        guard isMapReady else {
-            await MainActor.run {
-                createHook.error = "Campaign is ready, but the map has not fully downloaded to this device yet. Please keep this screen open and try again."
-                showCampaignReadinessOverlay = true
-                hasNavigatedToCampaign = false
-            }
-            return
-        }
-
+        provisionStatusText = "Opening campaign map..."
+        uiState.selectCampaign(
+            id: campaign.id,
+            name: campaign.name,
+            boundaryCoordinates: boundaryCoordinates
+        )
+        uiState.selectedTabIndex = 1
         dismiss()
-        try? await Task.sleep(nanoseconds: 300_000_000)
-        await MainActor.run {
-            uiState.selectCampaign(
-                id: campaign.id,
-                name: campaign.name,
-                boundaryCoordinates: boundaryCoordinates
-            )
-            uiState.selectedTabIndex = 1
-        }
         Task {
             await CampaignDownloadService.shared.prefetchIfNeeded(campaignId: campaign.id.uuidString)
         }

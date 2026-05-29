@@ -3,19 +3,19 @@ import test from 'node:test';
 
 import { isLinkableBuildingFootprint } from '../buildingFootprintFilter';
 
-test('drops explicit residential buildings below the generic area threshold', () => {
+test('drops explicit residential buildings below the 45 sqm threshold', () => {
   assert.equal(
     isLinkableBuildingFootprint({
       properties: {
         building_type: 'residential',
-        area_sqm: 24,
+        area_sqm: 44,
       },
     }),
     false
   );
 });
 
-test('keeps explicit accessory structures when they meet the generic area threshold', () => {
+test('drops explicit accessory structures even when they meet the area threshold', () => {
   assert.equal(
     isLinkableBuildingFootprint({
       properties: {
@@ -23,7 +23,7 @@ test('keeps explicit accessory structures when they meet the generic area thresh
         area_sqm: 80,
       },
     }),
-    true
+    false
   );
 });
 

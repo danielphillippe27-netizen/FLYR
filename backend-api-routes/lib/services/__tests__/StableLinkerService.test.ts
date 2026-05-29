@@ -121,7 +121,7 @@ type MockState = {
 };
 
 class MockQueryBuilder implements PromiseLike<{ data: any; error: null }> {
-  private operation: 'select' | 'update' | null = null;
+  private operation: 'select' | 'update' | 'delete' | null = null;
   private filters = new Map<string, unknown>();
   private updateValues: Record<string, unknown> | null = null;
   private head = false;
@@ -142,6 +142,11 @@ class MockQueryBuilder implements PromiseLike<{ data: any; error: null }> {
   update(values: Record<string, unknown>) {
     this.operation = 'update';
     this.updateValues = values;
+    return this;
+  }
+
+  delete() {
+    this.operation = 'delete';
     return this;
   }
 
@@ -187,6 +192,9 @@ class MockQueryBuilder implements PromiseLike<{ data: any; error: null }> {
     if (this.operation === 'update') {
       return this.executeUpdate();
     }
+    if (this.operation === 'delete') {
+      return this.executeDelete();
+    }
     return this.executeSelect();
   }
 
@@ -218,6 +226,18 @@ class MockQueryBuilder implements PromiseLike<{ data: any; error: null }> {
     return Promise.resolve({ data: filtered, error: null });
   }
 
+  private executeDelete() {
+    const rows = this.getRows();
+    const deleted = rows.filter((row) =>
+      Array.from(this.filters.entries()).every(([column, value]) => row[column] === value)
+    );
+    const remaining = rows.filter((row) =>
+      !Array.from(this.filters.entries()).every(([column, value]) => row[column] === value)
+    );
+    this.setRows(remaining);
+    return Promise.resolve({ data: deleted, error: null });
+  }
+
   private getRows(): Array<Record<string, unknown>> {
     switch (this.table) {
       case 'campaign_addresses':
@@ -228,6 +248,20 @@ class MockQueryBuilder implements PromiseLike<{ data: any; error: null }> {
         return this.state.buildingAddressLinks ?? [];
       default:
         return [];
+    }
+  }
+
+  private setRows(rows: Array<Record<string, unknown>>) {
+    switch (this.table) {
+      case 'campaign_addresses':
+        this.state.campaignAddresses = rows;
+        break;
+      case 'address_orphans':
+        this.state.addressOrphans = rows;
+        break;
+      case 'building_address_links':
+        this.state.buildingAddressLinks = rows;
+        break;
     }
   }
 }
@@ -1050,6 +1084,47 @@ async function run() {
     assertEqual(state.campaignAddresses?.[0].building_gers_id, 'durham_buildings:1:905734');
     assertEqual(state.campaignAddresses?.[0].match_source, 'gold_exact');
     assertEqual(state.campaignAddresses?.[0].confidence, 1);
+  });
+
+  await testAsync('External reset: preserves canonical building links while clearing fallback address state', async () => {
+    const state: MockState = {
+      campaignAddresses: [
+        {
+          id: 'address-1',
+          campaign_id: 'campaign-1',
+          building_id: 'building-1',
+          building_gers_id: 'durham_buildings:1:905734',
+          match_source: 'gold_exact',
+          confidence: 1,
+        },
+      ],
+      addressOrphans: [
+        {
+          id: 'orphan-1',
+          campaign_id: 'campaign-1',
+          address_id: 'address-1',
+        },
+      ],
+      buildingAddressLinks: [
+        {
+          id: 'link-1',
+          campaign_id: 'campaign-1',
+          building_id: 'building-1',
+          address_id: 'address-1',
+          link_source: 'auto',
+        },
+      ],
+    };
+    const service = new StableLinkerService(createMockSupabase(state) as any);
+
+    await (service as any).resetCampaignArtifacts('campaign-1', true, false);
+
+    assertEqual(state.buildingAddressLinks?.length, 1);
+    assertEqual(state.addressOrphans?.length, 0);
+    assertEqual(state.campaignAddresses?.[0].building_id, null);
+    assertEqual(state.campaignAddresses?.[0].building_gers_id, null);
+    assertEqual(state.campaignAddresses?.[0].match_source, null);
+    assertEqual(state.campaignAddresses?.[0].confidence, null);
   });
 
   await testAsync('External manual assignment: municipal building ids stay out of UUID orphan fields', async () => {

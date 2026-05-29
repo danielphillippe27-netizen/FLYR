@@ -26,6 +26,8 @@ type CurrentBundleRow = {
   parcels_geojson: FeatureCollection;
   roads_geojson: FeatureCollection;
   links: CampaignMapBundleLink[];
+  address_orphans?: AddressOrphan[];
+  building_orphans?: BuildingOrphan[];
   display_mode_hint: DisplayModeHint;
   counts: Record<string, unknown>;
   layer_fetched_at: Record<string, string | null>;
@@ -37,6 +39,7 @@ type CurrentBundleRow = {
 
 type SourceVersionResult = {
   source_version?: string;
+  link_source_version?: string;
   counts?: Record<string, unknown>;
   updated_at?: string;
 };
@@ -46,8 +49,26 @@ export type CampaignMapBundleLink = {
   building_id: string;
   address_id: string;
   match_type: string;
+  link_source?: string | null;
   confidence: number;
   distance_meters: number;
+  source_version?: string | null;
+  is_multi_unit?: boolean | null;
+  unit_count?: number | null;
+  building_class?: string | null;
+};
+
+export type AddressOrphan = {
+  address_id: string;
+  campaign_id: string;
+  reason: 'no_containment' | 'no_parcel' | 'proximity_too_far' | 'proximity_ambiguous';
+  nearest_building_id: string | null;
+  nearest_building_distance_m: number | null;
+};
+
+export type BuildingOrphan = {
+  building_id: string;
+  campaign_id: string;
 };
 
 type BuildingIdentityRow = {
@@ -68,7 +89,7 @@ type MaterializedCampaignBuildingRow = {
 };
 
 type DisplayModeHint = 'buildings' | 'addresses';
-type LinksStatus = 'fresh' | 'stale_reused' | 'client_fallback_required';
+type LinksStatus = 'ok' | 'stale_reused' | 'pending_provision' | 'client_fallback_required' | 'fresh';
 type Bbox = [number, number, number, number];
 type ParcelBundleResult = {
   collection: FeatureCollection;
@@ -95,6 +116,8 @@ export type CanonicalCampaignMapBundleResponse = {
   parcels: FeatureCollection;
   roads: FeatureCollection;
   links: CampaignMapBundleLink[];
+  address_orphans: AddressOrphan[];
+  building_orphans: BuildingOrphan[];
   counts: {
     addresses: number;
     buildings: number;
@@ -111,10 +134,9 @@ export type CanonicalCampaignMapBundleResponse = {
 const EMPTY_FEATURE_COLLECTION: FeatureCollection = { type: 'FeatureCollection', features: [] };
 const ADDRESS_TTL_MS = 15 * 60 * 1000;
 const STATIC_GEOMETRY_TTL_MS = 24 * 60 * 60 * 1000;
-const LINK_REFRESH_BUDGET_MS = 2_500;
-const MAP_BUNDLE_CACHE_VERSION = 'canonical-map-bundle-v4';
+const MAP_BUNDLE_CACHE_VERSION = 'canonical-map-bundle-v5';
 const PARCEL_RESOLUTION_VERSION = 'pmtiles-v2';
-const STRICT_NEAREST_LINK_MAX_DISTANCE_METERS = 8;
+const STRICT_NEAREST_LINK_MAX_DISTANCE_METERS = 15;
 const STRICT_PROXIMITY_LINK_MAX_DISTANCE_METERS = 25;
 const STRICT_PROXIMITY_LINK_MIN_CONFIDENCE = 0.75;
 const UUID_RE =
@@ -142,6 +164,14 @@ function normalizedString(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+function normalizeLinksStatus(value: unknown): LinksStatus {
+  const status = normalizedString(value);
+  if (status === 'fresh') return 'ok';
+  if (status === 'ok' || status === 'stale_reused' || status === 'pending_provision') return status;
+  if (status === 'client_fallback_required') return 'client_fallback_required';
+  return 'pending_provision';
 }
 
 function numericValue(value: unknown, fallback = 0): number {
@@ -208,10 +238,11 @@ function linkRank(link: CampaignMapBundleLink): number {
 
 export function isStrictCampaignMapBundleLink(link: CampaignMapBundleLink): boolean {
   const matchType = normalizedString(link.match_type)?.toLowerCase() ?? '';
+  const linkSource = normalizedString(link.link_source)?.toLowerCase() ?? '';
   const confidence = numericValue(link.confidence, 0);
   const distanceMeters = numericValue(link.distance_meters, Number.POSITIVE_INFINITY);
 
-  if (matchType === 'manual') return true;
+  if (matchType === 'manual' || linkSource === 'manual' || linkSource === 'client_auto') return true;
   if (matchType === 'semantic_verified') return confidence >= 0.9;
   if (matchType === 'containment_verified' || matchType === 'point_on_surface') return confidence >= 0.85;
   if (matchType === 'parcel_verified' || matchType === 'parcel_bridge') return confidence >= 0.9;
@@ -262,17 +293,11 @@ function lookupNormalizedString(lookup: Map<string, string>, value: string): str
 
 export function normalizeCampaignMapBundleLinksForClient(
   rawLinks: CampaignMapBundleLink[],
-  publicIdsByBuildingRowId: Map<string, string>,
-  addressEmbeddedLinks: CampaignMapBundleLink[] = []
+  publicIdsByBuildingRowId: Map<string, string>
 ): CampaignMapBundleLink[] {
-  const publicBuildingIdByAddressId = new Map(
-    addressEmbeddedLinks.map((link) => [link.address_id.trim().toLowerCase(), link.building_id])
-  );
-
   return deduplicateLinksByAddress(strictCampaignMapBundleLinks(rawLinks)).map((link) => {
     const publicBuildingId =
       lookupNormalizedString(publicIdsByBuildingRowId, link.building_id) ??
-      lookupNormalizedString(publicBuildingIdByAddressId, link.address_id) ??
       link.building_id;
 
     return {
@@ -344,21 +369,31 @@ function applyLinksToFeatureCollections(
         'gers_id',
         'id',
       ]);
-      const featureLinks = dedupeStrings(
-        identifiers.flatMap((identifier) => linksByBuildingId.get(identifier) ?? [])
-          .map((link) => link.address_id)
-      );
+      const rawFeatureLinks = identifiers.flatMap((identifier) => linksByBuildingId.get(identifier) ?? []);
+      const featureLinks = dedupeStrings(rawFeatureLinks.map((link) => link.address_id));
+      const splitterUnitsCount = rawFeatureLinks.reduce((max, link) => {
+        const unitCount = numericValue(link.unit_count, 0);
+        return unitCount > max ? unitCount : max;
+      }, 0);
+      const isTownhouse = rawFeatureLinks.some((link) => normalizedString(link.building_class)?.toLowerCase() === 'townhouse');
       const properties = { ...(feature.properties ?? {}) };
       properties.address_ids = featureLinks;
       properties.is_linked = featureLinks.length > 0;
+      properties.is_townhouse = isTownhouse;
       if (featureLinks.length === 1) {
         properties.address_id = featureLinks[0];
       } else {
         delete properties.address_id;
       }
+      properties.address_count = featureLinks.length;
+      properties.units_count = Math.max(
+        numericValue(properties.units_count, 1),
+        featureLinks.length,
+        splitterUnitsCount || 0
+      );
       if (featureLinks.length > 0) {
-        properties.address_count = featureLinks.length;
-        properties.units_count = Math.max(numericValue(properties.units_count, 1), featureLinks.length);
+        properties.feature_type = 'linked_building';
+        properties.feature_status = 'linked';
       }
       return { ...feature, properties };
     }),
@@ -380,6 +415,34 @@ function applyLinksToFeatureCollections(
   };
 
   return { buildings: linkedBuildings, addresses: linkedAddresses };
+}
+
+function collectBuildingOrphans(
+  campaignId: string,
+  buildings: FeatureCollection,
+  links: CampaignMapBundleLink[]
+): BuildingOrphan[] {
+  const linkedBuildingIds = new Set(
+    links
+      .map((link) => normalizedString(link.building_id)?.toLowerCase())
+      .filter((id): id is string => Boolean(id))
+  );
+  return buildings.features.flatMap((feature) => {
+    const identifiers = featureIdentityCandidates(feature, [
+      'canonical_building_id',
+      'canonicalBuildingId',
+      'public_building_id',
+      'building_id',
+      'gers_id',
+      'id',
+    ]);
+    if (identifiers.length === 0) return [];
+    if (identifiers.some((identifier) => linkedBuildingIds.has(identifier))) return [];
+    return [{
+      campaign_id: campaignId,
+      building_id: identifiers[0],
+    }];
+  });
 }
 
 function collectCoordinatePairs(value: unknown, output: Array<[number, number]>) {
@@ -558,8 +621,8 @@ function currentBundleIsFresh(row: CurrentBundleRow, nowMs = Date.now()): boolea
 }
 
 function currentBundleNeedsParcelBackfill(row: CurrentBundleRow): boolean {
-  if (asFeatureCollection(row.parcels_geojson).features.length > 0) return false;
   if (normalizedString(row.counts?.parcel_resolution_version) !== PARCEL_RESOLUTION_VERSION) return true;
+  if (asFeatureCollection(row.parcels_geojson).features.length > 0) return false;
   return !normalizedString(row.counts?.parcel_source) &&
     !normalizedString(row.counts?.parcel_source_checked_at);
 }
@@ -607,19 +670,31 @@ function currentBundleNeedsPolishedCacheRefresh(
   });
 }
 
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      (error) => {
-        clearTimeout(timer);
-        reject(error);
-      }
-    );
+export function shouldRefreshBundleFromPersistedParcels(params: {
+  currentParcelFeatures: number;
+  currentParcelSource?: string | null;
+  persistedParcelCount?: number | null;
+}): boolean {
+  const persistedParcelCount = numericValue(params.persistedParcelCount, 0);
+  if (persistedParcelCount <= 0) return false;
+
+  const currentParcelFeatures = Math.max(params.currentParcelFeatures, 0);
+  if (persistedParcelCount > currentParcelFeatures) return true;
+
+  return normalizedString(params.currentParcelSource) !== 'campaign_parcels';
+}
+
+function currentBundleNeedsPersistedParcelRefresh(
+  row: CurrentBundleRow,
+  source: SourceVersionResult
+): boolean {
+  return shouldRefreshBundleFromPersistedParcels({
+    currentParcelFeatures: numericValue(
+      row.counts?.parcels,
+      asFeatureCollection(row.parcels_geojson).features.length
+    ),
+    currentParcelSource: row.counts?.parcel_source as string | null | undefined,
+    persistedParcelCount: source.counts?.parcels as number | null | undefined,
   });
 }
 
@@ -631,18 +706,39 @@ function displayModeHint(buildings: FeatureCollection, addresses: FeatureCollect
   return 'buildings';
 }
 
+function linksStatusForStoredLinks(
+  links: CampaignMapBundleLink[],
+  linkSourceVersion: string | null
+): Exclude<LinksStatus, 'fresh' | 'client_fallback_required'> {
+  if (links.length === 0) return 'pending_provision';
+
+  const autoLinks = links.filter((link) => {
+    const source = normalizedString(link.link_source)?.toLowerCase() ?? 'auto';
+    return source === 'auto' || source === 'auto_parcel' || source === 'client_auto_expired';
+  });
+  if (autoLinks.length === 0) return 'ok';
+  if (!linkSourceVersion) return 'stale_reused';
+  return autoLinks.every((link) => normalizedString(link.source_version) === linkSourceVersion)
+    ? 'ok'
+    : 'stale_reused';
+}
+
 function responseFromRow(row: CurrentBundleRow): CanonicalCampaignMapBundleResponse {
+  const addressOrphans = Array.isArray(row.address_orphans) ? row.address_orphans : [];
+  const buildingOrphans = Array.isArray(row.building_orphans) ? row.building_orphans : [];
   return {
     campaign_id: row.campaign_id,
     asset_signature: row.asset_signature,
     source_version: row.source_version,
     display_mode_hint: row.display_mode_hint === 'addresses' ? 'addresses' : 'buildings',
-    links_status: row.links_status ?? 'fresh',
+    links_status: normalizeLinksStatus(row.links_status),
     addresses: asFeatureCollection(row.addresses_geojson),
     buildings: asFeatureCollection(row.buildings_geojson),
     parcels: asFeatureCollection(row.parcels_geojson),
     roads: asFeatureCollection(row.roads_geojson),
     links: Array.isArray(row.links) ? row.links : [],
+    address_orphans: addressOrphans,
+    building_orphans: buildingOrphans,
     counts: {
       addresses: numericValue(row.counts?.addresses, asFeatureCollection(row.addresses_geojson).features.length),
       buildings: numericValue(row.counts?.buildings, asFeatureCollection(row.buildings_geojson).features.length),
@@ -680,6 +776,9 @@ export class CampaignMapBundleService {
     );
     const needsCacheVersionRefresh = current ? currentBundleNeedsCacheVersionRefresh(current) : false;
     const needsParcelBackfill = current ? currentBundleNeedsParcelBackfill(current) : false;
+    const needsPersistedParcelRefresh = current
+      ? currentBundleNeedsPersistedParcelRefresh(current, source.raw)
+      : false;
     const needsPolishedCacheRefresh = current
       ? currentBundleNeedsPolishedCacheRefresh(current, polishedCacheMeta)
       : false;
@@ -688,6 +787,7 @@ export class CampaignMapBundleService {
       current &&
       !needsCacheVersionRefresh &&
       !needsParcelBackfill &&
+      !needsPersistedParcelRefresh &&
       !needsPolishedCacheRefresh &&
       current.asset_signature === localSignature &&
       current.source_version === source.sourceVersion &&
@@ -706,20 +806,37 @@ export class CampaignMapBundleService {
       !currentBundleIsFresh(current) ||
       needsCacheVersionRefresh ||
       needsParcelBackfill ||
+      needsPersistedParcelRefresh ||
       needsPolishedCacheRefresh;
 
     if (!shouldRebuild && current) {
       return { status: 'ok', bundle: responseFromRow(current) };
     }
 
-    const bundle = await this.rebuildBundle(campaignId, source.sourceVersion, current, {
+    const bundle = await this.rebuildBundle(campaignId, source.sourceVersion, source.linkSourceVersion, current, {
       forceRefreshAllLayers: needsCacheVersionRefresh,
       forceRefreshBuildings: needsPolishedCacheRefresh,
+      forceRefreshParcels: needsParcelBackfill || needsPersistedParcelRefresh,
     });
     return { status: 'ok', bundle };
   }
 
-  private async fetchSourceVersion(campaignId: string): Promise<{ sourceVersion: string; raw: SourceVersionResult }> {
+  // Manual repair tool only. Not part of the normal map load path.
+  // See: flyr-linking-restructure task 2
+  async refreshLinksForRepair(campaignId: string): Promise<void> {
+    const { error } = await this.supabase.rpc('rpc_refresh_campaign_map_links', {
+      p_campaign_id: campaignId,
+    });
+    if (error) {
+      throw new Error(`Failed to repair campaign map links: ${error.message}`);
+    }
+  }
+
+  private async fetchSourceVersion(campaignId: string): Promise<{
+    sourceVersion: string;
+    linkSourceVersion: string | null;
+    raw: SourceVersionResult;
+  }> {
     const { data, error } = await this.supabase.rpc('rpc_get_campaign_map_source_version', {
       p_campaign_id: campaignId,
     });
@@ -728,7 +845,8 @@ export class CampaignMapBundleService {
     }
     const raw = (data ?? {}) as SourceVersionResult;
     const sourceVersion = normalizedString(raw.source_version) ?? `fallback:${campaignId}`;
-    return { sourceVersion, raw };
+    const linkSourceVersion = normalizedString(raw.link_source_version) ?? sourceVersion;
+    return { sourceVersion, linkSourceVersion, raw };
   }
 
   private async fetchCurrentBundle(campaignId: string): Promise<CurrentBundleRow | null> {
@@ -747,8 +865,13 @@ export class CampaignMapBundleService {
   private async rebuildBundle(
     campaignId: string,
     sourceVersion: string,
+    linkSourceVersion: string | null,
     current: CurrentBundleRow | null,
-    options: { forceRefreshAllLayers?: boolean; forceRefreshBuildings?: boolean } = {}
+    options: {
+      forceRefreshAllLayers?: boolean;
+      forceRefreshBuildings?: boolean;
+      forceRefreshParcels?: boolean;
+    } = {}
   ): Promise<CanonicalCampaignMapBundleResponse> {
     const now = new Date();
     const nowIso = now.toISOString();
@@ -768,6 +891,7 @@ export class CampaignMapBundleService {
       isFresh(currentFetchedAt.buildings, STATIC_GEOMETRY_TTL_MS);
     const shouldReuseParcels =
       !options.forceRefreshAllLayers &&
+      !options.forceRefreshParcels &&
       sameSource &&
       current &&
       isFresh(currentFetchedAt.parcels, STATIC_GEOMETRY_TTL_MS) &&
@@ -803,17 +927,21 @@ export class CampaignMapBundleService {
           : this.fetchFeatureCollection('rpc_get_campaign_roads_v2', campaignId)
       ),
       this.measure('links', async () => {
-        const linkResult = await this.refreshLinksWithBudget(campaignId, current);
-        const links = linkResult.status === 'fresh'
-          ? await this.fetchLinks(campaignId)
-          : linkResult.links;
-        return { linkResult, links };
+        const links = await this.fetchLinks(campaignId);
+        return {
+          linksStatus: linksStatusForStoredLinks(links, linkSourceVersion),
+          links,
+        };
       }),
     ]);
 
-    const { linkResult, links } = linkBundle;
+    const { linksStatus, links } = linkBundle;
     const parcels = parcelBundle.collection;
     const linkedFeatures = applyLinksToFeatureCollections(buildings, addresses, links);
+    const [addressOrphans, buildingOrphans] = await Promise.all([
+      this.measure('address_orphans', () => this.fetchAddressOrphans(campaignId)),
+      Promise.resolve(collectBuildingOrphans(campaignId, linkedFeatures.buildings, links)),
+    ]);
     const signature = assetSignature(campaignId, linkedFeatures.buildings, linkedFeatures.addresses, parcels);
     const layerFetchedAt = {
       addresses: shouldReuseAddresses ? currentFetchedAt.addresses ?? nowIso : nowIso,
@@ -832,6 +960,8 @@ export class CampaignMapBundleService {
       parcels: parcels.features.length,
       roads: roads.features.length,
       links: links.length,
+      address_orphans: addressOrphans.length,
+      building_orphans: buildingOrphans.length,
     };
     const persistedCounts = {
       ...counts,
@@ -851,10 +981,12 @@ export class CampaignMapBundleService {
       p_parcels_geojson: parcels,
       p_roads_geojson: roads,
       p_links: links,
+      p_address_orphans: addressOrphans,
+      p_building_orphans: buildingOrphans,
       p_display_mode_hint: hint,
       p_counts: persistedCounts,
       p_layer_fetched_at: layerFetchedAt,
-      p_links_status: linkResult.status,
+      p_links_status: linksStatus,
       p_built_at: nowIso,
       p_expires_at: expiresAt,
     }));
@@ -868,42 +1000,20 @@ export class CampaignMapBundleService {
       asset_signature: signature,
       source_version: sourceVersion,
       display_mode_hint: hint,
-      links_status: linkResult.status,
+      links_status: linksStatus,
       addresses: linkedFeatures.addresses,
       buildings: linkedFeatures.buildings,
       parcels,
       roads,
       links,
+      address_orphans: addressOrphans,
+      building_orphans: buildingOrphans,
       counts,
       layer_fetched_at: layerFetchedAt,
       built_at: normalizedString(persisted?.built_at) ?? nowIso,
       expires_at: normalizedString(persisted?.expires_at) ?? expiresAt,
       updated_at: normalizedString(persisted?.updated_at),
     };
-  }
-
-  private async refreshLinksWithBudget(
-    campaignId: string,
-    current: CurrentBundleRow | null
-  ): Promise<{ status: LinksStatus; links: CampaignMapBundleLink[] }> {
-    try {
-      await withTimeout(
-        (async () => {
-          const { error } = await this.supabase.rpc('rpc_refresh_campaign_map_links', { p_campaign_id: campaignId });
-          if (error) throw new Error(error.message);
-        })(),
-        LINK_REFRESH_BUDGET_MS,
-        'Campaign map link refresh'
-      );
-      return { status: 'fresh', links: [] };
-    } catch (error) {
-      console.warn('[CampaignMapBundle] Link refresh skipped:', error instanceof Error ? error.message : error);
-      const fallbackLinks = strictCampaignMapBundleLinks(Array.isArray(current?.links) ? current!.links : []);
-      return {
-        status: fallbackLinks.length > 0 ? 'stale_reused' : 'client_fallback_required',
-        links: fallbackLinks,
-      };
-    }
   }
 
   private async fetchFeatureCollection(rpcName: string, campaignId: string): Promise<FeatureCollection> {
@@ -1099,22 +1209,58 @@ export class CampaignMapBundleService {
     }
   }
 
+  private async fetchAddressOrphans(campaignId: string): Promise<AddressOrphan[]> {
+    const { data, error } = await this.supabase
+      .from('address_orphans')
+      .select('campaign_id, address_id, reason, nearest_building_id, nearest_distance')
+      .eq('campaign_id', campaignId);
+    if (error) {
+      console.warn('[CampaignMapBundle] Failed to fetch address orphans:', error.message);
+      return [];
+    }
+
+    return ((data ?? []) as Array<{
+      campaign_id?: string | null;
+      address_id?: string | null;
+      reason?: string | null;
+      nearest_building_id?: string | null;
+      nearest_distance?: number | string | null;
+    }>).flatMap((row) => {
+      const addressId = normalizedString(row.address_id);
+      const rowCampaignId = normalizedString(row.campaign_id) ?? campaignId;
+      const reason = normalizedString(row.reason) as AddressOrphan['reason'] | null;
+      if (!addressId || !reason) return [];
+      return [{
+        campaign_id: rowCampaignId,
+        address_id: addressId,
+        reason,
+        nearest_building_id: normalizedString(row.nearest_building_id),
+        nearest_building_distance_m: finiteNumber(row.nearest_distance),
+      }];
+    });
+  }
+
   private async fetchLinks(campaignId: string): Promise<CampaignMapBundleLink[]> {
     const { data, error } = await this.supabase
       .from('building_address_links')
-      .select('id, building_id, address_id, match_type, confidence, distance_meters')
+      .select('id, building_id, address_id, match_type, link_source, confidence, distance_meters, source_version, is_multi_unit, unit_count, building_class')
       .eq('campaign_id', campaignId);
     if (error) {
       console.warn('[CampaignMapBundle] Failed to fetch links:', error.message);
-      return this.fetchCampaignAddressLinks(campaignId);
+      return [];
     }
     const rawLinks = ((data ?? []) as Array<{
       id: string;
       building_id: string | null;
       address_id: string | null;
       match_type: string | null;
+      link_source: string | null;
       confidence: number | null;
       distance_meters: number | null;
+      source_version: string | null;
+      is_multi_unit: boolean | null;
+      unit_count: number | null;
+      building_class: string | null;
     }>).flatMap((row) => {
       const buildingId = normalizedString(row.building_id);
       const addressId = normalizedString(row.address_id);
@@ -1124,22 +1270,24 @@ export class CampaignMapBundleService {
         building_id: buildingId,
         address_id: addressId,
         match_type: row.match_type ?? 'auto',
+        link_source: row.link_source ?? null,
         confidence: row.confidence ?? 0.5,
         distance_meters: row.distance_meters ?? 0,
+        source_version: row.source_version ?? null,
+        is_multi_unit: row.is_multi_unit ?? null,
+        unit_count: row.unit_count ?? null,
+        building_class: row.building_class ?? null,
       }];
     });
-    if (rawLinks.length === 0) {
-      return this.fetchCampaignAddressLinks(campaignId);
-    }
+    if (rawLinks.length === 0) return [];
 
-    const [publicIdsByBuildingRowId, addressEmbeddedLinks] = await Promise.all([
-      this.fetchPublicBuildingIdsByRowId(campaignId, rawLinks.map((link) => link.building_id)),
-      this.fetchCampaignAddressLinks(campaignId),
-    ]);
+    const publicIdsByBuildingRowId = await this.fetchPublicBuildingIdsByRowId(
+      campaignId,
+      rawLinks.map((link) => link.building_id)
+    );
     return normalizeCampaignMapBundleLinksForClient(
       rawLinks,
-      publicIdsByBuildingRowId,
-      addressEmbeddedLinks
+      publicIdsByBuildingRowId
     );
   }
 
@@ -1172,35 +1320,5 @@ export class CampaignMapBundleService {
         normalizedString(row.gers_id) ?? row.id,
       ])
     );
-  }
-
-  private async fetchCampaignAddressLinks(campaignId: string): Promise<CampaignMapBundleLink[]> {
-    const { data, error } = await this.supabase
-      .from('campaign_addresses')
-      .select('id, building_gers_id, match_source, confidence')
-      .eq('campaign_id', campaignId)
-      .not('building_gers_id', 'is', null);
-    if (error) {
-      console.warn('[CampaignMapBundle] Failed to fetch address-embedded links:', error.message);
-      return [];
-    }
-    const links = ((data ?? []) as Array<{
-      id: string;
-      building_gers_id: string | null;
-      match_source: string | null;
-      confidence: number | null;
-    }>).flatMap((row) => {
-      const buildingId = normalizedString(row.building_gers_id);
-      if (!buildingId) return [];
-      return [{
-        id: `${buildingId.toLowerCase()}:${row.id.toLowerCase()}`,
-        building_id: buildingId,
-        address_id: row.id,
-        match_type: row.match_source ?? 'auto',
-        confidence: row.confidence ?? 0.5,
-        distance_meters: 0,
-      }];
-    });
-    return strictCampaignMapBundleLinks(links);
   }
 }

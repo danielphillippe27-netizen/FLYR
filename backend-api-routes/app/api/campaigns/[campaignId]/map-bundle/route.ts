@@ -103,6 +103,17 @@ export async function GET(request: Request, context: RouteContext): Promise<Resp
     const requestUrl = new URL(request.url);
     const localSignature = requestUrl.searchParams.get('signature');
     const service = new CampaignMapBundleService(auth.admin, recordTiming);
+    if (requestUrl.searchParams.get('force_refresh') === 'true') {
+      const expectedToken = process.env.FLYR_LINK_REPAIR_TOKEN;
+      const providedToken = request.headers.get('x-flyr-link-repair-token');
+      if (!expectedToken || providedToken !== expectedToken) {
+        return NextResponse.json(
+          { error: 'Forbidden' },
+          { status: 403, headers: finalizeHeaders() }
+        );
+      }
+      await service.refreshLinksForRepair(campaignId);
+    }
     const result = await service.resolve(campaignId, localSignature);
 
     if (result.status === 'not_modified') {

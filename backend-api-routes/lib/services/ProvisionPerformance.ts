@@ -1,4 +1,5 @@
 import * as turf from '@turf/turf';
+import { isLinkableBuildingFootprint } from '@/lib/geo/buildingFootprintFilter';
 
 export const PROVISION_TIMINGS_VERSION = 1;
 export const DEFAULT_SPATIAL_BUCKET_DEGREES = 0.001;
@@ -78,6 +79,10 @@ export type LinkerAddressRow = {
   id: string;
   coordinate?: { lon?: unknown; lat?: unknown } | null;
   geom?: GeoJSON.Point | null;
+  street_match_score?: unknown;
+  house_number_score?: unknown;
+  match_score?: unknown;
+  score?: unknown;
 };
 
 export type LinkerBuildingRow = {
@@ -85,6 +90,16 @@ export type LinkerBuildingRow = {
   gers_id?: string | null;
   geom?: GeoJSON.Polygon | GeoJSON.MultiPolygon | null;
   height_m?: number | null;
+  units_count?: number | null;
+  unit_count?: number | null;
+  building_class?: string | null;
+  building_type?: string | null;
+  subtype?: string | null;
+  class?: string | null;
+  feature_type?: string | null;
+  type?: string | null;
+  is_townhome_row?: boolean | null;
+  is_multi_unit?: boolean | null;
 };
 
 export type LinkerParcelRow = {
@@ -103,6 +118,26 @@ export type AutoBuildingLinkRow = {
   confidence: number;
   distance_meters: number;
   building_height: number | null;
+  source_version?: string | null;
+};
+
+export type AddressOrphanReason =
+  | 'no_containment'
+  | 'no_parcel'
+  | 'proximity_too_far'
+  | 'proximity_ambiguous';
+
+export type AddressOrphanLinkerRow = {
+  address_id: string;
+  campaign_id: string;
+  reason: AddressOrphanReason;
+  nearest_building_id: string | null;
+  nearest_building_distance_m: number | null;
+};
+
+export type CanonicalBuildingLinkResult = {
+  links: AutoBuildingLinkRow[];
+  address_orphans: AddressOrphanLinkerRow[];
 };
 
 export type AutoParcelAddressLinkRow = {
@@ -117,6 +152,9 @@ export type AutoParcelAddressLinkRow = {
 type PreparedBuilding = {
   id: string;
   height_m: number | null;
+  units_count: number | null;
+  is_townhome: boolean;
+  is_multi_unit: boolean;
   geom: GeoJSON.Polygon | GeoJSON.MultiPolygon;
   bbox: [number, number, number, number];
 };
@@ -190,6 +228,79 @@ function numberProperty(value: unknown): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+function optionalNumberProperty(value: unknown): number | null {
+  const parsed = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function booleanProperty(value: unknown): boolean {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') {
+    return value.toLowerCase() === 'true' || value === '1';
+  }
+  return value === 1;
+}
+
+function addressContainmentScore(address: LinkerAddressRow): number | null {
+  return optionalNumberProperty(address.house_number_score) ??
+    optionalNumberProperty(address.street_match_score) ??
+    optionalNumberProperty(address.match_score) ??
+    optionalNumberProperty(address.score);
+}
+
+function buildingUnitsCount(
+  row: LinkerBuildingRow | null | undefined,
+  properties: Record<string, unknown> = {}
+): number | null {
+  const parsed = optionalNumberProperty(
+    properties.units_count ??
+    properties.unit_count ??
+    row?.units_count ??
+    row?.unit_count
+  );
+  return parsed && parsed > 0 ? Math.round(parsed) : null;
+}
+
+function buildingIsTownhome(
+  row: LinkerBuildingRow | null | undefined,
+  properties: Record<string, unknown> = {}
+): boolean {
+  const className = stringProperty(properties.building_class) ?? stringProperty(row?.building_class);
+  return Boolean(row?.is_townhome_row) ||
+    booleanProperty(properties.is_townhome) ||
+    booleanProperty(properties.is_townhome_row) ||
+    className === 'townhouse' ||
+    className === 'townhome';
+}
+
+function buildingIsMultiUnit(
+  row: LinkerBuildingRow | null | undefined,
+  unitsCount: number | null,
+  properties: Record<string, unknown> = {}
+): boolean {
+  return Boolean(row?.is_multi_unit) ||
+    booleanProperty(properties.is_multi_unit) ||
+    buildingIsTownhome(row, properties) ||
+    (unitsCount ?? 0) > 1;
+}
+
+function buildingFilterProperties(
+  row: LinkerBuildingRow | null | undefined,
+  geometry: GeoJSON.Polygon | GeoJSON.MultiPolygon,
+  properties: Record<string, unknown> = {}
+): Record<string, unknown> {
+  return {
+    ...properties,
+    area_sqm: properties.area_sqm ?? properties.area ?? turf.area(turf.feature(geometry)),
+    building_class: properties.building_class ?? row?.building_class,
+    building_type: properties.building_type ?? row?.building_type,
+    subtype: properties.subtype ?? row?.subtype,
+    class: properties.class ?? row?.class,
+    feature_type: properties.feature_type ?? row?.feature_type,
+    type: properties.type ?? row?.type,
+  };
+}
+
 function prepareBuildingsFromMemory(params: {
   materializedBuildings: LinkerBuildingRow[];
   sourceBuildings: GeoJSON.Feature[];
@@ -213,11 +324,21 @@ function prepareBuildingsFromMemory(params: {
     const properties = feature.properties && typeof feature.properties === 'object'
       ? feature.properties as Record<string, unknown>
       : {};
+    if (!isLinkableBuildingFootprint({
+      geometry,
+      properties: buildingFilterProperties(materialized, geometry, properties),
+    })) {
+      return [];
+    }
+
     const height = numberProperty(properties.height_m ?? properties.height ?? materialized.height_m);
 
     return [{
       id: materialized.id,
       height_m: Number.isFinite(height) && height > 0 ? height : materialized.height_m ?? null,
+      units_count: buildingUnitsCount(materialized, properties),
+      is_townhome: buildingIsTownhome(materialized, properties),
+      is_multi_unit: buildingIsMultiUnit(materialized, buildingUnitsCount(materialized, properties), properties),
       geom: geometry,
       bbox: turf.bbox(turf.feature(geometry)) as [number, number, number, number],
     }];
@@ -228,9 +349,20 @@ export function prepareBuildingsFromRows(buildingRows: LinkerBuildingRow[]): Pre
   return buildingRows.flatMap((building) => {
     const geometry = stripGeometryCrs(building.geom);
     if (geometry?.type !== 'Polygon' && geometry?.type !== 'MultiPolygon') return [];
+    if (!isLinkableBuildingFootprint({
+      geometry,
+      properties: buildingFilterProperties(building, geometry),
+    })) {
+      return [];
+    }
+
+    const unitsCount = buildingUnitsCount(building);
     return [{
       id: building.id,
       height_m: building.height_m ?? null,
+      units_count: unitsCount,
+      is_townhome: buildingIsTownhome(building),
+      is_multi_unit: buildingIsMultiUnit(building, unitsCount),
       geom: geometry,
       bbox: turf.bbox(turf.feature(geometry)) as [number, number, number, number],
     }];
@@ -359,6 +491,32 @@ function findNearestBuilding(
   return best;
 }
 
+function rankNearestBuildings(
+  coordinates: [number, number],
+  point: GeoJSON.Feature<GeoJSON.Point>,
+  buildings: PreparedBuilding[],
+  searchMeters: number
+): { building: PreparedBuilding; distanceMeters: number }[] {
+  const ranked: { building: PreparedBuilding; distanceMeters: number }[] = [];
+
+  for (const building of buildings) {
+    if (!bboxMayBeNearPoint(coordinates, building.bbox, searchMeters + 10)) {
+      continue;
+    }
+
+    const measuredDistanceMeters = turf.pointToPolygonDistance(
+      point,
+      turf.feature(building.geom),
+      { units: 'kilometers' }
+    ) * 1000;
+
+    ranked.push({ building, distanceMeters: measuredDistanceMeters });
+  }
+
+  ranked.sort((a, b) => a.distanceMeters - b.distanceMeters);
+  return ranked;
+}
+
 function findSmallestContainingParcel(
   point: GeoJSON.Feature<GeoJSON.Point>,
   parcels: PreparedParcel[]
@@ -481,31 +639,88 @@ export function buildAutoBuildingLinksFromPreparedRows(params: {
   distanceMeters?: number;
   bucketDegrees?: number;
   useSpatialBuckets?: boolean;
+  sourceVersion?: string | null;
+  claimedSingleUnitBuildingIds?: Set<string>;
 }): AutoBuildingLinkRow[] {
+  return buildCanonicalBuildingLinksFromPreparedRows(params).links;
+}
+
+export function buildCanonicalBuildingLinksFromPreparedRows(params: {
+  campaignId: string;
+  addresses: LinkerAddressRow[];
+  buildings: PreparedBuilding[];
+  parcels?: LinkerParcelRow[];
+  distanceMeters?: number;
+  bucketDegrees?: number;
+  useSpatialBuckets?: boolean;
+  sourceVersion?: string | null;
+  claimedSingleUnitBuildingIds?: Set<string>;
+}): CanonicalBuildingLinkResult {
   const distanceMeters = params.distanceMeters ?? 15;
+  const disambiguationGapMeters = 3;
   const bucketDegrees = params.bucketDegrees ?? DEFAULT_SPATIAL_BUCKET_DEGREES;
   const buckets = params.useSpatialBuckets === false
     ? null
-    : buildSpatialBuckets(params.buildings, bucketDegrees, distanceMeters);
+    : buildSpatialBuckets(params.buildings, bucketDegrees, distanceMeters + disambiguationGapMeters);
   const parcels = params.parcels?.length ? prepareParcelsFromRows(params.parcels) : [];
+  const claimedSingleUnitBuildingIds = params.claimedSingleUnitBuildingIds ?? new Set<string>();
 
   const links: AutoBuildingLinkRow[] = [];
+  const addressOrphans: AddressOrphanLinkerRow[] = [];
+
+  const pushLink = (address: LinkerAddressRow, building: PreparedBuilding, values: {
+    match_type: string;
+    link_source: string;
+    confidence: number;
+    distance_meters: number;
+  }) => {
+    links.push({
+      campaign_id: params.campaignId,
+      address_id: address.id,
+      building_id: building.id,
+      match_type: values.match_type,
+      link_source: values.link_source,
+      confidence: values.confidence,
+      distance_meters: values.distance_meters,
+      building_height: building.height_m ?? null,
+      source_version: params.sourceVersion ?? null,
+    });
+
+    if (!building.is_multi_unit && !building.is_townhome && (building.units_count ?? 1) <= 1) {
+      claimedSingleUnitBuildingIds.add(building.id);
+    }
+  };
+
+  const pushOrphan = (
+    address: LinkerAddressRow,
+    reason: AddressOrphanReason,
+    nearest: { building: PreparedBuilding; distanceMeters: number } | null
+  ) => {
+    addressOrphans.push({
+      campaign_id: params.campaignId,
+      address_id: address.id,
+      reason,
+      nearest_building_id: nearest?.building.id ?? null,
+      nearest_building_distance_m: nearest ? Number(nearest.distanceMeters.toFixed(2)) : null,
+    });
+  };
+
   for (const address of params.addresses) {
     const coordinates = addressPointCoordinates(address);
     if (!coordinates) continue;
 
     const point = turf.point(coordinates);
     const containingBuilding = findContainingBuilding(point, params.buildings);
-    if (containingBuilding) {
-      links.push({
-        campaign_id: params.campaignId,
-        address_id: address.id,
-        building_id: containingBuilding.id,
-        match_type: 'containment',
+    const containmentScore = addressContainmentScore(address);
+    const containmentRejectedByScore = Boolean(
+      containingBuilding && containmentScore !== null && containmentScore < 0.4
+    );
+    if (containingBuilding && (containmentScore === null || containmentScore >= 0.4)) {
+      pushLink(address, containingBuilding, {
+        match_type: 'containment_verified',
         link_source: 'auto',
-        confidence: 0.95,
+        confidence: 1,
         distance_meters: 0,
-        building_height: containingBuilding.height_m ?? null,
       });
       continue;
     }
@@ -513,15 +728,11 @@ export function buildAutoBuildingLinksFromPreparedRows(params: {
     const parcel = parcels.length > 0 ? findSmallestContainingParcel(point, parcels) : null;
     const parcelBest = parcel ? findNearestBuildingOnParcel(point, parcel, params.buildings) : null;
     if (parcelBest) {
-      links.push({
-        campaign_id: params.campaignId,
-        address_id: address.id,
-        building_id: parcelBest.building.id,
+      pushLink(address, parcelBest.building, {
         match_type: 'parcel_bridge',
         link_source: 'auto_parcel',
         confidence: 0.9,
         distance_meters: parcelBest.distanceMeters,
-        building_height: parcelBest.building.height_m ?? null,
       });
       continue;
     }
@@ -529,23 +740,55 @@ export function buildAutoBuildingLinksFromPreparedRows(params: {
     const candidateBuildings = buckets
       ? nearbyBucketBuildings(coordinates, buckets, bucketDegrees)
       : params.buildings;
-    const best = findNearestBuilding(coordinates, point, candidateBuildings, distanceMeters);
+    const rankedBuildings = rankNearestBuildings(
+      coordinates,
+      point,
+      candidateBuildings,
+      Math.max(distanceMeters + disambiguationGapMeters, 60)
+    );
+    const best = rankedBuildings[0] ?? null;
+    const nextBest = rankedBuildings[1] ?? null;
+    if (!best) {
+      const reason: AddressOrphanReason = containmentRejectedByScore
+        ? 'no_containment'
+        : (parcels.length === 0 ? 'no_parcel' : 'proximity_too_far');
+      pushOrphan(address, reason, null);
+      continue;
+    }
+
+    if (best.distanceMeters > distanceMeters) {
+      pushOrphan(address, 'proximity_too_far', best);
+      continue;
+    }
+
+    if (nextBest && (nextBest.distanceMeters - best.distanceMeters) < disambiguationGapMeters) {
+      pushOrphan(address, 'proximity_ambiguous', best);
+      continue;
+    }
+
+    const bestCanAcceptMultiple = best.building.is_multi_unit ||
+      best.building.is_townhome ||
+      (best.building.units_count ?? 1) > 1;
+    if (!bestCanAcceptMultiple && claimedSingleUnitBuildingIds.has(best.building.id)) {
+      pushOrphan(address, 'proximity_ambiguous', best);
+      continue;
+    }
+
     if (best) {
-      links.push({
-        campaign_id: params.campaignId,
-        address_id: address.id,
-        building_id: best.building.id,
+      pushLink(address, best.building, {
         match_type: 'nearest_building_15m',
         link_source: 'auto',
         confidence: Math.max(0, Math.min(1, 1 - best.distanceMeters / distanceMeters)),
         distance_meters: best.distanceMeters,
-        building_height: best.building.height_m ?? null,
       });
       continue;
     }
   }
 
-  return links;
+  return {
+    links,
+    address_orphans: addressOrphans,
+  };
 }
 
 export function buildAutoBuildingLinksFromMemory(params: {
@@ -557,8 +800,25 @@ export function buildAutoBuildingLinksFromMemory(params: {
   distanceMeters?: number;
   bucketDegrees?: number;
   useSpatialBuckets?: boolean;
+  sourceVersion?: string | null;
+  claimedSingleUnitBuildingIds?: Set<string>;
 }): AutoBuildingLinkRow[] {
-  return buildAutoBuildingLinksFromPreparedRows({
+  return buildCanonicalBuildingLinksFromMemory(params).links;
+}
+
+export function buildCanonicalBuildingLinksFromMemory(params: {
+  campaignId: string;
+  addresses: LinkerAddressRow[];
+  materializedBuildings: LinkerBuildingRow[];
+  sourceBuildings: GeoJSON.Feature[];
+  parcels?: LinkerParcelRow[];
+  distanceMeters?: number;
+  bucketDegrees?: number;
+  useSpatialBuckets?: boolean;
+  sourceVersion?: string | null;
+  claimedSingleUnitBuildingIds?: Set<string>;
+}): CanonicalBuildingLinkResult {
+  return buildCanonicalBuildingLinksFromPreparedRows({
     campaignId: params.campaignId,
     addresses: params.addresses,
     buildings: prepareBuildingsFromMemory({
@@ -569,5 +829,7 @@ export function buildAutoBuildingLinksFromMemory(params: {
     distanceMeters: params.distanceMeters,
     bucketDegrees: params.bucketDegrees,
     useSpatialBuckets: params.useSpatialBuckets,
+    sourceVersion: params.sourceVersion,
+    claimedSingleUnitBuildingIds: params.claimedSingleUnitBuildingIds,
   });
 }

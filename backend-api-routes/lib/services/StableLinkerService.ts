@@ -146,6 +146,7 @@ interface PreparedParcelFeature extends ParcelFeature {
 interface SpatialJoinOptions {
   parcels?: ParcelFeature[];
   resetExisting?: boolean;
+  resetBuildingAddressLinks?: boolean;
   persistenceMode?: 'silver' | 'gold' | 'external';
 }
 
@@ -647,7 +648,11 @@ export class StableLinkerService {
 
       const persistenceMode = options.persistenceMode ?? 'silver';
       if (options.resetExisting) {
-        await this.resetCampaignArtifacts(campaignId, persistenceMode !== 'silver');
+        await this.resetCampaignArtifacts(
+          campaignId,
+          persistenceMode !== 'silver',
+          options.resetBuildingAddressLinks ?? persistenceMode === 'silver'
+        );
       }
 
       // 3. Run 4-tier matching algorithm
@@ -898,12 +903,12 @@ export class StableLinkerService {
     );
   }
 
-  private async resetCampaignArtifacts(campaignId: string, clearCampaignAddressLinks: boolean): Promise<void> {
+  private async resetCampaignArtifacts(
+    campaignId: string,
+    clearCampaignAddressLinks: boolean,
+    clearBuildingAddressLinks: boolean
+  ): Promise<void> {
     const operations: Array<PromiseLike<{ error: { message: string } | null }>> = [
-      this.supabase
-        .from('building_address_links')
-        .delete()
-        .eq('campaign_id', campaignId),
       this.supabase
         .from('building_slices')
         .delete()
@@ -913,6 +918,15 @@ export class StableLinkerService {
         .delete()
         .eq('campaign_id', campaignId),
     ];
+
+    if (clearBuildingAddressLinks) {
+      operations.unshift(
+        this.supabase
+          .from('building_address_links')
+          .delete()
+          .eq('campaign_id', campaignId)
+      );
+    }
 
     if (clearCampaignAddressLinks) {
       operations.push(

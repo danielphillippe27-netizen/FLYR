@@ -125,6 +125,8 @@ async function main() {
       bucketed.map((link) => link.address_id).sort(),
       ['boundary', 'inside', 'nearby']
     );
+    assert.equal(bucketed.find((link) => link.address_id === 'inside')?.match_type, 'containment_verified');
+    assert.equal(bucketed.find((link) => link.address_id === 'inside')?.confidence, 1);
   });
 
   await test('memory linker skips duplicate source features and unknown gers ids', () => {
@@ -142,6 +144,36 @@ async function main() {
 
     assert.equal(links.length, 1);
     assert.equal(links[0].building_id, 'building-known');
+  });
+
+  await test('canonical linker drops tiny and accessory building footprints', () => {
+    const tinyBuildings = prepareBuildingsFromRows([
+      {
+        id: 'tiny-building',
+        gers_id: 'tiny',
+        geom: rectangle('tiny', -111.90050, 33.50000, -111.90045, 33.50005).geometry,
+      },
+      {
+        id: 'garage-building',
+        gers_id: 'garage',
+        building_type: 'garage',
+        geom: rectangle('garage', -111.90090, 33.50000, -111.90070, 33.50020).geometry,
+      },
+    ]);
+
+    assert.equal(tinyBuildings.length, 0);
+
+    const memoryLinks = buildAutoBuildingLinksFromMemory({
+      campaignId,
+      addresses: [pointAddress('garage-address', -111.90080, 33.50010)],
+      materializedBuildings: [{ id: 'garage-building', gers_id: 'garage' }],
+      sourceBuildings: [{
+        ...rectangle('garage', -111.90090, 33.50000, -111.90070, 33.50020),
+        properties: { gers_id: 'garage', building_type: 'garage' },
+      }],
+    });
+
+    assert.equal(memoryLinks.length, 0);
   });
 
   await test('parcel bridge links an address to a same-parcel building beyond distance gate', () => {
@@ -170,6 +202,68 @@ async function main() {
     assert.equal(links[0].building_id, 'building-on-parcel');
     assert.equal(links[0].match_type, 'parcel_bridge');
     assert.equal(links[0].link_source, 'auto_parcel');
+  });
+
+  await test('proximity rejects ambiguous nearest buildings inside the 15m cap', () => {
+    const buildings = prepareBuildingsFromRows([
+      {
+        id: 'building-a',
+        geom: rectangle('a', -111.90050, 33.50000, -111.90040, 33.50010).geometry,
+      },
+      {
+        id: 'building-b',
+        geom: rectangle('b', -111.90030, 33.50000, -111.90020, 33.50010).geometry,
+      },
+    ]);
+
+    const links = buildAutoBuildingLinksFromPreparedRows({
+      campaignId,
+      addresses: [pointAddress('ambiguous', -111.90035, 33.50005)],
+      buildings,
+    });
+
+    assert.equal(links.length, 0);
+  });
+
+  await test('proximity does not claim the same single-unit building twice', () => {
+    const buildings = prepareBuildingsFromRows([
+      {
+        id: 'single-unit',
+        geom: rectangle('single', -111.90050, 33.50000, -111.90040, 33.50010).geometry,
+      },
+    ]);
+
+    const links = buildAutoBuildingLinksFromPreparedRows({
+      campaignId,
+      addresses: [
+        pointAddress('first', -111.90055, 33.50005),
+        pointAddress('second', -111.90056, 33.50005),
+      ],
+      buildings,
+    });
+
+    assert.deepEqual(links.map((link) => link.address_id), ['first']);
+  });
+
+  await test('proximity allows repeated links to known multi-unit buildings', () => {
+    const buildings = prepareBuildingsFromRows([
+      {
+        id: 'multi-unit',
+        units_count: 2,
+        geom: rectangle('multi', -111.90050, 33.50000, -111.90040, 33.50010).geometry,
+      },
+    ]);
+
+    const links = buildAutoBuildingLinksFromPreparedRows({
+      campaignId,
+      addresses: [
+        pointAddress('first', -111.90055, 33.50005),
+        pointAddress('second', -111.90056, 33.50005),
+      ],
+      buildings,
+    });
+
+    assert.deepEqual(links.map((link) => link.address_id), ['first', 'second']);
   });
 
   await test('parcel address links persist smallest containing parcel evidence', () => {

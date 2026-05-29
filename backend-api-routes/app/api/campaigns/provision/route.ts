@@ -12,19 +12,22 @@ import type { CampaignSnapshotRow } from '@/lib/diamond/geometry';
 import {
   ParcelEnrichmentService,
 } from '@/lib/services/ParcelEnrichmentService';
+import { CampaignMapBundleService } from '@/lib/services/CampaignMapBundleService';
 import { isParcelRegionSupported } from '@/lib/geo/parcelRegions';
 import { sendCampaignReadyNotificationOnce } from '@/lib/notifications/campaign-ready';
 import {
   ProvisionTimingRecorder,
-  buildAutoBuildingLinksFromMemory,
-  buildAutoBuildingLinksFromPreparedRows,
+  buildCanonicalBuildingLinksFromMemory,
+  buildCanonicalBuildingLinksFromPreparedRows,
   buildParcelAddressLinksFromPreparedRows,
   prepareBuildingsFromRows,
+  type AddressOrphanLinkerRow,
   type AutoBuildingLinkRow,
   type AutoParcelAddressLinkRow,
   type LinkerParcelRow,
   type ProvisionTimingSnapshot,
 } from '@/lib/services/ProvisionPerformance';
+import { TownhouseSplitterService, type SplitterResult } from '@/lib/services/TownhouseSplitterService';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -44,6 +47,8 @@ type AutoLinkCampaignAddressesResult = {
   skipped_manual?: unknown;
   unlinked?: unknown;
   parcel_linked?: unknown;
+  address_orphans?: AddressOrphanLinkerRow[];
+  links?: AutoLinkRow[];
 };
 
 type CampaignPostProcessingResult = {
@@ -52,6 +57,8 @@ type CampaignPostProcessingResult = {
   linkedAddressCount: number;
   skippedManualCount: number;
   unlinkedAddressCount: number;
+  unitsCreated: number;
+  townhousesIdentified: number;
   linkerPath: 'in_memory' | 'in_process' | 'postgis_rpc' | 'deferred' | 'failed';
   message: string;
 };
@@ -80,6 +87,10 @@ type CampaignAddressLinkerRow = {
   source_id?: string | null;
   coordinate?: { lon?: unknown; lat?: unknown } | null;
   geom?: GeoJSON.Point | null;
+  street_match_score?: unknown;
+  house_number_score?: unknown;
+  match_score?: unknown;
+  score?: unknown;
 };
 
 type CampaignBuildingLinkerRow = {
@@ -87,6 +98,11 @@ type CampaignBuildingLinkerRow = {
   gers_id?: string | null;
   geom?: GeoJSON.Polygon | GeoJSON.MultiPolygon | null;
   height_m?: number | null;
+  units_count?: number | null;
+  unit_count?: number | null;
+  building_class?: string | null;
+  is_townhome_row?: boolean | null;
+  is_multi_unit?: boolean | null;
 };
 
 type CampaignParcelLinkerRow = LinkerParcelRow;
@@ -573,7 +589,7 @@ async function fetchCampaignLinkerBuildings(
   return fetchAllCampaignRows<CampaignBuildingLinkerRow>(
     supabase,
     'buildings',
-    'id, gers_id, geom, height_m',
+    'id, gers_id, geom, height_m, units_count, is_townhome_row',
     campaignId
   );
 }
@@ -1085,45 +1101,71 @@ async function upsertAutoBuildingLinks(
 
   for (let index = 0; index < links.length; index += FALLBACK_INSERT_BATCH_SIZE) {
     const chunk = links.slice(index, index + FALLBACK_INSERT_BATCH_SIZE);
-    const { error: rpcError } = await supabase.rpc('bulk_upsert_auto_building_links', {
+    const addressIds = chunk.map((link) => link.address_id);
+    const { data: protectedRows, error: protectedError } = await supabase
+      .from('building_address_links')
+      .select('address_id, link_source')
+      .eq('campaign_id', chunk[0].campaign_id)
+      .in('link_source', ['manual', 'client_auto'])
+      .in('address_id', addressIds);
+
+    if (protectedError) {
+      throw new Error(`Failed to protect manual/client building links before auto upsert: ${protectedError.message}`);
+    }
+
+    const protectedAddressIds = new Set((protectedRows ?? []).map((row) => String(row.address_id).toLowerCase()));
+    const autoLinks = chunk.filter((link) => !protectedAddressIds.has(link.address_id.toLowerCase()));
+
+    const fallbackUpsert = async (reason: string) => {
+      if (autoLinks.length === 0) return;
+      console.warn('[Provision] Falling back to Supabase building-link upsert:', {
+        campaignId: chunk[0].campaign_id,
+        reason,
+        chunkSize: chunk.length,
+        autoLinkCount: autoLinks.length,
+        protectedLinkCount: protectedAddressIds.size,
+      });
+      const { error } = await supabase
+        .from('building_address_links')
+        .upsert(autoLinks, {
+          onConflict: 'campaign_id,address_id',
+        });
+
+      if (error) {
+        throw new Error(`Failed to write building links: ${error.message}`);
+      }
+    };
+
+    const { data: rpcData, error: rpcError } = await supabase.rpc('bulk_upsert_auto_building_links', {
       p_campaign_id: chunk[0].campaign_id,
       p_links: chunk,
     });
 
-    if (!rpcError) {
-      continue;
+    if (rpcError) {
+      await fallbackUpsert(`bulk_upsert_auto_building_links RPC failed: ${rpcError.message}`);
+    } else {
+      const upserted = Number((rpcData as { upserted?: unknown } | null)?.upserted);
+      if (!Number.isFinite(upserted) || upserted < autoLinks.length) {
+        await fallbackUpsert(
+          `bulk_upsert_auto_building_links persisted ${Number.isFinite(upserted) ? upserted : 'unknown'} of ${autoLinks.length} writable links`
+        );
+      }
     }
 
-    console.warn('[Provision] bulk_upsert_auto_building_links RPC failed; falling back to Supabase upsert:', {
-      code: rpcError.code,
-      message: rpcError.message,
-    });
-
-    const { data: manualRows, error: manualError } = await supabase
+    const { count: persistedCount, error: persistedError } = await supabase
       .from('building_address_links')
-      .select('address_id')
+      .select('id', { count: 'exact', head: true })
       .eq('campaign_id', chunk[0].campaign_id)
-      .eq('link_source', 'manual')
-      .in('address_id', chunk.map((link) => link.address_id));
+      .in('address_id', addressIds);
 
-    if (manualError) {
-      throw new Error(`Failed to protect manual building links before fallback upsert: ${manualError.message}`);
+    if (persistedError) {
+      throw new Error(`Failed to verify persisted building links: ${persistedError.message}`);
     }
 
-    const manualAddressIds = new Set((manualRows ?? []).map((row) => String(row.address_id)));
-    const autoLinks = chunk.filter((link) => !manualAddressIds.has(link.address_id));
-    if (autoLinks.length === 0) {
-      continue;
-    }
-
-    const { error } = await supabase
-      .from('building_address_links')
-      .upsert(autoLinks, {
-        onConflict: 'campaign_id,address_id',
-      });
-
-    if (error) {
-      throw new Error(`Failed to write building links: ${error.message}`);
+    if ((persistedCount ?? 0) < chunk.length) {
+      throw new Error(
+        `Canonical building-link write verification failed: expected ${chunk.length} rows, found ${persistedCount ?? 0}`
+      );
     }
   }
 }
@@ -1189,6 +1231,257 @@ function isMissingParcelAddressLinksTable(error: { code?: string; message?: stri
     );
 }
 
+function optionalString(value: unknown): string | null {
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
+}
+
+async function fetchCanonicalLinkSourceVersion(
+  supabase: ReturnType<typeof createAdminClient>,
+  campaignId: string
+): Promise<string | null> {
+  const { data, error } = await supabase.rpc('rpc_get_campaign_map_source_version', {
+    p_campaign_id: campaignId,
+  });
+
+  if (error) {
+    console.warn('[Provision] Failed to compute canonical link source_version; links will be written without one:', {
+      campaignId,
+      code: error.code,
+      message: error.message,
+    });
+    return null;
+  }
+
+  const raw = (data ?? {}) as { link_source_version?: unknown; source_version?: unknown };
+  return optionalString(raw.link_source_version) ?? optionalString(raw.source_version);
+}
+
+async function expireStaleClientAutoLinks(
+  supabase: ReturnType<typeof createAdminClient>,
+  campaignId: string
+): Promise<number> {
+  const now = new Date().toISOString();
+  const { data: expiredRows, error } = await supabase
+    .from('campaign_addresses')
+    .update({ match_source: 'client_auto_expired' })
+    .eq('campaign_id', campaignId)
+    .eq('match_source', 'client_auto')
+    .lt('client_link_expires_at', now)
+    .select('id');
+
+  if (error) {
+    throw new Error(`Failed to expire stale client-auto address links: ${error.message}`);
+  }
+
+  const expiredAddressIds = (expiredRows ?? [])
+    .map((row) => optionalString((row as { id?: unknown }).id))
+    .filter((id): id is string => Boolean(id));
+  if (expiredAddressIds.length === 0) return 0;
+
+  const { error: linkError } = await supabase
+    .from('building_address_links')
+    .update({ link_source: 'client_auto_expired' })
+    .eq('campaign_id', campaignId)
+    .eq('link_source', 'client_auto')
+    .in('address_id', expiredAddressIds);
+
+  if (linkError) {
+    throw new Error(`Failed to expire stale client-auto building links: ${linkError.message}`);
+  }
+
+  return expiredAddressIds.length;
+}
+
+async function clearRefreshableAutoBuildingLinks(
+  supabase: ReturnType<typeof createAdminClient>,
+  campaignId: string
+): Promise<void> {
+  const { error } = await supabase
+    .from('building_address_links')
+    .delete()
+    .eq('campaign_id', campaignId)
+    .in('link_source', ['auto', 'auto_parcel', 'client_auto_expired']);
+
+  if (error) {
+    throw new Error(`Failed to clear refreshable automatic building links: ${error.message}`);
+  }
+}
+
+async function replaceAddressOrphans(
+  supabase: ReturnType<typeof createAdminClient>,
+  campaignId: string,
+  orphans: AddressOrphanLinkerRow[]
+): Promise<void> {
+  const { error: deleteError } = await supabase
+    .from('address_orphans')
+    .delete()
+    .eq('campaign_id', campaignId);
+
+  if (deleteError) {
+    throw new Error(`Failed to clear address orphans: ${deleteError.message}`);
+  }
+
+  if (orphans.length === 0) return;
+
+  const { error } = await supabase.rpc('insert_address_orphans_batch', {
+    p_campaign_id: campaignId,
+    p_rows: orphans,
+  });
+
+  if (error) {
+    throw new Error(`Failed to persist address orphans: ${error.message}`);
+  }
+}
+
+async function replaceAddressOrphansAfterLinking(
+  supabase: ReturnType<typeof createAdminClient>,
+  campaignId: string,
+  candidateOrphans: AddressOrphanLinkerRow[]
+): Promise<AddressOrphanLinkerRow[]> {
+  if (candidateOrphans.length === 0) {
+    await replaceAddressOrphans(supabase, campaignId, []);
+    return [];
+  }
+
+  const linkedRows = await fetchAllCampaignRows<{ address_id: string | null }>(
+    supabase,
+    'building_address_links',
+    'address_id',
+    campaignId
+  );
+  const linkedAddressIds = new Set(
+    linkedRows
+      .map((row) => optionalString(row.address_id))
+      .filter((id): id is string => Boolean(id))
+  );
+  const persistedOrphans = candidateOrphans.filter((orphan) => !linkedAddressIds.has(orphan.address_id));
+  await replaceAddressOrphans(supabase, campaignId, persistedOrphans);
+  return persistedOrphans;
+}
+
+async function refreshGroupedBuildingLinkClassifications(
+  supabase: ReturnType<typeof createAdminClient>,
+  campaignId: string
+): Promise<void> {
+  const linkRows = await fetchAllCampaignRows<{
+    building_id: string | null;
+    address_id: string | null;
+  }>(
+    supabase,
+    'building_address_links',
+    'building_id, address_id',
+    campaignId
+  );
+
+  const addressIdsByBuilding = new Map<string, Set<string>>();
+  for (const row of linkRows) {
+    const buildingId = optionalString(row.building_id);
+    const addressId = optionalString(row.address_id);
+    if (!buildingId || !addressId) continue;
+    const existing = addressIdsByBuilding.get(buildingId) ?? new Set<string>();
+    existing.add(addressId);
+    addressIdsByBuilding.set(buildingId, existing);
+  }
+
+  for (const [buildingId, addressIds] of addressIdsByBuilding) {
+    const unitCount = Math.max(addressIds.size, 1);
+    const isMultiUnit = unitCount > 1;
+    const { error } = await supabase
+      .from('building_address_links')
+      .update({
+        is_multi_unit: isMultiUnit,
+        unit_count: unitCount,
+        unit_arrangement: isMultiUnit ? 'horizontal' : 'single',
+        building_class: isMultiUnit ? 'multi_unit' : null,
+      })
+      .eq('campaign_id', campaignId)
+      .eq('building_id', buildingId);
+
+    if (error) {
+      throw new Error(`Failed to classify building links for ${buildingId}: ${error.message}`);
+    }
+  }
+}
+
+async function prewarmCanonicalMapBundle(
+  supabase: ReturnType<typeof createAdminClient>,
+  campaignId: string
+): Promise<void> {
+  try {
+    await new CampaignMapBundleService(supabase).resolve(campaignId, null);
+  } catch (error) {
+    console.warn('[Provision] Canonical map-bundle prewarm failed; map-bundle GET will rebuild on demand:', {
+      campaignId,
+      message: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+function parsePolygonGeometry(
+  geometry: CampaignBuildingLinkerRow['geom'] | string | null | undefined
+): GeoJSON.Polygon | null {
+  const parsed = typeof geometry === 'string'
+    ? (() => {
+      try {
+        return JSON.parse(geometry) as GeoJSON.Geometry;
+      } catch {
+        return null;
+      }
+    })()
+    : geometry;
+  return parsed?.type === 'Polygon' ? parsed : null;
+}
+
+function townhouseSplitterFeatures(buildings: CampaignBuildingLinkerRow[]) {
+  return buildings.flatMap((building) => {
+    const geometry = parsePolygonGeometry(building.geom);
+    if (!geometry) return [];
+    return [{
+      type: 'Feature' as const,
+      geometry,
+      properties: {
+        gers_id: building.id,
+        height: building.height_m ?? null,
+      },
+    }];
+  });
+}
+
+async function runProvisionTownhouseSplitter(params: {
+  supabase: ReturnType<typeof createAdminClient>;
+  campaignId: string;
+  buildings: CampaignBuildingLinkerRow[];
+}): Promise<SplitterResult[]> {
+  const buildings = params.buildings.length > 0
+    ? params.buildings
+    : await fetchCampaignLinkerBuildings(params.supabase, params.campaignId);
+  const features = townhouseSplitterFeatures(buildings);
+  if (features.length === 0) return [];
+
+  const splitter = new TownhouseSplitterService(params.supabase);
+  const summary = await splitter.processCampaignTownhouses(params.campaignId, { features });
+  const splitterResults = summary.results ?? [];
+
+  for (const result of splitterResults) {
+    const { error } = await params.supabase
+      .from('building_address_links')
+      .update({
+        is_multi_unit: result.units_count > 1,
+        unit_count: Math.max(result.units_count, 1),
+        unit_arrangement: result.units_count > 1 ? 'horizontal' : 'single',
+        building_class: result.is_townhouse ? 'townhouse' : (result.units_count > 1 ? 'multi_unit' : null),
+      })
+      .eq('campaign_id', params.campaignId)
+      .eq('building_id', result.building_id);
+
+    if (error) {
+      throw new Error(`Failed to persist townhouse classification for ${result.building_id}: ${error.message}`);
+    }
+  }
+
+  return splitterResults;
+}
+
 async function autoLinkCampaignAddressesFromMemory(params: {
   supabase: ReturnType<typeof createAdminClient>;
   campaignId: string;
@@ -1196,8 +1489,10 @@ async function autoLinkCampaignAddressesFromMemory(params: {
   addresses: CampaignAddressLinkerRow[];
   materializedBuildings: CampaignBuildingLinkerRow[];
   bedrockLinkGeometry: BedrockLinkGeometry;
+  sourceVersion?: string | null;
   timings?: ProvisionTimingRecorder;
 }): Promise<AutoLinkCampaignAddressesResult> {
+  await clearRefreshableAutoBuildingLinks(params.supabase, params.campaignId);
   const persistedParcels = await fetchCampaignLinkerParcels(params.supabase, params.campaignId).catch((error) => {
     console.warn('[Provision] Persisted parcel evidence unavailable for in-memory linker:', {
       campaignId: params.campaignId,
@@ -1215,14 +1510,16 @@ async function autoLinkCampaignAddressesFromMemory(params: {
       parcels: persistedParcels,
     })
     : [];
-  const links = buildAutoBuildingLinksFromMemory({
+  const canonicalLinkResult = buildCanonicalBuildingLinksFromMemory({
     campaignId: params.campaignId,
     addresses: params.addresses,
     materializedBuildings: params.materializedBuildings,
     sourceBuildings: params.bedrockLinkGeometry.buildings ?? [],
     parcels: parcelsForLinking,
     distanceMeters: AUTO_LINK_DISTANCE_METERS,
+    sourceVersion: params.sourceVersion,
   });
+  const links = canonicalLinkResult.links;
 
   await Promise.all([
     params.timings
@@ -1232,12 +1529,21 @@ async function autoLinkCampaignAddressesFromMemory(params: {
       ? params.timings.measure('bulk_parcel_link_insert_ms', () => upsertAutoParcelAddressLinks(params.supabase, parcelAddressLinks), 'linker')
       : upsertAutoParcelAddressLinks(params.supabase, parcelAddressLinks),
   ]);
+  const addressOrphans = await (params.timings
+    ? params.timings.measure(
+      'address_orphan_persist_ms',
+      () => replaceAddressOrphansAfterLinking(params.supabase, params.campaignId, canonicalLinkResult.address_orphans),
+      'linker'
+    )
+    : replaceAddressOrphansAfterLinking(params.supabase, params.campaignId, canonicalLinkResult.address_orphans));
 
   return {
     linked: links.length,
     parcel_linked: parcelAddressLinks.length,
     skipped_manual: 0,
     unlinked: Math.max(params.totalAddresses - links.length, 0),
+    address_orphans: addressOrphans,
+    links,
   };
 }
 
@@ -1245,8 +1551,10 @@ async function autoLinkCampaignAddressesInProcess(params: {
   supabase: ReturnType<typeof createAdminClient>;
   campaignId: string;
   totalAddresses: number;
+  sourceVersion?: string | null;
   timings?: ProvisionTimingRecorder;
 }): Promise<AutoLinkCampaignAddressesResult> {
+  await clearRefreshableAutoBuildingLinks(params.supabase, params.campaignId);
   const [addresses, buildingRows, parcelRows] = await Promise.all([
     fetchAllCampaignRows<CampaignAddressLinkerRow>(
       params.supabase,
@@ -1257,7 +1565,7 @@ async function autoLinkCampaignAddressesInProcess(params: {
     fetchAllCampaignRows<CampaignBuildingLinkerRow>(
       params.supabase,
       'buildings',
-      'id, geom, height_m',
+      'id, gers_id, geom, height_m, units_count, is_townhome_row',
       params.campaignId
     ),
     fetchCampaignLinkerParcels(params.supabase, params.campaignId).catch((error) => {
@@ -1269,13 +1577,15 @@ async function autoLinkCampaignAddressesInProcess(params: {
     }),
   ]);
 
-  const links = buildAutoBuildingLinksFromPreparedRows({
+  const canonicalLinkResult = buildCanonicalBuildingLinksFromPreparedRows({
     campaignId: params.campaignId,
     addresses,
     buildings: prepareBuildingsFromRows(buildingRows),
     parcels: parcelRows,
     distanceMeters: AUTO_LINK_DISTANCE_METERS,
+    sourceVersion: params.sourceVersion,
   });
+  const links = canonicalLinkResult.links;
   const parcelAddressLinks = buildParcelAddressLinksFromPreparedRows({
     campaignId: params.campaignId,
     addresses,
@@ -1290,12 +1600,21 @@ async function autoLinkCampaignAddressesInProcess(params: {
       ? params.timings.measure('bulk_parcel_link_insert_ms', () => upsertAutoParcelAddressLinks(params.supabase, parcelAddressLinks), 'linker')
       : upsertAutoParcelAddressLinks(params.supabase, parcelAddressLinks),
   ]);
+  const addressOrphans = await (params.timings
+    ? params.timings.measure(
+      'address_orphan_persist_ms',
+      () => replaceAddressOrphansAfterLinking(params.supabase, params.campaignId, canonicalLinkResult.address_orphans),
+      'linker'
+    )
+    : replaceAddressOrphansAfterLinking(params.supabase, params.campaignId, canonicalLinkResult.address_orphans));
 
   return {
     linked: links.length,
     parcel_linked: parcelAddressLinks.length,
     skipped_manual: 0,
     unlinked: Math.max(params.totalAddresses - links.length, 0),
+    address_orphans: addressOrphans,
+    links,
   };
 }
 
@@ -1547,10 +1866,40 @@ async function runCampaignPostProcessing(params: {
         linkedAddressCount: 0,
         skippedManualCount,
         unlinkedAddressCount: params.insertedCount,
+        unitsCreated: 0,
+        townhousesIdentified: 0,
         linkerPath,
         message: `${label} campaign is map-ready, but building linking failed.`,
       };
     }
+
+    await (params.timings
+      ? params.timings.measure('grouped_link_classification_ms', () => refreshGroupedBuildingLinkClassifications(
+        params.supabase,
+        params.campaignId
+      ), 'linker')
+      : refreshGroupedBuildingLinkClassifications(params.supabase, params.campaignId));
+
+    const splitterResults = await (params.timings
+      ? params.timings.measure('townhouse_splitter_ms', () => runProvisionTownhouseSplitter({
+        supabase: params.supabase,
+        campaignId: params.campaignId,
+        buildings: params.materializedBuildings,
+      }), 'linker')
+      : runProvisionTownhouseSplitter({
+        supabase: params.supabase,
+        campaignId: params.campaignId,
+        buildings: params.materializedBuildings,
+      }));
+    const unitsCreated = splitterResults.reduce((sum, row) => sum + Math.max(row.units_count, 0), 0);
+    const townhousesIdentified = splitterResults.filter((row) => row.is_townhouse).length;
+
+    await (params.timings
+      ? params.timings.measure('map_bundle_prewarm_ms', () => prewarmCanonicalMapBundle(
+        params.supabase,
+        params.campaignId
+      ), 'linker')
+      : prewarmCanonicalMapBundle(params.supabase, params.campaignId));
 
     await updateCampaignLinkSummary({
       supabase: params.supabase,
@@ -1575,10 +1924,23 @@ async function runCampaignPostProcessing(params: {
       linkedAddressCount,
       skippedManualCount,
       unlinkedAddressCount,
+      unitsCreated,
+      townhousesIdentified,
       linkerPath,
       message: `${label} campaign is map-ready. ${linkedAddressCount} addresses auto-linked.`,
     };
   };
+
+  const expiredClientLinkCount = await expireStaleClientAutoLinks(params.supabase, params.campaignId);
+  if (expiredClientLinkCount > 0) {
+    console.log('[Provision] Expired stale client-auto links before canonical linking.', {
+      campaignId: params.campaignId,
+      expiredClientLinkCount,
+    });
+  }
+  await clearRefreshableAutoBuildingLinks(params.supabase, params.campaignId);
+
+  const linkSourceVersion = await fetchCanonicalLinkSourceVersion(params.supabase, params.campaignId);
 
   const { count: materializedBuildingCount, error: buildingCountError } = await params.supabase
     .from('buildings')
@@ -1599,7 +1961,10 @@ async function runCampaignPostProcessing(params: {
       linkedAddressCount: 0,
       skippedManualCount: 0,
       unlinkedAddressCount: params.insertedCount,
+      unitsCreated: 0,
+      townhousesIdentified: 0,
       linkerPath: 'deferred',
+      // TODO: remove after linking-restructure cleanup
       message: `${label} campaign is map-ready. Linking deferred to device.`,
     };
   }
@@ -1620,6 +1985,7 @@ async function runCampaignPostProcessing(params: {
         addresses: params.campaignAddresses,
         materializedBuildings: params.materializedBuildings,
         bedrockLinkGeometry: params.bedrockLinkGeometry!,
+        sourceVersion: linkSourceVersion,
         timings: params.timings,
       }), 'linker')
       : autoLinkCampaignAddressesFromMemory({
@@ -1629,6 +1995,7 @@ async function runCampaignPostProcessing(params: {
         addresses: params.campaignAddresses,
         materializedBuildings: params.materializedBuildings,
         bedrockLinkGeometry: params.bedrockLinkGeometry,
+        sourceVersion: linkSourceVersion,
       }));
 
     const linkedAddressCount = jsonNumber(inMemoryResult.linked);
@@ -1658,12 +2025,14 @@ async function runCampaignPostProcessing(params: {
         supabase: params.supabase,
         campaignId: params.campaignId,
         totalAddresses: params.insertedCount,
+        sourceVersion: linkSourceVersion,
         timings: params.timings,
       }), 'linker')
       : autoLinkCampaignAddressesInProcess({
         supabase: params.supabase,
         campaignId: params.campaignId,
         totalAddresses: params.insertedCount,
+        sourceVersion: linkSourceVersion,
       }));
 
     console.log('[Provision] In-process S3 footprint linker completed as primary path.', {
@@ -1711,7 +2080,10 @@ async function runCampaignPostProcessing(params: {
     linkedAddressCount: jsonNumber(inMemoryResult?.linked),
     skippedManualCount: 0,
     unlinkedAddressCount: params.insertedCount,
+    unitsCreated: 0,
+    townhousesIdentified: 0,
     linkerPath: 'failed',
+    // TODO: remove after linking-restructure cleanup
     message: `${label} campaign is map-ready. Linking deferred to device.`,
   };
 }
@@ -2022,7 +2394,8 @@ export async function POST(request: NextRequest) {
             buildings_saved: effectiveBuildingCount,
             source: addressSource,
             links_created: postProcessing.linkedAddressCount,
-            units_created: 0,
+            units_created: postProcessing.unitsCreated,
+            townhouses_identified: postProcessing.townhousesIdentified,
             has_parcels: (preparedParcelCount ?? 0) > 0,
             parcel_count: preparedParcelCount ?? 0,
             building_link_confidence: responseBuildingLinkConfidence,

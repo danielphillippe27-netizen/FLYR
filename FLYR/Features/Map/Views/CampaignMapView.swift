@@ -1254,6 +1254,10 @@ struct CampaignMapView: View {
     @State private var showBuildingRenderPendingOverlay = false
     @State private var buildingRenderCheckTask: Task<Void, Never>?
     @State private var buildingRenderMonitoringStartedAt: Date?
+    @State private var isInitialMapPreparing = true
+    @State private var hasInstalledInitialCampaignLayers = false
+    @State private var initialMapReadyCompletionScheduled = false
+    @State private var initialMapReadyFallbackTask: Task<Void, Never>?
     @State private var mapDataUpdateTask: Task<Void, Never>?
     @State private var lastMapDebugRenderChoiceSignature: String?
     @State private var campaignMapMode: CampaignMapMode?
@@ -1862,6 +1866,9 @@ struct CampaignMapView: View {
             .onChange(of: campaignId) { _, _ in
                 configureUnlinkedTargetResolver()
                 stopWalkMode()
+                resetInitialMapReadiness(
+                    layersAlreadyInstalled: mapView?.mapboxMap.isStyleLoaded == true && layerManager != nil
+                )
                 hasFlownToCampaign = false
                 lastCampaignOverviewCameraSignature = nil
                 lastLoadedDataKey = nil
@@ -1935,6 +1942,9 @@ struct CampaignMapView: View {
                 cancellables.removeAll()
                 statusRefreshTask?.cancel()
                 buildingRenderCheckTask?.cancel()
+                initialMapReadyFallbackTask?.cancel()
+                initialMapReadyFallbackTask = nil
+                initialMapReadyCompletionScheduled = false
                 mapDataUpdateTask?.cancel()
                 postLinkCampaignDataRefreshTask?.cancel()
                 quickStartStandardTapTask?.cancel()
@@ -1960,6 +1970,7 @@ struct CampaignMapView: View {
                 refreshVisibleBuildingRenderMonitoring(reset: isLoading)
                 if !isLoading {
                     updateMapData()
+                    scheduleInitialMapReadyCompletionIfPossible()
                     rehydrateSessionVisitInferenceIfNeeded()
                     maybeStartDemoSession()
                     maybePresentPendingLiveInviteHandoff()
@@ -1968,20 +1979,24 @@ struct CampaignMapView: View {
             .onChange(of: buildingsRenderSignature) { _, _ in
                 refreshVisibleBuildingRenderMonitoring(reset: true)
                 updateMapData()
+                scheduleInitialMapReadyCompletionIfPossible()
                 rehydrateSessionVisitInferenceIfNeeded()
                 maybeStartDemoSession()
                 maybePresentPendingLiveInviteHandoff()
             }
             .onChange(of: featuresService.addresses(for: campaignId)?.features.count ?? 0) { _, _ in
                 updateMapData()
+                scheduleInitialMapReadyCompletionIfPossible()
                 maybePresentPendingLiveInviteHandoff()
             }
             .onChange(of: parcelsRenderSignature) { _, _ in
                 updateMapData()
+                scheduleInitialMapReadyCompletionIfPossible()
             }
             .onChange(of: currentDiamondManifest) { _, _ in
                 refreshVisibleBuildingRenderMonitoring(reset: true)
                 updateMapData()
+                scheduleInitialMapReadyCompletionIfPossible()
             }
             .onChange(of: currentDisplayModeHint) { _, _ in
                 applyServerDisplayModeHintIfNeeded()
@@ -2403,6 +2418,7 @@ struct CampaignMapView: View {
             doorKnockingSuggestionOverlay
             loadingOverlay
                 .animation(.easeInOut(duration: 0.28), value: featuresService.isLoading)
+                .animation(.easeInOut(duration: 0.22), value: isInitialMapPreparing)
             mapOptimizingOverlay
                 .animation(.easeInOut(duration: 0.24), value: featuresService.clientLinkingProgress.percent)
             buildingRenderPendingOverlay
@@ -4715,15 +4731,20 @@ struct CampaignMapView: View {
     private var loadingOverlay: some View {
         let hasFirstDrawData = !(featuresService.buildings(for: campaignId)?.features.isEmpty ?? true) ||
             !(featuresService.addresses(for: campaignId)?.features.isEmpty ?? true)
-        if featuresService.isLoading && !quickStartEnabled && !hasFirstDrawData {
+        let shouldShowLoader = !quickStartEnabled && (
+            isInitialMapPreparing ||
+                (featuresService.isLoading && !hasFirstDrawData)
+        )
+        if shouldShowLoader {
             ZStack {
                 Color.clear
                     .ignoresSafeArea()
 
-                VStack(spacing: 24) {
-                    MapLoadingLottieView(name: "splash")
-                        .frame(width: 340, height: 227)
-                        .clipped()
+                VStack(spacing: 14) {
+                    ProgressView()
+                        .progressViewStyle(.circular)
+                        .tint(.white)
+                        .scaleEffect(1.18)
                         .accessibilityHidden(true)
 
                     Text("Loading map")
@@ -4733,6 +4754,11 @@ struct CampaignMapView: View {
                         .shadow(color: .black.opacity(0.45), radius: 6, x: 0, y: 2)
                 }
                 .padding(.horizontal, 24)
+                .padding(.vertical, 14)
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(Color.black.opacity(0.68))
+                )
                 .offset(y: -56)
             }
             .allowsHitTesting(true)
@@ -4794,8 +4820,74 @@ struct CampaignMapView: View {
 
     // MARK: - Setup
 
+    private func resetInitialMapReadiness(layersAlreadyInstalled: Bool = false) {
+        isInitialMapPreparing = true
+        hasInstalledInitialCampaignLayers = layersAlreadyInstalled
+        initialMapReadyCompletionScheduled = false
+        initialMapReadyFallbackTask?.cancel()
+        initialMapReadyFallbackTask = nil
+    }
+
+    private func scheduleInitialMapReadyCompletionIfPossible() {
+        guard isInitialMapPreparing,
+              !initialMapReadyCompletionScheduled,
+              !featuresService.isLoading,
+              hasInstalledInitialCampaignLayers,
+              let targetMapView = mapView,
+              targetMapView.mapboxMap.isStyleLoaded else {
+            return
+        }
+
+        let expectedCampaignId = campaignId
+        initialMapReadyCompletionScheduled = true
+        initialMapReadyFallbackTask?.cancel()
+
+        targetMapView.mapboxMap.onMapIdle.observeNext { _ in
+            DispatchQueue.main.async {
+                guard expectedCampaignId == campaignId,
+                      let currentMapView = mapView,
+                      currentMapView === targetMapView,
+                      !featuresService.isLoading else {
+                    initialMapReadyFallbackTask?.cancel()
+                    initialMapReadyFallbackTask = nil
+                    initialMapReadyCompletionScheduled = false
+                    scheduleInitialMapReadyCompletionIfPossible()
+                    return
+                }
+                completeInitialMapReadiness()
+            }
+        }.store(in: &cancellables)
+
+        initialMapReadyFallbackTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(1400))
+            guard !Task.isCancelled else { return }
+            guard expectedCampaignId == campaignId,
+                  let currentMapView = mapView,
+                  currentMapView === targetMapView,
+                  !featuresService.isLoading,
+                  hasInstalledInitialCampaignLayers else {
+                initialMapReadyFallbackTask = nil
+                initialMapReadyCompletionScheduled = false
+                scheduleInitialMapReadyCompletionIfPossible()
+                return
+            }
+            completeInitialMapReadiness()
+        }
+    }
+
+    private func completeInitialMapReadiness() {
+        guard isInitialMapPreparing else { return }
+        initialMapReadyFallbackTask?.cancel()
+        initialMapReadyFallbackTask = nil
+        initialMapReadyCompletionScheduled = false
+        withAnimation(.easeInOut(duration: 0.22)) {
+            isInitialMapPreparing = false
+        }
+    }
+
     private func setupMap(_ map: MapView) {
         cancellables.removeAll()
+        resetInitialMapReadiness()
         hasFlownToCampaign = false
         let manager = MapLayerManager(mapView: map)
         manager.includeBuildingsLayer = true
@@ -4850,6 +4942,8 @@ struct CampaignMapView: View {
             scheduleLayerVisibilityReassert()
             enforceCampaignMapPresentationMode()
             refreshVisibleBuildingRenderMonitoring(reset: false)
+            hasInstalledInitialCampaignLayers = true
+            scheduleInitialMapReadyCompletionIfPossible()
         }
 
         // Local campaign styles can load before SwiftUI's async onMapReady runs.

@@ -3,6 +3,7 @@ import {
   isStrictCampaignMapBundleLink,
   normalizeCampaignMapBundleLinksForClient,
   shouldRefreshBundleForCacheVersion,
+  shouldRefreshBundleFromPersistedParcels,
   shouldRefreshBundleFromPolishedCache,
 } from '../CampaignMapBundleService';
 
@@ -49,9 +50,39 @@ assert.equal(
 );
 
 assert.equal(
-  shouldRefreshBundleForCacheVersion('canonical-map-bundle-v3'),
+  shouldRefreshBundleForCacheVersion('canonical-map-bundle-v5'),
   false,
   'keeps bundles written by the current bundle cache version'
+);
+
+assert.equal(
+  shouldRefreshBundleFromPersistedParcels({
+    currentParcelFeatures: 115,
+    currentParcelSource: 'snapshot_pmtiles',
+    persistedParcelCount: 196,
+  }),
+  true,
+  'refreshes a partial snapshot parcel bundle once persisted parcels arrive'
+);
+
+assert.equal(
+  shouldRefreshBundleFromPersistedParcels({
+    currentParcelFeatures: 196,
+    currentParcelSource: 'campaign_parcels',
+    persistedParcelCount: 196,
+  }),
+  false,
+  'keeps a current bundle that already uses all persisted parcels'
+);
+
+assert.equal(
+  shouldRefreshBundleFromPersistedParcels({
+    currentParcelFeatures: 115,
+    currentParcelSource: 'snapshot_pmtiles',
+    persistedParcelCount: 0,
+  }),
+  false,
+  'does not churn snapshot parcel bundles when no persisted parcel layer exists'
 );
 
 assert.equal(
@@ -61,7 +92,7 @@ assert.equal(
     address_id: 'address-1',
     match_type: 'nearest_building_15m',
     confidence: 0.4,
-    distance_meters: 9,
+    distance_meters: 16,
   }),
   false,
   'rejects loose nearest-building links from the canonical map bundle'
@@ -95,7 +126,7 @@ assert.deepEqual(
   'normalizes internal building row ids to public map ids and keeps the best link per address'
 );
 
-const embeddedFallbackLinks = normalizeCampaignMapBundleLinksForClient(
+const unmappedLinks = normalizeCampaignMapBundleLinksForClient(
   [
     {
       id: 'internal-only',
@@ -106,23 +137,13 @@ const embeddedFallbackLinks = normalizeCampaignMapBundleLinksForClient(
       distance_meters: 0,
     },
   ],
-  new Map(),
-  [
-    {
-      id: 'embedded',
-      building_id: 'overture:building:def',
-      address_id: 'address-2',
-      match_type: 'auto',
-      confidence: 0.9,
-      distance_meters: 0,
-    },
-  ]
+  new Map()
 );
 
 assert.equal(
-  embeddedFallbackLinks[0]?.building_id,
-  'overture:building:def',
-  'falls back to campaign_addresses.building_gers_id when the building row lookup is unavailable'
+  unmappedLinks[0]?.building_id,
+  '9d55f5ef-a4fd-4fc0-810e-6d36d13604af',
+  'does not fall back to campaign_addresses.building_gers_id when the building row lookup is unavailable'
 );
 
 console.log('CampaignMapBundleService polished-cache freshness tests passed.');
