@@ -671,6 +671,30 @@ async function persistPreparedParcels(
   return normalizedParcels.length;
 }
 
+async function runDeferredParcelEnrichment(campaignId: string) {
+  try {
+    const supabase = createAdminClient();
+    await new ParcelEnrichmentService(supabase).runForCampaign(campaignId);
+  } catch (error) {
+    console.error('[Provision] Deferred parcel enrichment failed:', {
+      campaignId,
+      error: error instanceof Error ? error.message : error,
+    });
+  }
+}
+
+function scheduleDeferredParcelEnrichment(campaignId: string) {
+  try {
+    after(() => runDeferredParcelEnrichment(campaignId));
+  } catch (error) {
+    console.warn('[Provision] Next after() unavailable for parcel enrichment; running best-effort fallback.', {
+      campaignId,
+      error: error instanceof Error ? error.message : error,
+    });
+    void runDeferredParcelEnrichment(campaignId);
+  }
+}
+
 async function cachePolishedBuildingGeoJSON(
   supabase: ReturnType<typeof createAdminClient>,
   campaignId: string,
@@ -1286,6 +1310,8 @@ async function updateCampaignLinkSummary(params: {
   await updateCampaignProvision(params.supabase, params.campaignId, {
     provision_status: 'ready',
     provision_phase: 'linked',
+    provision_error: null,
+    provision_message: null,
     optimized_at: params.readyAt,
     building_link_confidence: confidence,
     map_mode: confidence >= 80 ? 'hybrid' : 'standard_pins',
@@ -1503,6 +1529,8 @@ async function runCampaignPostProcessing(params: {
       await updateCampaignProvision(params.supabase, params.campaignId, {
         provision_status: 'ready',
         provision_phase: 'linking_failed',
+        provision_error: null,
+        provision_message: null,
         optimized_at: params.readyAt,
         building_link_confidence: 0,
         map_mode: 'standard_pins',
@@ -1772,6 +1800,8 @@ export async function POST(request: NextRequest) {
     await updateCampaignProvision(supabase, campaignId, {
       provision_status: 'pending',
       provision_phase: 'created',
+      provision_error: null,
+      provision_message: null,
       provision_source: null,
       provisioned_at: null,
       addresses_ready_at: null,
@@ -1971,6 +2001,8 @@ export async function POST(request: NextRequest) {
               provision_phase: postProcessing.linkedAddressCount === 0 && finalAddressCount > 0
                 ? 'linking_failed'
                 : 'map_ready',
+              provision_error: null,
+              provision_message: null,
               provisioned_at: readyAt,
               map_ready_at: readyAt,
               provision_timings: timings.snapshot(),
@@ -1982,7 +2014,7 @@ export async function POST(request: NextRequest) {
             : 0;
           const responseMapMode = responseBuildingLinkConfidence >= 80 ? 'hybrid' : 'standard_pins';
 
-          return {
+          const result = {
             success: true,
             campaign_id: campaignId,
             addresses_saved: finalAddressCount,
@@ -2023,6 +2055,16 @@ export async function POST(request: NextRequest) {
             warning: snapshot.warning ?? null,
             message: postProcessing.message,
           };
+
+          if (parcelEnrichmentStatus === 'queued' && !hasPreparedParcels) {
+            if (waitForLinker) {
+              scheduleDeferredParcelEnrichment(campaignId!);
+            } else {
+              await runDeferredParcelEnrichment(campaignId!);
+            }
+          }
+
+          return result;
 	        });
 	      } catch (error) {
         console.error('[Provision] Background provisioning error:', error);

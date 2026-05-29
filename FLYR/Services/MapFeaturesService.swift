@@ -139,6 +139,63 @@ struct MapFeatureGeoJSONFeature<P: Codable>: Codable {
     let id: String?
     let geometry: MapFeatureGeoJSONGeometry
     let properties: P
+
+    enum CodingKeys: String, CodingKey {
+        case type
+        case id
+        case geometry
+        case properties
+    }
+
+    init(
+        type: String = "Feature",
+        id: String? = nil,
+        geometry: MapFeatureGeoJSONGeometry,
+        properties: P
+    ) {
+        self.type = type
+        self.id = id
+        self.geometry = geometry
+        self.properties = properties
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+
+        type = try container.decodeIfPresent(String.self, forKey: .type) ?? "Feature"
+        id = Self.decodeFlexibleStringIfPresent(container, forKey: .id)
+        geometry = try container.decode(MapFeatureGeoJSONGeometry.self, forKey: .geometry)
+        properties = try container.decode(P.self, forKey: .properties)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(type, forKey: .type)
+        try container.encodeIfPresent(id, forKey: .id)
+        try container.encode(geometry, forKey: .geometry)
+        try container.encode(properties, forKey: .properties)
+    }
+
+    private static func decodeFlexibleStringIfPresent(
+        _ container: KeyedDecodingContainer<CodingKeys>,
+        forKey key: CodingKeys
+    ) -> String? {
+        if let stringValue = try? container.decodeIfPresent(String.self, forKey: key) {
+            return stringValue
+        }
+        if let intValue = try? container.decodeIfPresent(Int.self, forKey: key) {
+            return String(intValue)
+        }
+        if let doubleValue = try? container.decodeIfPresent(Double.self, forKey: key),
+           doubleValue.isFinite {
+            let rounded = doubleValue.rounded()
+            if abs(doubleValue - rounded) < .ulpOfOne {
+                return String(Int64(rounded))
+            }
+            return String(doubleValue)
+        }
+        return nil
+    }
 }
 
 /// GeoJSON FeatureCollection for map feature RPCs
@@ -564,18 +621,7 @@ private func decodeFeatureCollection<F: Codable>(_ data: Data) throws -> MapFeat
 }
 
 private func campaignApiBaseURL() -> URL {
-    let configured =
-        (Bundle.main.object(forInfoDictionaryKey: "FLYR_PRO_API_URL") as? String) ??
-        (Bundle.main.object(forInfoDictionaryKey: "FLYR_API_BASE_URL") as? String) ??
-        "https://flyrpro.app"
-    let trimmed = configured.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-
-    if let components = URLComponents(string: trimmed),
-       components.host?.lowercased() == "flyrpro.app" {
-        return URL(string: "https://www.flyrpro.app")!
-    }
-
-    return URL(string: trimmed) ?? URL(string: "https://www.flyrpro.app")!
+    Config.backendAPIURL
 }
 
 private func fetchCampaignAddressGeoJSONFromAPI(campaignId: UUID) async throws -> AddressFeatureCollection {
@@ -942,6 +988,7 @@ final class MapFeaturesService: ObservableObject {
         var loadedCachedFirstDrawBundle = false
         var cachedBundleHasBuildings = false
         var cachedBundleHasAddresses = false
+        var cachedBundleHasParcels = false
         var cachedBundleNeedsLinkRefresh = false
 
         if let cachedBundle = await campaignRepository.getCampaignMapBundle(campaignId: campaignId),
@@ -952,6 +999,7 @@ final class MapFeaturesService: ObservableObject {
             loadedCachedFirstDrawBundle = true
             cachedBundleHasBuildings = !(self.buildings?.features.isEmpty ?? true)
             cachedBundleHasAddresses = !cachedBundle.addresses.features.isEmpty
+            cachedBundleHasParcels = !(self.parcels?.features.isEmpty ?? true)
             cachedBundleNeedsLinkRefresh = cachedBundleHasBuildings
                 && cachedBundleHasAddresses
                 && !Self.hasLinkedAddressIdentity(
@@ -959,7 +1007,7 @@ final class MapFeaturesService: ObservableObject {
                     addresses: cachedBundle.addresses
                 )
             isLoading = false
-            print("🧪 [MAP_DEBUG] cache_bundle_loaded campaign=\(campaignId) buildingsGeoJSON=\(self.buildings?.features.count ?? 0) addressesGeoJSON=\(self.addresses?.features.count ?? 0) roads=\(self.roads?.features.count ?? 0)")
+            print("🧪 [MAP_DEBUG] cache_bundle_loaded campaign=\(campaignId) buildingsGeoJSON=\(self.buildings?.features.count ?? 0) addressesGeoJSON=\(self.addresses?.features.count ?? 0) parcelsGeoJSON=\(self.parcels?.features.count ?? 0) roads=\(self.roads?.features.count ?? 0)")
             if cachedBundleNeedsLinkRefresh {
                 print("🧪 [MAP_DEBUG] cache_bundle_link_identity_missing campaign=\(campaignId) action=refresh_addresses_and_buildings")
             }
@@ -1041,7 +1089,7 @@ final class MapFeaturesService: ObservableObject {
             if hasParcelTiles {
                 self.parcels = ParcelFeatureCollection(type: "FeatureCollection", features: [])
                 print("🧪 [MAP_DEBUG] parcels_geojson_skipped campaign=\(campaignId) reason=parcel_vector_tiles")
-            } else if forceRefresh || !loadedCachedFirstDrawBundle {
+            } else if forceRefresh || !loadedCachedFirstDrawBundle || !cachedBundleHasParcels {
                 group.addTask {
                     await self.fetchCampaignParcels(campaignId: campaignId, requestId: requestId)
                 }

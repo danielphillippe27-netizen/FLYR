@@ -2,25 +2,36 @@ import SwiftUI
 
 struct TypeChips: View {
     @Binding var selected: CampaignType
+    var options: [CampaignType] = CampaignType.allCases
     
     var body: some View {
-        HStack(spacing: 8) {
-            ForEach(CampaignType.allCases) { type in
-                Button {
-                    withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) { 
-                        selected = type 
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 10) {
+                ForEach(options) { type in
+                    Button {
+                        withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                            selected = type
+                        }
+                    } label: {
+                        Text(type.title)
+                            .font(.system(size: 16, weight: .semibold))
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
+                            .padding(.vertical, 12)
+                            .padding(.horizontal, 18)
+                            .background(selected == type ? Color.red : Color(.systemGray6))
+                            .foregroundStyle(selected == type ? .white : .primary)
+                            .clipShape(Capsule())
+                            .overlay {
+                                Capsule()
+                                    .stroke(selected == type ? Color.red : Color(.separator).opacity(0.55), lineWidth: 1)
+                            }
                     }
-                } label: {
-                    Text(type.title)
-                        .font(.system(size: 15, weight: .medium))
-                        .padding(.vertical, 8)
-                        .padding(.horizontal, 16)
-                        .background(selected == type ? Color.accentColor : Color(.systemGray6))
-                        .foregroundStyle(selected == type ? .white : .primary)
-                        .clipShape(Capsule())
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
             }
+            .padding(.horizontal, 1)
+            .padding(.vertical, 2)
         }
     }
 }

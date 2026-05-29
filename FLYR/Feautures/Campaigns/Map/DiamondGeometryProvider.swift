@@ -32,6 +32,10 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
     static let addressCircleLayerId = "diamond-addresses-circles"
     static let selectedAddressCircleLayerId = "diamond-addresses-selected"
     static let addressNumberLayerId = "diamond-addresses-numbers"
+    static let parcelOverviewMinZoom: Double = 13.2
+    static let parcelOverviewMaxZoom: Double = 22.0
+    static let addressLayerMinZoom: Double = 11.8
+    static let addressNumberLayerMinZoom: Double = 17.0
 
     private let buildingSourceId = VectorTileDiamondGeometryProvider.buildingSourceId
     private let addressSourceId = VectorTileDiamondGeometryProvider.addressSourceId
@@ -45,10 +49,10 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
     private let addressCircleLayerId = VectorTileDiamondGeometryProvider.addressCircleLayerId
     private let selectedAddressCircleLayerId = VectorTileDiamondGeometryProvider.selectedAddressCircleLayerId
     private let addressNumberLayerId = VectorTileDiamondGeometryProvider.addressNumberLayerId
-    private let parcelOverviewMinZoom = 15.8
-    private let parcelOverviewMaxZoom = 22.0
+    private let parcelOverviewMinZoom = VectorTileDiamondGeometryProvider.parcelOverviewMinZoom
+    private let parcelOverviewMaxZoom = VectorTileDiamondGeometryProvider.parcelOverviewMaxZoom
     private let buildingCapHeightMeters = 1.2
-    private let addressLayerMinZoom = 11.8
+    private let addressLayerMinZoom = VectorTileDiamondGeometryProvider.addressLayerMinZoom
     private let addressCylinderHeightMeters = 3.0
     private let addressLabelCapClearanceMeters = 0.05
     private let selectedBuildingHeightScale = 1.0
@@ -381,7 +385,7 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
             }
         )
         labels.symbolSortKey = .constant(0)
-        labels.minZoom = 17
+        labels.minZoom = Self.addressNumberLayerMinZoom
         labels.filter = singleAddressBuildingNumberFilter()
         try map.addLayer(labels, layerPosition: .above(buildingLineLayerId))
     }
@@ -430,7 +434,7 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
         fill.sourceLayer = sourceLayer
         fill.fillColor = .expression(statusFillColorExpression(defaultColor: MapStatusColor.untouched))
         fill.fillOpacity = .expression(parcelOverviewFillOpacityExpression())
-        fill.fillAntialias = .constant(true)
+        fill.fillAntialias = .constant(false)
         fill.minZoom = parcelOverviewMinZoom
         fill.maxZoom = parcelOverviewMaxZoom
         fill.filter = parcelFilter
@@ -444,8 +448,10 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
             Exp(.interpolate) {
                 Exp(.linear)
                 Exp(.zoom)
-                15.8
-                0.25
+                13.2
+                0.15
+                15.0
+                0.45
                 16.8
                 0.85
                 19.0
@@ -599,7 +605,7 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
                 100
             }
         )
-        labels.minZoom = 17
+        labels.minZoom = Self.addressNumberLayerMinZoom
         labels.filter = addressFilter
         try map.addLayer(labels, layerPosition: .above(selectedAddressCircleLayerId))
     }
@@ -719,9 +725,11 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
         Exp(.interpolate) {
             Exp(.linear)
             Exp(.zoom)
-            15.8
+            13.2
             0.0
-            16.2
+            13.8
+            0.22
+            15.2
             0.48
             17.4
             Exp(.switchCase) {
@@ -742,9 +750,11 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
         Exp(.interpolate) {
             Exp(.linear)
             Exp(.zoom)
-            15.8
+            13.2
             0.0
-            16.2
+            13.8
+            0.06
+            15.2
             0.10
             17.4
             Exp(.switchCase) {

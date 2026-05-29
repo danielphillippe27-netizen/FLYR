@@ -35,14 +35,7 @@ final class BuildingLinkService {
     
     private init() {
         self.supabaseClient = SupabaseManager.shared.client
-        let raw = (Bundle.main.object(forInfoDictionaryKey: "FLYR_PRO_API_URL") as? String)?.trimmingCharacters(in: CharacterSet(charactersIn: "/")) ?? "https://flyrpro.app"
-        // Normalize flyrpro.app → www.flyrpro.app so URLSession doesn't follow a redirect that
-        // strips the Authorization header, causing 401 on the buildings snapshot endpoint.
-        if let components = URLComponents(string: raw), components.host == "flyrpro.app" {
-            self.baseURL = "https://www.flyrpro.app"
-        } else {
-            self.baseURL = raw
-        }
+        self.baseURL = Config.backendAPIURL.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
     }
     
     // MARK: - Fetch Buildings (from S3 via API)

@@ -33,6 +33,7 @@ struct LeaderboardRow: View {
     let value: Double
     /// When set, shown instead of numeric value (e.g. "—" or "No activity")
     let valueDisplay: String?
+    let pendingText: String?
     let isCurrentUser: Bool
     let isActiveMetric: Bool
 
@@ -43,6 +44,7 @@ struct LeaderboardRow: View {
         subtitle: String? = nil,
         value: Double,
         valueDisplay: String? = nil,
+        pendingText: String? = nil,
         isCurrentUser: Bool = false,
         isActiveMetric: Bool = true
     ) {
@@ -52,6 +54,7 @@ struct LeaderboardRow: View {
         self.subtitle = subtitle
         self.value = value
         self.valueDisplay = valueDisplay
+        self.pendingText = pendingText
         self.isCurrentUser = isCurrentUser
         self.isActiveMetric = isActiveMetric
     }
@@ -97,11 +100,22 @@ struct LeaderboardRow: View {
             .frame(maxWidth: .infinity, alignment: .leading)
 
             // Metric value (monospaced, red when active)
-            Text(valueDisplay ?? formatValue(value))
-                .font(.system(size: 18, weight: .bold))
-                .monospacedDigit()
-                .foregroundColor(isActiveMetric ? Self.accentRed : .text)
-                .frame(minWidth: 44, alignment: .trailing)
+            VStack(alignment: .trailing, spacing: 3) {
+                Text(valueDisplay ?? formatValue(value))
+                    .font(.system(size: 18, weight: .bold))
+                    .monospacedDigit()
+                    .foregroundColor(isActiveMetric ? Self.accentRed : .text)
+                if let pendingText, !pendingText.isEmpty {
+                    Text(pendingText)
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(Self.accentRed)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Self.accentRed.opacity(0.12))
+                        .cornerRadius(4)
+                }
+            }
+            .frame(minWidth: 44, alignment: .trailing)
 
             // Chevron
             Image(systemName: "chevron.right")
@@ -118,9 +132,9 @@ struct LeaderboardRow: View {
     private var rankView: some View {
         switch rank {
         case 0:
-            Text("—")
-                .font(.system(size: 15, weight: .medium))
-                .foregroundColor(.muted)
+            Text("Live")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(Self.accentRed)
         case 1:
             ZStack {
                 Image(systemName: "crown.fill")

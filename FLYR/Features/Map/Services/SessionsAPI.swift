@@ -48,6 +48,10 @@ final class SessionsAPI {
 
     private init() {}
 
+    private struct UserProjectionRefreshParams: Encodable {
+        let p_user_id: UUID
+    }
+
     private func isMissingRouteAssignmentColumn(_ error: Error) -> Bool {
         if let postgrestError = error as? PostgrestError {
             let message = postgrestError.message.lowercased()
@@ -70,6 +74,26 @@ final class SessionsAPI {
         return message.contains("farm_id")
             || message.contains("farm_touch_id")
             || message.contains("cycle_number")
+    }
+
+    private func refreshSessionDerivedProjections(userId: UUID) async {
+        let params = UserProjectionRefreshParams(p_user_id: userId)
+
+        do {
+            _ = try await client
+                .rpc("refresh_leaderboard_rollups_for_user", params: params)
+                .execute()
+        } catch {
+            print("⚠️ [SessionsAPI] Failed to refresh leaderboard rollups after session update: \(error)")
+        }
+
+        do {
+            _ = try await client
+                .rpc("refresh_user_stats_from_sessions", params: params)
+                .execute()
+        } catch {
+            print("⚠️ [SessionsAPI] Failed to refresh user stats after session update: \(error)")
+        }
     }
 
     /// Prefer the campaign's workspace to avoid leaking the caller's current workspace into
@@ -319,6 +343,10 @@ final class SessionsAPI {
             .update(data)
             .eq("id", value: id.uuidString)
             .execute()
+
+        if endTime != nil, let userId = AuthManager.shared.user?.id {
+            await refreshSessionDerivedProjections(userId: userId)
+        }
     }
 
     /// Permanently remove a session owned by the current user.

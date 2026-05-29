@@ -234,6 +234,7 @@ actor LeaderboardService {
                     let weekly = snapshot(from: dict["weekly"], fallback: weeklyFallback)
                     let monthly = snapshot(from: dict["monthly"], fallback: monthlyFallback)
                     let allTime = snapshot(from: dict["all_time"], fallback: allTimeFallback)
+                    let pending = snapshot(from: dict["pending"], fallback: MetricSnapshot())
                     
                     // Create LeaderboardUser manually to handle JSONB fields
                     return LeaderboardUser(
@@ -250,11 +251,12 @@ actor LeaderboardService {
                         daily: daily,
                         weekly: weekly,
                         monthly: monthly,
-                        allTime: allTime
+                        allTime: allTime,
+                        pending: pending
                     )
                 }
                 // #region agent log
-                _debugLogLeaderboard(location: "LeaderboardService.fetchLeaderboard", message: "leaderboard result", data: ["userCount": users.count, "timeframe": timeframe, "metric": metric, "userIds": Array(users.prefix(15).map(\.id)), "doorknocksList": Array(users.prefix(15).map(\.doorknocks))], hypothesisId: "H4")
+                _debugLogLeaderboard(location: "LeaderboardService.fetchLeaderboard", message: "leaderboard result", data: ["userCount": users.count, "timeframe": timeframe, "metric": metric, "userIds": Array(users.prefix(15).map(\.id)), "doorknocksList": Array(users.prefix(15).map(\.doorknocks)), "pendingList": Array(users.prefix(15).map { $0.pendingValue(for: metric) })], hypothesisId: "H4")
                 // #endregion
                 print("✅ [LeaderboardService] Successfully fetched \(users.count) users")
                 return users

@@ -77,8 +77,10 @@ final class MapLayerManager {
     static let parcelsSourceId = "campaign-parcels-source"
     static let parcelsFillLayerId = "campaign-parcels-fill"
     static let parcelsLineLayerId = "campaign-parcels-line"
-    static let parcelsOverviewMinZoom: Double = 15.8
-    static let parcelsOverviewMaxZoom: Double = 22.0
+    static let parcelsOverviewMinZoom: Double = 13.2
+    static let parcelsOverviewMaxZoom: Double = 16.8
+    private static let addressModeMinimumZoom: Double = 0.0
+    private static let addressModeMaximumZoom: Double = 24.0
     
     // MARK: - Address markers zoom (3D cylinders + house number labels)
     
@@ -417,9 +419,32 @@ final class MapLayerManager {
         Exp(.interpolate) {
             Exp(.linear)
             Exp(.zoom)
-            15.8
+            13.2
             0.0
+            13.8
+            0.06
+            15.2
+            0.10
             16.2
+            Exp(.switchCase) {
+                Self.isActiveStatusExpression
+                0.22
+                0.16
+            }
+            16.8
+            0.0
+        }
+    }
+
+    private static var diamondParcelOverviewFillOpacityExpression: Exp {
+        Exp(.interpolate) {
+            Exp(.linear)
+            Exp(.zoom)
+            13.2
+            0.0
+            13.8
+            0.06
+            15.2
             0.10
             17.4
             Exp(.switchCase) {
@@ -432,6 +457,31 @@ final class MapLayerManager {
                 Self.isActiveStatusExpression
                 0.14
                 0.08
+            }
+        }
+    }
+
+    private static var diamondParcelLineOpacityExpression: Exp {
+        Exp(.interpolate) {
+            Exp(.linear)
+            Exp(.zoom)
+            13.2
+            0.0
+            13.8
+            0.22
+            15.2
+            0.48
+            17.4
+            Exp(.switchCase) {
+                Self.isActiveStatusExpression
+                0.9
+                0.62
+            }
+            20.0
+            Exp(.switchCase) {
+                Self.isActiveStatusExpression
+                0.82
+                0.5
             }
         }
     }
@@ -575,6 +625,7 @@ final class MapLayerManager {
     private var failedDiamondGeometrySignatures: Set<String> = []
     private var desiredDiamondBuildingVisibility = true
     private var desiredDiamondAddressVisibility = true
+    private var desiredAddressModeZoomVisibility = false
     private var lastAppliedDiamondBuildingVisibility: Bool?
     private var lastAppliedDiamondAddressVisibility: Bool?
     private var diamondTerritoryBoundary: GeoJSONObject?
@@ -1098,6 +1149,7 @@ final class MapLayerManager {
         var fillLayer = FillLayer(id: Self.parcelsFillLayerId, source: Self.parcelsSourceId)
         fillLayer.fillColor = .expression(Self.parcelLinkedAddressColorExpression)
         fillLayer.fillOpacity = .expression(Self.parcelOverviewFillOpacityExpression)
+        fillLayer.fillAntialias = .constant(false)
         fillLayer.minZoom = Self.parcelsOverviewMinZoom
         fillLayer.maxZoom = Self.parcelsOverviewMaxZoom
         fillLayer.filter = Exp(.match) {
@@ -1129,34 +1181,34 @@ final class MapLayerManager {
             Exp(.interpolate) {
                 Exp(.linear)
                 Exp(.zoom)
-                15.8
+                13.2
                 0.0
-                16.2
+                13.8
+                0.22
+                15.2
                 0.48
-                17.4
+                16.2
                 Exp(.switchCase) {
                     Self.isActiveStatusExpression
-                    0.9
-                    0.62
+                    1.0
+                    0.78
                 }
-                20.0
-                Exp(.switchCase) {
-                    Self.isActiveStatusExpression
-                    0.82
-                    0.5
-                }
+                16.8
+                0.0
             }
         )
         lineLayer.lineWidth = .expression(
             Exp(.interpolate) {
                 Exp(.linear)
                 Exp(.zoom)
-                15.8
-                0.25
-                16.8
+                13.2
+                0.15
+                15.0
+                0.45
+                16.2
                 0.85
-                19.0
-                1.2
+                16.8
+                0.0
             }
         )
         lineLayer.minZoom = Self.parcelsOverviewMinZoom
@@ -1900,6 +1952,7 @@ final class MapLayerManager {
                 self.lastAppliedDiamondBuildingVisibility = nil
                 self.lastAppliedDiamondAddressVisibility = nil
                 self.applyDiamondGeometryVisibilityIfNeeded()
+                self.updateDiamondAddressModeZoomVisibility(isAddressMode: self.desiredAddressModeZoomVisibility)
                 self.replayCachedFeatureStates(reason: "diamond_install")
                 print("💎 [DIAMOND] Installed vector tile geometry for campaign \(manifest.campaignId)")
                 print("🧪 [MAP_DEBUG] pmtiles_install_done campaign=\(manifest.campaignId) ms=\(Int(Date().timeIntervalSince(debugInstallStartedAt) * 1000)) renderer=pmtiles_vector")
@@ -2479,6 +2532,156 @@ final class MapLayerManager {
             print("❌ [MapLayer] Error updating address house emblem visibility: \(error)")
         }
     }
+
+    /// Address mode intentionally keeps addresses and parcels visible across the full camera range.
+    /// Building mode restores the normal zoom ramps so the standard map remains uncluttered.
+    func updateAddressModeZoomVisibility(isAddressMode: Bool) {
+        desiredAddressModeZoomVisibility = isAddressMode
+        guard let mapView = mapView else { return }
+        guard let map = mapView.mapboxMap else { return }
+        let addressMinZoom = isAddressMode ? Self.addressModeMinimumZoom : Self.addressMarkersLayerMinZoom
+        let addressLabelMinZoom = Self.addressNumbersLayerMinZoom
+        let parcelMinZoom = isAddressMode ? Self.addressModeMinimumZoom : Self.parcelsOverviewMinZoom
+        let parcelMaxZoom = isAddressMode ? Self.addressModeMaximumZoom : Self.parcelsOverviewMaxZoom
+
+        if map.layerExists(withId: Self.addressesLayerId) {
+            try? map.updateLayer(withId: Self.addressesLayerId, type: FillExtrusionLayer.self) {
+                $0.minZoom = addressMinZoom
+                $0.fillExtrusionOpacity = isAddressMode
+                    ? .constant(1.0)
+                    : .expression(Self.addressMarkersZoomOpacityExpression)
+            }
+        }
+
+        if map.layerExists(withId: Self.selectedAddressesLayerId) {
+            try? map.updateLayer(withId: Self.selectedAddressesLayerId, type: FillExtrusionLayer.self) {
+                $0.minZoom = addressMinZoom
+            }
+        }
+
+        if map.layerExists(withId: Self.addressNumbersLayerId) {
+            try? map.updateLayer(withId: Self.addressNumbersLayerId, type: SymbolLayer.self) {
+                $0.minZoom = addressLabelMinZoom
+                $0.textOpacity = .expression(Self.addressNumbersZoomOpacityExpression)
+            }
+        }
+
+        if map.layerExists(withId: Self.addressLabelHitboxLayerId) {
+            try? map.updateLayer(withId: Self.addressLabelHitboxLayerId, type: CircleLayer.self) {
+                $0.minZoom = addressLabelMinZoom
+            }
+        }
+
+        if map.layerExists(withId: Self.addressHouseIconLayerId) {
+            try? map.updateLayer(withId: Self.addressHouseIconLayerId, type: SymbolLayer.self) {
+                $0.minZoom = addressMinZoom
+                $0.maxZoom = isAddressMode ? Self.addressModeMaximumZoom : 15.4
+                $0.iconOpacity = isAddressMode
+                    ? .constant(1.0)
+                    : .expression(Self.addressHouseIconsZoomOpacityExpression)
+            }
+        }
+
+        if map.layerExists(withId: Self.parcelsFillLayerId) {
+            try? map.updateLayer(withId: Self.parcelsFillLayerId, type: FillLayer.self) {
+                $0.minZoom = parcelMinZoom
+                $0.maxZoom = parcelMaxZoom
+                $0.fillOpacity = isAddressMode
+                    ? .constant(0.14)
+                    : .expression(Self.parcelOverviewFillOpacityExpression)
+            }
+        }
+
+        if map.layerExists(withId: Self.parcelsLineLayerId) {
+            try? map.updateLayer(withId: Self.parcelsLineLayerId, type: LineLayer.self) {
+                $0.minZoom = parcelMinZoom
+                $0.maxZoom = parcelMaxZoom
+                $0.lineOpacity = isAddressMode
+                    ? .constant(0.72)
+                    : .expression(
+                        Exp(.interpolate) {
+                            Exp(.linear)
+                            Exp(.zoom)
+                            13.2
+                            0.0
+                            13.8
+                            0.22
+                            15.2
+                            0.48
+                            16.2
+                            Exp(.switchCase) {
+                                Self.isActiveStatusExpression
+                                1.0
+                                0.78
+                            }
+                            16.8
+                            0.0
+                        }
+                    )
+            }
+        }
+
+        updateDiamondAddressModeZoomVisibility(isAddressMode: isAddressMode)
+    }
+
+    private func updateDiamondAddressModeZoomVisibility(isAddressMode: Bool) {
+        guard let mapView = mapView else { return }
+        guard let map = mapView.mapboxMap else { return }
+        let addressMinZoom = isAddressMode
+            ? Self.addressModeMinimumZoom
+            : VectorTileDiamondGeometryProvider.addressLayerMinZoom
+        let addressLabelMinZoom = VectorTileDiamondGeometryProvider.addressNumberLayerMinZoom
+        let parcelMinZoom = isAddressMode
+            ? Self.addressModeMinimumZoom
+            : VectorTileDiamondGeometryProvider.parcelOverviewMinZoom
+        let parcelMaxZoom = isAddressMode
+            ? Self.addressModeMaximumZoom
+            : VectorTileDiamondGeometryProvider.parcelOverviewMaxZoom
+
+        if map.layerExists(withId: VectorTileDiamondGeometryProvider.addressCircleLayerId) {
+            try? map.updateLayer(withId: VectorTileDiamondGeometryProvider.addressCircleLayerId, type: FillExtrusionLayer.self) {
+                $0.minZoom = addressMinZoom
+            }
+            try? map.updateLayer(withId: VectorTileDiamondGeometryProvider.addressCircleLayerId, type: CircleLayer.self) {
+                $0.minZoom = addressMinZoom
+            }
+        }
+
+        if map.layerExists(withId: VectorTileDiamondGeometryProvider.selectedAddressCircleLayerId) {
+            try? map.updateLayer(withId: VectorTileDiamondGeometryProvider.selectedAddressCircleLayerId, type: FillExtrusionLayer.self) {
+                $0.minZoom = addressMinZoom
+            }
+            try? map.updateLayer(withId: VectorTileDiamondGeometryProvider.selectedAddressCircleLayerId, type: CircleLayer.self) {
+                $0.minZoom = addressMinZoom
+            }
+        }
+
+        if map.layerExists(withId: VectorTileDiamondGeometryProvider.addressNumberLayerId) {
+            try? map.updateLayer(withId: VectorTileDiamondGeometryProvider.addressNumberLayerId, type: SymbolLayer.self) {
+                $0.minZoom = addressLabelMinZoom
+            }
+        }
+
+        if map.layerExists(withId: VectorTileDiamondGeometryProvider.parcelFillLayerId) {
+            try? map.updateLayer(withId: VectorTileDiamondGeometryProvider.parcelFillLayerId, type: FillLayer.self) {
+                $0.minZoom = parcelMinZoom
+                $0.maxZoom = parcelMaxZoom
+                $0.fillOpacity = isAddressMode
+                    ? .constant(0.14)
+                    : .expression(Self.diamondParcelOverviewFillOpacityExpression)
+            }
+        }
+
+        if map.layerExists(withId: VectorTileDiamondGeometryProvider.parcelLineLayerId) {
+            try? map.updateLayer(withId: VectorTileDiamondGeometryProvider.parcelLineLayerId, type: LineLayer.self) {
+                $0.minZoom = parcelMinZoom
+                $0.maxZoom = parcelMaxZoom
+                $0.lineOpacity = isAddressMode
+                    ? .constant(0.72)
+                    : .expression(Self.diamondParcelLineOpacityExpression)
+            }
+        }
+    }
     
     /// Extract centroid [lon, lat] from Polygon or MultiPolygon geometry coordinates (handles NSArray/NSNumber from JSONSerialization).
     private static func centroidFromGeometryCoordinates(_ coordsAny: Any?, geomType: String) -> [Double]? {
@@ -2630,7 +2833,7 @@ final class MapLayerManager {
             buildingByIdentifier: buildingByIdentifier,
             buildingByAddressId: buildingByAddressId,
             requireHouseNumberLabel: true,
-            keepSingleAddressCoordinate: true
+            keepSingleAddressCoordinate: false
         )
 
         return try stableJSONData(withJSONObject: [
@@ -2679,7 +2882,7 @@ final class MapLayerManager {
             buildingByIdentifier: buildingByIdentifier,
             buildingByAddressId: buildingByAddressId,
             requireHouseNumberLabel: false,
-            keepSingleAddressCoordinate: true
+            keepSingleAddressCoordinate: false
         )
 
         return try stableJSONData(withJSONObject: [

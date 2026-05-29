@@ -82,9 +82,7 @@ final class PushRegistrationService {
     }
 
     private static var apiBaseURL: URL {
-        let url = Config.productionAppURL
-        guard url.host == "flyrpro.app" else { return url }
-        return URL(string: "https://www.flyrpro.app") ?? url
+        Config.backendAPIURL
     }
 }
 

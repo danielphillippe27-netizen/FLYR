@@ -441,6 +441,26 @@ function linkParcelsOneToOneWithAddresses(
   return linked;
 }
 
+function includeUnlinkedParcels(
+  parcels: CampaignParcelResponse[],
+  linkedParcels: CampaignParcelResponse[]
+): CampaignParcelResponse[] {
+  if (linkedParcels.length === 0) return parcels;
+
+  const linkedParcelKeys = new Set(
+    linkedParcels.flatMap((parcel) => [
+      parcel.external_id,
+      String(parcel.properties.parcel_link_id ?? ''),
+      String(parcel.properties.parcel_id ?? ''),
+    ].filter((value) => value.length > 0))
+  );
+
+  return [
+    ...linkedParcels,
+    ...parcels.filter((parcel) => !linkedParcelKeys.has(parcel.external_id) && !linkedParcelKeys.has(parcel.id)),
+  ];
+}
+
 function validRingPositions(ring: number[][] | undefined): Array<[number, number]> {
   if (!Array.isArray(ring)) return [];
   return ring
@@ -590,8 +610,18 @@ function isResidentialParcelFeature(feature: GeoJSON.Feature): boolean {
     hasNonResidentialParcelTerm(properties.appellation) ||
     hasNonResidentialParcelTerm(properties.statutory_actions) ||
     hasNonResidentialParcelTerm(properties.zoning) ||
+    hasNonResidentialParcelTerm(properties.zoning_description) ||
+    hasNonResidentialParcelTerm(properties.zone) ||
     hasNonResidentialParcelTerm(properties.land_use) ||
-    hasNonResidentialParcelTerm(properties.use)
+    hasNonResidentialParcelTerm(properties.landuse) ||
+    hasNonResidentialParcelTerm(properties.use) ||
+    hasNonResidentialParcelTerm(properties.type) ||
+    hasNonResidentialParcelTerm(properties.class) ||
+    hasNonResidentialParcelTerm(properties.category) ||
+    hasNonResidentialParcelTerm(properties.parcel_type) ||
+    hasNonResidentialParcelTerm(properties.property_type) ||
+    hasNonResidentialParcelTerm(properties.name) ||
+    hasNonResidentialParcelTerm(properties.description)
   ) {
     return false;
   }
@@ -599,6 +629,28 @@ function isResidentialParcelFeature(feature: GeoJSON.Feature): boolean {
   const intent = normalizedParcelText(properties.parcel_intent);
   if (!intent) return true;
   return intent === 'fee simple title' || intent === 'dcdb' || intent.includes('residential');
+}
+
+function parcelResponseToFeature(parcel: CampaignParcelResponse): GeoJSON.Feature | null {
+  try {
+    const geometry = JSON.parse(parcel.geom) as GeoJSON.Geometry;
+    if (geometry.type !== 'Polygon' && geometry.type !== 'MultiPolygon') return null;
+    return {
+      type: 'Feature',
+      id: parcel.id,
+      geometry,
+      properties: parcel.properties,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function filterResidentialParcelResponses(parcels: CampaignParcelResponse[]): CampaignParcelResponse[] {
+  return parcels.filter((parcel) => {
+    const feature = parcelResponseToFeature(parcel);
+    return feature ? isResidentialParcelFeature(feature) : false;
+  });
 }
 
 function featureWithinCampaignScope(
@@ -721,13 +773,14 @@ export async function GET(
     );
 
   const persistedParcels = await fetchPersistedCampaignParcels(supabase, campaignId);
-  if (persistedParcels.length > 0) {
+  const residentialPersistedParcels = filterResidentialParcelResponses(persistedParcels);
+  if (residentialPersistedParcels.length > 0) {
     const parcelAddressLinks = await fetchPersistedParcelAddressLinks(supabase, campaignId);
-    const evidenceLinkedParcels = parcelsLinkedFromEvidence(persistedParcels, parcelAddressLinks);
+    const evidenceLinkedParcels = parcelsLinkedFromEvidence(residentialPersistedParcels, parcelAddressLinks);
     const linkedParcels = evidenceLinkedParcels.length > 0
       ? evidenceLinkedParcels
-      : linkParcelsOneToOneWithAddresses(persistedParcels, addressPoints);
-    return NextResponse.json(linkedParcels.length > 0 ? linkedParcels : persistedParcels, {
+      : linkParcelsOneToOneWithAddresses(residentialPersistedParcels, addressPoints);
+    return NextResponse.json(includeUnlinkedParcels(residentialPersistedParcels, linkedParcels), {
       headers: {
         'Cache-Control': 'private, max-age=60',
         'X-FLYR-Parcels-Source': 'campaign_parcels',
@@ -757,7 +810,7 @@ export async function GET(
   try {
     const parcels = await fetchScopedPmtilesParcels(campaignId, snapshot, parcelTiles, bbox, boundary);
     const linkedParcels = linkParcelsOneToOneWithAddresses(parcels, addressPoints);
-    return NextResponse.json(linkedParcels.length > 0 ? linkedParcels : parcels, {
+    return NextResponse.json(includeUnlinkedParcels(parcels, linkedParcels), {
       headers: {
         'Cache-Control': 'private, max-age=60',
       },

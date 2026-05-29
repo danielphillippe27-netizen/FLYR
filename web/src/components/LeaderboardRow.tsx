@@ -1,6 +1,7 @@
 import type { LeaderboardUser, LeaderboardMetric } from '../types/leaderboard'
 import {
   getUserValue,
+  getUserPendingValue,
   formatLeaderboardValue,
   getSubtitle,
 } from '../lib/leaderboard'
@@ -43,12 +44,16 @@ export default function LeaderboardRow({
 }: LeaderboardRowProps) {
   const value = getUserValue(user, metric, timeframe)
   const formatted = formatLeaderboardValue(value, metric)
+  const pendingValue = getUserPendingValue(user, metric)
+  const pendingFormatted = formatLeaderboardValue(pendingValue, metric)
   const subtitle = getSubtitle(user, metric, timeframe)
   const podiumColor = getPodiumColor(user.rank)
 
   const rankEl =
     user.rank === 1 ? (
       <span style={{ fontSize: 20 }} title="1st">👑</span>
+    ) : user.rank <= 0 ? (
+      <span style={{ fontSize: 11, fontWeight: 700, color: ACCENT }}>Live</span>
     ) : user.rank <= 3 ? (
       <span
         style={{
@@ -158,7 +163,6 @@ export default function LeaderboardRow({
       </div>
       <div
         style={{
-          fontSize: 18,
           fontWeight: 700,
           color: ACCENT,
           fontVariantNumeric: 'tabular-nums',
@@ -166,7 +170,22 @@ export default function LeaderboardRow({
           textAlign: 'right',
         }}
       >
-        {formatted}
+        <div style={{ fontSize: 18 }}>{formatted}</div>
+        {pendingValue > 0 && (
+          <div
+            style={{
+              display: 'inline-block',
+              marginTop: 3,
+              padding: '2px 6px',
+              borderRadius: 4,
+              background: 'rgba(255, 79, 79, 0.12)',
+              fontSize: 11,
+              lineHeight: 1.2,
+            }}
+          >
+            +{pendingFormatted} pending
+          </div>
+        )}
       </div>
     </div>
   )

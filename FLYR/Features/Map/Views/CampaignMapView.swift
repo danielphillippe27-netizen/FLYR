@@ -1458,14 +1458,9 @@ struct CampaignMapView: View {
             .sortedByRouteScope(activeRouteWorkContext)
     }
 
-    private func addressFeaturesForCurrentDisplayMode() -> [AddressFeature] {
-        switch displayMode {
-        case .addresses:
-            return visibleAddressFeatures
-        case .buildings:
-            guard !usesStandardPinsRenderer else { return [] }
-            return isMapEditMode ? visibleAddressFeatures : []
-        }
+    private func addressFeaturesForLayerCache() -> [AddressFeature] {
+        guard !usesStandardPinsRenderer else { return [] }
+        return visibleAddressFeatures
     }
 
     private func normalizedMapFeatureIdentifier(_ value: String?) -> String? {
@@ -1478,8 +1473,7 @@ struct CampaignMapView: View {
         let territoryParcels = (featuresService.parcels?.features ?? [])
             .filter { featureIntersectsCampaignTerritory($0.geometry) }
 
-        let addressLinkedParcels = parcelsLinkedOneToOneWithVisibleAddresses(from: territoryParcels)
-        return addressLinkedParcels.isEmpty ? territoryParcels : addressLinkedParcels
+        return parcelsAnnotatingVisibleAddressLinks(from: territoryParcels)
     }
 
     private var buildingSessionTargets: [ResolvedCampaignTarget] {
@@ -2620,7 +2614,7 @@ struct CampaignMapView: View {
                             quickStartContactBookButton
                         } else if !isQuickStartStandardMode {
                             BuildingCircleToggle(mode: $displayMode) { _ in
-                                updateMapData()
+                                scheduleLayerVisibilityReassert()
                             }
                         }
                         Spacer(minLength: 8)
@@ -2661,7 +2655,7 @@ struct CampaignMapView: View {
                         quickStartContactBookButton
                     } else if !isQuickStartStandardMode {
                         BuildingCircleToggle(mode: $displayMode) { _ in
-                            updateMapData()
+                            scheduleLayerVisibilityReassert()
                         }
                     }
                     Spacer(minLength: 8)
@@ -4303,6 +4297,7 @@ struct CampaignMapView: View {
         case .buildings:
             manager.includeBuildingsLayer = true
             manager.includeAddressesLayer = showAddressLayerWithBuildings
+            manager.updateAddressModeZoomVisibility(isAddressMode: false)
             manager.setDiamondGeometryVisibility(
                 buildings: shouldShowDiamondBuildings,
                 addresses: hasDiamondAddresses && editModeShowsBuildingsAndAddresses
@@ -4347,6 +4342,7 @@ struct CampaignMapView: View {
         case .addresses:
             manager.includeBuildingsLayer = false
             manager.includeAddressesLayer = true
+            manager.updateAddressModeZoomVisibility(isAddressMode: true)
             manager.setDiamondGeometryVisibility(buildings: false, addresses: hasDiamondAddresses)
             let addressCount = visibleAddressFeatures.count
             let buildingCount = visibleBuildingFeatures.count
@@ -5010,7 +5006,7 @@ struct CampaignMapView: View {
                 searchMeters: threshold
             )
         }
-        let addressFeaturesForDisplay = addressFeaturesForCurrentDisplayMode()
+        let addressFeaturesForDisplay = addressFeaturesForLayerCache()
         manager.updateBuildings(buildingsDataForCurrentDisplayMode())
         refreshTownhomeStatusOverlay()
         manager.updateAddressNumberLabels(
@@ -5020,15 +5016,20 @@ struct CampaignMapView: View {
         )
 
         let hasDiamondAddresses = diamondManifestForCurrentRenderer?.hasRenderablePMTilesAddresses == true
-        if !hasDiamondAddresses, let addressesData = addressDataForCurrentDisplayMode() {
+        if !hasDiamondAddresses,
+           !addressFeaturesForDisplay.isEmpty,
+           let addressesData = addressDataForLayerCache(features: addressFeaturesForDisplay) {
             manager.updateAddresses(
                 addressesData,
                 addresses: addressFeaturesForDisplay,
                 buildings: visibleBuildingFeatures,
                 orderedAddressIdsByBuilding: buildingAddressMap
             )
-        } else if displayMode == .addresses, !hasDiamondAddresses, let buildingsData = visibleBuildingsGeoJSONData() {
+        } else if !hasDiamondAddresses, let buildingsData = visibleBuildingsGeoJSONData() {
             manager.updateAddressesFromBuildingCentroids(buildingGeoJSONData: buildingsData)
+        } else if !hasDiamondAddresses,
+                  let emptyAddressesData = addressDataForLayerCache(features: []) {
+            manager.updateAddresses(emptyAddressesData)
         }
 
         if let roads = featuresService.roads, !roads.features.isEmpty,
@@ -5573,8 +5574,8 @@ struct CampaignMapView: View {
         }
     }
 
-    private func addressDataForCurrentDisplayMode() -> Data? {
-        visibleAddressesGeoJSONData(features: addressFeaturesForCurrentDisplayMode())
+    private func addressDataForLayerCache(features: [AddressFeature]) -> Data? {
+        visibleAddressesGeoJSONData(features: features)
     }
 
     private func visibleBuildingsGeoJSONData() -> Data? {
@@ -5595,8 +5596,8 @@ struct CampaignMapView: View {
         )
     }
 
-    private func parcelsLinkedOneToOneWithVisibleAddresses(from parcels: [ParcelFeature]) -> [ParcelFeature] {
-        guard !parcels.isEmpty else { return [] }
+    private func parcelsAnnotatingVisibleAddressLinks(from parcels: [ParcelFeature]) -> [ParcelFeature] {
+        guard !parcels.isEmpty else { return parcels }
 
         let addressCoordinates = visibleAddressFeatures.compactMap { feature -> (id: String, coordinate: CLLocationCoordinate2D)? in
             guard let id = normalizedMapFeatureIdentifier(feature.properties.id ?? feature.id),
@@ -5605,37 +5606,42 @@ struct CampaignMapView: View {
             }
             return (id, coordinate)
         }
-        guard !addressCoordinates.isEmpty else { return [] }
+        guard !addressCoordinates.isEmpty else { return parcels }
 
         let addressIds = Set(addressCoordinates.map(\.id))
-        let parcelsByAddressProperty = parcels.compactMap { parcel -> ParcelFeature? in
-            guard let addressId = normalizedMapFeatureIdentifier(parcel.properties.addressId),
-                  addressIds.contains(addressId) else {
-                return nil
+        var addressIdByParcelIndex: [Int: String] = [:]
+
+        for (index, parcel) in parcels.enumerated() {
+            if let addressId = normalizedMapFeatureIdentifier(parcel.properties.addressId),
+               addressIds.contains(addressId) {
+                addressIdByParcelIndex[index] = addressId
             }
-            return parcel
-        }
-        if !parcelsByAddressProperty.isEmpty {
-            return parcelsByAddressProperty
         }
 
-        return addressCoordinates.compactMap { address in
-            guard let parcel = smallestParcel(containing: address.coordinate, in: parcels) else {
-                return nil
+        for address in addressCoordinates where !addressIdByParcelIndex.values.contains(address.id) {
+            guard let index = smallestParcelIndex(containing: address.coordinate, in: parcels) else {
+                continue
             }
-            return parcel.withAddressId(address.id)
+            addressIdByParcelIndex[index] = address.id
+        }
+
+        return parcels.enumerated().map { index, parcel in
+            guard let addressId = addressIdByParcelIndex[index] else { return parcel }
+            return parcel.withAddressId(addressId)
         }
     }
 
-    private func smallestParcel(
+    private func smallestParcelIndex(
         containing coordinate: CLLocationCoordinate2D,
         in parcels: [ParcelFeature]
-    ) -> ParcelFeature? {
+    ) -> Int? {
         parcels
-            .filter { parcelContains(coordinate, geometry: $0.geometry) }
+            .enumerated()
+            .filter { _, parcel in parcelContains(coordinate, geometry: parcel.geometry) }
             .min { lhs, rhs in
-                parcelAreaSortValue(lhs.geometry) < parcelAreaSortValue(rhs.geometry)
+                parcelAreaSortValue(lhs.element.geometry) < parcelAreaSortValue(rhs.element.geometry)
             }
+            .map(\.offset)
     }
 
     private func parcelContains(
@@ -7372,6 +7378,7 @@ struct CampaignMapView: View {
                             presentAddressPicker(
                                 building: building,
                                 address: nil,
+                                startsWithReverseGeocode: true,
                                 seedCoordinateOverride: CampaignTargetResolver.coordinate(for: feature.geometry)
                             )
                             return
@@ -7400,6 +7407,7 @@ struct CampaignMapView: View {
                         presentAddressPicker(
                             building: building,
                             address: nil,
+                            startsWithReverseGeocode: true,
                             seedCoordinateOverride: CampaignTargetResolver.coordinate(for: feature.geometry)
                         )
                         return
@@ -8366,6 +8374,12 @@ struct CampaignMapView: View {
             mutationLinkedAddressIds = nil
             createdManualAddress = true
             resolvedLinkedCoordinate = placementCoordinate
+            upsertAddressFeatureLocally(
+                response.address,
+                coordinate: placementCoordinate,
+                buildingId: context.id,
+                source: candidate.source ?? "mapbox_reverse_geocode"
+            )
         } else {
             let response = try await BuildingLinkService.shared.linkAddressToBuilding(
                 campaignId: campaignId,
@@ -8622,6 +8636,44 @@ struct CampaignMapView: View {
         scheduleLoadedStatusesRefresh(forceRefresh: true)
     }
 
+    private func upsertAddressFeatureLocally(
+        _ address: CampaignAddressResponse,
+        coordinate: CLLocationCoordinate2D,
+        buildingId: String?,
+        source: String?
+    ) {
+        guard let geometry = pointGeometry(for: coordinate) else { return }
+
+        let addressId = address.id.uuidString.lowercased()
+        let properties = AddressProperties(
+            id: addressId,
+            gersId: address.gersId,
+            buildingGersId: address.buildingGersId ?? buildingId,
+            houseNumber: address.houseNumber,
+            streetName: address.streetName,
+            postalCode: address.postalCode,
+            locality: address.locality,
+            formatted: address.formatted,
+            source: source
+        )
+        let feature = AddressFeature(
+            type: "Feature",
+            id: addressId,
+            geometry: geometry,
+            properties: properties
+        )
+
+        var collection = featuresService.addresses ?? AddressFeatureCollection(type: "FeatureCollection", features: [])
+        if let index = collection.features.firstIndex(where: {
+            (($0.properties.id ?? $0.id ?? "").lowercased()) == addressId
+        }) {
+            collection.features[index] = feature
+        } else {
+            collection.features.append(feature)
+        }
+        featuresService.addresses = collection
+    }
+
     private func updateAddressFeatureBuildingLink(addressId: UUID, buildingId: String) {
         guard let collection = featuresService.addresses else { return }
         let targetId = addressId.uuidString.lowercased()
@@ -8712,6 +8764,12 @@ struct CampaignMapView: View {
         }
 
         updateBuildingLinkFeatureState(identifiers: identifiers, linkedAddressIds: linkedIds)
+        upsertAddressFeatureLocally(
+            address,
+            coordinate: coordinate,
+            buildingId: linkedBuildingId,
+            source: address.gersId == nil ? "manual" : nil
+        )
         moveAddressFeature(addressId: address.id, to: coordinate)
         refreshTownhomeStatusOverlay()
         scheduleLoadedStatusesRefresh(forceRefresh: true)
@@ -15024,6 +15082,7 @@ private struct BuildingAddressPickerSheet: View {
     private var fieldBorder: Color { isLightMode ? Color(uiColor: .separator) : Color(white: 0.28) }
     private var hasReverseGeocodeCandidate: Bool { candidates.contains(where: \.isReverseGeocode) }
     private var reverseGeocodeAccent: Color { Color.orange }
+    private var reverseGeocodeSymbolName: String { "antenna.radiowaves.left.and.right" }
     private var linkingLottieName: String { colorScheme == .dark ? "splash" : "splash_black" }
 
     var body: some View {
@@ -15037,7 +15096,7 @@ private struct BuildingAddressPickerSheet: View {
             pickerHeader
 
             Group {
-                if isLoading && candidates.isEmpty {
+                if (isLoading || isReverseGeocoding) && candidates.isEmpty {
                     loadingState
                 } else if candidates.isEmpty {
                     emptyState
@@ -15062,9 +15121,10 @@ private struct BuildingAddressPickerSheet: View {
         }
         .task {
             if candidates.isEmpty {
-                await loadCandidates()
                 if context.startsWithReverseGeocode {
-                    await loadReverseGeocodeCandidate(userInitiated: true)
+                    await loadReverseGeocodeCandidate(userInitiated: false)
+                } else {
+                    await loadCandidates()
                 }
             }
         }
@@ -15108,10 +15168,10 @@ private struct BuildingAddressPickerSheet: View {
 
     private var reverseGeocodeButton: some View {
         Button {
-            Task { await loadReverseGeocodeCandidate(userInitiated: true) }
+            requestReverseGeocodeCandidate(userInitiated: true)
         } label: {
             ZStack {
-                Image(systemName: "location.circle.fill")
+                Image(systemName: reverseGeocodeSymbolName)
                     .font(.system(size: 20, weight: .semibold))
                     .foregroundColor(hasReverseGeocodeCandidate ? reverseGeocodeAccent : cardText)
                     .opacity(isReverseGeocoding ? 0 : 1)
@@ -15129,7 +15189,7 @@ private struct BuildingAddressPickerSheet: View {
                     .stroke(hasReverseGeocodeCandidate ? reverseGeocodeAccent.opacity(0.8) : fieldBorder, lineWidth: 1)
             )
         }
-        .disabled(isReverseGeocoding || context.seedCoordinate == nil || linkingCandidateId != nil)
+        .disabled(isReverseGeocoding || hasReverseGeocodeCandidate || context.seedCoordinate == nil || linkingCandidateId != nil)
         .accessibilityLabel("Reverse geocode address")
     }
 
@@ -15252,7 +15312,7 @@ private struct BuildingAddressPickerSheet: View {
         } label: {
             HStack(spacing: 12) {
                 if candidate.isReverseGeocode {
-                    Image(systemName: "location.circle.fill")
+                    Image(systemName: reverseGeocodeSymbolName)
                         .font(.system(size: 17, weight: .semibold))
                         .foregroundColor(reverseGeocodeAccent)
                         .frame(width: 34, height: 34)
@@ -15374,7 +15434,7 @@ private struct BuildingAddressPickerSheet: View {
                 seedCoordinate: context.seedCoordinate,
                 includeLinkedCandidates: true
             )
-            let nextCandidates = prioritizedCandidates(response.candidates)
+            let nextCandidates = prioritizedCandidates(response.candidates + existingReverseGeocodeCandidates())
             candidates = nextCandidates
             if let exactCandidate = exactAutoLinkCandidate(in: nextCandidates) {
                 await autoLinkExactCandidate(exactCandidate)
@@ -15475,7 +15535,7 @@ private struct BuildingAddressPickerSheet: View {
         )
     }
 
-    private func loadReverseGeocodeCandidate(userInitiated: Bool) async {
+    private func requestReverseGeocodeCandidate(userInitiated: Bool) {
         guard context.seedCoordinate != nil else {
             candidates = []
             searchMessage = "Move the map onto a building first, then choose an address."
@@ -15485,9 +15545,31 @@ private struct BuildingAddressPickerSheet: View {
             searchMessage = "Reverse geocoding needs a connection right now."
             return
         }
-        guard !isReverseGeocoding else { return }
+        guard !isReverseGeocoding, !hasReverseGeocodeCandidate else { return }
 
         isReverseGeocoding = true
+        Task {
+            await loadReverseGeocodeCandidate(userInitiated: userInitiated, loadingAlreadyStarted: true)
+        }
+    }
+
+    private func loadReverseGeocodeCandidate(userInitiated: Bool, loadingAlreadyStarted: Bool = false) async {
+        guard context.seedCoordinate != nil else {
+            candidates = []
+            searchMessage = "Move the map onto a building first, then choose an address."
+            if loadingAlreadyStarted { isReverseGeocoding = false }
+            return
+        }
+        guard networkMonitor.isOnline else {
+            searchMessage = "Reverse geocoding needs a connection right now."
+            if loadingAlreadyStarted { isReverseGeocoding = false }
+            return
+        }
+        if !loadingAlreadyStarted {
+            guard !isReverseGeocoding else { return }
+            isReverseGeocoding = true
+        }
+
         defer { isReverseGeocoding = false }
 
         do {
@@ -15502,8 +15584,10 @@ private struct BuildingAddressPickerSheet: View {
                 includeLinkedCandidates: true
             )
             let nextCandidates = prioritizedCandidates(response.candidates)
-            if nextCandidates.contains(where: \.isReverseGeocode) {
+            if !nextCandidates.isEmpty {
                 candidates = nextCandidates
+            }
+            if nextCandidates.contains(where: \.isReverseGeocode) {
                 searchMessage = nil
             } else if candidates.isEmpty || userInitiated {
                 searchMessage = "Couldn't find an estimated address for this building."
@@ -15513,6 +15597,10 @@ private struct BuildingAddressPickerSheet: View {
                 searchMessage = error.localizedDescription
             }
         }
+    }
+
+    private func existingReverseGeocodeCandidates() -> [BuildingAddressCandidate] {
+        candidates.filter(\.isReverseGeocode)
     }
 
     private func prioritizedCandidates(_ input: [BuildingAddressCandidate]) -> [BuildingAddressCandidate] {
@@ -15542,11 +15630,11 @@ private struct BuildingAddressPickerSheet: View {
         return deduped.sorted { lhs, rhs in
             let lhsExact = exactExistingIds.contains(lhs.id)
             let rhsExact = exactExistingIds.contains(rhs.id)
-            if lhsExact != rhsExact {
-                return lhsExact
-            }
             if lhs.isReverseGeocode != rhs.isReverseGeocode {
                 return lhs.isReverseGeocode
+            }
+            if lhsExact != rhsExact {
+                return lhsExact
             }
             if lhs.score != rhs.score { return lhs.score > rhs.score }
             if lhs.distanceMeters != rhs.distanceMeters { return lhs.distanceMeters < rhs.distanceMeters }

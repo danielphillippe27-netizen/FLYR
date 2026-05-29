@@ -1404,12 +1404,14 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
             }
         }
 
-        // Now set state and start tracking (timer + location)
+        // Now set state and start tracking (timer + location). Publish the campaign
+        // context before the session id so SwiftUI never sees an active campaign
+        // session without a campaign map to render.
+        self.campaignId = campaignId
         sessionId = newSessionId
         activeSharedLiveSessionId = nil
         lastSharedLivePresencePeriodicSync = nil
         SessionManager.lastEndedSummaryMapSnapshot = nil
-        self.campaignId = campaignId
         self.routeAssignmentId = routeAssignmentId
         self.currentFarmExecutionContext = farmExecutionContext
         self.targetBuildings = targetBuildings

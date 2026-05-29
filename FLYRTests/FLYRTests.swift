@@ -91,6 +91,10 @@ struct FLYRTests {
         #expect(GoalType.goalPickerCases(for: .doorKnocking) == [.knocks, .conversations, .appointments])
     }
 
+    @Test func doorKnockSessionsDefaultToAllCampaignHomes() async throws {
+        #expect(GoalType.knocks.defaultAmount(for: .doorKnocking, targetCount: 120) == 120)
+    }
+
     @Test func flyerSessionsDefaultToTimeGoals() async throws {
         #expect(SessionMode.flyer.defaultGoalType == .time)
         #expect(GoalType.time.defaultAmount(for: .flyer, targetCount: 120) == 60)

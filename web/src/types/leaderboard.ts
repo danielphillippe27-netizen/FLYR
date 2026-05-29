@@ -20,6 +20,7 @@ export interface LeaderboardUser {
   weekly: MetricSnapshot
   monthly: MetricSnapshot
   all_time: MetricSnapshot
+  pending: MetricSnapshot
 }
 
 export type LeaderboardMetric = 'doorknocks' | 'conversations' | 'distance'

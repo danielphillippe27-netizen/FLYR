@@ -194,6 +194,9 @@ struct NewCampaignScreen: View {
                 .onChange(of: campaignType) { _, _ in
                     markDetailsDirtyIfNeeded()
                 }
+                .onChange(of: description) { _, _ in
+                    markDetailsDirtyIfNeeded()
+                }
                 .onChange(of: workspaceContext.industry) { _, _ in
                     reconcileCampaignTypeWithIndustry()
                 }
@@ -320,17 +323,24 @@ struct NewCampaignScreen: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Campaign type")
                     .font(.flyrSubheadline.weight(.semibold))
+                    .foregroundStyle(.secondary)
 
-                Picker("Campaign type", selection: $campaignType) {
-                    ForEach(campaignTypeOptions) { type in
-                        Text(type.title).tag(type)
-                    }
-                }
-                .pickerStyle(.menu)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(12)
-                .background(Color(.secondarySystemBackground))
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                TypeChips(selected: $campaignType, options: campaignTypeOptions)
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Notes")
+                    .font(.flyrSubheadline.weight(.semibold))
+                    .foregroundStyle(.secondary)
+
+                TextField("Add notes", text: $description, axis: .vertical)
+                    .textInputAutocapitalization(.sentences)
+                    .font(.system(size: 16))
+                    .lineLimit(3...6)
+                    .frame(minHeight: 86, alignment: .topLeading)
+                    .padding(12)
+                    .background(Color(.secondarySystemBackground))
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             }
 
             if let tracked = localProvisionBanner {
@@ -470,7 +480,8 @@ struct NewCampaignScreen: View {
             try await CampaignsAPI.shared.updateCampaignDetails(
                 campaignId: campaign.id,
                 name: trimmedCampaignName,
-                type: campaignType
+                type: campaignType,
+                description: description
             )
             campaign.name = trimmedCampaignName
             campaign.type = campaignType

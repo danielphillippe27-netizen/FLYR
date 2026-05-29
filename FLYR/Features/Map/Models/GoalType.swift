@@ -120,7 +120,7 @@ enum GoalType: String, Codable, CaseIterable, Identifiable {
     func defaultAmount(for mode: SessionMode, targetCount: Int) -> Int {
         switch self {
         case .knocks:
-            return min(max(1, targetCount), 25)
+            return max(1, targetCount)
         case .conversations:
             return min(max(1, targetCount), 10)
         case .appointments:

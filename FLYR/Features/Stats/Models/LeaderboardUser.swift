@@ -15,6 +15,7 @@ struct LeaderboardUser: Identifiable, Codable {
     let weekly: MetricSnapshot
     let monthly: MetricSnapshot
     let allTime: MetricSnapshot
+    let pending: MetricSnapshot
     
     enum CodingKeys: String, CodingKey {
         case id
@@ -31,6 +32,7 @@ struct LeaderboardUser: Identifiable, Codable {
         case weekly
         case monthly
         case allTime = "all_time"
+        case pending
     }
     
     // Custom initializer for manual construction
@@ -48,7 +50,8 @@ struct LeaderboardUser: Identifiable, Codable {
         daily: MetricSnapshot,
         weekly: MetricSnapshot,
         monthly: MetricSnapshot,
-        allTime: MetricSnapshot
+        allTime: MetricSnapshot,
+        pending: MetricSnapshot = MetricSnapshot()
     ) {
         self.id = id
         self.name = name
@@ -64,6 +67,33 @@ struct LeaderboardUser: Identifiable, Codable {
         self.weekly = weekly
         self.monthly = monthly
         self.allTime = allTime
+        self.pending = pending
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(String.self, forKey: .id) ?? ""
+        name = try container.decodeIfPresent(String.self, forKey: .name) ?? "User"
+        avatarUrl = try container.decodeIfPresent(String.self, forKey: .avatarUrl)
+        countryCode = try container.decodeIfPresent(String.self, forKey: .countryCode)
+        brokerage = try container.decodeIfPresent(String.self, forKey: .brokerage)
+        rank = try container.decodeIfPresent(Int.self, forKey: .rank) ?? 0
+        doorknocks = try container.decodeIfPresent(Int.self, forKey: .doorknocks) ?? 0
+        leads = try container.decodeIfPresent(Int.self, forKey: .leads) ?? 0
+        conversations = try container.decodeIfPresent(Int.self, forKey: .conversations) ?? 0
+        distance = try container.decodeIfPresent(Double.self, forKey: .distance) ?? 0.0
+
+        let topLevelSnapshot = MetricSnapshot(
+            leads: leads,
+            conversations: conversations,
+            distance: distance,
+            doorknocks: doorknocks
+        )
+        daily = try container.decodeIfPresent(MetricSnapshot.self, forKey: .daily) ?? topLevelSnapshot
+        weekly = try container.decodeIfPresent(MetricSnapshot.self, forKey: .weekly) ?? topLevelSnapshot
+        monthly = try container.decodeIfPresent(MetricSnapshot.self, forKey: .monthly) ?? topLevelSnapshot
+        allTime = try container.decodeIfPresent(MetricSnapshot.self, forKey: .allTime) ?? topLevelSnapshot
+        pending = try container.decodeIfPresent(MetricSnapshot.self, forKey: .pending) ?? MetricSnapshot()
     }
 
     var countryFlag: String {
@@ -74,29 +104,16 @@ struct LeaderboardUser: Identifiable, Codable {
     func value(for metric: String, timeframe: String) -> Double {
         let snapshot = snapshot(for: timeframe)
         
-        switch metric {
-        case "doorknocks":
-            return Double(snapshot.doorknocks)
-        case "leads":
-            return Double(snapshot.leads)
-        case "distance":
-            return snapshot.distance
-        case "conversations":
-            return Double(snapshot.conversations)
-        case "appointments":
-            // Placeholder until backend supports appointments
-            return 0.0
-        case "deals":
-            // Placeholder until backend supports deals
-            return 0.0
-        default:
-            return Double(snapshot.doorknocks)
-        }
+        return snapshot.value(for: metric)
     }
     
     // Helper to get value for selected metric (uses all_time by default)
     func value(for metric: String) -> Double {
         return value(for: metric, timeframe: "all_time")
+    }
+
+    func pendingValue(for metric: String) -> Double {
+        return pending.value(for: metric)
     }
     
     // Helper to get formatted value for selected metric

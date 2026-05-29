@@ -12,4 +12,17 @@ struct MetricSnapshot: Codable {
         self.distance = distance
         self.doorknocks = doorknocks
     }
+
+    func value(for metric: String) -> Double {
+        switch metric {
+        case "leads":
+            return Double(leads)
+        case "conversations":
+            return Double(conversations)
+        case "distance":
+            return distance
+        default:
+            return Double(doorknocks)
+        }
+    }
 }

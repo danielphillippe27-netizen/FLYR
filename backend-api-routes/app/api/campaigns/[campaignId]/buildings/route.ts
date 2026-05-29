@@ -994,7 +994,21 @@ async function readPolishedBuildingCache(
 
   const row = data as PolishedBuildingCacheRow | null;
   const cached = featureCollectionFromCache(row?.feature_collection);
-  if (!cached || cached.features.length === 0) return null;
+  if (!cached || cached.features.length === 0) {
+    if (row && (row.feature_count ?? 0) === 0) {
+      console.warn(
+        `[buildings] Polished cache for ${campaignId} is empty; deleting stale row and rebuilding`
+      );
+      const { error: deleteError } = await supabase
+        .from("campaign_polished_building_features")
+        .delete()
+        .eq("campaign_id", campaignId);
+      if (deleteError && !isMissingPolishedCacheTable(deleteError)) {
+        console.warn("[buildings] Polished empty-cache delete failed:", deleteError.message);
+      }
+    }
+    return null;
+  }
   const cacheGeometryVersion = finiteNumber(
     cached.features[0]?.properties?.polished_geometry_version
   );

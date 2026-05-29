@@ -8,18 +8,7 @@ final class DiamondManifestAPI {
     private let baseURL: URL
 
     private init() {
-        let configured =
-            (Bundle.main.object(forInfoDictionaryKey: "FLYR_PRO_API_URL") as? String) ??
-            (Bundle.main.object(forInfoDictionaryKey: "FLYR_API_BASE_URL") as? String) ??
-            "https://flyrpro.app"
-        let trimmed = configured.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-
-        if let components = URLComponents(string: trimmed),
-           components.host?.lowercased() == "flyrpro.app" {
-            self.baseURL = URL(string: "https://www.flyrpro.app")!
-        } else {
-            self.baseURL = URL(string: trimmed) ?? URL(string: "https://www.flyrpro.app")!
-        }
+        self.baseURL = Config.backendAPIURL
     }
 
     func fetchManifest(campaignId: UUID) async throws -> DiamondManifest {

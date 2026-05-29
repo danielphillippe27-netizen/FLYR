@@ -48,18 +48,21 @@ final class UnlinkedHomeAddressResolver {
             for: reverseCandidate,
             in: response.candidates
         ) {
+            let placementCoordinate = userConfirmed
+                ? seedCoordinate
+                : matchingCampaignCandidate.coordinate.clCoordinate
             try await BuildingLinkService.shared.linkAddressToBuilding(
                 campaignId: campaignId,
                 buildingId: buildingId,
                 addressId: matchingCampaignCandidate.id,
-                coordinate: seedCoordinate
+                coordinate: userConfirmed ? seedCoordinate : nil
             )
             return UnlinkedHomeAddressResolution(
                 addressId: matchingCampaignCandidate.id,
                 kind: .existingCampaignAddress,
                 candidate: matchingCampaignCandidate,
                 createdAddress: nil,
-                coordinate: seedCoordinate
+                coordinate: placementCoordinate
             )
         }
 

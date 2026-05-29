@@ -98,10 +98,9 @@ struct MainTabView: View {
             withAnimation(.easeInOut(duration: 0.25)) {
                 uiState.showTabBar = (newId == nil && !sessionManager.isActive) || sessionManager.sessionRestoredThisLaunch
             }
-            // Clear campaign selection only when starting a session (so Record stays on map when ending; we clear on summary dismiss)
-            if newId != nil {
-                uiState.clearMapSelection()
-            }
+            // Keep the selected campaign while a session is starting so RecordHomeView
+            // does not briefly lose its map context. The selection is cleared after
+            // the end-session summary is dismissed.
         }
         .onAppear {
             CampaignNotificationRouter.shared.configure(uiState: uiState)

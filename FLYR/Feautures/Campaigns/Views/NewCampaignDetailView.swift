@@ -729,6 +729,12 @@ struct NewCampaignDetailView: View {
             sessionManager.pendingSessionSummary = nil
             sessionManager.pendingSessionSummarySessionId = nil
         }
+        .onChange(of: sessionManager.sessionId) { _, _ in
+            routeActiveCampaignSessionToRecordTabIfNeeded()
+        }
+        .onChange(of: sessionManager.campaignId) { _, _ in
+            routeActiveCampaignSessionToRecordTabIfNeeded()
+        }
         .onReceive(NotificationCenter.default.publisher(for: .sessionEnded)) { _ in
             Task { await refreshCampaignDetailData() }
         }
@@ -1085,6 +1091,21 @@ struct NewCampaignDetailView: View {
             return presentation.defaultShareCardData
         }
         return placeholderShareCardData
+    }
+
+    private func routeActiveCampaignSessionToRecordTabIfNeeded() {
+        guard sessionManager.sessionId != nil,
+              !sessionManager.isDemoSession,
+              sessionManager.campaignId == campaignID else {
+            return
+        }
+
+        uiState.selectCampaign(
+            id: campaignID,
+            name: hook.item?.name,
+            boundaryCoordinates: mapCenter.map { [$0] } ?? []
+        )
+        uiState.selectedTabIndex = 1
     }
     
     // MARK: - Analytics Helpers

@@ -76,6 +76,7 @@ struct CampaignDetailsUpdate: Encodable {
     let name: String
     let title: String
     let type: String
+    let description: String
 }
 
 final class CampaignsAPI {
@@ -765,15 +766,12 @@ final class CampaignsAPI {
 
     /// Backend base URL for provision API (e.g. https://flyrpro.app).
     private static var provisionBaseURL: String {
-        (Bundle.main.object(forInfoDictionaryKey: "FLYR_PRO_API_URL") as? String)?.trimmingCharacters(in: CharacterSet(charactersIn: "/")) ?? "https://flyrpro.app"
+        Config.backendAPIURL.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
     }
 
-    /// Use www when host is apex to avoid redirect stripping Authorization.
+    /// Uses the backend deployment host when the custom app domain is caught in an apex/www redirect loop.
     private static var provisionRequestBaseURL: String {
-        guard let components = URLComponents(string: provisionBaseURL), components.host == "flyrpro.app" else {
-            return provisionBaseURL
-        }
-        return "https://www.flyrpro.app"
+        provisionBaseURL
     }
 
     /// Provision does a full backend pipeline (Diamond/Bedrock + ingest + linking + routing),
@@ -857,7 +855,7 @@ final class CampaignsAPI {
         print("✅ [API] Updated territory_boundary for campaign \(campaignId)")
     }
 
-    private static func bbox(for polygon: GeoJSONPolygon) -> [Double]? {
+    static func bbox(for polygon: GeoJSONPolygon) -> [Double]? {
         let coordinates = polygon.coordinates.flatMap { $0 }
         let lons = coordinates.compactMap { $0.first }
         let lats = coordinates.compactMap { $0.count > 1 ? $0[1] : nil }
@@ -871,7 +869,7 @@ final class CampaignsAPI {
     }
 
     /// Update the user-facing campaign details after the territory-first create flow starts.
-    func updateCampaignDetails(campaignId: UUID, name: String, type: CampaignType) async throws {
+    func updateCampaignDetails(campaignId: UUID, name: String, type: CampaignType, description: String) async throws {
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedName.isEmpty else {
             throw NSError(domain: "CampaignsAPI", code: 400, userInfo: [NSLocalizedDescriptionKey: "Campaign name is required"])
@@ -885,7 +883,8 @@ final class CampaignsAPI {
         let detailsUpdate = CampaignDetailsUpdate(
             name: trimmedName,
             title: trimmedName,
-            type: type.dbValue
+            type: type.dbValue,
+            description: description.trimmingCharacters(in: .whitespacesAndNewlines)
         )
         _ = try await client
             .from("campaigns")

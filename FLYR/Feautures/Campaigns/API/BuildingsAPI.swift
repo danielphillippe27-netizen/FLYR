@@ -466,14 +466,9 @@ final class BuildingsAPI {
     }
     
     /// Backend base URL for GET buildings API.
-    /// Normalizes flyrpro.app → www.flyrpro.app so URLSession doesn't follow a redirect that
-    /// strips the Authorization header, causing 401 on the snapshot endpoint.
+    /// Uses the backend deployment host when the custom app domain is caught in an apex/www redirect loop.
     private static var buildingsAPIBaseURL: String {
-        let raw = (Bundle.main.object(forInfoDictionaryKey: "FLYR_PRO_API_URL") as? String)?.trimmingCharacters(in: CharacterSet(charactersIn: "/")) ?? "https://flyrpro.app"
-        guard let components = URLComponents(string: raw), components.host == "flyrpro.app" else {
-            return raw
-        }
-        return "https://www.flyrpro.app"
+        Config.backendAPIURL.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
     }
 
     private static let snapshotTimestampFormatter: ISO8601DateFormatter = {

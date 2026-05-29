@@ -190,6 +190,48 @@ final class BuildingDataServiceTests: XCTestCase {
         XCTAssertTrue(directlyLinked.contains(linkedId.uuidString.lowercased()))
         XCTAssertFalse(directlyLinked.contains(unlinkedId.uuidString.lowercased()))
     }
+
+    func testBuildingFeatureCollectionDecodesNumericTopLevelFeatureId() throws {
+        let payload: [String: Any] = [
+            "type": "FeatureCollection",
+            "features": [[
+                "type": "Feature",
+                "id": 12345,
+                "geometry": [
+                    "type": "Polygon",
+                    "coordinates": [[
+                        [-79.0, 43.0],
+                        [-78.999, 43.0],
+                        [-78.999, 43.001],
+                        [-79.0, 43.001],
+                        [-79.0, 43.0]
+                    ]]
+                ],
+                "properties": [
+                    "id": "building-12345",
+                    "building_id": "building-12345",
+                    "gers_id": "building-12345",
+                    "height": 10,
+                    "height_m": 10,
+                    "min_height": 0,
+                    "is_townhome": false,
+                    "units_count": 1,
+                    "status": "not_visited",
+                    "scans_today": 0,
+                    "scans_total": 0,
+                    "source": "bedrock_pmtiles",
+                    "area_sqm": 95
+                ]
+            ]]
+        ]
+        let data = try JSONSerialization.data(withJSONObject: payload, options: [])
+
+        let collection = try JSONDecoder().decode(BuildingFeatureCollection.self, from: data)
+
+        XCTAssertEqual(collection.features.count, 1)
+        XCTAssertEqual(collection.features.first?.id, "12345")
+        XCTAssertEqual(collection.features.first?.properties.gersId, "building-12345")
+    }
     
     // MARK: - ResolvedAddress Tests
     

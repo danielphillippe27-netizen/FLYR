@@ -79,17 +79,21 @@ struct LeaderboardView: View {
             await vm.fetchLeaderboard()
             HapticManager.rigid()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .sessionEnded)) { _ in
+            Task { await vm.fetchLeaderboard() }
+        }
     }
 
     @ViewBuilder
     private func rowContent(for user: LeaderboardUser) -> some View {
         let isCurrentUser = isCurrentAuthUser(leaderboardUserId: user.id)
         let value = user.value(for: vm.metric.rawValue, timeframe: vm.timeRange.rawValue)
+        let pendingValue = user.pendingValue(for: vm.metric.rawValue)
 
         Button {
             HapticManager.light()
             toastManager.show(
-                message: "\(user.name) · Rank #\(user.rank)",
+                message: user.rank > 0 ? "\(user.name) · Rank #\(user.rank)" : "\(user.name) · Live progress",
                 type: .info,
                 duration: 2.0
             )
@@ -100,6 +104,7 @@ struct LeaderboardView: View {
                 name: user.name,
                 subtitle: user.brokerage,
                 value: value,
+                pendingText: pendingText(for: pendingValue),
                 isCurrentUser: isCurrentUser,
                 isActiveMetric: true
             )
@@ -195,6 +200,14 @@ struct LeaderboardView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding()
+    }
+
+    private func pendingText(for value: Double) -> String? {
+        guard value > 0 else { return nil }
+        if value.truncatingRemainder(dividingBy: 1) == 0 {
+            return "+\(Int(value)) pending"
+        }
+        return "+\(String(format: "%.1f", value)) pending"
     }
 }
 

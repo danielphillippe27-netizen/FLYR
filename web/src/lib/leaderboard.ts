@@ -18,10 +18,10 @@ function parseSnapshot(raw: unknown): MetricSnapshot {
   if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
     const o = raw as Record<string, unknown>
     return {
-      doorknocks: typeof o.doorknocks === 'number' ? o.doorknocks : 0,
-      leads: typeof o.leads === 'number' ? o.leads : 0,
-      conversations: typeof o.conversations === 'number' ? o.conversations : 0,
-      distance: typeof o.distance === 'number' ? o.distance : 0,
+      doorknocks: Number(o.doorknocks) || 0,
+      leads: Number(o.leads) || 0,
+      conversations: Number(o.conversations) || 0,
+      distance: Number(o.distance) || 0,
     }
   }
   return { doorknocks: 0, leads: 0, conversations: 0, distance: 0 }
@@ -43,19 +43,19 @@ function parseSnapshotWithFallback(raw: unknown, fallback: MetricSnapshot): Metr
 }
 
 function mapRow(row: Record<string, unknown>): LeaderboardUser {
-  const doorknocks = typeof row.doorknocks === 'number' ? row.doorknocks : 0
+  const doorknocks = Number(row.doorknocks) || 0
   const topLevelSnapshot: MetricSnapshot = {
     doorknocks,
-    leads: typeof row.leads === 'number' ? row.leads : 0,
-    conversations: typeof row.conversations === 'number' ? row.conversations : 0,
-    distance: typeof row.distance === 'number' ? row.distance : 0,
+    leads: Number(row.leads) || 0,
+    conversations: Number(row.conversations) || 0,
+    distance: Number(row.distance) || 0,
   }
 
   return {
     id: typeof row.id === 'string' ? row.id : String(row.id ?? ''),
     name: typeof row.name === 'string' ? row.name : 'User',
     avatar_url: typeof row.avatar_url === 'string' ? row.avatar_url : null,
-    rank: typeof row.rank === 'number' ? row.rank : 0,
+    rank: Number(row.rank) || 0,
     doorknocks,
     leads: topLevelSnapshot.leads,
     conversations: topLevelSnapshot.conversations,
@@ -64,6 +64,7 @@ function mapRow(row: Record<string, unknown>): LeaderboardUser {
     weekly: parseSnapshotWithFallback(row.weekly, emptySnapshot()),
     monthly: parseSnapshotWithFallback(row.monthly, topLevelSnapshot),
     all_time: parseSnapshotWithFallback(row.all_time, emptySnapshot()),
+    pending: parseSnapshot(row.pending),
   }
 }
 
@@ -87,6 +88,23 @@ export async function fetchLeaderboard(
   if (error) throw error
   if (!Array.isArray(data)) return []
   return data.map((row: Record<string, unknown>) => mapRow(row))
+}
+
+/** Get pending active-session value for a user for the given metric. */
+export function getUserPendingValue(
+  user: LeaderboardUser,
+  metric: LeaderboardMetric
+): number {
+  switch (metric) {
+    case 'doorknocks':
+      return user.pending.doorknocks
+    case 'conversations':
+      return user.pending.conversations
+    case 'distance':
+      return user.pending.distance
+    default:
+      return user.pending.doorknocks
+  }
 }
 
 /** Get display value for a user for the given metric and timeframe. */
