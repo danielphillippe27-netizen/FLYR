@@ -475,6 +475,34 @@ enum OfflineMigrations {
             try db.create(index: "idx_cached_links_campaign_address_unique", on: "cached_building_address_links", columns: ["campaign_id", "address_id"], unique: true, ifNotExists: true)
         }
 
+        migrator.registerMigration("phase1_campaign_map_bundle_cache_v1") { db in
+            try db.create(table: "cached_parcels", ifNotExists: true) { t in
+                t.column("id", .text).primaryKey()
+                t.column("campaign_id", .text).notNull()
+                t.column("external_id", .text)
+                t.column("geometry_geojson", .text).notNull()
+                t.column("properties_json", .text)
+                t.column("payload_json", .text)
+                t.column("updated_at", .text)
+            }
+
+            try db.create(table: "cached_campaign_map_bundles", ifNotExists: true) { t in
+                t.column("campaign_id", .text).primaryKey()
+                t.column("asset_signature", .text)
+                t.column("source_version", .text)
+                t.column("display_mode_hint", .text)
+                t.column("links_status", .text)
+                t.column("counts_json", .text)
+                t.column("layer_fetched_at_json", .text)
+                t.column("built_at", .text)
+                t.column("expires_at", .text)
+                t.column("updated_at", .text)
+            }
+
+            try db.create(index: "idx_cached_parcels_campaign_id", on: "cached_parcels", columns: ["campaign_id"], ifNotExists: true)
+            try db.create(index: "idx_cached_map_bundles_expires", on: "cached_campaign_map_bundles", columns: ["campaign_id", "expires_at"], ifNotExists: true)
+        }
+
         return migrator
     }
 }

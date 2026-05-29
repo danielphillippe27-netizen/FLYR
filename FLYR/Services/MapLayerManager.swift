@@ -45,9 +45,6 @@ final class MapLayerManager {
     static let buildingsLayerId = "buildings-extrusion"
     static let buildingsLeadGlowLayerId = "buildings-lead-glow"
     static let buildingsSelectedGlowLayerId = "buildings-selected-glow"
-    static let selectedBuildingSourceId = "selected-building-source"
-    static let selectedBuildingLayerId = "selected-building-exact-extrusion"
-    static let selectedBuildingGlowLayerId = "selected-building-exact-glow"
     static let townhomeOverlaySourceId = "townhome-status-source"
     static let townhomeOverlayLayerId = "townhome-status-extrusion"
     static let townhomeOutlineLayerId = "townhome-status-outlines"
@@ -77,8 +74,8 @@ final class MapLayerManager {
     static let parcelsSourceId = "campaign-parcels-source"
     static let parcelsFillLayerId = "campaign-parcels-fill"
     static let parcelsLineLayerId = "campaign-parcels-line"
-    static let parcelsOverviewMinZoom: Double = 13.2
-    static let parcelsOverviewMaxZoom: Double = 16.8
+    static let parcelsOverviewMinZoom: Double = 13.5
+    static let parcelsOverviewMaxZoom: Double = 24.0
     private static let addressModeMinimumZoom: Double = 0.0
     private static let addressModeMaximumZoom: Double = 24.0
     
@@ -419,9 +416,9 @@ final class MapLayerManager {
         Exp(.interpolate) {
             Exp(.linear)
             Exp(.zoom)
-            13.2
+            13.5
             0.0
-            13.8
+            14.0
             0.06
             15.2
             0.10
@@ -431,8 +428,85 @@ final class MapLayerManager {
                 0.22
                 0.16
             }
-            16.8
+            18.0
+            Exp(.switchCase) {
+                Self.isActiveStatusExpression
+                0.16
+                0.11
+            }
+            24.0
+            Exp(.switchCase) {
+                Self.isActiveStatusExpression
+                0.10
+                0.07
+            }
+        }
+    }
+
+    private static var parcelOverviewLineOpacityExpression: Exp {
+        Exp(.interpolate) {
+            Exp(.linear)
+            Exp(.zoom)
+            13.5
             0.0
+            14.0
+            0.22
+            15.2
+            0.48
+            16.2
+            Exp(.switchCase) {
+                Self.isActiveStatusExpression
+                1.0
+                0.78
+            }
+            18.0
+            Exp(.switchCase) {
+                Self.isActiveStatusExpression
+                0.90
+                0.62
+            }
+            24.0
+            Exp(.switchCase) {
+                Self.isActiveStatusExpression
+                0.75
+                0.50
+            }
+        }
+    }
+
+    private static var parcelOverviewLineWidthExpression: Exp {
+        Exp(.interpolate) {
+            Exp(.linear)
+            Exp(.zoom)
+            13.5
+            0.15
+            15.0
+            0.45
+            16.2
+            0.85
+            20.0
+            1.05
+            24.0
+            1.15
+        }
+    }
+
+    private static var addressModeParcelLineWidthExpression: Exp {
+        Exp(.interpolate) {
+            Exp(.linear)
+            Exp(.zoom)
+            0.0
+            0.35
+            13.2
+            0.35
+            15.0
+            0.55
+            16.2
+            0.85
+            20.0
+            1.15
+            24.0
+            1.3
         }
     }
 
@@ -440,9 +514,9 @@ final class MapLayerManager {
         Exp(.interpolate) {
             Exp(.linear)
             Exp(.zoom)
-            13.2
+            13.5
             0.0
-            13.8
+            14.0
             0.06
             15.2
             0.10
@@ -465,9 +539,9 @@ final class MapLayerManager {
         Exp(.interpolate) {
             Exp(.linear)
             Exp(.zoom)
-            13.2
+            13.5
             0.0
-            13.8
+            14.0
             0.22
             15.2
             0.48
@@ -625,9 +699,11 @@ final class MapLayerManager {
     private var failedDiamondGeometrySignatures: Set<String> = []
     private var desiredDiamondBuildingVisibility = true
     private var desiredDiamondAddressVisibility = true
+    private var desiredDiamondAddressNumberVisibility: Bool?
     private var desiredAddressModeZoomVisibility = false
     private var lastAppliedDiamondBuildingVisibility: Bool?
     private var lastAppliedDiamondAddressVisibility: Bool?
+    private var lastAppliedDiamondAddressNumberVisibility: Bool?
     private var diamondTerritoryBoundary: GeoJSONObject?
     private var diamondTerritoryBoundarySignature = "none"
     private var buildingFeatureStateCache: [String: [String: Any]] = [:]
@@ -653,6 +729,9 @@ final class MapLayerManager {
     var showOrphans = true
     private var lastBuildingsSourceSignature: Int?
     private var lastTownhomeOverlaySignature: Int?
+#if DEBUG
+    private var lastTownhomeOverlayRenderedUnitCounts: [String: Int] = [:]
+#endif
     private var lastAddressesSourceSignature: Int?
     private var lastRoadsSourceSignature: Int?
     private var lastParcelsSourceSignature: Int?
@@ -692,11 +771,21 @@ final class MapLayerManager {
     private func resetSourceSignaturesForStyleReload() {
         lastBuildingsSourceSignature = nil
         lastTownhomeOverlaySignature = nil
+#if DEBUG
+        lastTownhomeOverlayRenderedUnitCounts = [:]
+#endif
         lastAddressesSourceSignature = nil
         lastRoadsSourceSignature = nil
         lastParcelsSourceSignature = nil
         lastAddressNumbersSourceSignature = nil
+        lastAddressNumbersVisible = nil
         lastTeammatePresenceSignature = nil
+        // A Mapbox style reload drops custom vector-tile sources/layers even if the manifest did not change.
+        installedDiamondManifest = nil
+        activeDiamondGeometrySignature = nil
+        lastAppliedDiamondBuildingVisibility = nil
+        lastAppliedDiamondAddressVisibility = nil
+        lastAppliedDiamondAddressNumberVisibility = nil
     }
     
     // MARK: - Buildings Layer (Fill Extrusion)
@@ -723,11 +812,13 @@ final class MapLayerManager {
         // Create fill-extrusion layer
         var layer = FillExtrusionLayer(id: Self.buildingsLayerId, source: Self.buildingsSourceId)
         
-        // Color expression based on status priority. Selection only tints truly
-        // unvisited homes so status writes are visible immediately while selected.
-        // Priority: QR_SCANNED (purple) > CONVERSATIONS (green) > TOUCHED (green) > UNTOUCHED (slate)
+        // Selected homes are recolored on the original extrusion so the full building
+        // highlights cleanly without stacking a duplicate selected extrusion.
         layer.fillExtrusionColor = .expression(
             Exp(.switchCase) {
+                Self.isSelectedExpression
+                MapStatusColor.selectedHome
+
                 // QR code: scans_total > 0 (purple)
                 Exp(.gt) {
                     Self.scansTotalExpression
@@ -815,9 +906,6 @@ final class MapLayerManager {
                     MapStatusColor.touched
                 }
 
-                Self.isSelectedUnvisitedExpression
-                MapStatusColor.selectedHome
-                
                 // Default: unvisited slate
                 MapStatusColor.untouched
             }
@@ -886,58 +974,8 @@ final class MapLayerManager {
             print("❌ [MapLayer] Error adding selected building glow layer: \(error)")
         }
 
-        setupSelectedBuildingExactLayer(above: Self.buildingsSelectedGlowLayerId)
-
         // Lead status is communicated by the building fill color itself. Avoid a separate
         // always-on line layer so highlighted homes stay clean unless selected.
-    }
-
-    private func setupSelectedBuildingExactLayer(above layerId: String) {
-        guard let mapView else { return }
-
-        var source = GeoJSONSource(id: Self.selectedBuildingSourceId)
-        source.data = .featureCollection(FeatureCollection(features: []))
-
-        do {
-            try mapView.mapboxMap.addSource(source)
-        } catch {
-            print("❌ [MapLayer] Error adding exact selected building source: \(error)")
-            return
-        }
-
-        var glowLayer = LineLayer(id: Self.selectedBuildingGlowLayerId, source: Self.selectedBuildingSourceId)
-        glowLayer.lineColor = .constant(StyleColor(MapStatusColor.selectedHomeGlow))
-        glowLayer.lineWidth = .expression(
-            Exp(.interpolate) {
-                Exp(.linear)
-                Exp(.zoom)
-                12
-                1.2
-                16
-                3.0
-                20
-                5.0
-            }
-        )
-        glowLayer.lineBlur = .constant(4.0)
-        // Selection is shown by recoloring the full extrusion; keep outline layers silent.
-        glowLayer.lineOpacity = .constant(0.0)
-        glowLayer.minZoom = 12
-        glowLayer.filter = Exp(.match) {
-            Exp(.geometryType)
-            "Polygon"
-            true
-            "MultiPolygon"
-            true
-            false
-        }
-
-        do {
-            try mapView.mapboxMap.addLayer(glowLayer, layerPosition: .above(layerId))
-            print("✅ [MapLayer] Added exact selected building overlay")
-        } catch {
-            print("❌ [MapLayer] Error adding exact selected building glow layer: \(error)")
-        }
     }
 
     /// Set up a townhouse-only overlay layer that can render mixed per-unit statuses
@@ -1177,39 +1215,9 @@ final class MapLayerManager {
 
         var lineLayer = LineLayer(id: Self.parcelsLineLayerId, source: Self.parcelsSourceId)
         lineLayer.lineColor = .expression(Self.parcelLinkedAddressColorExpression)
-        lineLayer.lineOpacity = .expression(
-            Exp(.interpolate) {
-                Exp(.linear)
-                Exp(.zoom)
-                13.2
-                0.0
-                13.8
-                0.22
-                15.2
-                0.48
-                16.2
-                Exp(.switchCase) {
-                    Self.isActiveStatusExpression
-                    1.0
-                    0.78
-                }
-                16.8
-                0.0
-            }
-        )
+        lineLayer.lineOpacity = .expression(Self.parcelOverviewLineOpacityExpression)
         lineLayer.lineWidth = .expression(
-            Exp(.interpolate) {
-                Exp(.linear)
-                Exp(.zoom)
-                13.2
-                0.15
-                15.0
-                0.45
-                16.2
-                0.85
-                16.8
-                0.0
-            }
+            Self.parcelOverviewLineWidthExpression
         )
         lineLayer.minZoom = Self.parcelsOverviewMinZoom
         lineLayer.maxZoom = Self.parcelsOverviewMaxZoom
@@ -1894,6 +1902,7 @@ final class MapLayerManager {
             failedDiamondGeometrySignatures.removeAll()
             lastAppliedDiamondBuildingVisibility = nil
             lastAppliedDiamondAddressVisibility = nil
+            lastAppliedDiamondAddressNumberVisibility = nil
             if hadDiamondGeometry {
                 print("🧪 [MAP_DEBUG] renderer_clear renderer=pmtiles_vector reason=manifest_nil")
             }
@@ -1951,6 +1960,7 @@ final class MapLayerManager {
                 self.pendingDiamondGeometrySignature = nil
                 self.lastAppliedDiamondBuildingVisibility = nil
                 self.lastAppliedDiamondAddressVisibility = nil
+                self.lastAppliedDiamondAddressNumberVisibility = nil
                 self.applyDiamondGeometryVisibilityIfNeeded()
                 self.updateDiamondAddressModeZoomVisibility(isAddressMode: self.desiredAddressModeZoomVisibility)
                 self.replayCachedFeatureStates(reason: "diamond_install")
@@ -1963,6 +1973,7 @@ final class MapLayerManager {
                 self.pendingDiamondGeometrySignature = nil
                 self.lastAppliedDiamondBuildingVisibility = nil
                 self.lastAppliedDiamondAddressVisibility = nil
+                self.lastAppliedDiamondAddressNumberVisibility = nil
                 do {
                     try self.diamondGeometryProvider.removeGeometry(from: mapView)
                 } catch {
@@ -1975,15 +1986,17 @@ final class MapLayerManager {
         }
     }
 
-    func setDiamondGeometryVisibility(_ isVisible: Bool) {
+    func setDiamondGeometryVisibility(_ isVisible: Bool, addressNumbers: Bool? = nil) {
         desiredDiamondBuildingVisibility = isVisible
         desiredDiamondAddressVisibility = isVisible
+        desiredDiamondAddressNumberVisibility = addressNumbers
         applyDiamondGeometryVisibilityIfNeeded()
     }
 
-    func setDiamondGeometryVisibility(buildings: Bool, addresses: Bool) {
+    func setDiamondGeometryVisibility(buildings: Bool, addresses: Bool, addressNumbers: Bool? = nil) {
         desiredDiamondBuildingVisibility = buildings
         desiredDiamondAddressVisibility = addresses
+        desiredDiamondAddressNumberVisibility = addressNumbers
         applyDiamondGeometryVisibilityIfNeeded()
     }
 
@@ -2004,17 +2017,31 @@ final class MapLayerManager {
         let existingLayerIds = Set(mapView.mapboxMap.allLayerIdentifiers.map(\.id))
         guard layerIds.contains(where: existingLayerIds.contains) else { return }
         guard lastAppliedDiamondBuildingVisibility != desiredDiamondBuildingVisibility ||
-              lastAppliedDiamondAddressVisibility != desiredDiamondAddressVisibility else { return }
+              lastAppliedDiamondAddressVisibility != desiredDiamondAddressVisibility ||
+              lastAppliedDiamondAddressNumberVisibility != desiredDiamondAddressNumberVisibility else { return }
+
+        let hasAddressNumberOverride = desiredDiamondAddressNumberVisibility != nil
+        let shouldShowAddressNumbers = desiredDiamondAddressNumberVisibility ?? desiredDiamondAddressVisibility
 
         for layerId in layerIds where existingLayerIds.contains(layerId) {
-            let isAddressLayer = layerId == VectorTileDiamondGeometryProvider.addressCircleLayerId ||
-                layerId == VectorTileDiamondGeometryProvider.selectedAddressCircleLayerId ||
-                layerId == VectorTileDiamondGeometryProvider.addressNumberLayerId
+            let isAddressCircleLayer = layerId == VectorTileDiamondGeometryProvider.addressCircleLayerId ||
+                layerId == VectorTileDiamondGeometryProvider.selectedAddressCircleLayerId
+            let isAddressNumberLayer = layerId == VectorTileDiamondGeometryProvider.addressNumberLayerId
+            let isBuildingAddressNumberLayer = layerId == VectorTileDiamondGeometryProvider.buildingAddressNumberLayerId
             let isParcelLayer = layerId == VectorTileDiamondGeometryProvider.parcelFillLayerId ||
                 layerId == VectorTileDiamondGeometryProvider.parcelLineLayerId
-            let shouldShow = isParcelLayer
-                ? (desiredDiamondBuildingVisibility || desiredDiamondAddressVisibility)
-                : (isAddressLayer ? desiredDiamondAddressVisibility : desiredDiamondBuildingVisibility)
+            let shouldShow: Bool
+            if isParcelLayer {
+                shouldShow = desiredDiamondBuildingVisibility || desiredDiamondAddressVisibility
+            } else if isAddressCircleLayer {
+                shouldShow = desiredDiamondAddressVisibility
+            } else if isAddressNumberLayer {
+                shouldShow = shouldShowAddressNumbers
+            } else if isBuildingAddressNumberLayer {
+                shouldShow = hasAddressNumberOverride ? false : desiredDiamondBuildingVisibility
+            } else {
+                shouldShow = desiredDiamondBuildingVisibility
+            }
             let visibility: Visibility = shouldShow ? .visible : .none
 
             if layerId == VectorTileDiamondGeometryProvider.parcelFillLayerId {
@@ -2050,6 +2077,7 @@ final class MapLayerManager {
 
         lastAppliedDiamondBuildingVisibility = desiredDiamondBuildingVisibility
         lastAppliedDiamondAddressVisibility = desiredDiamondAddressVisibility
+        lastAppliedDiamondAddressNumberVisibility = desiredDiamondAddressNumberVisibility
     }
     
     /// Update buildings source with new GeoJSON data (polygon-only or empty to avoid FillBucket LineString errors).
@@ -2126,6 +2154,13 @@ final class MapLayerManager {
             addressStatusRows: addressStatusRows,
             currentUserId: currentUserId
         ) ?? Self.encodedEmptyTownhomeOverlay()
+#if DEBUG
+        logTownhomeOverlayUnitChanges(
+            buildings: buildings,
+            addresses: addresses,
+            orderedAddressIdsByBuilding: orderedAddressIdsByBuilding
+        )
+#endif
         let signature = Self.sourceSignature(for: data)
         guard lastTownhomeOverlaySignature != signature else { return }
 
@@ -2141,6 +2176,32 @@ final class MapLayerManager {
             print("❌ [MapLayer] Error updating townhouse overlay: \(error)")
         }
     }
+
+#if DEBUG
+    private func logTownhomeOverlayUnitChanges(
+        buildings: [BuildingFeature],
+        addresses: [AddressFeature],
+        orderedAddressIdsByBuilding: [String: [UUID]]
+    ) {
+        let audits = Self.townhomeOverlayAuditCounts(
+            buildings: buildings,
+            addresses: addresses,
+            orderedAddressIdsByBuilding: orderedAddressIdsByBuilding
+        )
+        var nextCounts: [String: Int] = [:]
+        for audit in audits {
+            nextCounts[audit.buildingId] = audit.renderedSliceCount
+            guard lastTownhomeOverlayRenderedUnitCounts[audit.buildingId] != audit.renderedSliceCount else {
+                continue
+            }
+            print(
+                "🧪 [MapLayer] townhome_overlay_units building=\(audit.buildingId) " +
+                "source=\(audit.source.rawValue) linked=\(audit.linkedCount) rendered=\(audit.renderedSliceCount)"
+            )
+        }
+        lastTownhomeOverlayRenderedUnitCounts = nextCounts
+    }
+#endif
 
     private static func encodedEmptyTownhomeOverlay() -> Data {
         let collection: [String: Any] = [
@@ -2158,22 +2219,7 @@ final class MapLayerManager {
         addressStatusRows: [UUID: AddressStatusRow] = [:],
         currentUserId: UUID? = nil
     ) -> Data? {
-        let addressContextsById = Dictionary(
-            uniqueKeysWithValues: addresses.compactMap { feature -> (UUID, OverlayAddressContext)? in
-                guard let idString = feature.properties.id ?? feature.id,
-                      let id = UUID(uuidString: idString) else { return nil }
-                return (
-                    id,
-                    OverlayAddressContext(
-                        id: id,
-                        buildingGersId: (feature.properties.buildingGersId ?? feature.properties.gersId ?? "").lowercased(),
-                        houseNumber: feature.properties.houseNumber,
-                        streetName: feature.properties.streetName,
-                        formatted: feature.properties.formatted
-                    )
-                )
-            }
-        )
+        let addressContextsById = overlayAddressContextsById(addresses)
 
         var featureDictionaries: [[String: Any]] = []
 
@@ -2182,13 +2228,14 @@ final class MapLayerManager {
             guard !gersId.isEmpty else { continue }
             let buildingIdentifiers = normalizedBuildingIdentifiers(for: building)
 
-            let linkedAddresses = orderedAddressesForTownhome(
+            let addressResolution = orderedAddressResolutionForTownhome(
                 buildingIdentifiers: buildingIdentifiers,
                 embeddedAddressIds: building.properties.addressUUIDs,
                 fallbackAddressId: building.properties.addressId,
                 addressesById: addressContextsById,
                 orderedAddressIdsByBuilding: orderedAddressIdsByBuilding
             )
+            let linkedAddresses = addressResolution.addresses
 
             guard linkedAddresses.count >= Self.townhomeOverlayMinimumUnitCount else { continue }
 
@@ -2598,26 +2645,12 @@ final class MapLayerManager {
                 $0.maxZoom = parcelMaxZoom
                 $0.lineOpacity = isAddressMode
                     ? .constant(0.72)
-                    : .expression(
-                        Exp(.interpolate) {
-                            Exp(.linear)
-                            Exp(.zoom)
-                            13.2
-                            0.0
-                            13.8
-                            0.22
-                            15.2
-                            0.48
-                            16.2
-                            Exp(.switchCase) {
-                                Self.isActiveStatusExpression
-                                1.0
-                                0.78
-                            }
-                            16.8
-                            0.0
-                        }
-                    )
+                    : .expression(Self.parcelOverviewLineOpacityExpression)
+                $0.lineWidth = .expression(
+                    isAddressMode
+                        ? Self.addressModeParcelLineWidthExpression
+                        : Self.parcelOverviewLineWidthExpression
+                )
             }
         }
 
@@ -2813,7 +2846,8 @@ final class MapLayerManager {
         let buildingContexts = labelBuildingContexts(
             buildings: buildings,
             addresses: addresses,
-            orderedAddressIdsByBuilding: orderedAddressIdsByBuilding
+            orderedAddressIdsByBuilding: orderedAddressIdsByBuilding,
+            includeAddressFeatureLinks: false
         )
 
         var buildingByIdentifier: [String: LabelBuildingContext] = [:]
@@ -2833,7 +2867,8 @@ final class MapLayerManager {
             buildingByIdentifier: buildingByIdentifier,
             buildingByAddressId: buildingByAddressId,
             requireHouseNumberLabel: true,
-            keepSingleAddressCoordinate: false
+            requireCurrentBuildingLink: true,
+            keepSingleAddressCoordinate: true
         )
 
         return try stableJSONData(withJSONObject: [
@@ -2882,7 +2917,8 @@ final class MapLayerManager {
             buildingByIdentifier: buildingByIdentifier,
             buildingByAddressId: buildingByAddressId,
             requireHouseNumberLabel: false,
-            keepSingleAddressCoordinate: false
+            requireCurrentBuildingLink: false,
+            keepSingleAddressCoordinate: true
         )
 
         return try stableJSONData(withJSONObject: [
@@ -2897,6 +2933,7 @@ final class MapLayerManager {
         buildingByIdentifier: [String: LabelBuildingContext],
         buildingByAddressId: [UUID: LabelBuildingContext],
         requireHouseNumberLabel: Bool,
+        requireCurrentBuildingLink: Bool,
         keepSingleAddressCoordinate: Bool
     ) -> [[String: Any]] {
         addresses.compactMap { feature in
@@ -2930,10 +2967,21 @@ final class MapLayerManager {
                 feature.properties.gersId
             ]
             .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            let linkedBuildingByIdentifier = buildingIdentifiers.compactMap { buildingByIdentifier[$0] }.first { context in
+                guard context.usesExplicitAddressIds, let addressUUID else { return true }
+                return context.orderedAddressIds.contains(addressUUID)
+            }
+            let containingBuilding = buildingContext(containing: baseCoordinate, in: buildingContexts).flatMap { context -> LabelBuildingContext? in
+                guard context.usesExplicitAddressIds else { return context }
+                guard let addressUUID else { return nil }
+                return context.orderedAddressIds.contains(addressUUID) ? context : nil
+            }
 
-            let linkedBuilding = addressUUID.flatMap { buildingByAddressId[$0] }
-                ?? buildingIdentifiers.compactMap { buildingByIdentifier[$0] }.first
-                ?? buildingContext(containing: baseCoordinate, in: buildingContexts)
+            let explicitlyLinkedBuilding = addressUUID.flatMap { buildingByAddressId[$0] }
+            let linkedBuilding = requireCurrentBuildingLink
+                ? explicitlyLinkedBuilding
+                : explicitlyLinkedBuilding ?? linkedBuildingByIdentifier ?? containingBuilding
+            guard !requireCurrentBuildingLink || linkedBuilding != nil else { return nil }
 
             let resolvedCoordinate: CLLocationCoordinate2D
             let labelPriority: Double
@@ -3160,12 +3208,14 @@ final class MapLayerManager {
         let orderedAddressIds: [UUID]
         let addressCount: Int
         let height: Double
+        let usesExplicitAddressIds: Bool
     }
 
     private static func labelBuildingContexts(
         buildings: [BuildingFeature],
         addresses: [AddressFeature],
-        orderedAddressIdsByBuilding: [String: [UUID]]
+        orderedAddressIdsByBuilding: [String: [UUID]],
+        includeAddressFeatureLinks: Bool = true
     ) -> [LabelBuildingContext] {
         let addressesByIdentifier = Dictionary(grouping: addresses) { feature in
             (feature.properties.buildingGersId ?? feature.properties.gersId ?? "")
@@ -3177,45 +3227,56 @@ final class MapLayerManager {
             guard let centroid = CampaignTargetResolver.coordinate(for: building.geometry) else { return nil }
             let polygons = polygonRings(from: building.geometry)
 
-            let identifiers = building.properties.buildingIdentifierCandidates
-                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
-                .filter { !$0.isEmpty }
+            let identifiers = normalizedBuildingIdentifiers(for: building)
             guard !identifiers.isEmpty else { return nil }
 
-            var orderedAddressIds: [UUID] = []
-            for identifier in identifiers {
-                if let mapped = orderedAddressIdsByBuilding[identifier] {
-                    orderedAddressIds.append(contentsOf: mapped)
-                }
-                if let featureGroup = addressesByIdentifier[identifier] {
-                    orderedAddressIds.append(contentsOf: featureGroup.sorted(by: compareLabelAddresses).compactMap { feature in
-                        guard let id = feature.properties.id ?? feature.id else { return nil }
-                        return UUID(uuidString: id)
-                    })
-                }
-            }
+            let explicitAddressIds = explicitlyMappedAddressIds(
+                for: identifiers,
+                orderedAddressIdsByBuilding: orderedAddressIdsByBuilding
+            )
 
-            if let directAddressId = building.properties.addressId.flatMap(UUID.init(uuidString:)) {
-                orderedAddressIds.append(directAddressId)
+            var orderedAddressIds: [UUID]
+            if let explicitAddressIds {
+                orderedAddressIds = explicitAddressIds
+            } else {
+                orderedAddressIds = building.properties.addressUUIDs
+                if includeAddressFeatureLinks {
+                    for identifier in identifiers {
+                        if let featureGroup = addressesByIdentifier[identifier] {
+                            orderedAddressIds.append(contentsOf: featureGroup.sorted(by: compareLabelAddresses).compactMap { feature in
+                                guard let id = feature.properties.id ?? feature.id else { return nil }
+                                return UUID(uuidString: id)
+                            })
+                        }
+                    }
+                }
+
+                if let directAddressId = building.properties.addressId.flatMap(UUID.init(uuidString:)) {
+                    orderedAddressIds.append(directAddressId)
+                }
             }
 
             orderedAddressIds = dedupePreservingOrder(orderedAddressIds)
+            let addressCount = explicitAddressIds != nil
+                ? max(orderedAddressIds.count, 1)
+                : max(
+                    orderedAddressIds.count,
+                    building.properties.addressCount ?? 0,
+                    building.properties.unitsCount,
+                    1
+                )
 
             return LabelBuildingContext(
                 identifiers: identifiers,
                 centroid: centroid,
                 polygons: polygons,
                 orderedAddressIds: orderedAddressIds,
-                addressCount: max(
-                    orderedAddressIds.count,
-                    building.properties.addressCount ?? 0,
-                    building.properties.unitsCount,
-                    1
-                ),
+                addressCount: addressCount,
                 height: max(
                     building.properties.heightM ?? building.properties.height,
                     Self.defaultBuildingExtrusionHeight
-                )
+                ),
+                usesExplicitAddressIds: explicitAddressIds != nil
             )
         }
     }
@@ -3519,12 +3580,11 @@ final class MapLayerManager {
         let featureId = gersId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !featureId.isEmpty else { return }
 
-        var state: [String: Any] = [
-            "status": status,
-            "scans_total": scansTotal,
-            "qr_scanned": scansTotal > 0,
-            "visit_owner": visitOwner ?? ""
-        ]
+        var state = buildingFeatureStateCache[featureId] ?? [:]
+        state["status"] = status
+        state["scans_total"] = scansTotal
+        state["qr_scanned"] = scansTotal > 0
+        state["visit_owner"] = visitOwner ?? ""
         if let isLinked {
             state["is_linked"] = isLinked
         }
@@ -3745,22 +3805,6 @@ final class MapLayerManager {
         updateBuildingSelection(identifiers: [gersId], isSelected: isSelected)
     }
 
-    func updateTownhomeOverlaySelection(addressIds: [UUID], isSelected: Bool) {
-        guard let mapView = mapView,
-              mapView.mapboxMap.sourceExists(withId: Self.townhomeOverlaySourceId) else { return }
-        let state: [String: Any] = ["selected": isSelected]
-        var seen = Set<UUID>()
-        for addressId in addressIds where seen.insert(addressId).inserted {
-            mapView.mapboxMap.setFeatureState(
-                sourceId: Self.townhomeOverlaySourceId,
-                sourceLayerId: nil,
-                featureId: addressId.uuidString.lowercased(),
-                state: state,
-                callback: { _ in }
-            )
-        }
-    }
-
     func updateBuildingSelection(identifiers: [String], isSelected: Bool) {
         guard let mapView = mapView else { return }
         var seen = Set<String>()
@@ -3769,78 +3813,12 @@ final class MapLayerManager {
             .filter { !$0.isEmpty && seen.insert($0).inserted }
         guard !featureIds.isEmpty else { return }
 
-        let state: [String: Any] = ["selected": isSelected]
-        let hasLocalBuildings = mapView.mapboxMap.sourceExists(withId: Self.buildingsSourceId)
-        let diamondBuildingLayer = installedDiamondManifest?.sourceLayers?.buildings
-        let diamondBuildingSourceId = existingDiamondSourceId(
-            preferred: VectorTileDiamondGeometryProvider.buildingSourceId,
-            on: mapView.mapboxMap
-        )
-
         for featureId in featureIds {
-            if hasLocalBuildings {
-                mapView.mapboxMap.setFeatureState(
-                    sourceId: Self.buildingsSourceId,
-                    sourceLayerId: nil,
-                    featureId: featureId,
-                    state: state,
-                    callback: { _ in }
-                )
-            }
-
-            if mapView.mapboxMap.sourceExists(withId: Self.townhomeOverlaySourceId) {
-                mapView.mapboxMap.setFeatureState(
-                    sourceId: Self.townhomeOverlaySourceId,
-                    sourceLayerId: nil,
-                    featureId: featureId,
-                    state: state,
-                    callback: { _ in }
-                )
-            }
-
-            if let diamondBuildingLayer, let diamondBuildingSourceId {
-                mapView.mapboxMap.setFeatureState(
-                    sourceId: diamondBuildingSourceId,
-                    sourceLayerId: diamondBuildingLayer,
-                    featureId: featureId,
-                    state: state,
-                    callback: { _ in }
-                )
-            }
-
-            updateDiamondParcelState(featureId: featureId, state: state)
+            var state = buildingFeatureStateCache[featureId] ?? [:]
+            state["selected"] = isSelected
+            buildingFeatureStateCache[featureId] = state
+            applyBuildingFeatureState(featureId: featureId, state: state, mapView: mapView, logSuccess: false)
         }
-    }
-
-    func updateExactSelectedBuilding(_ feature: BuildingFeature?) {
-        guard let mapView else { return }
-        let existingLayerIds = Set(mapView.mapboxMap.allLayerIdentifiers.map(\.id))
-        if !mapView.mapboxMap.sourceExists(withId: Self.selectedBuildingSourceId),
-           let anchorLayerId = [
-            Self.buildingsSelectedGlowLayerId,
-            VectorTileDiamondGeometryProvider.buildingLineLayerId,
-            VectorTileDiamondGeometryProvider.buildingFillLayerId,
-            Self.buildingsLayerId
-           ].first(where: { existingLayerIds.contains($0) }) {
-            setupSelectedBuildingExactLayer(above: anchorLayerId)
-        }
-        guard mapView.mapboxMap.sourceExists(withId: Self.selectedBuildingSourceId) else { return }
-
-        do {
-            let collection = BuildingFeatureCollection(
-                type: "FeatureCollection",
-                features: feature.map { [$0] } ?? []
-            )
-            let data = try JSONEncoder().encode(collection)
-            let geoJSON = try JSONDecoder().decode(GeoJSONObject.self, from: data)
-            mapView.mapboxMap.updateGeoJSONSource(withId: Self.selectedBuildingSourceId, geoJSON: geoJSON)
-        } catch {
-            print("❌ [MapLayer] Error updating exact selected building: \(error)")
-        }
-    }
-
-    func clearExactSelectedBuilding() {
-        updateExactSelectedBuilding(nil)
     }
 
     func updateAddressSelection(addressId: String, isSelected: Bool) {
@@ -3860,16 +3838,6 @@ final class MapLayerManager {
         if mapView.mapboxMap.sourceExists(withId: Self.parcelsSourceId) {
             mapView.mapboxMap.setFeatureState(
                 sourceId: Self.parcelsSourceId,
-                sourceLayerId: nil,
-                featureId: featureId,
-                state: state,
-                callback: { _ in }
-            )
-        }
-
-        if mapView.mapboxMap.sourceExists(withId: Self.townhomeOverlaySourceId) {
-            mapView.mapboxMap.setFeatureState(
-                sourceId: Self.townhomeOverlaySourceId,
                 sourceLayerId: nil,
                 featureId: featureId,
                 state: state,
@@ -4137,6 +4105,26 @@ final class MapLayerManager {
         let formatted: String?
     }
 
+    private enum TownhomeAddressResolutionSource: String {
+        case explicitMap = "explicit_map"
+        case embeddedFallback = "embedded_fallback"
+    }
+
+    private struct TownhomeAddressResolution {
+        let addresses: [OverlayAddressContext]
+        let linkedCount: Int
+        let source: TownhomeAddressResolutionSource
+    }
+
+#if DEBUG
+    private struct TownhomeOverlayAudit {
+        let buildingId: String
+        let source: TownhomeAddressResolutionSource
+        let linkedCount: Int
+        let renderedSliceCount: Int
+    }
+#endif
+
     private struct ProjectedPoint {
         let x: Double
         let y: Double
@@ -4147,16 +4135,27 @@ final class MapLayerManager {
         let v: Double
     }
 
-    private static func orderedAddressesForTownhome(
+    private static func orderedAddressResolutionForTownhome(
         buildingIdentifiers: [String],
         embeddedAddressIds: [UUID],
         fallbackAddressId: String?,
         addressesById: [UUID: OverlayAddressContext],
         orderedAddressIdsByBuilding: [String: [UUID]]
-    ) -> [OverlayAddressContext] {
+    ) -> TownhomeAddressResolution {
+        if let mappedIds = explicitlyMappedAddressIds(
+            for: buildingIdentifiers,
+            orderedAddressIdsByBuilding: orderedAddressIdsByBuilding
+        ) {
+            let normalizedIds = dedupePreservingOrder(mappedIds)
+            return TownhomeAddressResolution(
+                addresses: normalizedIds.compactMap { addressesById[$0] },
+                linkedCount: normalizedIds.count,
+                source: .explicitMap
+            )
+        }
+
         let identifierSet = Set(buildingIdentifiers)
-        let mappedIds = buildingIdentifiers.flatMap { orderedAddressIdsByBuilding[$0] ?? [] }
-        let normalizedIds = dedupePreservingOrder(mappedIds + embeddedAddressIds)
+        let normalizedIds = dedupePreservingOrder(embeddedAddressIds)
         var ordered = normalizedIds.compactMap { addressesById[$0] }
         let seen = Set(ordered.map(\.id))
 
@@ -4166,17 +4165,114 @@ final class MapLayerManager {
 
         ordered.append(contentsOf: matchedAddresses)
         if !ordered.isEmpty {
-            return ordered
+            return TownhomeAddressResolution(
+                addresses: ordered,
+                linkedCount: ordered.count,
+                source: .embeddedFallback
+            )
         }
 
         if let fallbackAddressId,
            let uuid = UUID(uuidString: fallbackAddressId),
            let address = addressesById[uuid] {
-            return [address]
+            return TownhomeAddressResolution(
+                addresses: [address],
+                linkedCount: 1,
+                source: .embeddedFallback
+            )
         }
 
-        return []
+        return TownhomeAddressResolution(
+            addresses: [],
+            linkedCount: 0,
+            source: .embeddedFallback
+        )
     }
+
+    private static func explicitlyMappedAddressIds(
+        for buildingIdentifiers: [String],
+        orderedAddressIdsByBuilding: [String: [UUID]]
+    ) -> [UUID]? {
+        let normalizedMap = normalizedOrderedAddressIdsByBuilding(orderedAddressIdsByBuilding)
+        guard !normalizedMap.isEmpty else { return nil }
+
+        var foundExplicitEntry = false
+        var mappedIds: [UUID] = []
+        for identifier in buildingIdentifiers {
+            let normalized = identifier.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard !normalized.isEmpty,
+                  let ids = normalizedMap[normalized] else { continue }
+            foundExplicitEntry = true
+            mappedIds.append(contentsOf: ids)
+        }
+
+        return foundExplicitEntry ? dedupePreservingOrder(mappedIds) : nil
+    }
+
+    private static func normalizedOrderedAddressIdsByBuilding(
+        _ orderedAddressIdsByBuilding: [String: [UUID]]
+    ) -> [String: [UUID]] {
+        var normalized: [String: [UUID]] = [:]
+        for (identifier, addressIds) in orderedAddressIdsByBuilding {
+            let key = identifier.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard !key.isEmpty else { continue }
+            normalized[key, default: []].append(contentsOf: addressIds)
+        }
+
+        for key in Array(normalized.keys) {
+            normalized[key] = dedupePreservingOrder(normalized[key] ?? [])
+        }
+        return normalized
+    }
+
+    private static func overlayAddressContextsById(_ addresses: [AddressFeature]) -> [UUID: OverlayAddressContext] {
+        var contexts: [UUID: OverlayAddressContext] = [:]
+        for feature in addresses {
+            guard let idString = feature.properties.id ?? feature.id,
+                  let id = UUID(uuidString: idString) else { continue }
+            contexts[id] = OverlayAddressContext(
+                id: id,
+                buildingGersId: (feature.properties.buildingGersId ?? feature.properties.gersId ?? "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .lowercased(),
+                houseNumber: feature.properties.houseNumber,
+                streetName: feature.properties.streetName,
+                formatted: feature.properties.formatted
+            )
+        }
+        return contexts
+    }
+
+#if DEBUG
+    private static func townhomeOverlayAuditCounts(
+        buildings: [BuildingFeature],
+        addresses: [AddressFeature],
+        orderedAddressIdsByBuilding: [String: [UUID]]
+    ) -> [TownhomeOverlayAudit] {
+        let addressContextsById = overlayAddressContextsById(addresses)
+        return buildings.compactMap { building in
+            let buildingId = (building.properties.canonicalBuildingIdentifier ?? building.id ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+            guard !buildingId.isEmpty else { return nil }
+            let resolution = orderedAddressResolutionForTownhome(
+                buildingIdentifiers: normalizedBuildingIdentifiers(for: building),
+                embeddedAddressIds: building.properties.addressUUIDs,
+                fallbackAddressId: building.properties.addressId,
+                addressesById: addressContextsById,
+                orderedAddressIdsByBuilding: orderedAddressIdsByBuilding
+            )
+            return TownhomeOverlayAudit(
+                buildingId: buildingId,
+                source: resolution.source,
+                linkedCount: resolution.linkedCount,
+                renderedSliceCount: resolution.addresses.count >= Self.townhomeOverlayMinimumUnitCount
+                    ? resolution.addresses.count
+                    : 0
+            )
+        }
+    }
+#endif
 
     private static func normalizedBuildingIdentifiers(for building: BuildingFeature) -> [String] {
         let rawValues = building.properties.buildingIdentifierCandidates.map(Optional.some) + [
@@ -4775,6 +4871,11 @@ final class MapLayerManager {
             source = try c.decodeIfPresent(String.self, forKey: .source)
         }
     }
+
+    struct ParcelLinkedAddressTapResult {
+        let addressIds: [UUID]
+        let preferredAddress: AddressTapResult?
+    }
     
     // MARK: - Click Handling
     
@@ -4823,18 +4924,6 @@ final class MapLayerManager {
             height: pixelRadius * 2
         )
 
-        if let parcelAddress = await queryFlyerAddress(
-            at: point,
-            layerIds: [
-                VectorTileDiamondGeometryProvider.parcelFillLayerId,
-                Self.parcelsFillLayerId
-            ],
-            fallbackCoordinate: coordinate,
-            preferFallbackCoordinate: true
-        ) {
-            return parcelAddress
-        }
-
         if let address = await queryFlyerAddress(
             in: searchBox,
             layerIds: [
@@ -4845,19 +4934,37 @@ final class MapLayerManager {
                 Self.addressesLayerId
             ],
             fallbackCoordinate: coordinate,
-            preferFallbackCoordinate: false
+            preferFallbackCoordinate: false,
+            allowRootAddressFallback: true,
+            includeFeatureIdAsAddress: true
         ) {
             return address
         }
 
-        return await queryFlyerAddress(
+        if let buildingAddress = await queryFlyerAddress(
             in: searchBox,
             layerIds: [
                 VectorTileDiamondGeometryProvider.buildingFillLayerId,
                 Self.buildingsLayerId
             ],
             fallbackCoordinate: coordinate,
-            preferFallbackCoordinate: false
+            preferFallbackCoordinate: false,
+            allowRootAddressFallback: false,
+            includeFeatureIdAsAddress: false
+        ) {
+            return buildingAddress
+        }
+
+        return await queryFlyerAddress(
+            at: point,
+            layerIds: [
+                VectorTileDiamondGeometryProvider.parcelFillLayerId,
+                Self.parcelsFillLayerId
+            ],
+            fallbackCoordinate: coordinate,
+            preferFallbackCoordinate: true,
+            allowRootAddressFallback: false,
+            includeFeatureIdAsAddress: false
         )
     }
 
@@ -4865,7 +4972,9 @@ final class MapLayerManager {
         at point: CGPoint,
         layerIds: [String],
         fallbackCoordinate: CLLocationCoordinate2D,
-        preferFallbackCoordinate: Bool
+        preferFallbackCoordinate: Bool,
+        allowRootAddressFallback: Bool,
+        includeFeatureIdAsAddress: Bool
     ) async -> FlyerAddress? {
         guard let mapView = mapView else { return nil }
         let availableLayerIds = availableRenderedLayerIds(from: layerIds)
@@ -4884,7 +4993,9 @@ final class MapLayerManager {
                     returning: self.firstFlyerAddress(
                         from: result,
                         fallbackCoordinate: fallbackCoordinate,
-                        preferFallbackCoordinate: preferFallbackCoordinate
+                        preferFallbackCoordinate: preferFallbackCoordinate,
+                        allowRootAddressFallback: allowRootAddressFallback,
+                        includeFeatureIdAsAddress: includeFeatureIdAsAddress
                     )
                 )
             }
@@ -4895,7 +5006,9 @@ final class MapLayerManager {
         in box: CGRect,
         layerIds: [String],
         fallbackCoordinate: CLLocationCoordinate2D,
-        preferFallbackCoordinate: Bool
+        preferFallbackCoordinate: Bool,
+        allowRootAddressFallback: Bool,
+        includeFeatureIdAsAddress: Bool
     ) async -> FlyerAddress? {
         guard let mapView = mapView else { return nil }
         let availableLayerIds = availableRenderedLayerIds(from: layerIds)
@@ -4914,7 +5027,9 @@ final class MapLayerManager {
                     returning: self.firstFlyerAddress(
                         from: result,
                         fallbackCoordinate: fallbackCoordinate,
-                        preferFallbackCoordinate: preferFallbackCoordinate
+                        preferFallbackCoordinate: preferFallbackCoordinate,
+                        allowRootAddressFallback: allowRootAddressFallback,
+                        includeFeatureIdAsAddress: includeFeatureIdAsAddress
                     )
                 )
             }
@@ -4924,14 +5039,18 @@ final class MapLayerManager {
     private func firstFlyerAddress(
         from result: Result<[QueriedRenderedFeature], Error>,
         fallbackCoordinate: CLLocationCoordinate2D,
-        preferFallbackCoordinate: Bool
+        preferFallbackCoordinate: Bool,
+        allowRootAddressFallback: Bool,
+        includeFeatureIdAsAddress: Bool
     ) -> FlyerAddress? {
         guard case .success(let features) = result else { return nil }
         for renderedFeature in features {
             if let address = flyerAddress(
                 from: renderedFeature.queriedFeature.feature,
                 fallbackCoordinate: fallbackCoordinate,
-                preferFallbackCoordinate: preferFallbackCoordinate
+                preferFallbackCoordinate: preferFallbackCoordinate,
+                allowRootAddressFallback: allowRootAddressFallback,
+                includeFeatureIdAsAddress: includeFeatureIdAsAddress
             ) {
                 return address
             }
@@ -4942,19 +5061,26 @@ final class MapLayerManager {
     private func flyerAddress(
         from feature: Feature,
         fallbackCoordinate: CLLocationCoordinate2D,
-        preferFallbackCoordinate: Bool
+        preferFallbackCoordinate: Bool,
+        allowRootAddressFallback: Bool,
+        includeFeatureIdAsAddress: Bool
     ) -> FlyerAddress? {
         var converted = feature.properties.map(unwrapTurfProperties) ?? [:]
         if let rootId = rootFeatureId(from: feature), !rootId.isEmpty {
             converted["id"] = converted["id"] ?? rootId
-            converted["address_id"] = converted["address_id"] ?? rootId
+            if allowRootAddressFallback {
+                converted["address_id"] = converted["address_id"] ?? rootId
+            }
         }
-        guard let addressId = firstUUIDString(in: converted, keys: [
+        var identityKeys = [
             "address_id",
             "campaign_address_id",
-            "campaignAddressId",
-            "id"
-        ]),
+            "campaignAddressId"
+        ]
+        if includeFeatureIdAsAddress {
+            identityKeys.append("id")
+        }
+        guard let addressId = firstUUIDString(in: converted, keys: identityKeys),
               let uuid = UUID(uuidString: addressId) else {
             return nil
         }
@@ -5016,6 +5142,30 @@ final class MapLayerManager {
         return nil
     }
 
+    private func uuidStrings(from value: Any?) -> [String] {
+        if let string = value as? String {
+            let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let uuid = UUID(uuidString: trimmed) {
+                return [uuid.uuidString.lowercased()]
+            }
+            return trimmed
+                .split { $0 == "," || $0 == " " || $0 == ";" }
+                .compactMap { UUID(uuidString: String($0))?.uuidString.lowercased() }
+        }
+        if let values = value as? [Any] {
+            var seen: Set<String> = []
+            var uuids: [String] = []
+            for nested in values {
+                for uuid in uuidStrings(from: nested) where !seen.contains(uuid) {
+                    seen.insert(uuid)
+                    uuids.append(uuid)
+                }
+            }
+            return uuids
+        }
+        return []
+    }
+
     private func flyerAddressLabel(from properties: [String: Any]) -> String {
         for key in ["formatted", "address_text", "full_address", "label"] {
             if let value = properties[key] as? String {
@@ -5035,46 +5185,30 @@ final class MapLayerManager {
         return combined.isEmpty ? "Address" : combined
     }
 
-    /// Get building or address at tap location by querying both layers (so circles always show the card).
+    /// Get building or address at tap location. Query direct address layers first, then buildings,
+    /// then parcel fallback only when the parcel has explicit address metadata.
     func getBuildingOrAddressAt(point: CGPoint, completion: @escaping (BuildingOrAddressTapResult?) -> Void) {
-        guard let mapView = mapView else { completion(nil); return }
+        queryAddressHitbox(at: point, mode: .broad) { [weak self] address in
+            guard let self else { return }
+            if let address {
+                completion(.address(address))
+                return
+            }
 
-        let layerIds = availableRenderedLayerIds(from: [
-            VectorTileDiamondGeometryProvider.selectedAddressCircleLayerId,
-            VectorTileDiamondGeometryProvider.addressCircleLayerId,
-            Self.addressLabelHitboxLayerId,
-            Self.addressNumbersLayerId,
-            Self.addressHouseIconLayerId,
-            VectorTileDiamondGeometryProvider.buildingFillLayerId,
-            Self.buildingsLayerId,
-            Self.selectedAddressesLayerId,
-            Self.addressesLayerId
-        ])
-        guard !layerIds.isEmpty else {
-            completion(nil)
-            return
-        }
-        let hitbox = CGRect(x: point.x - 22, y: point.y - 22, width: 44, height: 44)
-        let options = RenderedQueryOptions(layerIds: layerIds, filter: nil)
-        mapView.mapboxMap.queryRenderedFeatures(with: hitbox, options: options) { [weak self] result in
-            guard let self = self else { return }
-            switch result {
-            case .success(let features):
-                for renderedFeature in features {
-                    let feature = renderedFeature.queriedFeature.feature
-                    if let addressResult = self.addressTapResult(from: feature) {
-                        DispatchQueue.main.async { completion(.address(addressResult)) }
-                        return
-                    }
-                    if let building = self.buildingProperties(from: feature) {
-                        DispatchQueue.main.async { completion(.building(building)) }
-                        return
+            self.queryBuildingTap(at: point) { [weak self] building in
+                guard let self else { return }
+                if let building {
+                    completion(.building(building))
+                    return
+                }
+
+                self.queryParcelAddressFallback(at: point) { address in
+                    if let address {
+                        completion(.address(address))
+                    } else {
+                        completion(nil)
                     }
                 }
-                DispatchQueue.main.async { completion(nil) }
-            case .failure(let error):
-                print("❌ [MapLayer] Error querying features: \(error)")
-                DispatchQueue.main.async { completion(nil) }
             }
         }
     }
@@ -5108,19 +5242,23 @@ final class MapLayerManager {
     func getBuildingFeatureAt(point: CGPoint, completion: @escaping (BuildingFeature?) -> Void) {
         guard let mapView = mapView else { completion(nil); return }
 
-        let options = RenderedQueryOptions(
-            layerIds: [VectorTileDiamondGeometryProvider.buildingFillLayerId, Self.buildingsLayerId],
-            filter: nil
-        )
+        let layerIds = availableRenderedLayerIds(from: buildingTapLayerIds)
+        guard !layerIds.isEmpty else {
+            DispatchQueue.main.async { completion(nil) }
+            return
+        }
+
+        let options = RenderedQueryOptions(layerIds: layerIds, filter: nil)
         mapView.mapboxMap.queryRenderedFeatures(with: point, options: options) { result in
             switch result {
             case .success(let features):
-                guard let first = features.first,
-                      let feature = self.buildingFeature(from: first.queriedFeature.feature) else {
-                    DispatchQueue.main.async { completion(nil) }
-                    return
+                for renderedFeature in features {
+                    if let feature = self.buildingFeature(from: renderedFeature.queriedFeature.feature) {
+                        DispatchQueue.main.async { completion(feature) }
+                        return
+                    }
                 }
-                DispatchQueue.main.async { completion(feature) }
+                DispatchQueue.main.async { completion(nil) }
             case .failure(let error):
                 print("❌ [MapLayer] Error querying features: \(error)")
                 DispatchQueue.main.async { completion(nil) }
@@ -5146,10 +5284,7 @@ final class MapLayerManager {
             width: pixelRadius * 2,
             height: pixelRadius * 2
         )
-        let layerIds = availableRenderedLayerIds(from: [
-            VectorTileDiamondGeometryProvider.buildingFillLayerId,
-            Self.buildingsLayerId
-        ])
+        let layerIds = availableRenderedLayerIds(from: buildingTapLayerIds)
         guard !layerIds.isEmpty else { return [] }
 
         return await withCheckedContinuation { continuation in
@@ -5322,26 +5457,92 @@ final class MapLayerManager {
     
     /// Get address at tap location (async via completion). Use when display mode is Addresses.
     func getAddressAt(point: CGPoint, completion: @escaping (AddressTapResult?) -> Void) {
-        queryAddressHitbox(at: point, completion: completion)
+        queryAddressHitbox(at: point, mode: .broad, completion: completion)
     }
 
-    private func queryAddressHitbox(at point: CGPoint, completion: @escaping (AddressTapResult?) -> Void) {
-        guard let mapView = mapView else { completion(nil); return }
+    /// Smaller address target for building mode so building geometry wins unless the user taps
+    /// directly on an address dot/number.
+    func getStrictAddressAt(point: CGPoint, completion: @escaping (AddressTapResult?) -> Void) {
+        queryAddressHitbox(at: point, mode: .strict, completion: completion)
+    }
 
-        let layerIds = availableRenderedLayerIds(from: [
+    func getParcelLinkedAddressAt(point: CGPoint, completion: @escaping (AddressTapResult?) -> Void) {
+        queryParcelAddressFallback(at: point, completion: completion)
+    }
+
+    func getParcelLinkedAddressesAt(point: CGPoint, completion: @escaping (ParcelLinkedAddressTapResult?) -> Void) {
+        queryParcelLinkedAddressesFallback(at: point, completion: completion)
+    }
+
+    private enum AddressHitMode {
+        case strict
+        case broad
+
+        var radius: CGFloat {
+            switch self {
+            case .strict: return 12
+            case .broad: return 22
+            }
+        }
+    }
+
+    private var strictAddressTapLayerIds: [String] {
+        [
             VectorTileDiamondGeometryProvider.selectedAddressCircleLayerId,
             VectorTileDiamondGeometryProvider.addressCircleLayerId,
+            VectorTileDiamondGeometryProvider.addressNumberLayerId,
+            Self.addressNumbersLayerId,
+            Self.addressHouseIconLayerId,
+            Self.selectedAddressesLayerId,
+            Self.addressesLayerId
+        ]
+    }
+
+    private var broadAddressTapLayerIds: [String] {
+        [
+            VectorTileDiamondGeometryProvider.selectedAddressCircleLayerId,
+            VectorTileDiamondGeometryProvider.addressCircleLayerId,
+            VectorTileDiamondGeometryProvider.addressNumberLayerId,
             Self.addressLabelHitboxLayerId,
             Self.addressNumbersLayerId,
             Self.addressHouseIconLayerId,
             Self.selectedAddressesLayerId,
             Self.addressesLayerId
-        ])
+        ]
+    }
+
+    private var buildingTapLayerIds: [String] {
+        [
+            Self.townhomeOverlayLayerId,
+            Self.townhomeSliceOutlineLayerId,
+            Self.townhomeDividerStripLayerId,
+            Self.townhomeDividerLayerId,
+            Self.townhomeOutlineLayerId,
+            VectorTileDiamondGeometryProvider.buildingFillLayerId,
+            Self.buildingsLayerId
+        ]
+    }
+
+    private func queryAddressHitbox(
+        at point: CGPoint,
+        mode: AddressHitMode,
+        completion: @escaping (AddressTapResult?) -> Void
+    ) {
+        guard let mapView = mapView else { completion(nil); return }
+
+        let requestedLayerIds: [String] = {
+            switch mode {
+            case .strict: return strictAddressTapLayerIds
+            case .broad: return broadAddressTapLayerIds
+            }
+        }()
+        let layerIds = availableRenderedLayerIds(from: requestedLayerIds)
         guard !layerIds.isEmpty else {
             completion(nil)
             return
         }
-        let hitbox = CGRect(x: point.x - 22, y: point.y - 22, width: 44, height: 44)
+        let radius = mode.radius
+        let hitbox = CGRect(x: point.x - radius, y: point.y - radius, width: radius * 2, height: radius * 2)
         let options = RenderedQueryOptions(layerIds: layerIds, filter: nil)
         mapView.mapboxMap.queryRenderedFeatures(with: hitbox, options: options) { [weak self] result in
             guard let self = self else { return }
@@ -5362,33 +5563,128 @@ final class MapLayerManager {
     }
 
     private func addressTapResult(from feature: Feature) -> AddressTapResult? {
-        guard let data = decodedFeaturePropertiesData(from: feature) else {
+        guard let data = decodedFeaturePropertiesData(from: feature, includeRootAddressFallback: true) else {
             return nil
         }
         return try? JSONDecoder().decode(AddressTapResult.self, from: data)
     }
 
     private func buildingProperties(from feature: Feature) -> BuildingProperties? {
-        guard let data = decodedFeaturePropertiesData(from: feature) else {
+        guard let data = decodedFeaturePropertiesData(from: feature, includeRootAddressFallback: false) else {
             return nil
         }
         return try? JSONDecoder().decode(BuildingProperties.self, from: data)
     }
 
-    private func decodedFeaturePropertiesData(from feature: Feature) -> Data? {
+    private func decodedFeaturePropertiesData(
+        from feature: Feature,
+        includeRootAddressFallback: Bool
+    ) -> Data? {
         guard let properties = feature.properties else {
             return nil
         }
         var converted = unwrapTurfProperties(properties)
         if let rootId = rootFeatureId(from: feature), !rootId.isEmpty {
             converted["id"] = converted["id"] ?? rootId
-            converted["address_id"] = converted["address_id"] ?? rootId
+            if includeRootAddressFallback {
+                converted["address_id"] = converted["address_id"] ?? rootId
+            }
         }
         let sanitized = SafeJSON.sanitize(converted)
         guard JSONSerialization.isValidJSONObject(sanitized) else {
             return nil
         }
         return SafeJSON.data(from: sanitized)
+    }
+
+    private func queryBuildingTap(at point: CGPoint, completion: @escaping (BuildingProperties?) -> Void) {
+        getBuildingFeatureAt(point: point) { feature in
+            completion(feature?.properties)
+        }
+    }
+
+    private func queryParcelAddressFallback(at point: CGPoint, completion: @escaping (AddressTapResult?) -> Void) {
+        queryParcelLinkedAddressesFallback(at: point) { result in
+            completion(result?.preferredAddress)
+        }
+    }
+
+    private func queryParcelLinkedAddressesFallback(
+        at point: CGPoint,
+        completion: @escaping (ParcelLinkedAddressTapResult?) -> Void
+    ) {
+        guard let mapView = mapView else { completion(nil); return }
+
+        let layerIds = availableRenderedLayerIds(from: [
+            VectorTileDiamondGeometryProvider.parcelFillLayerId,
+            Self.parcelsFillLayerId
+        ])
+        guard !layerIds.isEmpty else {
+            completion(nil)
+            return
+        }
+
+        mapView.mapboxMap.queryRenderedFeatures(
+            with: point,
+            options: RenderedQueryOptions(layerIds: layerIds, filter: nil)
+        ) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let features):
+                for renderedFeature in features {
+                    if let result = self.parcelLinkedAddressTapResult(from: renderedFeature.queriedFeature.feature) {
+                        DispatchQueue.main.async { completion(result) }
+                        return
+                    }
+                }
+                DispatchQueue.main.async { completion(nil) }
+            case .failure(let error):
+                print("❌ [MapLayer] Error querying parcel fallback features: \(error)")
+                DispatchQueue.main.async { completion(nil) }
+            }
+        }
+    }
+
+    private func parcelAddressTapResult(from feature: Feature) -> AddressTapResult? {
+        parcelLinkedAddressTapResult(from: feature)?.preferredAddress
+    }
+
+    private func parcelLinkedAddressTapResult(from feature: Feature) -> ParcelLinkedAddressTapResult? {
+        guard let properties = feature.properties else { return nil }
+        let converted = unwrapTurfProperties(properties)
+
+        let primaryAddressId = firstUUIDString(in: converted, keys: [
+            "address_id",
+            "campaign_address_id",
+            "campaignAddressId"
+        ])
+        let rawAddressIds = [primaryAddressId].compactMap { $0 } + uuidStrings(from: converted["address_ids"])
+        var seen = Set<UUID>()
+        let addressIds = rawAddressIds.compactMap { UUID(uuidString: $0) }.filter { seen.insert($0).inserted }
+        guard !addressIds.isEmpty else { return nil }
+
+        let preferredId: UUID?
+        if let primaryAddressId, let primaryUUID = UUID(uuidString: primaryAddressId) {
+            preferredId = primaryUUID
+        } else if addressIds.count == 1 {
+            preferredId = addressIds[0]
+        } else {
+            preferredId = nil
+        }
+
+        let preferredAddress = preferredId.map {
+            AddressTapResult(
+                addressId: $0,
+                formatted: flyerAddressLabel(from: converted),
+                gersId: converted["gers_id"] as? String,
+                buildingGersId: converted["building_gers_id"] as? String,
+                houseNumber: converted["house_number"] as? String,
+                streetName: converted["street_name"] as? String,
+                source: converted["source"] as? String
+            )
+        }
+
+        return ParcelLinkedAddressTapResult(addressIds: addressIds, preferredAddress: preferredAddress)
     }
     
     // MARK: - Cleanup
@@ -5398,8 +5694,6 @@ final class MapLayerManager {
         guard let mapView = mapView else { return }
         
         // Remove layers
-        try? mapView.mapboxMap.removeLayer(withId: Self.selectedBuildingGlowLayerId)
-        try? mapView.mapboxMap.removeLayer(withId: Self.selectedBuildingLayerId)
         try? mapView.mapboxMap.removeLayer(withId: Self.buildingsSelectedGlowLayerId)
         try? mapView.mapboxMap.removeLayer(withId: Self.buildingsLayerId)
         try? mapView.mapboxMap.removeLayer(withId: Self.buildingsLeadGlowLayerId)
@@ -5423,7 +5717,6 @@ final class MapLayerManager {
         try? mapView.mapboxMap.removeLayer(withId: Self.roadsLayerId)
         
         // Remove sources
-        try? mapView.mapboxMap.removeSource(withId: Self.selectedBuildingSourceId)
         try? mapView.mapboxMap.removeSource(withId: Self.buildingsSourceId)
         try? mapView.mapboxMap.removeSource(withId: Self.townhomeOverlaySourceId)
         try? mapView.mapboxMap.removeSource(withId: Self.addressesSourceId)

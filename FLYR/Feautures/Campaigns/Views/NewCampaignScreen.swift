@@ -4,15 +4,18 @@ import CoreLocation
 
 private enum CampaignCreationStage {
     case territory
+    case creating
     case details
 }
 
 struct NewCampaignScreen: View {
     @ObservedObject var store: CampaignV2Store
+    private let resumedCampaignId: UUID?
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var uiState: AppUIState
     @EnvironmentObject private var entitlementsService: EntitlementsService
     @ObservedObject private var workspaceContext = WorkspaceContext.shared
+    @ObservedObject private var provisionMonitor = CampaignProvisionMonitor.shared
     
     @State private var name = ""
     @State private var description = ""
@@ -41,7 +44,19 @@ struct NewCampaignScreen: View {
     @State private var hasNavigatedToCampaign = false
     @State private var campaignMapDataReady = false
     @State private var showCampaignReadinessOverlay = false
+    @State private var isCancellingProvision = false
+    @State private var cancelProvisionError: String?
+    @State private var hasLoadedResumedCampaign = false
+    @State private var readyRevealCompleted = false
+    @State private var hasRegisteredCreationPresentation = false
+    @State private var campaignCreationTask: Task<Void, Never>?
     @State private var provisioningTask: Task<Void, Never>?
+
+    init(store: CampaignV2Store, resumedCampaignId: UUID? = nil) {
+        self.store = store
+        self.resumedCampaignId = resumedCampaignId
+        _creationStage = State(initialValue: resumedCampaignId == nil ? .territory : .creating)
+    }
 
     private var mapPreviewCenter: CLLocationCoordinate2D {
         selectedCenter ?? locationManager.currentLocation?.coordinate ?? CLLocationCoordinate2D(latitude: 43.65, longitude: -79.38)
@@ -95,7 +110,45 @@ struct NewCampaignScreen: View {
     }
 
     private var shouldShowCampaignCreatingOverlay: Bool {
-        showCampaignReadinessOverlay && isProvisioningCampaign && !provisionFailed
+        showCampaignReadinessOverlay && !campaignMapDataReady && !provisionFailed
+    }
+
+    private var activeCreatingCampaignId: UUID? {
+        createdCampaign?.id ?? resumedCampaignId ?? provisionMonitor.tracked?.campaignId
+    }
+
+    private var trackedForActiveCampaign: TrackedCampaignProvision? {
+        guard let activeCreatingCampaignId,
+              provisionMonitor.tracked?.campaignId == activeCreatingCampaignId else {
+            return nil
+        }
+        return provisionMonitor.tracked
+    }
+
+    private var creatingProgressPercent: Int {
+        max(
+            CampaignProvisionMonitor.clampedProgress(provisionProgressPercent),
+            trackedForActiveCampaign?.displayProgressPercent ?? 0
+        )
+    }
+
+    private var creatingActivityText: String {
+        trackedForActiveCampaign?.activityText ?? CampaignProvisionMonitor.activityText(progressPercent: creatingProgressPercent)
+    }
+
+    private var creatingErrorText: String? {
+        cancelProvisionError ?? createHook.error
+    }
+
+    private var creatingRevealPolygon: [CLLocationCoordinate2D] {
+        if let drawnPolygon, drawnPolygon.count >= 3 {
+            return drawnPolygon
+        }
+        if uiState.selectedMapCampaignId == activeCreatingCampaignId,
+           uiState.selectedMapCampaignBoundaryCoordinates.count >= 3 {
+            return uiState.selectedMapCampaignBoundaryCoordinates
+        }
+        return []
     }
 
     private var territoryHelperText: String {
@@ -120,7 +173,8 @@ struct NewCampaignScreen: View {
 
     var body: some View {
         Group {
-            if creationStage == .territory {
+            switch creationStage {
+            case .territory:
                 ZStack(alignment: .bottom) {
                     MapDrawingView(
                         initialCenter: selectedCenter ?? locationManager.currentLocation?.coordinate,
@@ -146,10 +200,27 @@ struct NewCampaignScreen: View {
                             .padding(.bottom, 118)
                     }
                 }
-            } else {
+            case .creating:
+                CampaignCreatingOverlayView(
+                    useDarkStyle: colorScheme == .dark,
+                    progressPercent: creatingProgressPercent,
+                    activityText: creatingActivityText,
+                    polygonCoordinates: creatingRevealPolygon,
+                    isCancelling: isCancellingProvision,
+                    errorText: creatingErrorText,
+                    onCancel: {
+                        Task { await cancelCampaignCreation() }
+                    },
+                    onReadyRevealComplete: {
+                        Task { await completeReadyReveal() }
+                    }
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .ignoresSafeArea()
+            case .details:
                 ScrollView {
                     VStack(spacing: 28) {
-                    campaignDetailsSection
+                        campaignDetailsSection
 
                         Rectangle()
                             .fill(.clear)
@@ -158,9 +229,9 @@ struct NewCampaignScreen: View {
                 }
             }
         }
-        .navigationTitle(creationStage == .territory ? "" : "New Campaign")
+        .navigationTitle(creationStage == .details ? "New Campaign" : "")
         .toolbarTitleDisplayMode(.inline)
-        .toolbar(creationStage == .territory ? .hidden : .visible, for: .navigationBar)
+        .toolbar(creationStage == .details ? .visible : .hidden, for: .navigationBar)
         .safeAreaInset(edge: .bottom) {
             if creationStage == .details {
                 VStack(spacing: 12) {
@@ -184,33 +255,62 @@ struct NewCampaignScreen: View {
                 .background(.ultraThinMaterial)
             }
         }
-                .onAppear {
-                    locationManager.requestLocation()
-                    reconcileCampaignTypeWithIndustry()
-                }
-                .onChange(of: name) { _, _ in
-                    markDetailsDirtyIfNeeded()
-                }
-                .onChange(of: campaignType) { _, _ in
-                    markDetailsDirtyIfNeeded()
-                }
-                .onChange(of: description) { _, _ in
-                    markDetailsDirtyIfNeeded()
-                }
-                .onChange(of: workspaceContext.industry) { _, _ in
-                    reconcileCampaignTypeWithIndustry()
-                }
-                .sheet(isPresented: $showPaywall) {
-                    PaywallView()
-                }
-                .overlay {
-                    if shouldShowCampaignCreatingOverlay {
-                        CampaignCreatingOverlayView(useDarkStyle: colorScheme == .dark)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .ignoresSafeArea()
+        .onAppear {
+            registerCampaignCreationPresentationIfNeeded()
+            locationManager.requestLocation()
+            reconcileCampaignTypeWithIndustry()
+            configureResumedCampaignIfNeeded()
+        }
+        .onDisappear {
+            unregisterCampaignCreationPresentationIfNeeded()
+        }
+        .onChange(of: provisionMonitor.tracked) { _, _ in
+            Task { await reconcileTrackedProvisionState() }
+        }
+        .task(id: creationStage) {
+            guard creationStage == .creating else { return }
+            while !Task.isCancelled, creationStage == .creating {
+                await provisionMonitor.refreshLatest()
+                await reconcileTrackedProvisionState()
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+            }
+        }
+        .onChange(of: name) { _, _ in
+            markDetailsDirtyIfNeeded()
+        }
+        .onChange(of: campaignType) { _, _ in
+            markDetailsDirtyIfNeeded()
+        }
+        .onChange(of: description) { _, _ in
+            markDetailsDirtyIfNeeded()
+        }
+        .onChange(of: workspaceContext.industry) { _, _ in
+            reconcileCampaignTypeWithIndustry()
+        }
+        .sheet(isPresented: $showPaywall) {
+            PaywallView()
+        }
+        .overlay {
+            if shouldShowCampaignCreatingOverlay {
+                CampaignCreatingOverlayView(
+                    useDarkStyle: colorScheme == .dark,
+                    progressPercent: creatingProgressPercent,
+                    activityText: creatingActivityText,
+                    polygonCoordinates: creatingRevealPolygon,
+                    isCancelling: isCancellingProvision,
+                    errorText: creatingErrorText,
+                    onCancel: {
+                        Task { await cancelCampaignCreation() }
+                    },
+                    onReadyRevealComplete: {
+                        Task { await completeReadyReveal() }
                     }
-                }
-                .hidesTabBar()
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .ignoresSafeArea()
+            }
+        }
+        .hidesTabBar()
     }
 
     private var territorySetupSection: some View {
@@ -343,43 +443,182 @@ struct NewCampaignScreen: View {
                     .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             }
 
-            if let tracked = localProvisionBanner {
-                CampaignProvisionStatusBanner(tracked: tracked)
-            }
         }
         .formContainerPadding()
     }
 
-    private var localProvisionBanner: TrackedCampaignProvision? {
-        guard let campaign = createdCampaign else { return nil }
-        if provisionFailed {
-            return TrackedCampaignProvision(
-                campaignId: campaign.id,
-                campaignName: campaign.name,
-                state: .needsAttention,
-                statusText: provisionStatusText.isEmpty ? "Setup needs attention." : provisionStatusText,
-                progressPercent: provisionProgressPercent
+    @MainActor
+    private func registerCampaignCreationPresentationIfNeeded() {
+        guard !hasRegisteredCreationPresentation else { return }
+        hasRegisteredCreationPresentation = true
+        uiState.campaignCreationFlowDidAppear()
+    }
+
+    @MainActor
+    private func unregisterCampaignCreationPresentationIfNeeded() {
+        guard hasRegisteredCreationPresentation else { return }
+        hasRegisteredCreationPresentation = false
+        uiState.campaignCreationFlowDidDisappear()
+    }
+
+    @MainActor
+    private func configureResumedCampaignIfNeeded() {
+        guard let resumedCampaignId, !hasLoadedResumedCampaign else { return }
+        hasLoadedResumedCampaign = true
+        creationStage = .creating
+        if let tracked = trackedForActiveCampaign {
+            provisionProgressPercent = tracked.displayProgressPercent
+            provisionStatusText = tracked.statusText
+        }
+        Task {
+            await loadCampaignForCreatingFlow(campaignId: resumedCampaignId)
+            await provisionMonitor.refreshLatest()
+            await reconcileTrackedProvisionState()
+        }
+    }
+
+    @MainActor
+    private func reconcileTrackedProvisionState() async {
+        guard creationStage == .creating || creationStage == .details,
+              let activeCreatingCampaignId,
+              let tracked = trackedForActiveCampaign,
+              tracked.campaignId == activeCreatingCampaignId else {
+            return
+        }
+
+        provisionProgressPercent = max(provisionProgressPercent, tracked.displayProgressPercent)
+        provisionStatusText = tracked.statusText
+
+        switch tracked.state {
+        case .ready:
+            campaignMapDataReady = true
+            provisionComplete = true
+            provisionFailed = false
+            provisionProgressPercent = 100
+            provisionStatusText = "Your campaign is ready"
+        case .needsAttention:
+            provisionComplete = true
+            provisionFailed = true
+            createHook.error = tracked.statusText
+        case .queued, .preparingMap, .optimizing:
+            break
+        }
+    }
+
+    @MainActor
+    @discardableResult
+    private func loadCampaignForCreatingFlow(campaignId: UUID) async -> CampaignV2? {
+        if let campaign = store.campaign(id: campaignId) {
+            createdCampaign = campaign
+            applyDetailsDefaults(from: campaign)
+            await loadTerritoryBoundaryIfNeeded(campaignId: campaignId)
+            return campaign
+        }
+
+        do {
+            let row = try await CampaignsAPI.shared.fetchCampaignDBRow(id: campaignId)
+            let campaign = campaignV2(from: row)
+            if store.campaign(id: campaign.id) == nil {
+                store.append(campaign)
+            } else {
+                store.update(campaign)
+            }
+            createdCampaign = campaign
+            description = row.description ?? ""
+            applyDetailsDefaults(from: campaign)
+            await loadTerritoryBoundaryIfNeeded(campaignId: campaignId)
+            return campaign
+        } catch {
+            createHook.error = "Could not load campaign details: \(error.localizedDescription)"
+            return nil
+        }
+    }
+
+    @MainActor
+    private func moveCreatingFlowToDetails(campaignId: UUID) async {
+        if createdCampaign?.id != campaignId {
+            _ = await loadCampaignForCreatingFlow(campaignId: campaignId)
+        }
+        guard let campaign = createdCampaign else { return }
+        applyDetailsDefaults(from: campaign)
+        provisionProgressPercent = 100
+        provisionStatusText = "Campaign is ready."
+        withAnimation(.spring(response: 0.48, dampingFraction: 0.86)) {
+            creationStage = .details
+        }
+    }
+
+    @MainActor
+    private func loadTerritoryBoundaryIfNeeded(campaignId: UUID) async {
+        if let drawnPolygon, drawnPolygon.count >= 3 {
+            return
+        }
+        guard let boundary = await CampaignsAPI.shared.fetchTerritoryBoundary(campaignId: campaignId),
+              boundary.count >= 3 else {
+            return
+        }
+        drawnPolygon = boundary
+        if uiState.selectedMapCampaignId == campaignId {
+            uiState.selectCampaign(
+                id: campaignId,
+                name: createdCampaign?.name ?? uiState.selectedMapCampaignName,
+                boundaryCoordinates: boundary
             )
         }
-        if isProvisioningCampaign {
-            return TrackedCampaignProvision(
-                campaignId: campaign.id,
-                campaignName: campaign.name,
-                state: .preparingMap,
-                statusText: CampaignProvisionMonitor.runningStatusText,
-                progressPercent: provisionProgressPercent
-            )
+    }
+
+    @MainActor
+    private func completeReadyReveal() async {
+        guard !readyRevealCompleted,
+              creationStage == .creating,
+              let campaignId = activeCreatingCampaignId else {
+            return
         }
-        if provisionComplete {
-            return TrackedCampaignProvision(
-                campaignId: campaign.id,
-                campaignName: campaign.name,
-                state: campaignMapDataReady ? .ready : .optimizing,
-                statusText: campaignMapDataReady ? "Campaign is ready." : CampaignProvisionMonitor.runningStatusText,
-                progressPercent: campaignMapDataReady ? 100 : provisionProgressPercent
-            )
+        readyRevealCompleted = true
+
+        if detailsSaved && campaignMapDataReady {
+            await openCreatedCampaign()
+        } else {
+            await moveCreatingFlowToDetails(campaignId: campaignId)
         }
-        return nil
+    }
+
+    @MainActor
+    private func applyDetailsDefaults(from campaign: CampaignV2) {
+        if name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            name = campaign.name
+        }
+        campaignType = campaign.type
+    }
+
+    private func campaignV2(from row: CampaignDBRow) -> CampaignV2 {
+        CampaignV2(
+            id: row.id,
+            name: row.title,
+            type: row.campaignType,
+            addressSource: row.addressSource,
+            addresses: [],
+            totalFlyers: 0,
+            scans: row.scans,
+            conversions: row.conversions,
+            createdAt: row.createdAt,
+            status: row.status ?? .draft,
+            seedQuery: row.region,
+            dataConfidence: row.dataConfidence,
+            provisionStatus: row.provisionStatus,
+            provisionSource: row.provisionSource,
+            provisionPhase: row.provisionPhase,
+            addressesReadyAt: row.addressesReadyAt,
+            mapReadyAt: row.mapReadyAt,
+            optimizedAt: row.optimizedAt,
+            hasParcels: row.hasParcels,
+            buildingLinkConfidence: row.buildingLinkConfidence,
+            mapMode: row.mapMode,
+            coverageScore: row.coverageScore,
+            dataQuality: row.dataQuality,
+            standardModeRecommended: row.standardModeRecommended,
+            dataQualityReason: row.dataQualityReason
+        )
     }
 
     @MainActor
@@ -387,7 +626,8 @@ struct NewCampaignScreen: View {
         drawnPolygon = vertices
         guard !isSubmittingCampaign else { return }
         isSubmittingCampaign = true
-        Task { await createCampaignTapped(polygonFromSheet: vertices) }
+        campaignCreationTask?.cancel()
+        campaignCreationTask = Task { await createCampaignTapped(polygonFromSheet: vertices) }
     }
 
     private func openMapDrawing() {
@@ -418,18 +658,25 @@ struct NewCampaignScreen: View {
         }
 
         creationStage = .details
+        readyRevealCompleted = false
+        cancelProvisionError = nil
+        provisionStatusText = "Creating campaign"
+        provisionProgressPercent = 0
         guard await canCreateCampaignInCurrentPlan() else {
             showPaywall = true
             creationStage = .territory
             return
         }
+        guard !Task.isCancelled else { return }
         print("🗺️ [CAMPAIGN DEBUG] Using drawn polygon (\(polygon.count) points) - will provision in background")
         print("🗺️ [CAMPAIGN DEBUG] Polygon bounds: \(polygonBoundsSummary(for: polygon))")
         let provisionRegionCode = await inferredProvisionRegionCode(for: polygon)
+        guard !Task.isCancelled else { return }
         if let provisionRegionCode {
             print("🗺️ [CAMPAIGN DEBUG] Inferred provision region: \(provisionRegionCode)")
         }
         let workspaceId = await RoutePlansAPI.shared.primaryWorkspaceIdForCurrentUser()
+        guard !Task.isCancelled else { return }
         guard let workspaceId else {
             createHook.error = "No workspace found. Please sign out and back in, or try again."
             creationStage = .territory
@@ -449,6 +696,11 @@ struct NewCampaignScreen: View {
             workspaceId: workspaceId
         )
         if var created = await createHook.createV2(payload: payload, store: store, polygon: polygon) {
+            if Task.isCancelled {
+                try? await CampaignsAPI.shared.deleteCampaign(campaignId: created.id)
+                store.remove(id: created.id)
+                return
+            }
             print("✅ [CAMPAIGN DEBUG] Campaign created with ID: \(created.id)")
             created.type = campaignType
             createdCampaign = created
@@ -490,20 +742,63 @@ struct NewCampaignScreen: View {
             CampaignProvisionMonitor.shared.update(
                 campaignId: campaign.id,
                 campaignName: campaign.name,
-                state: .optimizing,
-                statusText: CampaignProvisionMonitor.runningStatusText,
-                progressPercent: provisionProgressPercent
+                state: campaignMapDataReady ? .ready : .optimizing,
+                statusText: campaignMapDataReady ? "Campaign is ready." : CampaignProvisionMonitor.runningStatusText,
+                progressPercent: campaignMapDataReady ? 100 : provisionProgressPercent
             )
             detailsSaved = true
             createHook.error = nil
+            await provisionMonitor.refreshLatest()
+            await reconcileTrackedProvisionState()
 
             if campaignMapDataReady {
                 await openCreatedCampaign()
             } else {
-                dismiss()
+                readyRevealCompleted = false
+                showCampaignReadinessOverlay = false
+                withAnimation(.easeInOut(duration: 0.22)) {
+                    creationStage = .creating
+                }
             }
         } catch {
             createHook.error = "Could not save campaign details: \(error.localizedDescription)"
+        }
+    }
+
+    @MainActor
+    private func cancelCampaignCreation() async {
+        guard !isCancellingProvision else { return }
+        isCancellingProvision = true
+        cancelProvisionError = nil
+        campaignCreationTask?.cancel()
+        provisioningTask?.cancel()
+
+        guard let campaignId = activeCreatingCampaignId else {
+            isSubmittingCampaign = false
+            isProvisioningCampaign = false
+            isCancellingProvision = false
+            dismiss()
+            return
+        }
+
+        do {
+            try await CampaignsAPI.shared.deleteCampaign(campaignId: campaignId)
+            store.remove(id: campaignId)
+            provisionMonitor.dismiss(campaignId: campaignId)
+            if createdCampaign?.id == campaignId {
+                createdCampaign = nil
+            }
+            if uiState.selectedMapCampaignId == campaignId {
+                uiState.clearMapSelection()
+            }
+            isSubmittingCampaign = false
+            isProvisioningCampaign = false
+            provisionComplete = false
+            provisionFailed = false
+            dismiss()
+        } catch {
+            cancelProvisionError = "Could not cancel campaign setup: \(error.localizedDescription)"
+            isCancellingProvision = false
         }
     }
 
@@ -659,11 +954,12 @@ struct NewCampaignScreen: View {
                 )
                 print("🗺️ [CAMPAIGN DEBUG] Background map data ready: buildings=\(mapDataReadiness.buildingCount) addresses=\(mapDataReadiness.addressCount)")
 
-                if detailsSaved {
+                if detailsSaved && creationStage != .creating {
                     await openCreatedCampaign()
                 }
             }
         } catch {
+            guard !Task.isCancelled else { return }
             #if DEBUG
             print("⚠️ [CAMPAIGN DEBUG] Background provision monitor failed: \(error.localizedDescription)")
             #endif
@@ -681,12 +977,14 @@ struct NewCampaignScreen: View {
                 polygonGeoJSON: geoJSON,
                 regionCode: regionCode
             )
+            guard !Task.isCancelled else { return }
             provisionStatusText = CampaignProvisionMonitor.runningStatusText
             updateProvisionProgress(18)
             let provisionResponse = try await CampaignsAPI.shared.provisionCampaign(
                 campaignId: campaign.id,
                 waitUntilReady: false
             )
+            guard !Task.isCancelled else { return }
             updateProvisionProgress(35)
             if let confidence = provisionResponse?.dataConfidenceSummary {
                 workingCampaign.dataConfidence = confidence
@@ -746,6 +1044,7 @@ struct NewCampaignScreen: View {
                         )
                     }
                 )
+                guard !Task.isCancelled else { return }
                 workingCampaign.provisionStatus = provisionState.provisionStatus
                 workingCampaign.provisionSource = provisionState.provisionSource
                 workingCampaign.provisionPhase = provisionState.provisionPhase
@@ -778,6 +1077,7 @@ struct NewCampaignScreen: View {
                 }
 
                 let campaignAddresses = await addressTask.value
+                guard !Task.isCancelled else { return }
                 if !campaignAddresses.isEmpty {
                     workingCampaign.totalFlyers = max(workingCampaign.totalFlyers, campaignAddresses.count)
                     preserveCurrentDetails(in: &workingCampaign)
@@ -786,6 +1086,7 @@ struct NewCampaignScreen: View {
                     updateProvisionProgress(75)
                 }
                 let prewarmedMapDataReadiness = await buildingTask.value
+                guard !Task.isCancelled else { return }
 
                 provisionStatusText = CampaignProvisionMonitor.runningStatusText
                 updateProvisionProgress(82)
@@ -793,6 +1094,7 @@ struct NewCampaignScreen: View {
                     campaignId: campaign.id.uuidString,
                     forceRefresh: true
                 )
+                guard !Task.isCancelled else { return }
 
                 provisionStatusText = CampaignProvisionMonitor.runningStatusText
                 updateProvisionProgress(88)
@@ -845,6 +1147,7 @@ struct NewCampaignScreen: View {
                 )
             }
         } catch {
+            guard !Task.isCancelled else { return }
             if isDiamondGeometryReadinessError(error) {
                 print("💎 [CAMPAIGN DEBUG] Diamond/Bedrock geometry not ready yet; warming in the background")
                 MapFeaturesService.shared.beginDiamondManifestPrewarm(
@@ -877,7 +1180,7 @@ struct NewCampaignScreen: View {
         isProvisioningCampaign = false
         provisionComplete = true
 
-        if detailsSaved && campaignMapDataReady {
+        if detailsSaved && campaignMapDataReady && creationStage != .creating {
             await openCreatedCampaign()
         }
     }
@@ -1259,6 +1562,34 @@ struct NewCampaignScreen: View {
         }
         Task {
             await CampaignDownloadService.shared.prefetchIfNeeded(campaignId: campaign.id.uuidString)
+        }
+    }
+}
+
+extension NewCampaignScreen {
+    static func featureCollectionHasLinkedAddressIdentity(_ collection: GeoJSONFeatureCollection) -> Bool {
+        collection.features.contains { feature in
+            hasLinkedAddressIdentity(in: feature.properties["address_id"]?.value) ||
+                hasLinkedAddressIdentity(in: feature.properties["address_ids"]?.value)
+        }
+    }
+
+    private static func hasLinkedAddressIdentity(in value: Any?) -> Bool {
+        switch value {
+        case let string as String:
+            return !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        case let uuid as UUID:
+            return !uuid.uuidString.isEmpty
+        case let strings as [String]:
+            return strings.contains { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        case let uuids as [UUID]:
+            return !uuids.isEmpty
+        case let values as [AnyCodable]:
+            return values.contains { hasLinkedAddressIdentity(in: $0.value) }
+        case let values as [Any]:
+            return values.contains { hasLinkedAddressIdentity(in: $0) }
+        default:
+            return false
         }
     }
 }

@@ -5,7 +5,7 @@ import Supabase
 final class LiveSessionVoiceAPI {
     static let shared = LiveSessionVoiceAPI()
 
-    private let defaultVoiceAPIURL = "https://backend-api-routes.vercel.app"
+    private let defaultVoiceAPIURL = "https://www.flyrpro.app"
 
     private var baseURL: String {
         if let configured = Bundle.main.object(forInfoDictionaryKey: "FLYR_VOICE_API_URL") as? String,

@@ -307,12 +307,17 @@ struct FarmMapView: View {
         let hasBuildingSelectedGlowLayer = map.allLayerIdentifiers.contains(where: { $0.id == MapLayerManager.buildingsSelectedGlowLayerId })
         let hasBuildingLeadGlowLayer = map.allLayerIdentifiers.contains(where: { $0.id == MapLayerManager.buildingsLeadGlowLayerId })
         let hasTownhomeLeadGlowLayer = map.allLayerIdentifiers.contains(where: { $0.id == MapLayerManager.townhomeLeadGlowLayerId })
+        let shouldShowAddressNumbers = shouldShowAddressNumberLabels()
 
         switch displayMode {
         case .buildings:
             manager.includeBuildingsLayer = true
             manager.includeAddressesLayer = false
-            manager.setDiamondGeometryVisibility(buildings: true, addresses: false)
+            manager.setDiamondGeometryVisibility(
+                buildings: true,
+                addresses: false,
+                addressNumbers: shouldShowAddressNumbers
+            )
             if hasBuildingsLayer {
                 try? map.updateLayer(withId: MapLayerManager.buildingsLayerId, type: FillExtrusionLayer.self) {
                     $0.visibility = .constant(visibleBuildingFeatures.isEmpty ? .none : .visible)
@@ -349,12 +354,16 @@ struct FarmMapView: View {
                 }
             }
             manager.updateAddressHouseIconVisibility(isVisible: false)
-            manager.updateAddressNumberLabelVisibility(isVisible: false)
+            manager.updateAddressNumberLabelVisibility(isVisible: shouldShowAddressNumbers)
 
         case .addresses:
             manager.includeBuildingsLayer = false
             manager.includeAddressesLayer = true
-            manager.setDiamondGeometryVisibility(buildings: false, addresses: true)
+            manager.setDiamondGeometryVisibility(
+                buildings: false,
+                addresses: true,
+                addressNumbers: shouldShowAddressNumbers
+            )
             if hasBuildingsLayer {
                 try? map.updateLayer(withId: MapLayerManager.buildingsLayerId, type: FillExtrusionLayer.self) {
                     $0.visibility = .constant(.none)
@@ -391,7 +400,7 @@ struct FarmMapView: View {
                 }
             }
             manager.updateAddressHouseIconVisibility(isVisible: true)
-            manager.updateAddressNumberLabelVisibility(isVisible: shouldShowAddressNumberLabels())
+            manager.updateAddressNumberLabelVisibility(isVisible: shouldShowAddressNumbers)
             if let mapView, mapView.mapboxMap.cameraState.zoom < 16.2 {
                 mapView.camera.ease(
                     to: CameraOptions(

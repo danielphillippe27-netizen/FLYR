@@ -237,7 +237,7 @@ struct FLYRApp: App {
         }
 
         if (url.scheme == "https" || url.scheme == "http"),
-           ["flyrpro.app", "www.flyrpro.app", "backend-api-routes.vercel.app"].contains(url.host?.lowercased() ?? ""),
+           ["flyrpro.app", "www.flyrpro.app"].contains(url.host?.lowercased() ?? ""),
            url.path == "/join" {
             return token
         }

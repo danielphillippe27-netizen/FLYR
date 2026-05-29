@@ -80,21 +80,22 @@ enum Config {
         if let configured = urlValue(for: "FLYR_PRO_API_URL") {
             return normalizedBackendAPIURL(configured)
         }
-        if let configured = urlValue(for: "FLYR_INVITES_API_URL") {
-            return normalizedBackendAPIURL(configured)
-        }
         return fallbackBackendAPIURL
     }
 
-    private static let fallbackBackendAPIURL = URL(string: "https://backend-api-routes.vercel.app")!
+    private static let canonicalAppBackendAPIURL = URL(string: "https://www.flyrpro.app")!
+    private static let fallbackBackendAPIURL = canonicalAppBackendAPIURL
 
     private static func normalizedBackendAPIURL(_ url: URL) -> URL {
-        guard let host = url.host?.lowercased(),
-              host == "flyrpro.app" || host == "www.flyrpro.app" else {
+        guard let host = url.host?.lowercased() else {
             return url
         }
 
-        return fallbackBackendAPIURL
+        if host == "flyrpro.app" {
+            return canonicalAppBackendAPIURL
+        }
+
+        return url
     }
 
     static var dialerEnabledWorkspaceIDs: [UUID] {

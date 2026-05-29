@@ -105,6 +105,20 @@ struct FLYRTests {
         #expect(GoalType.conversations.progressMetricLabel == "conversations")
     }
 
+    @Test func campaignProvisionMonitorClampsProgress() async throws {
+        #expect(CampaignProvisionMonitor.clampedProgress(-20) == 0)
+        #expect(CampaignProvisionMonitor.clampedProgress(35) == 35)
+        #expect(CampaignProvisionMonitor.clampedProgress(140) == 100)
+    }
+
+    @Test func campaignProvisionMonitorActivityTextMatchesProvisionPhase() async throws {
+        #expect(CampaignProvisionMonitor.activityText(status: .pending, phase: .created) == "Creating campaign")
+        #expect(CampaignProvisionMonitor.activityText(status: .pending, phase: .sourceProbed) == "Finding homes")
+        #expect(CampaignProvisionMonitor.activityText(status: .pending, phase: .addressesLoading) == "Saving addresses")
+        #expect(CampaignProvisionMonitor.activityText(status: .pending, phase: .mapReady) == "Preparing map")
+        #expect(CampaignProvisionMonitor.activityText(status: .ready, phase: .linked) == "Campaign is ready")
+    }
+
     @Test func campaignDetailProgressPrefersRealDoorSignalsOverLegacyProgress() async throws {
         let campaign = CampaignV2(
             id: UUID(),

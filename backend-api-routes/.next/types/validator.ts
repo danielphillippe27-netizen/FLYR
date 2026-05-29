@@ -189,6 +189,15 @@ type RouteHandlerConfig<Route extends AppRouteHandlerRoutes = AppRouteHandlerRou
   type __Unused = __Check
 }
 
+// Validate ../../app/api/campaigns/[campaignId]/map-bundle/route.ts
+{
+  type __IsExpected<Specific extends RouteHandlerConfig<"/api/campaigns/[campaignId]/map-bundle">> = Specific
+  const handler = {} as typeof import("../../app/api/campaigns/[campaignId]/map-bundle/route.js")
+  type __Check = __IsExpected<typeof handler>
+  // @ts-ignore
+  type __Unused = __Check
+}
+
 // Validate ../../app/api/campaigns/[campaignId]/parcel-tiles/[...tile]/route.ts
 {
   type __IsExpected<Specific extends RouteHandlerConfig<"/api/campaigns/[campaignId]/parcel-tiles/[...tile]">> = Specific

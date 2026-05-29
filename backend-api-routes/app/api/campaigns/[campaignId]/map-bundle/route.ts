@@ -2,10 +2,8 @@ import { createClient } from '@supabase/supabase-js';
 import { NextResponse } from 'next/server';
 import { ensureCampaignAccess } from '@/app/api/campaigns/_utils/access';
 import { CampaignMapBundleService } from '@/lib/services/CampaignMapBundleService';
-
-const SUPABASE_URL = process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY ?? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
-const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+import { getSupabaseAnonKey, getSupabaseUrl } from '@/lib/supabase/env';
+import { createAdminClient as createSupabaseAdminClient } from '@/lib/supabase/server';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -42,7 +40,7 @@ function getAuthToken(request: Request): string | null {
 }
 
 function createAnonClient() {
-  return createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+  return createClient(getSupabaseUrl(), getSupabaseAnonKey(), {
     auth: {
       autoRefreshToken: false,
       persistSession: false,
@@ -51,12 +49,7 @@ function createAnonClient() {
 }
 
 function createAdminClient() {
-  return createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
-    auth: {
-      autoRefreshToken: false,
-      persistSession: false,
-    },
-  });
+  return createSupabaseAdminClient();
 }
 
 async function authenticate(request: Request, campaignId: string) {

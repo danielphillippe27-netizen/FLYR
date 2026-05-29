@@ -3,7 +3,14 @@ import CoreLocation
 import Supabase
 
 private actor BuildingFetchDeduper {
+    private struct RecentResult {
+        let features: [BuildingFeature]
+        let storedAt: Date
+    }
+
     private var tasks: [String: Task<[BuildingFeature], Error>] = [:]
+    private var recentResults: [String: RecentResult] = [:]
+    private let recentResultTTL: TimeInterval = 45
 
     func task(
         for campaignId: String,
@@ -18,9 +25,80 @@ private actor BuildingFetchDeduper {
         return (task, false)
     }
 
+    func recentResult(for campaignId: String) -> [BuildingFeature]? {
+        let key = campaignId.lowercased()
+        guard let result = recentResults[key] else { return nil }
+        guard Date().timeIntervalSince(result.storedAt) <= recentResultTTL else {
+            recentResults.removeValue(forKey: key)
+            return nil
+        }
+        return result.features
+    }
+
+    func remember(_ features: [BuildingFeature], for campaignId: String) {
+        guard !features.isEmpty else { return }
+        recentResults[campaignId.lowercased()] = RecentResult(features: features, storedAt: Date())
+    }
+
     func clear(for campaignId: String) {
         tasks.removeValue(forKey: campaignId.lowercased())
     }
+}
+
+struct CanonicalCampaignMapBundleCounts: Codable, Sendable {
+    let addresses: Int
+    let buildings: Int
+    let parcels: Int
+    let roads: Int
+    let links: Int?
+}
+
+struct CanonicalCampaignMapLayerFetchedAt: Codable, Sendable {
+    let addresses: String?
+    let buildings: String?
+    let parcels: String?
+    let roads: String?
+}
+
+struct CanonicalCampaignMapBundle: Codable, Sendable {
+    let campaignId: String
+    let assetSignature: String
+    let sourceVersion: String
+    let displayModeHint: String?
+    let linksStatus: String?
+    let addresses: AddressFeatureCollection
+    let buildings: BuildingFeatureCollection
+    let parcels: ParcelFeatureCollection
+    let roads: RoadFeatureCollection
+    let links: [ClientBuildingAddressLink]
+    let counts: CanonicalCampaignMapBundleCounts?
+    let layerFetchedAt: CanonicalCampaignMapLayerFetchedAt?
+    let builtAt: String?
+    let expiresAt: String?
+    let updatedAt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case campaignId = "campaign_id"
+        case assetSignature = "asset_signature"
+        case sourceVersion = "source_version"
+        case displayModeHint = "display_mode_hint"
+        case linksStatus = "links_status"
+        case addresses
+        case buildings
+        case parcels
+        case roads
+        case links
+        case counts
+        case layerFetchedAt = "layer_fetched_at"
+        case builtAt = "built_at"
+        case expiresAt = "expires_at"
+        case updatedAt = "updated_at"
+    }
+}
+
+enum CampaignMapBundleFetchResult: Sendable {
+    case notModified
+    case bundle(CanonicalCampaignMapBundle)
 }
 
 /// Service for fetching and managing building-address links
@@ -42,6 +120,18 @@ final class BuildingLinkService {
     
     /// Fetches building GeoJSON for a campaign from S3 snapshot
     func fetchBuildings(campaignId: String) async throws -> [BuildingFeature] {
+        if let cachedFeatures = await freshCachedBuildingsFromBundle(campaignId: campaignId) {
+            return cachedFeatures
+        }
+
+        if let recentFeatures = await buildingFetchDeduper.recentResult(for: campaignId) {
+            print(
+                "🔗 [BuildingLinkService] Reusing recent buildings fetch for campaign: \(campaignId) " +
+                "features=\(recentFeatures.count)"
+            )
+            return recentFeatures
+        }
+
         let taskResult = await buildingFetchDeduper.task(for: campaignId) { [self] in
             Task { [self] in
                 try await fetchBuildingsUncoalesced(campaignId: campaignId)
@@ -54,6 +144,7 @@ final class BuildingLinkService {
 
         do {
             let features = try await taskResult.task.value
+            await buildingFetchDeduper.remember(features, for: campaignId)
             if !taskResult.isExisting {
                 await buildingFetchDeduper.clear(for: campaignId)
             }
@@ -64,6 +155,25 @@ final class BuildingLinkService {
             }
             throw error
         }
+    }
+
+    private func freshCachedBuildingsFromBundle(campaignId: String) async -> [BuildingFeature]? {
+        guard let cachedBundle = await campaignRepository.getCampaignMapBundle(campaignId: campaignId),
+              let metadata = cachedBundle.metadata,
+              metadata.isFresh,
+              !metadata.requiresClientFallback,
+              !cachedBundle.addresses.features.isEmpty,
+              !cachedBundle.buildings.features.isEmpty else {
+            return nil
+        }
+
+        let polygonCount = Self.polygonBuildingCount(in: cachedBundle.buildings.features)
+        guard polygonCount > 0 else { return nil }
+        print(
+            "🧪 [MAP_DEBUG] buildings_geojson_network_skipped campaign=\(campaignId) " +
+            "reason=fresh_canonical_bundle cached=\(cachedBundle.buildings.features.count) renderable=\(polygonCount)"
+        )
+        return cachedBundle.buildings.features
     }
 
     private func fetchBuildingsUncoalesced(campaignId: String) async throws -> [BuildingFeature] {
@@ -265,6 +375,53 @@ final class BuildingLinkService {
         return ParcelFeatureCollection(type: "FeatureCollection", features: features)
     }
 
+    func fetchCanonicalCampaignMapBundle(
+        campaignId: String,
+        localSignature: String?
+    ) async throws -> CampaignMapBundleFetchResult {
+        let encodedCampaignId = encodedPathComponent(campaignId)
+        guard var components = URLComponents(string: "\(baseURL)/api/campaigns/\(encodedCampaignId)/map-bundle") else {
+            throw BuildingLinkError.invalidURL
+        }
+        if let signature = localSignature?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !signature.isEmpty {
+            components.queryItems = [URLQueryItem(name: "signature", value: signature)]
+        }
+        guard let url = components.url else {
+            throw BuildingLinkError.invalidURL
+        }
+
+        print("🧪 [MAP_DEBUG] canonical_map_bundle_fetch_start campaign=\(campaignId) signature=\(localSignature ?? "none")")
+        let (data, response) = try await authorizedDataRequest(
+            url: url,
+            timeoutInterval: 30,
+            suppressHTTPWarning: true
+        )
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw BuildingLinkError.fetchFailed
+        }
+
+        if httpResponse.statusCode == 304 {
+            print("🧪 [MAP_DEBUG] canonical_map_bundle_not_modified campaign=\(campaignId)")
+            return .notModified
+        }
+
+        guard httpResponse.statusCode == 200 else {
+            let body = String(data: data, encoding: .utf8) ?? ""
+            let preview = body.count > 300 ? String(body.prefix(300)) + "…" : body
+            print("⚠️ [BuildingLinkService] GET map-bundle HTTP \(httpResponse.statusCode). Body: \(preview)")
+            throw BuildingLinkError.fetchFailed
+        }
+
+        let bundle = try JSONDecoder().decode(CanonicalCampaignMapBundle.self, from: data)
+        print(
+            "🧪 [MAP_DEBUG] canonical_map_bundle_loaded campaign=\(campaignId) " +
+            "buildings=\(bundle.buildings.features.count) addresses=\(bundle.addresses.features.count) " +
+            "parcels=\(bundle.parcels.features.count) links=\(bundle.links.count) status=\(bundle.linksStatus ?? "unknown")"
+        )
+        return .bundle(bundle)
+    }
+
     /// Publishes locally generated auto-links back to the campaign so other clients can hydrate
     /// from campaign_addresses.building_gers_id without running the linker again.
     func publishClientGeneratedLinks(
@@ -357,6 +514,9 @@ final class BuildingLinkService {
 
         let parcelId = row.properties?["parcel_id"]?.value as? String ?? row.externalId
         let addressId = row.properties?["address_id"]?.value as? String
+        let addressIds =
+            row.properties?["address_ids"]?.value as? [String] ??
+            (row.properties?["address_ids"]?.value as? [Any])?.compactMap { $0 as? String }
         let source = row.properties?["source"]?.value as? String ?? "campaign_parcels"
         let area =
             row.properties?["area_sqm"]?.value as? Double ??
@@ -371,7 +531,8 @@ final class BuildingLinkService {
                 externalId: row.externalId,
                 source: source,
                 areaSqm: area,
-                addressId: addressId
+                addressId: addressId,
+                addressIds: addressIds
             )
         )
     }
@@ -1867,10 +2028,12 @@ final class BuildingLinkService {
         url: URL,
         method: String = "GET",
         body: Data? = nil,
+        timeoutInterval: TimeInterval = 90,
         suppressHTTPWarning: Bool = false
     ) async throws -> (Data, URLResponse) {
         var request = URLRequest(url: url)
         request.httpMethod = method
+        request.timeoutInterval = timeoutInterval
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         if body != nil {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")

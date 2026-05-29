@@ -63,7 +63,7 @@ final class ClientMapLinkerServiceTests: XCTestCase {
         XCTAssertEqual(summary.links.first?.matchType, "proximity_verified")
     }
 
-    func testSemanticMismatchFallsBackToNearestValidBuilding() async throws {
+    func testSemanticMismatchDoesNotCreateFallbackLink() async throws {
         let buildings = BuildingFeatureCollection(type: "FeatureCollection", features: [
             building(id: "far-semantic-match", ring: square(lon: -79.001, lat: 43.001, size: 0.00008), street: "Pine Street", house: "50"),
             building(id: "nearest-mismatch", ring: square(lon: -79.00018, lat: 43.00018, size: 0.00008), street: "Elm Street", house: "99")
@@ -78,9 +78,8 @@ final class ClientMapLinkerServiceTests: XCTestCase {
             parcels: nil
         )
 
-        XCTAssertEqual(summary.links.count, 1)
-        XCTAssertEqual(summary.links.first?.buildingId, "nearest-mismatch")
-        XCTAssertEqual(summary.links.first?.matchType, "proximity_fallback")
+        XCTAssertTrue(summary.links.isEmpty)
+        XCTAssertEqual(summary.progress.percent, 100)
     }
 
     func testSingleUnitBuildingsAreNotReusedForAdjacentHomes() async throws {

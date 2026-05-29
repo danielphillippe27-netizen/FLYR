@@ -790,6 +790,7 @@ final class CampaignsAPI {
     private static func provisionResponse(from state: CampaignProvisionState) -> CampaignProvisionResponse {
         let isReady = state.provisionStatus == .ready
         let isFailed = state.provisionStatus == .failed
+        let failureMessage = state.provisionMessage ?? state.provisionError ?? "Campaign provisioning failed on the server."
         return CampaignProvisionResponse(
             success: isReady,
             addressesSaved: nil,
@@ -799,9 +800,9 @@ final class CampaignsAPI {
             message: isReady
                 ? "Campaign is map-ready."
                 : isFailed
-                    ? "Campaign provisioning failed on the server."
+                    ? failureMessage
                     : "Campaign provisioning is still in progress.",
-            error: isFailed ? "Campaign provisioning failed on the server." : nil,
+            error: isFailed ? failureMessage : nil,
             accepted: false,
             dataConfidenceScore: nil,
             dataConfidenceLabel: nil,
@@ -816,7 +817,7 @@ final class CampaignsAPI {
             parcelEnrichmentStatus: nil,
             provisionTimings: state.provisionTimings,
             linkerPath: nil,
-            warning: "Provision request timed out on the client, but the server kept working.",
+            warning: isFailed ? failureMessage : "Provision request timed out on the client, but the server kept working.",
             hasParcels: nil,
             buildingLinkConfidence: nil,
             mapMode: nil,
@@ -1078,7 +1079,8 @@ final class CampaignsAPI {
         while Date().timeIntervalSince(start) * 1_000_000_000 < Double(timeoutNanos) {
             let state = try await fetchProvisionState(campaignId: campaignId)
             await onProgress?(state)
-            print("🧭 [API] Provision state campaign=\(campaignId) status=\(state.provisionStatus?.rawValue ?? "nil") phase=\(state.provisionPhase?.rawValue ?? "nil")")
+            let failureReason = state.provisionMessage ?? state.provisionError
+            print("🧭 [API] Provision state campaign=\(campaignId) status=\(state.provisionStatus?.rawValue ?? "nil") phase=\(state.provisionPhase?.rawValue ?? "nil")\(failureReason.map { " reason=\($0)" } ?? "")")
 
             if state.provisionStatus == .ready && (!requireOptimized || state.provisionPhase?.isLinkComplete == true) {
                 return state
@@ -1098,7 +1100,7 @@ final class CampaignsAPI {
     func fetchProvisionState(campaignId: UUID) async throws -> CampaignProvisionState {
         let res: PostgrestResponse<CampaignProvisionState> = try await client
             .from("campaigns")
-            .select("id,provision_status,provision_source,provision_phase,provisioned_at,addresses_ready_at,map_ready_at,optimized_at,snapshot_bucket,snapshot_prefix,snapshot_buildings_url,snapshot_roads_url,address_source,coverage_score,data_quality,standard_mode_recommended,data_quality_reason,provision_timings")
+            .select("id,provision_status,provision_source,provision_phase,provisioned_at,addresses_ready_at,map_ready_at,optimized_at,snapshot_bucket,snapshot_prefix,snapshot_buildings_url,snapshot_roads_url,address_source,coverage_score,data_quality,standard_mode_recommended,data_quality_reason,provision_timings,provision_error,provision_message")
             .eq("id", value: campaignId.uuidString)
             .single()
             .execute()
@@ -1276,6 +1278,8 @@ struct CampaignProvisionState: Codable {
     let standardModeRecommended: Bool?
     let dataQualityReason: String?
     let provisionTimings: CampaignProvisionTimings?
+    let provisionError: String?
+    let provisionMessage: String?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -1296,6 +1300,8 @@ struct CampaignProvisionState: Codable {
         case standardModeRecommended = "standard_mode_recommended"
         case dataQualityReason = "data_quality_reason"
         case provisionTimings = "provision_timings"
+        case provisionError = "provision_error"
+        case provisionMessage = "provision_message"
     }
 }
 

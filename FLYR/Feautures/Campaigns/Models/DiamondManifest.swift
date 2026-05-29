@@ -79,35 +79,58 @@ struct DiamondManifest: Codable, Equatable {
     }
 
     var hasRenderablePMTilesGeometry: Bool {
-        false
+        diamondMode &&
+            isPMTilesGeometryProvider &&
+            buildingsRenderAsVectorTiles &&
+            hasText(vectorTileUrlTemplate) &&
+            hasText(sourceLayers?.buildings)
     }
 
     var hasRenderablePMTilesAddresses: Bool {
-        false
+        hasRenderablePMTilesAddressCylinders || hasRenderablePMTilesAddressPoints
     }
 
     var hasRenderablePMTilesParcels: Bool {
-        false
+        diamondMode &&
+            isPMTilesGeometryProvider &&
+            hasText(parcelVectorTileUrlTemplate) &&
+            hasText(parcelSourceLayer ?? sourceLayers?.parcels)
     }
 
     var hasRenderablePMTilesAddressCylinders: Bool {
-        false
+        diamondMode &&
+            isPMTilesGeometryProvider &&
+            hasText(addressVectorTileUrlTemplate ?? vectorTileUrlTemplate) &&
+            hasText(sourceLayers?.addressCircles)
     }
 
     var buildingsRenderAsGeoJSON: Bool {
-        true
+        switch buildingsRenderMode?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "geojson", "map_bundle", "map-bundle":
+            return true
+        default:
+            return false
+        }
     }
 
     var buildingsRenderAsVectorTiles: Bool {
-        false
+        !buildingsRenderAsGeoJSON
     }
 
     var buildingTilesAreCampaignScoped: Bool {
-        false
+        hasRenderablePMTilesGeometry
     }
 
     var hasRenderablePMTilesAddressPoints: Bool {
-        false
+        diamondMode &&
+            isPMTilesGeometryProvider &&
+            hasText(addressVectorTileUrlTemplate) &&
+            hasText(addressSourceLayer ?? sourceLayers?.addresses)
+    }
+
+    private func hasText(_ value: String?) -> Bool {
+        guard let value else { return false }
+        return !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 }
 

@@ -2,19 +2,28 @@ import Foundation
 import GRDB
 
 enum OfflineDateCodec {
-    static let formatter: ISO8601DateFormatter = {
+    private static let fractionalFormatter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return formatter
     }()
 
+    private static let standardFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter
+    }()
+
     static func string(from date: Date) -> String {
-        formatter.string(from: date)
+        fractionalFormatter.string(from: date)
     }
 
     static func date(from string: String?) -> Date? {
-        guard let string, !string.isEmpty else { return nil }
-        return formatter.date(from: string)
+        guard let string,
+              !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        let normalized = string.trimmingCharacters(in: .whitespacesAndNewlines)
+        return fractionalFormatter.date(from: normalized)
+            ?? standardFormatter.date(from: normalized)
     }
 }
 

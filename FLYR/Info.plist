@@ -42,7 +42,7 @@
 	<key>FLYR_PRO_API_URL</key>
 	<string>https://flyrpro.app</string>
 	<key>FLYR_INVITES_API_URL</key>
-	<string>https://backend-api-routes.vercel.app</string>
+	<string>https://www.flyrpro.app</string>
 	<key>FLYR_PASSWORD_RECOVERY_DEV_CALLBACK_URL</key>
 	<string>$(FLYR_PASSWORD_RECOVERY_DEV_CALLBACK_URL)</string>
 	<key>FLYR_PASSWORD_RECOVERY_PRODUCTION_URL</key>

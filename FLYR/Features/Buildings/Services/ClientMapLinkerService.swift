@@ -8,6 +8,63 @@ struct ClientBuildingAddressLink: Codable, Equatable, Sendable {
     let matchType: String
     let confidence: Double
     let distanceMeters: Double
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case buildingId
+        case addressId
+        case matchType
+        case confidence
+        case distanceMeters
+    }
+
+    enum SnakeCodingKeys: String, CodingKey {
+        case id
+        case buildingId = "building_id"
+        case addressId = "address_id"
+        case matchType = "match_type"
+        case confidence
+        case distanceMeters = "distance_meters"
+    }
+
+    init(
+        id: String,
+        buildingId: String,
+        addressId: String,
+        matchType: String,
+        confidence: Double,
+        distanceMeters: Double
+    ) {
+        self.id = id
+        self.buildingId = buildingId
+        self.addressId = addressId
+        self.matchType = matchType
+        self.confidence = confidence
+        self.distanceMeters = distanceMeters
+    }
+
+    init(from decoder: Decoder) throws {
+        if let snake = try? decoder.container(keyedBy: SnakeCodingKeys.self),
+           let buildingId = try? snake.decode(String.self, forKey: .buildingId),
+           let addressId = try? snake.decode(String.self, forKey: .addressId) {
+            self.id = (try? snake.decode(String.self, forKey: .id))
+                ?? "\(buildingId.lowercased()):\(addressId.lowercased())"
+            self.buildingId = buildingId
+            self.addressId = addressId
+            self.matchType = (try? snake.decode(String.self, forKey: .matchType)) ?? "auto"
+            self.confidence = (try? snake.decode(Double.self, forKey: .confidence)) ?? 0.5
+            self.distanceMeters = (try? snake.decode(Double.self, forKey: .distanceMeters)) ?? 0
+            return
+        }
+
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        buildingId = try container.decode(String.self, forKey: .buildingId)
+        addressId = try container.decode(String.self, forKey: .addressId)
+        matchType = (try? container.decode(String.self, forKey: .matchType)) ?? "auto"
+        confidence = (try? container.decode(Double.self, forKey: .confidence)) ?? 0.5
+        distanceMeters = (try? container.decode(Double.self, forKey: .distanceMeters)) ?? 0
+    }
 }
 
 struct ClientLinkingProgress: Equatable, Sendable {
@@ -39,8 +96,9 @@ final class ClientMapLinkerService: Sendable {
     private let parcelConfidence = 0.95
     private let proximityConfidence = 0.80
     private let fallbackConfidence = 0.50
-    private let proximityRadiusMeters = 75.0
-    private let fallbackRadiusMeters = 125.0
+    private let proximityRadiusMeters = 60.0
+    private let fallbackRadiusMeters = 75.0
+    private let minimumSemanticProximityScore = 0.65
 
     private init() {}
 
@@ -149,22 +207,14 @@ final class ClientMapLinkerService: Sendable {
         }
 
         if let semantic = nearby
-            .filter({ $0.distance <= proximityRadiusMeters && $0.streetScore >= 0.40 })
+            .filter({ $0.distance <= proximityRadiusMeters && $0.streetScore >= minimumSemanticProximityScore })
             .map({ $0.with(matchType: "proximity_verified", confidence: proximityConfidence) })
             .sorted(by: rankedBefore)
             .first {
             return semantic
         }
 
-        return nearby
-            .map { candidate in
-                candidate.with(
-                    matchType: "proximity_fallback",
-                    confidence: max(0.35, fallbackConfidence - min(candidate.distance / 500.0, 0.20))
-                )
-            }
-            .sorted(by: rankedBefore)
-            .first
+        return nil
     }
 
     private func parcelBridgeMatch(

@@ -32,8 +32,8 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
     static let addressCircleLayerId = "diamond-addresses-circles"
     static let selectedAddressCircleLayerId = "diamond-addresses-selected"
     static let addressNumberLayerId = "diamond-addresses-numbers"
-    static let parcelOverviewMinZoom: Double = 13.2
-    static let parcelOverviewMaxZoom: Double = 22.0
+    static let parcelOverviewMinZoom: Double = 13.5
+    static let parcelOverviewMaxZoom: Double = 24.0
     static let addressLayerMinZoom: Double = 11.8
     static let addressNumberLayerMinZoom: Double = 17.0
 
@@ -302,7 +302,9 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
 
         var fill = FillExtrusionLayer(id: buildingFillLayerId, source: sourceId)
         fill.sourceLayer = sourceLayer
-        fill.fillExtrusionColor = .expression(statusFillColorExpression(defaultColor: MapStatusColor.untouched))
+        fill.fillExtrusionColor = .expression(
+            statusFillColorExpression(defaultColor: MapStatusColor.untouched, selectedOverridesStatus: true)
+        )
         fill.fillExtrusionHeight = .expression(
             selectedBuildingHeightExpression(
                 base: MapLayerManager.buildingExtrusionHeightExpression
@@ -448,7 +450,7 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
             Exp(.interpolate) {
                 Exp(.linear)
                 Exp(.zoom)
-                13.2
+                13.5
                 0.15
                 15.0
                 0.45
@@ -456,6 +458,8 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
                 0.85
                 19.0
                 1.2
+                24.0
+                1.3
             }
         )
         line.minZoom = parcelOverviewMinZoom
@@ -725,9 +729,9 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
         Exp(.interpolate) {
             Exp(.linear)
             Exp(.zoom)
-            13.2
+            13.5
             0.0
-            13.8
+            14.0
             0.22
             15.2
             0.48
@@ -750,9 +754,9 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
         Exp(.interpolate) {
             Exp(.linear)
             Exp(.zoom)
-            13.2
+            13.5
             0.0
-            13.8
+            14.0
             0.06
             15.2
             0.10
@@ -771,9 +775,9 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
         }
     }
 
-    private func statusFillColorExpression(defaultColor: UIColor) -> Exp {
+    private func statusFillColorExpression(defaultColor: UIColor, selectedOverridesStatus: Bool = false) -> Exp {
         Exp(.switchCase) {
-            isSelectedUnvisitedStatusExpression()
+            selectedOverridesStatus ? isSelectedExpression() : isSelectedUnvisitedStatusExpression()
             MapStatusColor.selectedHome
 
             Exp(.match) {

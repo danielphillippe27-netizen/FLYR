@@ -23,6 +23,11 @@ final class AppUIState: ObservableObject {
     @Published var selectedRouteWorkContext: RouteWorkContext?
     @Published var plannedFarmExecution: FarmExecutionContext?
     @Published var pendingLiveInviteHandoff: PendingLiveInviteHandoff?
+    @Published private(set) var campaignCreationPresentationDepth: Int = 0
+
+    var isCampaignCreationFlowPresented: Bool {
+        campaignCreationPresentationDepth > 0
+    }
     
     private let settingsService = SettingsService.shared
     private let localStorage = LocalStorage.shared
@@ -154,6 +159,14 @@ final class AppUIState: ObservableObject {
         guard let pendingLiveInviteHandoff else { return }
         guard campaignId == nil || pendingLiveInviteHandoff.campaignId == campaignId else { return }
         self.pendingLiveInviteHandoff = nil
+    }
+
+    func campaignCreationFlowDidAppear() {
+        campaignCreationPresentationDepth += 1
+    }
+
+    func campaignCreationFlowDidDisappear() {
+        campaignCreationPresentationDepth = max(0, campaignCreationPresentationDepth - 1)
     }
 
     func updateSelectedCampaignBoundary(campaignId: UUID, coordinates: [CLLocationCoordinate2D]) {

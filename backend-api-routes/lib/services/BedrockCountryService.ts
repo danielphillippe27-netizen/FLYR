@@ -5,6 +5,11 @@ import { VectorTile } from '@mapbox/vector-tile';
 import * as turf from '@turf/turf';
 import { PMTiles } from 'pmtiles';
 import Pbf from 'pbf';
+import {
+  polygonalGeometry,
+  reconstructParcelFragments,
+} from '@/lib/geo/parcelFragments';
+import { isResidentialParcelFeature } from '@/lib/geo/parcelFilters';
 import type { LambdaSnapshotResponse } from '@/lib/services/TileLambdaService';
 import type { StandardCampaignAddress } from '@/lib/services/AddressAdapter';
 
@@ -124,6 +129,7 @@ type PmtilesParcelFeature = GeoJSON.Feature<GeoJSON.Geometry, Record<string, unk
 type BedrockScopedParcelFeature = {
   externalId: string;
   geometry: GeoJSON.MultiPolygon;
+  properties?: Record<string, unknown>;
 };
 
 const DEFAULT_BUCKET = 'flyr-pro-addresses-2025';
@@ -412,7 +418,6 @@ function layerUrl(config: BedrockCountryConfig, layer: 'addresses' | 'buildings'
 }
 
 function usaParcelPmtilesKey(config: BedrockCountryConfig, regionCode?: string | null) {
-  if (config.country === 'canada') return null;
   if (config.country !== 'usa') return layerKey(config, 'parcels', 'parcels.pmtiles');
   const state = regionCode?.trim().toUpperCase();
   if (!state || !USA_PARCEL_REGIONS.has(state)) return null;
@@ -1129,6 +1134,10 @@ function normalizePmtilesParcel(feature: PmtilesParcelFeature, fallbackId: strin
             type: 'MultiPolygon',
             coordinates: [feature.geometry.coordinates],
           },
+    properties: {
+      ...properties,
+      parcel_id: externalId,
+    },
   };
 }
 
@@ -1296,8 +1305,12 @@ async function loadParcelsFromPmtiles(options: {
   const range = pmtilesTileRangeForBbox(options.bbox, header.maxZoom, header.minZoom, 256);
   if (!range) return null;
 
-  const features: BedrockScopedParcelFeature[] = [];
-  const seen = new Set<string>();
+  const fragments: Array<{
+    id: string;
+    geometry: GeoJSON.Polygon | GeoJSON.MultiPolygon;
+    properties: Record<string, unknown>;
+    include: boolean;
+  }> = [];
   let scanned = 0;
   let bboxCandidates = 0;
   let touchedTiles = 0;
@@ -1319,20 +1332,42 @@ async function loadParcelsFromPmtiles(options: {
       for (let index = 0; index < layer.length; index += 1) {
         scanned += 1;
         const rawFeature = layer.feature(index).toGeoJSON(x, y, range.z) as PmtilesParcelFeature;
-        if (!rawFeature.geometry) continue;
-        const featureBbox = geometryBbox(rawFeature.geometry);
-        if (!featureBbox || !bboxIntersects(featureBbox, options.bbox)) continue;
-        bboxCandidates += 1;
-        if (!featureIntersectsPolygon(rawFeature, options.polygon, options.bbox)) continue;
+        const geometry = polygonalGeometry(rawFeature.geometry);
+        if (!geometry) continue;
+        const feature = { ...rawFeature, geometry };
+        if (!isResidentialParcelFeature(feature)) continue;
 
-        const parcel = normalizePmtilesParcel(rawFeature, `${range.z}/${x}/${y}/${index}`);
+        const featureBbox = geometryBbox(rawFeature.geometry);
+        const intersectsBbox = Boolean(featureBbox && bboxIntersects(featureBbox, options.bbox));
+        if (intersectsBbox) bboxCandidates += 1;
+
+        const parcel = normalizePmtilesParcel(
+          feature,
+          `${range.z}/${x}/${y}/${index}`
+        );
         if (!parcel) continue;
-        if (seen.has(parcel.externalId)) continue;
-        seen.add(parcel.externalId);
-        features.push(parcel);
+
+        fragments.push({
+          id: parcel.externalId,
+          geometry,
+          properties: parcel.properties ?? {},
+          include: featureIntersectsPolygon(feature, options.polygon, options.bbox),
+        });
       }
     }
   }
+
+  const features = reconstructParcelFragments(fragments).map((feature): BedrockScopedParcelFeature => ({
+    externalId: String(feature.id ?? feature.properties?.parcel_id),
+    geometry:
+      feature.geometry.type === 'MultiPolygon'
+        ? feature.geometry
+        : {
+            type: 'MultiPolygon',
+            coordinates: [feature.geometry.coordinates],
+          },
+    properties: feature.properties ?? {},
+  })).filter((feature) => feature.externalId.trim().length > 0);
 
   const totalMs = Date.now() - startedAt;
   return {

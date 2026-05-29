@@ -38,16 +38,28 @@ BEGIN
     FROM public.campaign_addresses ca
     CROSS JOIN LATERAL (
       SELECT
-        b.id AS building_id,
-        ST_Distance(ca.geom::geography, b.geom::geography) AS distance_meters
-      FROM public.buildings b
-      WHERE b.campaign_id = p_campaign_id
-        AND b.geom IS NOT NULL
-        AND ST_DWithin(ca.geom::geography, b.geom::geography, 15.0)
-      ORDER BY
-        ST_Distance(ca.geom::geography, b.geom::geography),
-        b.id
-      LIMIT 1
+        ranked.building_id,
+        ranked.distance_meters
+      FROM (
+        SELECT
+          b.id AS building_id,
+          ST_Distance(ca.geom::geography, b.geom::geography) AS distance_meters,
+          LEAD(ST_Distance(ca.geom::geography, b.geom::geography)) OVER (
+            ORDER BY ST_Distance(ca.geom::geography, b.geom::geography), b.id
+          ) AS next_distance_meters,
+          ROW_NUMBER() OVER (
+            ORDER BY ST_Distance(ca.geom::geography, b.geom::geography), b.id
+          ) AS link_rank
+        FROM public.buildings b
+        WHERE b.campaign_id = p_campaign_id
+          AND b.geom IS NOT NULL
+          AND ST_DWithin(ca.geom::geography, b.geom::geography, 8.0)
+      ) ranked
+      WHERE ranked.link_rank = 1
+        AND (
+          ranked.next_distance_meters IS NULL
+          OR ranked.next_distance_meters - ranked.distance_meters >= 3.0
+        )
     ) nearest
     WHERE ca.campaign_id = p_campaign_id
       AND ca.geom IS NOT NULL
@@ -75,7 +87,7 @@ BEGIN
       candidates.building_id::TEXT,
       'nearest_building_15m',
       'auto',
-      GREATEST(0.0, LEAST(1.0, 1.0 - (candidates.distance_meters / 15.0))),
+      GREATEST(0.0, LEAST(1.0, 1.0 - (candidates.distance_meters / 8.0))),
       candidates.distance_meters
     FROM candidates
     ON CONFLICT (campaign_id, address_id) DO UPDATE
@@ -106,7 +118,7 @@ GRANT EXECUTE ON FUNCTION public.auto_link_campaign_addresses(UUID)
 TO service_role;
 
 COMMENT ON FUNCTION public.auto_link_campaign_addresses(UUID) IS
-'Auto-links campaign addresses to the nearest campaign building within 15 metres. Only auto links are refreshed; manual overrides are never overwritten.';
+'Auto-links campaign addresses to the nearest unambiguous campaign building within 8 metres. Only auto links are refreshed; manual overrides are never overwritten.';
 
 NOTIFY pgrst, 'reload schema';
 

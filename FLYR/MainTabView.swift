@@ -8,6 +8,7 @@ struct MainTabView: View {
     @StateObject private var storeV2 = CampaignV2Store.shared
     @StateObject private var provisionMonitor = CampaignProvisionMonitor.shared
     @State private var showingNewCampaign = false
+    @State private var resumedCreatingCampaignId: UUID?
     /// Item-driven so cover only shows when we have data; no empty state.
     @State private var endSessionSummaryItem: EndSessionSummaryItem?
 
@@ -19,9 +20,50 @@ struct MainTabView: View {
         uiState.selectedMapCampaignId != nil
     }
 
+    private var resumedCreatingCampaignBinding: Binding<Bool> {
+        Binding(
+            get: { resumedCreatingCampaignId != nil },
+            set: { isPresented in
+                if !isPresented {
+                    resumedCreatingCampaignId = nil
+                }
+            }
+        )
+    }
+
+    @MainActor
+    private func syncTrackedCampaignCreationPresentation() {
+        let externalCampaignCreationFlowIsPresented =
+            uiState.isCampaignCreationFlowPresented && !showingNewCampaign && resumedCreatingCampaignId == nil
+        guard !externalCampaignCreationFlowIsPresented else {
+            return
+        }
+
+        guard !showingNewCampaign else {
+            return
+        }
+
+        guard let tracked = provisionMonitor.tracked else {
+            resumedCreatingCampaignId = nil
+            return
+        }
+
+        if tracked.isRunning {
+            resumedCreatingCampaignId = tracked.campaignId
+            return
+        }
+
+        if resumedCreatingCampaignId == tracked.campaignId, tracked.state == .ready {
+            return
+        }
+
+        if resumedCreatingCampaignId == tracked.campaignId {
+            resumedCreatingCampaignId = nil
+        }
+    }
+
     var body: some View {
-        ZStack(alignment: .top) {
-            VStack(spacing: 0) {
+        VStack(spacing: 0) {
             Group {
                 switch uiState.selectedTabIndex {
                 case Tab.home.rawValue:
@@ -58,34 +100,6 @@ struct MainTabView: View {
                     accentColor: campaignContext.accentColor
                 )
             }
-            }
-
-            if let tracked = provisionMonitor.tracked {
-                CampaignProvisionStatusBanner(
-                    tracked: tracked,
-                    compact: true,
-                    onTap: tracked.state == .ready ? {
-                        Task {
-                            let isMapReady = await CampaignDownloadService.shared.ensureMapAssetsAvailable(
-                                campaignId: tracked.campaignId.uuidString
-                            )
-                            guard isMapReady else { return }
-                            uiState.selectCampaign(id: tracked.campaignId, name: tracked.campaignName)
-                            uiState.selectedTabIndex = 1
-                            await CampaignDownloadService.shared.prefetchIfNeeded(
-                                campaignId: tracked.campaignId.uuidString
-                            )
-                        }
-                    } : nil,
-                    onDismiss: tracked.state == .ready || tracked.state == .needsAttention ? {
-                        provisionMonitor.dismiss()
-                    } : nil
-                )
-                .padding(.horizontal, 14)
-                .padding(.top, 10)
-                .transition(.move(edge: .top).combined(with: .opacity))
-                .zIndex(10)
-            }
         }
         .background(Color(UIColor.systemGroupedBackground))
         .campaignContext(campaignContext)
@@ -114,6 +128,7 @@ struct MainTabView: View {
         .task {
             await sessionManager.restoreActiveSessionIfNeeded()
             await provisionMonitor.refreshLatest()
+            syncTrackedCampaignCreationPresentation()
         }
         .fullScreenCover(isPresented: $showingNewCampaign) {
             NavigationStack {
@@ -124,8 +139,31 @@ struct MainTabView: View {
                                 showingNewCampaign = false
                             }
                         }
-                    }
+                }
             }
+        }
+        .fullScreenCover(isPresented: resumedCreatingCampaignBinding) {
+            if let resumedCreatingCampaignId {
+                NavigationStack {
+                    NewCampaignScreen(
+                        store: storeV2,
+                        resumedCampaignId: resumedCreatingCampaignId
+                    )
+                }
+            }
+        }
+        .task(id: resumedCreatingCampaignId) {
+            guard resumedCreatingCampaignId != nil else { return }
+            while !Task.isCancelled, resumedCreatingCampaignId != nil {
+                await provisionMonitor.refreshLatest()
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+            }
+        }
+        .onChange(of: provisionMonitor.tracked) { _, _ in
+            syncTrackedCampaignCreationPresentation()
+        }
+        .onChange(of: showingNewCampaign) { _, _ in
+            syncTrackedCampaignCreationPresentation()
         }
         .fullScreenCover(isPresented: $sessionManager.staleActiveSessionNeedsResolution) {
             StaleActiveSessionResolutionView(sessionManager: sessionManager)
@@ -137,6 +175,7 @@ struct MainTabView: View {
                 Task {
                     await sessionManager.appDidBecomeActive()
                     await provisionMonitor.refreshLatest()
+                    syncTrackedCampaignCreationPresentation()
                     CampaignNotificationRouter.shared.applyPendingRouteIfPossible()
                     await PushRegistrationService.shared.uploadPendingTokenIfPossible()
                 }

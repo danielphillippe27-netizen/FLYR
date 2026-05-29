@@ -83,6 +83,16 @@ function isMissingColumnError(error: { code?: string; message?: string } | null,
   );
 }
 
+function isGeometryWriteError(error: { code?: string; message?: string } | null): boolean {
+  const message = error?.message?.toLowerCase() ?? "";
+  return (
+    message.includes("geom") ||
+    message.includes("geometry") ||
+    message.includes("parse error") ||
+    message.includes("invalid input syntax")
+  );
+}
+
 function isMatchSourceConstraintError(error: { code?: string; message?: string } | null): boolean {
   const message = error?.message?.toLowerCase() ?? "";
   return (
@@ -96,24 +106,53 @@ async function writeManualAddress(
   values: Record<string, unknown>,
   mode: "insert" | "upsert"
 ) {
+  const writeValues = { ...values };
+  let selectColumns = ADDRESS_SELECT;
+
   const write = async (payload: Record<string, unknown>) => {
     const mutation = mode === "upsert"
       ? supabase.from("campaign_addresses").upsert(payload, { onConflict: "id" })
       : supabase.from("campaign_addresses").insert(payload);
 
     return mutation
-      .select(ADDRESS_SELECT)
+      .select(selectColumns)
       .single();
   };
 
-  let result = await write(values);
-  if (isMissingColumnError(result.error, "country")) {
-    const { country: _country, ...fallbackValues } = values;
-    console.warn(`[manual-address] campaign_addresses.country missing; retrying ${mode} without country`);
-    result = await write(fallbackValues);
-  }
+  while (true) {
+    const result = await write(writeValues);
+    if (!result.error) {
+      return result;
+    }
 
-  return result;
+    if ("geom" in writeValues && isGeometryWriteError(result.error)) {
+      delete writeValues.geom;
+      console.warn(`[manual-address] campaign_addresses.geom rejected; retrying ${mode} without geom`);
+      continue;
+    }
+
+    const optionalColumn = [
+      "country",
+      "source",
+      "building_id",
+      "building_gers_id",
+      "match_source",
+      "confidence",
+    ].find((column) => isMissingColumnError(result.error, column));
+
+    if (optionalColumn) {
+      delete writeValues[optionalColumn];
+      selectColumns = selectColumns
+        .split(",")
+        .map((column) => column.trim())
+        .filter((column) => column !== optionalColumn)
+        .join(", ");
+      console.warn(`[manual-address] campaign_addresses.${optionalColumn} missing; retrying ${mode} without it`);
+      continue;
+    }
+
+    return result;
+  }
 }
 
 const ADDRESS_SELECT =
@@ -170,7 +209,9 @@ export async function POST(request: Request, context: RouteContext): Promise<Res
     const addressProvenance = String(
       (body as { address_provenance?: unknown }).address_provenance ?? ""
     ).trim();
-    const isReverseGeocodeConfirmed = addressProvenance === "mapbox_reverse_geocode";
+    const userConfirmed = (body as { user_confirmed?: unknown }).user_confirmed !== false;
+    const isReverseGeocodeConfirmed =
+      userConfirmed && addressProvenance.toLowerCase().includes("reverse_geocode");
     const linkTarget = requestedBuildingId
       ? await resolveCampaignBuilding(supabase, campaignId, requestedBuildingId)
       : null;

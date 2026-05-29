@@ -5,7 +5,7 @@ import Supabase
 @MainActor
 final class InviteService {
     static let shared = InviteService()
-    private let legacyInvitesAPIHost = "backend-api-routes.vercel.app"
+    private let legacyInvitesAPIHost = "www.flyrpro.app"
 
     private var baseURL: String {
         (Bundle.main.object(forInfoDictionaryKey: "FLYR_PRO_API_URL") as? String)?

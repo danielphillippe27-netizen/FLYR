@@ -15,6 +15,18 @@ struct TrackedCampaignProvision: Codable, Equatable {
     var state: CampaignProvisionBadgeState
     var statusText: String
     var progressPercent: Int?
+
+    var isRunning: Bool {
+        state == .queued || state == .preparingMap || state == .optimizing
+    }
+
+    var displayProgressPercent: Int {
+        CampaignProvisionMonitor.clampedProgress(progressPercent ?? 0)
+    }
+
+    var activityText: String {
+        CampaignProvisionMonitor.activityText(state: state, progressPercent: progressPercent)
+    }
 }
 
 @MainActor
@@ -66,7 +78,10 @@ final class CampaignProvisionMonitor: ObservableObject {
         persist()
     }
 
-    func dismiss() {
+    func dismiss(campaignId: UUID? = nil) {
+        if let campaignId, tracked?.campaignId != campaignId {
+            return
+        }
         tracked = nil
         UserDefaults.standard.removeObject(forKey: storageKey)
     }
@@ -94,7 +109,7 @@ final class CampaignProvisionMonitor: ObservableObject {
         if status == .failed || phase == .failed {
             return .needsAttention
         }
-        if status == .ready && phase?.isMapUsable == true {
+        if status == .ready && (phase?.isMapUsable ?? true) {
             return .ready
         }
         if phase == .mapReady || phase == .optimizing {
@@ -110,7 +125,7 @@ final class CampaignProvisionMonitor: ObservableObject {
         if status == .failed || phase == .failed {
             return "Setup needs attention. Open the campaign to retry."
         }
-        if status == .ready && phase?.isMapUsable == true {
+        if status == .ready && (phase?.isMapUsable ?? true) {
             return phase == .linkingFailed
                 ? "Campaign is ready in standard map mode."
                 : "Campaign is ready."
@@ -127,11 +142,68 @@ final class CampaignProvisionMonitor: ObservableObject {
         }
     }
 
+    nonisolated static func activityText(status: CampaignProvisionStatus?, phase: CampaignProvisionPhase?) -> String {
+        if status == .failed || phase == .failed {
+            return "Setup needs attention"
+        }
+        if status == .ready && (phase?.isMapUsable ?? true) {
+            return "Campaign is ready"
+        }
+
+        switch phase {
+        case .created, .none:
+            return "Creating campaign"
+        case .sourceProbed:
+            return "Finding homes"
+        case .addressesLoading:
+            return "Saving addresses"
+        case .addressesReady, .mapReady:
+            return "Preparing map"
+        case .optimizing, .linked:
+            return "Finalizing map"
+        case .linkingFailed, .optimized:
+            return "Campaign is ready"
+        case .failed:
+            return "Setup needs attention"
+        }
+    }
+
+    nonisolated static func activityText(state: CampaignProvisionBadgeState, progressPercent: Int?) -> String {
+        switch state {
+        case .ready:
+            return "Campaign is ready"
+        case .needsAttention:
+            return "Setup needs attention"
+        case .queued, .preparingMap, .optimizing:
+            return activityText(progressPercent: progressPercent)
+        }
+    }
+
+    nonisolated static func activityText(progressPercent: Int?) -> String {
+        let progressPercent = clampedProgress(progressPercent ?? 0)
+        if progressPercent >= 100 {
+            return "Campaign is ready"
+        }
+        if progressPercent >= 82 {
+            return "Finalizing map"
+        }
+        if progressPercent >= 50 {
+            return "Preparing map"
+        }
+        if progressPercent >= 35 {
+            return "Saving addresses"
+        }
+        if progressPercent >= 18 {
+            return "Finding homes"
+        }
+        return "Creating campaign"
+    }
+
     nonisolated static func progressPercent(status: CampaignProvisionStatus?, phase: CampaignProvisionPhase?) -> Int? {
         if status == .failed || phase == .failed {
             return nil
         }
-        if status == .ready && phase?.isMapUsable == true {
+        if status == .ready && (phase?.isMapUsable ?? true) {
             return 100
         }
         switch phase {

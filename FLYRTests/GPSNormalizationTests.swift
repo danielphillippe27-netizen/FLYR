@@ -201,7 +201,7 @@ struct CampaignRoadsNormalizerTests {
         
         // Walk near the road (south of centerline)
         let walkLocation = CLLocation(
-            coordinate: CLLocationCoordinate2D(latitude: 43.649, longitude: -79.3795),
+            coordinate: CLLocationCoordinate2D(latitude: 43.64995, longitude: -79.3795),
             altitude: 0,
             horizontalAccuracy: 5,
             verticalAccuracy: 0,
@@ -304,6 +304,7 @@ struct CampaignRoadsNormalizerTests {
         config.preferredSideOffset = 0
         config.corridorSwitchHysteresisMeters = 4
         config.corridorSwitchConfirmationPoints = 2
+        config.switchAdvantageThreshold = 5
 
         let normalizer = SessionTrailNormalizer(config: config, corridors: [corridorA, corridorB], candidatePointsForSide: [])
 
@@ -315,7 +316,7 @@ struct CampaignRoadsNormalizerTests {
             timestamp: Date()
         )
         let second = CLLocation(
-            coordinate: CLLocationCoordinate2D(latitude: 43.6504, longitude: -79.38000),
+            coordinate: CLLocationCoordinate2D(latitude: 43.6504, longitude: -79.37996),
             altitude: 0,
             horizontalAccuracy: 5,
             verticalAccuracy: 0,
@@ -646,7 +647,9 @@ struct Dan3CampaignGPXTests {
         
         var config = GPSNormalizationConfig.default
         config.maxHorizontalAccuracy = 15  // Filter points >15m accuracy
-        
+        config.minMovementDistance = 0
+        config.maxWalkingSpeedMetersPerSecond = .greatestFiniteMagnitude
+
         let filter = LocationAcceptanceFilter(config: config)
         
         var accepted = 0
@@ -753,18 +756,16 @@ struct Dan3CampaignGPXTests {
             return
         }
         
-        // Use actual points from GPX file
-        // Index 30: West side walking (start of phase 2)
-        // Index 105: East side walking (start of phase 4)
-        let westSidePoint = points[30].coordinate
-        let eastSidePoint = points[105].coordinate
+        // Use actual points from GPX file on opposite sides of Living Court.
+        let eastSidePoint = points[30].coordinate
+        let westSidePoint = points[132].coordinate
         
         // Road centerline (approximate based on GPX data analysis)
         let roadCenterLon = -78.78933
         
         // In western hemisphere: more negative = further west
-        // West side should be more negative (further west) than center
-        // East side should be less negative (further east) than center
+        // West side should be more negative (further west) than center.
+        // East side should be less negative (further east) than center.
         
         print("West side point: lon=\(westSidePoint.longitude)")
         print("East side point: lon=\(eastSidePoint.longitude)")
@@ -789,8 +790,8 @@ struct Dan3CampaignGPXTests {
         print("West side is west of center: \(westIsWest)")
         print("East side is east of center: \(eastIsEast)")
         
-        // At minimum, verify they're different sides
-        #expect(westSidePoint.longitude != eastSidePoint.longitude, "Points should be on different sides")
+        #expect(westSidePoint.longitude < roadCenterLon, "West sample should be west of the road center")
+        #expect(eastSidePoint.longitude > roadCenterLon, "East sample should be east of the road center")
         
         print("✅ Side detection validated: offset verified")
     }

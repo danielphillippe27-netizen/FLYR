@@ -53,7 +53,11 @@ final class CampaignNotificationRouter: NSObject, UNUserNotificationCenterDelega
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification
     ) async -> UNNotificationPresentationOptions {
-        [.banner, .sound, .badge]
+        let userInfo = notification.request.content.userInfo
+        if userInfo["type"] as? String == "campaign_ready" {
+            return []
+        }
+        return [.banner, .sound, .badge]
     }
 
     nonisolated func userNotificationCenter(

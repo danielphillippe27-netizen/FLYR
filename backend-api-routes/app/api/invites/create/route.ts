@@ -100,18 +100,12 @@ function isMainFlyrJoinOrigin(origin: string | null): boolean {
   return origin === "https://flyrpro.app" || origin === "https://www.flyrpro.app";
 }
 
-function buildInviteURL(request: Request, token: string): string {
-  const requestURL = new URL(request.url);
-  const requestHost = requestURL.host.toLowerCase();
-  const fallbackOrigin =
-    requestHost === "backend-api-routes.vercel.app"
-      ? requestURL.origin
-      : DEFAULT_PUBLIC_JOIN_ORIGIN;
+function buildInviteURL(token: string): string {
   const legacyInviteOrigin = normalizedOrigin(process.env.FLYR_PUBLIC_INVITE_ORIGIN);
   const publicInviteOrigin =
     normalizedOrigin(process.env.FLYR_PUBLIC_JOIN_ORIGIN) ??
     legacyInviteOrigin ??
-    fallbackOrigin;
+    DEFAULT_PUBLIC_JOIN_ORIGIN;
   const url = new URL("/join", publicInviteOrigin);
   url.searchParams.set("token", token);
   return url.toString();
@@ -322,7 +316,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: dbMessage }, { status: 500 });
     }
 
-    const inviteURL = buildInviteURL(request, inviteToken);
+    const inviteURL = buildInviteURL(inviteToken);
 
     return NextResponse.json({
       success: true,

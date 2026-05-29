@@ -95,10 +95,12 @@ DECLARE
   v_campaign RECORD;
   v_address_count INTEGER := 0;
   v_building_count INTEGER := 0;
+  v_snapshot_building_count INTEGER := 0;
   v_parcel_count INTEGER := 0;
   v_manual_link_count INTEGER := 0;
   v_address_updated_at TIMESTAMPTZ;
   v_building_updated_at TIMESTAMPTZ;
+  v_snapshot_updated_at TIMESTAMPTZ;
   v_parcel_updated_at TIMESTAMPTZ;
   v_manual_link_updated_at TIMESTAMPTZ;
   v_payload JSONB;
@@ -127,7 +129,7 @@ BEGIN
     );
   END IF;
 
-  SELECT COUNT(*), MAX(COALESCE(ca.updated_at, ca.created_at))
+  SELECT COUNT(*), MAX(ca.created_at)
   INTO v_address_count, v_address_updated_at
   FROM public.campaign_addresses ca
   WHERE ca.campaign_id = p_campaign_id;
@@ -137,14 +139,32 @@ BEGIN
   FROM public.buildings b
   WHERE b.campaign_id = p_campaign_id;
 
+  IF to_regclass('public.campaign_snapshots') IS NOT NULL THEN
+    SELECT
+      COALESCE(MAX(
+        GREATEST(
+          COALESCE(cs.buildings_count, 0),
+          CASE
+            WHEN COALESCE(cs.tile_metrics->>'campaign_buildings_count', '') ~ '^[0-9]+$'
+              THEN (cs.tile_metrics->>'campaign_buildings_count')::INTEGER
+            ELSE 0
+          END
+        )
+      ), 0),
+      MAX(cs.created_at)
+    INTO v_snapshot_building_count, v_snapshot_updated_at
+    FROM public.campaign_snapshots cs
+    WHERE cs.campaign_id = p_campaign_id;
+  END IF;
+
   IF to_regclass('public.campaign_parcels') IS NOT NULL THEN
-    SELECT COUNT(*), MAX(COALESCE(cp.updated_at, cp.created_at))
+    SELECT COUNT(*), MAX(cp.created_at)
     INTO v_parcel_count, v_parcel_updated_at
     FROM public.campaign_parcels cp
     WHERE cp.campaign_id = p_campaign_id;
   END IF;
 
-  SELECT COUNT(*), MAX(bal.created_at)
+  SELECT COUNT(*), MAX(COALESCE(bal.modified_at, bal.matched_at))
   INTO v_manual_link_count, v_manual_link_updated_at
   FROM public.building_address_links bal
   WHERE bal.campaign_id = p_campaign_id
@@ -163,11 +183,16 @@ BEGIN
     'has_parcels', v_campaign.has_parcels,
     'building_link_confidence', v_campaign.building_link_confidence,
     'address_count', COALESCE(v_address_count, 0),
-    'building_count', COALESCE(v_building_count, 0),
+    'building_count', GREATEST(COALESCE(v_building_count, 0), COALESCE(v_snapshot_building_count, 0)),
     'parcel_count', COALESCE(v_parcel_count, 0),
     'manual_link_count', COALESCE(v_manual_link_count, 0),
     'address_updated_at', v_address_updated_at,
-    'building_updated_at', v_building_updated_at,
+    'building_updated_at', GREATEST(
+      COALESCE(v_building_updated_at, '-infinity'::timestamptz),
+      COALESCE(v_snapshot_updated_at, '-infinity'::timestamptz)
+    ),
+    'snapshot_building_count', COALESCE(v_snapshot_building_count, 0),
+    'snapshot_updated_at', v_snapshot_updated_at,
     'parcel_updated_at', v_parcel_updated_at,
     'manual_link_updated_at', v_manual_link_updated_at
   );
@@ -177,7 +202,7 @@ BEGIN
     'source', v_payload,
     'counts', jsonb_build_object(
       'addresses', COALESCE(v_address_count, 0),
-      'buildings', COALESCE(v_building_count, 0),
+      'buildings', GREATEST(COALESCE(v_building_count, 0), COALESCE(v_snapshot_building_count, 0)),
       'parcels', COALESCE(v_parcel_count, 0),
       'manual_links', COALESCE(v_manual_link_count, 0)
     ),
@@ -188,6 +213,7 @@ BEGIN
       COALESCE(v_campaign.optimized_at, '-infinity'::timestamptz),
       COALESCE(v_address_updated_at, '-infinity'::timestamptz),
       COALESCE(v_building_updated_at, '-infinity'::timestamptz),
+      COALESCE(v_snapshot_updated_at, '-infinity'::timestamptz),
       COALESCE(v_parcel_updated_at, '-infinity'::timestamptz),
       COALESCE(v_manual_link_updated_at, '-infinity'::timestamptz)
     )
@@ -288,21 +314,36 @@ BEGIN
       nearest.building_uuid,
       nearest.building_public_id,
       'nearest_building_15m'::TEXT AS match_type,
-      GREATEST(0.0, LEAST(1.0, 1.0 - (nearest.distance_meters / 15.0)))::DOUBLE PRECISION AS confidence,
+      GREATEST(0.0, LEAST(1.0, 1.0 - (nearest.distance_meters / 8.0)))::DOUBLE PRECISION AS confidence,
       nearest.distance_meters
     FROM public.campaign_addresses ca
     CROSS JOIN LATERAL (
       SELECT
-        b.id AS building_uuid,
-        b.gers_id::TEXT AS building_public_id,
-        ST_Distance(ca.geom::geography, b.geom::geography) AS distance_meters
-      FROM public.buildings b
-      WHERE b.campaign_id = p_campaign_id
-        AND b.geom IS NOT NULL
-        AND NULLIF(BTRIM(COALESCE(b.gers_id::TEXT, '')), '') IS NOT NULL
-        AND ST_DWithin(ca.geom::geography, b.geom::geography, 15.0)
-      ORDER BY ST_Distance(ca.geom::geography, b.geom::geography), b.id
-      LIMIT 1
+        ranked.building_uuid,
+        ranked.building_public_id,
+        ranked.distance_meters
+      FROM (
+        SELECT
+          b.id AS building_uuid,
+          b.gers_id::TEXT AS building_public_id,
+          ST_Distance(ca.geom::geography, b.geom::geography) AS distance_meters,
+          LEAD(ST_Distance(ca.geom::geography, b.geom::geography)) OVER (
+            ORDER BY ST_Distance(ca.geom::geography, b.geom::geography), b.id
+          ) AS next_distance_meters,
+          ROW_NUMBER() OVER (
+            ORDER BY ST_Distance(ca.geom::geography, b.geom::geography), b.id
+          ) AS link_rank
+        FROM public.buildings b
+        WHERE b.campaign_id = p_campaign_id
+          AND b.geom IS NOT NULL
+          AND NULLIF(BTRIM(COALESCE(b.gers_id::TEXT, '')), '') IS NOT NULL
+          AND ST_DWithin(ca.geom::geography, b.geom::geography, 8.0)
+      ) ranked
+      WHERE ranked.link_rank = 1
+        AND (
+          ranked.next_distance_meters IS NULL
+          OR ranked.next_distance_meters - ranked.distance_meters >= 3.0
+        )
     ) nearest
     WHERE ca.campaign_id = p_campaign_id
       AND ca.geom IS NOT NULL
@@ -360,6 +401,7 @@ BEGIN
     'total_addresses', v_total,
     'exact', v_exact,
     'nearest', v_nearest,
+    'nearest_radius_meters', 8,
     'linked', v_exact + v_nearest
   );
 END;
@@ -487,7 +529,7 @@ COMMENT ON FUNCTION public.rpc_get_campaign_map_source_version(UUID) IS
 'Computes a lightweight pull-based campaign map source version from campaign metadata, source table counts, and latest timestamps.';
 
 COMMENT ON FUNCTION public.rpc_refresh_campaign_map_links(UUID) IS
-'Refreshes automatic campaign address to building links using server-side PostGIS, preserving manual address assignments.';
+'Refreshes strict campaign address to building links using server-side PostGIS, preserving manual address assignments. Containment links are allowed; nearest-building links must be within 8 metres and unambiguous.';
 
 COMMENT ON FUNCTION public.rpc_upsert_campaign_map_bundle(UUID, TEXT, TEXT, JSONB, JSONB, JSONB, JSONB, JSONB, TEXT, JSONB, JSONB, TEXT, TIMESTAMPTZ, TIMESTAMPTZ) IS
 'Atomically marks the prior bundle stale and upserts the current canonical campaign map bundle.';

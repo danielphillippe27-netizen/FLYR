@@ -11,7 +11,7 @@ const SUPABASE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABAS
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 const AWS_REGION = process.env.AWS_REGION ?? "us-east-1";
-const POLISHED_BUILDING_GEOMETRY_VERSION = 8;
+const POLISHED_BUILDING_GEOMETRY_VERSION = 9;
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -118,8 +118,6 @@ const JSON_NO_STORE_HEADERS = {
   "Content-Type": "application/json",
   "Cache-Control": "no-store, max-age=0",
 };
-const MANUAL_HOME_PROXY_HALF_SIDE_METERS = 2.3 * 3.0;
-
 type GeoJSONGeometry = {
   type?: string;
   coordinates?: unknown;
@@ -293,212 +291,6 @@ function isSilverFeature(feature: GeoJSONFeature): boolean {
   return source === "silver" || source === "lambda" || source === "snapshot";
 }
 
-function isManualAddressPointFeature(feature: GeoJSONFeature): boolean {
-  const geometryType = normalizedString(feature.geometry?.type);
-  return geometryType === "Point" && isManualFeature(feature);
-}
-
-function squarePolygonCoordinates(
-  longitude: number,
-  latitude: number,
-  halfSideMeters: number
-): number[][] {
-  const latDelta = halfSideMeters / 111_320.0;
-  const metersPerLonDegree = Math.max(
-    Math.cos((latitude * Math.PI) / 180.0) * 111_320.0,
-    0.0001
-  );
-  const lonDelta = halfSideMeters / metersPerLonDegree;
-
-  return [
-    [longitude - lonDelta, latitude - latDelta],
-    [longitude + lonDelta, latitude - latDelta],
-    [longitude + lonDelta, latitude + latDelta],
-    [longitude - lonDelta, latitude + latDelta],
-    [longitude - lonDelta, latitude - latDelta],
-  ];
-}
-
-function pointFromLonLat(lon: number, lat: number): [number, number] | null {
-  if (!Number.isFinite(lon) || !Number.isFinite(lat)) return null;
-  if (Math.abs(lon) > 180 || Math.abs(lat) > 90) return null;
-  return [lon, lat];
-}
-
-function pointFromWkbHex(value: string): [number, number] | null {
-  const hex = value.replace(/^\\x/i, "");
-  if (!/^[0-9a-f]+$/i.test(hex) || hex.length < 42) return null;
-
-  try {
-    const buffer = Buffer.from(hex, "hex");
-    const littleEndian = buffer.readUInt8(0) === 1;
-    const readUInt32 = (offset: number) =>
-      littleEndian ? buffer.readUInt32LE(offset) : buffer.readUInt32BE(offset);
-    const readDouble = (offset: number) =>
-      littleEndian ? buffer.readDoubleLE(offset) : buffer.readDoubleBE(offset);
-
-    const rawType = readUInt32(1);
-    const hasSrid = (rawType & 0x20000000) !== 0;
-    const geometryType = rawType & 0xff;
-    if (geometryType !== 1) return null;
-
-    const coordinateOffset = 5 + (hasSrid ? 4 : 0);
-    if (buffer.length < coordinateOffset + 16) return null;
-    return pointFromLonLat(readDouble(coordinateOffset), readDouble(coordinateOffset + 8));
-  } catch {
-    return null;
-  }
-}
-
-function pointCoordinateFromGeometry(value: unknown): [number, number] | null {
-  if (!value) return null;
-
-  if (typeof value === "object") {
-    const geometry = value as { type?: unknown; coordinates?: unknown; geometry?: unknown };
-    if (geometry.type === "Point" && Array.isArray(geometry.coordinates)) {
-      return pointFromLonLat(Number(geometry.coordinates[0]), Number(geometry.coordinates[1]));
-    }
-    if (geometry.geometry) {
-      return pointCoordinateFromGeometry(geometry.geometry);
-    }
-    return null;
-  }
-
-  if (typeof value !== "string") return null;
-  const trimmed = value.trim();
-  if (!trimmed) return null;
-
-  try {
-    return pointCoordinateFromGeometry(JSON.parse(trimmed));
-  } catch {
-    // Continue through WKT/EWKB parsing.
-  }
-
-  const wktMatch = trimmed.match(/(?:SRID=\d+;)?POINT\s*\(\s*([-\d.]+)[,\s]+([-\d.]+)\s*\)/i);
-  if (wktMatch) {
-    return pointFromLonLat(Number(wktMatch[1]), Number(wktMatch[2]));
-  }
-
-  return pointFromWkbHex(trimmed);
-}
-
-function buildManualAddressProxyFeature(feature: GeoJSONFeature): GeoJSONFeature | null {
-  if (!isManualAddressPointFeature(feature)) return null;
-
-  const coordinates = Array.isArray(feature.geometry?.coordinates)
-    ? feature.geometry?.coordinates
-    : null;
-  const longitude = coordinates && coordinates.length > 0 ? finiteNumber(coordinates[0]) : null;
-  const latitude = coordinates && coordinates.length > 1 ? finiteNumber(coordinates[1]) : null;
-
-  if (longitude == null || latitude == null) return null;
-
-  const props = feature.properties ?? {};
-  const addressId =
-    normalizedString(props.address_id) ??
-    normalizedString(props.id) ??
-    normalizedString(feature.id);
-
-  if (!addressId) return null;
-
-  const houseNumber = normalizedString(props.house_number);
-  const streetName = normalizedString(props.street_name);
-  const fallbackAddressText = [houseNumber, streetName].filter(Boolean).join(" ").trim();
-  const addressText =
-    normalizedString(props.address_text) ??
-    normalizedString(props.formatted) ??
-    (fallbackAddressText.length > 0 ? fallbackAddressText : "Address");
-
-  const height =
-    finiteNumber(props.height_m) ??
-    finiteNumber(props.height) ??
-    9;
-
-  return {
-    type: "Feature",
-    id: addressId,
-    geometry: {
-      type: "Polygon",
-      coordinates: [squarePolygonCoordinates(longitude, latitude, MANUAL_HOME_PROXY_HALF_SIDE_METERS)],
-    },
-    properties: {
-      ...props,
-      id: addressId,
-      gers_id: normalizedString(props.gers_id) ?? addressId,
-      building_id: normalizedString(props.building_id) ?? addressId,
-      public_building_id: normalizedString(props.public_building_id) ?? addressId,
-      canonical_building_id: normalizedString(props.canonical_building_id) ?? addressId,
-      building_identifier_source: normalizedString(props.building_identifier_source) ?? "manual",
-      address_id: addressId,
-      address_text: addressText,
-      house_number: houseNumber,
-      street_name: streetName,
-      source: "manual",
-      feature_type: normalizedString(props.feature_type) ?? "address_proxy",
-      feature_status: normalizedString(props.feature_status) ?? "manual",
-      height,
-      height_m: height,
-      min_height: finiteNumber(props.min_height) ?? 0,
-      is_townhome: false,
-      units_count: Math.max(1, Math.round(finiteNumber(props.units_count) ?? 1)),
-      address_count: Math.max(1, Math.round(finiteNumber(props.address_count) ?? 1)),
-      status: normalizedString(props.status) ?? "not_visited",
-      scans_today: Math.max(0, Math.round(finiteNumber(props.scans_today) ?? 0)),
-      scans_total: Math.max(0, Math.round(finiteNumber(props.scans_total) ?? 0)),
-      qr_scanned: Boolean(props.qr_scanned),
-    },
-  };
-}
-
-function buildOfficialAddressProxyFeature(address: CampaignAddressRow): GeoJSONFeature | null {
-  const coordinate = pointCoordinateFromGeometry(address.geom);
-  if (!coordinate) return null;
-  const [longitude, latitude] = coordinate;
-  const houseNumber = normalizedString(address.house_number);
-  const streetName = normalizedString(address.street_name);
-  const fallbackAddressText = [houseNumber, streetName].filter(Boolean).join(" ").trim();
-  const addressText =
-    normalizedString(address.formatted) ??
-    (fallbackAddressText.length > 0 ? fallbackAddressText : "Address");
-  const scansTotal = Math.max(0, Math.round(finiteNumber(address.scans) ?? 0));
-
-  return {
-    type: "Feature",
-    id: `address-proxy-${address.id}`,
-    geometry: {
-      type: "Polygon",
-      coordinates: [squarePolygonCoordinates(longitude, latitude, MANUAL_HOME_PROXY_HALF_SIDE_METERS)],
-    },
-    properties: {
-      id: `address-proxy-${address.id}`,
-      gers_id: `address-proxy-${address.id}`,
-      building_id: `address-proxy-${address.id}`,
-      public_building_id: `address-proxy-${address.id}`,
-      canonical_building_id: `address-proxy-${address.id}`,
-      building_identifier_source: "address_proxy",
-      address_id: address.id,
-      address_ids: [address.id],
-      address_text: addressText,
-      house_number: houseNumber,
-      street_name: streetName,
-      source: "address_proxy",
-      feature_type: "address_proxy",
-      feature_status: "missing_footprint_proxy",
-      height: 9,
-      height_m: 9,
-      min_height: 0,
-      is_townhome: false,
-      units_count: 1,
-      address_count: 1,
-      is_linked: true,
-      status: address.visited ? "visited" : "not_visited",
-      scans_today: 0,
-      scans_total: scansTotal,
-      qr_scanned: scansTotal > 0,
-    },
-  };
-}
-
 function dedupeFeatures(features: GeoJSONFeature[]): GeoJSONFeature[] {
   const seen = new Set<string>();
   const deduped: GeoJSONFeature[] = [];
@@ -586,7 +378,24 @@ function isAddressProxyFeature(feature: GeoJSONFeature): boolean {
   const props = feature.properties ?? {};
   const source = normalizedString(props.source)?.toLowerCase();
   const featureType = normalizedString(props.feature_type)?.toLowerCase();
-  return source === "address_proxy" || featureType === "address_proxy";
+  const featureStatus = normalizedString(props.feature_status)?.toLowerCase();
+  const identifierSource = normalizedString(props.building_identifier_source)?.toLowerCase();
+  const ids = [
+    normalizedString(feature.id),
+    normalizedString(props.id),
+    normalizedString(props.gers_id),
+    normalizedString(props.building_id),
+    normalizedString(props.public_building_id),
+    normalizedString(props.canonical_building_id),
+  ].flatMap((value) => {
+    const normalized = value?.toLowerCase();
+    return normalized ? [normalized] : [];
+  });
+  return source === "address_proxy" ||
+    featureType === "address_proxy" ||
+    featureStatus === "missing_footprint_proxy" ||
+    identifierSource === "address_proxy" ||
+    ids.some((id) => id.startsWith("address-proxy-"));
 }
 
 function filterLinkableBuildingFeatures(
@@ -594,7 +403,7 @@ function filterLinkableBuildingFeatures(
   context: string
 ): GeoJSONFeature[] {
   const filtered = features.filter((feature) => {
-    if (isAddressProxyFeature(feature)) return true;
+    if (isAddressProxyFeature(feature)) return false;
     return filterLinkableBuildingFootprints([feature], { allowManual: true }).length > 0;
   });
   const removed = features.length - filtered.length;
@@ -831,51 +640,6 @@ async function enrichFeaturesWithPersistedLinks(
   });
 }
 
-function coveredAddressIdsForFeatures(features: GeoJSONFeature[]): Set<string> {
-  const covered = new Set<string>();
-  for (const feature of features) {
-    const props = feature.properties ?? {};
-    const addressIds = Array.isArray(props.address_ids)
-      ? props.address_ids
-      : [];
-    for (const addressId of addressIds) {
-      const normalized = normalizedString(addressId)?.toLowerCase();
-      if (normalized) covered.add(normalized);
-    }
-
-    const addressId = normalizedString(props.address_id)?.toLowerCase();
-    if (addressId) covered.add(addressId);
-  }
-  return covered;
-}
-
-async function appendMissingAddressProxyFeatures(
-  supabase: any,
-  campaignId: string,
-  features: GeoJSONFeature[]
-): Promise<GeoJSONFeature[]> {
-  const coveredAddressIds = coveredAddressIdsForFeatures(features);
-  const addresses = await fetchAllInPages<CampaignAddressRow>((from, to) =>
-    supabase
-      .from("campaign_addresses")
-      .select("id, formatted, house_number, street_name, building_id, building_gers_id, confidence, match_source, visited, scans, geom")
-      .eq("campaign_id", campaignId)
-      .range(from, to)
-  );
-
-  const proxyFeatures = addresses.flatMap((address) => {
-    if (coveredAddressIds.has(address.id.toLowerCase())) return [];
-    const proxy = buildOfficialAddressProxyFeature(address);
-    return proxy ? [proxy] : [];
-  });
-
-  if (proxyFeatures.length === 0) return features;
-  console.log(
-    `[buildings] Added ${proxyFeatures.length} official address proxy feature(s) for missing footprints in ${campaignId}`
-  );
-  return dedupeFeatures([...features, ...proxyFeatures]);
-}
-
 function materializedBuildingFeature(row: MaterializedCampaignBuildingRow): GeoJSONFeature | null {
   if (row.is_hidden === true) return null;
   const geometry = polygonGeometryFromValue(row.geom);
@@ -1075,7 +839,11 @@ async function writePolishedBuildingCache(
 ): Promise<void> {
   if (features.length === 0) return;
 
-  const normalizedFeatures = features.map(normalizeBuildingIdentityFeature);
+  const normalizedFeatures = filterLinkableBuildingFeatures(
+    features.map(normalizeBuildingIdentityFeature),
+    "polished-write"
+  );
+  if (normalizedFeatures.length === 0) return;
   const featureCollection = {
     type: "FeatureCollection",
     features: normalizedFeatures.map((feature) => ({
@@ -1415,8 +1183,7 @@ async function responseForSelectedSource(
   campaignId: string,
   sourceName: "Gold" | "Silver",
   baseFeatures: GeoJSONFeature[],
-  manualPolygonFeatures: GeoJSONFeature[],
-  manualAddressProxyFeatures: GeoJSONFeature[]
+  manualPolygonFeatures: GeoJSONFeature[]
 ): Promise<Response> {
   const linkableBaseFeatures = enforceUniqueFeatureAddressAssignments(filterLinkableBuildingFeatures(
     baseFeatures.map(normalizeBuildingIdentityFeature),
@@ -1429,7 +1196,6 @@ async function responseForSelectedSource(
   const mergedFeatures = dedupeFeatures([
     ...linkableBaseFeatures,
     ...linkableManualFeatures,
-    ...manualAddressProxyFeatures,
   ]);
   const linkedFeatures = await enrichFeaturesWithPersistedLinks(supabase, campaignId, mergedFeatures);
   await writePolishedBuildingCache(
@@ -1439,7 +1205,7 @@ async function responseForSelectedSource(
     linkedFeatures
   );
   console.log(
-    `[buildings] ${sourceName} selected for ${campaignId}; returned ${linkedFeatures.length} polygon/proxy features`
+    `[buildings] ${sourceName} selected for ${campaignId}; returned ${linkedFeatures.length} polygon features`
   );
   return NextResponse.json(
     { type: "FeatureCollection", features: linkedFeatures },
@@ -1453,7 +1219,7 @@ async function responseForSelectedSource(
  * Priority:
  *   1. Gold polygons from rpc_get_campaign_full_features / ref_buildings_gold.
  *   2. Silver polygons from rpc_get_campaign_full_features / campaign_snapshots, only when Gold is absent.
- *   3. Manual user-created polygons/proxies can accompany the selected source.
+ *   3. Manual user-created polygons can accompany the selected source.
  *   4. Empty FeatureCollection — campaign has neither Gold nor Silver buildings yet.
  */
 export async function GET(request: Request, context: RouteContext): Promise<Response> {
@@ -1531,7 +1297,6 @@ export async function GET(request: Request, context: RouteContext): Promise<Resp
         campaignId,
         "Silver",
         materializedFeatures,
-        [],
         []
       );
     }
@@ -1588,7 +1353,6 @@ export async function GET(request: Request, context: RouteContext): Promise<Resp
     let rpcGoldPolygonFeatures: GeoJSONFeature[] = [];
     let rpcSilverPolygonFeatures: GeoJSONFeature[] = [];
     let rpcManualPolygonFeatures: GeoJSONFeature[] = [];
-    let rpcManualAddressProxyFeatures: GeoJSONFeature[] = [];
 
     if (!rpcError && rpcResult) {
       const fc = rpcResult as { type?: string; features?: unknown[] };
@@ -1607,18 +1371,13 @@ export async function GET(request: Request, context: RouteContext): Promise<Resp
         polygonFeatures.filter(isManualFeature),
         hiddenBuildingIds
       );
-      rpcManualAddressProxyFeatures = features
-        .map(buildManualAddressProxyFeature)
-        .filter((feature): feature is GeoJSONFeature => feature !== null);
-
       if (rpcGoldPolygonFeatures.length > 0) {
         return await responseForSelectedSource(
           dataSupabase,
           campaignId,
           "Gold",
           rpcGoldPolygonFeatures,
-          rpcManualPolygonFeatures,
-          rpcManualAddressProxyFeatures
+          rpcManualPolygonFeatures
         );
       }
     } else if (rpcError) {
@@ -1639,8 +1398,7 @@ export async function GET(request: Request, context: RouteContext): Promise<Resp
         campaignId,
         "Gold",
         filterHiddenBuildings(goldFallback.features as GeoJSONFeature[], hiddenBuildingIds),
-        rpcManualPolygonFeatures,
-        rpcManualAddressProxyFeatures
+        rpcManualPolygonFeatures
         );
     }
 
@@ -1650,8 +1408,7 @@ export async function GET(request: Request, context: RouteContext): Promise<Resp
         campaignId,
         "Silver",
         rpcSilverPolygonFeatures,
-        rpcManualPolygonFeatures,
-        rpcManualAddressProxyFeatures
+        rpcManualPolygonFeatures
         );
     }
 
@@ -1662,8 +1419,7 @@ export async function GET(request: Request, context: RouteContext): Promise<Resp
         campaignId,
         "Silver",
         scopedFeatures,
-        rpcManualPolygonFeatures,
-        rpcManualAddressProxyFeatures
+        rpcManualPolygonFeatures
         );
     }
 
@@ -1679,24 +1435,20 @@ export async function GET(request: Request, context: RouteContext): Promise<Resp
           campaignId,
           "Silver",
           silverSnapshotFeatures,
-          rpcManualPolygonFeatures,
-          rpcManualAddressProxyFeatures
+          rpcManualPolygonFeatures
         );
       }
     }
 
-    if (rpcManualPolygonFeatures.length > 0 || rpcManualAddressProxyFeatures.length > 0) {
+    if (rpcManualPolygonFeatures.length > 0) {
       const linkableManualFeatures = filterLinkableBuildingFeatures(
         rpcManualPolygonFeatures.map(normalizeBuildingIdentityFeature),
         "manual-only-polygons"
       );
-      const mergedFeatures = dedupeFeatures([
-        ...linkableManualFeatures,
-        ...rpcManualAddressProxyFeatures.map(normalizeBuildingIdentityFeature),
-      ]);
+      const mergedFeatures = dedupeFeatures(linkableManualFeatures);
       await writePolishedBuildingCache(dataSupabase, campaignId, "manual", mergedFeatures);
       console.log(
-        `[buildings] Returning ${mergedFeatures.length} manual polygon/proxy features for ${campaignId}`
+        `[buildings] Returning ${mergedFeatures.length} manual polygon features for ${campaignId}`
       );
       return NextResponse.json(
         { type: "FeatureCollection", features: mergedFeatures },

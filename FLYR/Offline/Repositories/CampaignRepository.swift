@@ -19,7 +19,33 @@ struct CampaignDownloadState: Codable, Equatable, Sendable {
 struct OfflineCampaignMapBundle: Sendable {
     let buildings: BuildingFeatureCollection
     let addresses: AddressFeatureCollection
+    let parcels: ParcelFeatureCollection
     let roads: RoadFeatureCollection
+    let metadata: CachedCampaignMapBundleMetadata?
+}
+
+struct CachedCampaignMapBundleMetadata: Sendable {
+    let campaignId: String
+    let assetSignature: String?
+    let sourceVersion: String?
+    let displayModeHint: String?
+    let linksStatus: String?
+    let countsJSON: String?
+    let layerFetchedAtJSON: String?
+    let builtAt: String?
+    let expiresAt: String?
+    let updatedAt: String?
+
+    var isFresh: Bool {
+        guard let expiresAtDate = OfflineDateCodec.date(from: expiresAt) else { return false }
+        return expiresAtDate > Date()
+    }
+
+    var requiresClientFallback: Bool {
+        linksStatus?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() == "client_fallback_required"
+    }
 }
 
 struct CachedClientLinkBatch: Sendable {
@@ -176,6 +202,94 @@ private struct CachedAddressRecord: Codable, FetchableRecord, PersistableRecord 
         case longitude
         case payloadJSON = "payload_json"
         case updatedAt = "updated_at"
+    }
+}
+
+private struct CachedParcelRecord: Codable, FetchableRecord, PersistableRecord {
+    static let databaseTableName = "cached_parcels"
+
+    let id: String
+    let campaignId: String
+    let externalId: String?
+    let geometryGeoJSON: String
+    let propertiesJSON: String?
+    let payloadJSON: String?
+    let updatedAt: String?
+
+    enum Columns: String, ColumnExpression {
+        case id
+        case campaignId = "campaign_id"
+        case externalId = "external_id"
+        case geometryGeoJSON = "geometry_geojson"
+        case propertiesJSON = "properties_json"
+        case payloadJSON = "payload_json"
+        case updatedAt = "updated_at"
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case campaignId = "campaign_id"
+        case externalId = "external_id"
+        case geometryGeoJSON = "geometry_geojson"
+        case propertiesJSON = "properties_json"
+        case payloadJSON = "payload_json"
+        case updatedAt = "updated_at"
+    }
+}
+
+private struct CachedCampaignMapBundleRecord: Codable, FetchableRecord, PersistableRecord {
+    static let databaseTableName = "cached_campaign_map_bundles"
+
+    let campaignId: String
+    let assetSignature: String?
+    let sourceVersion: String?
+    let displayModeHint: String?
+    let linksStatus: String?
+    let countsJSON: String?
+    let layerFetchedAtJSON: String?
+    let builtAt: String?
+    let expiresAt: String?
+    let updatedAt: String?
+
+    enum Columns: String, ColumnExpression {
+        case campaignId = "campaign_id"
+        case assetSignature = "asset_signature"
+        case sourceVersion = "source_version"
+        case displayModeHint = "display_mode_hint"
+        case linksStatus = "links_status"
+        case countsJSON = "counts_json"
+        case layerFetchedAtJSON = "layer_fetched_at_json"
+        case builtAt = "built_at"
+        case expiresAt = "expires_at"
+        case updatedAt = "updated_at"
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case campaignId = "campaign_id"
+        case assetSignature = "asset_signature"
+        case sourceVersion = "source_version"
+        case displayModeHint = "display_mode_hint"
+        case linksStatus = "links_status"
+        case countsJSON = "counts_json"
+        case layerFetchedAtJSON = "layer_fetched_at_json"
+        case builtAt = "built_at"
+        case expiresAt = "expires_at"
+        case updatedAt = "updated_at"
+    }
+
+    var metadata: CachedCampaignMapBundleMetadata {
+        CachedCampaignMapBundleMetadata(
+            campaignId: campaignId,
+            assetSignature: assetSignature,
+            sourceVersion: sourceVersion,
+            displayModeHint: displayModeHint,
+            linksStatus: linksStatus,
+            countsJSON: countsJSON,
+            layerFetchedAtJSON: layerFetchedAtJSON,
+            builtAt: builtAt,
+            expiresAt: expiresAt,
+            updatedAt: updatedAt
+        )
     }
 }
 
@@ -678,6 +792,30 @@ final class CampaignRepository {
                     postalCode: feature.properties.postalCode,
                     latitude: coordinate?[safe: 1],
                     longitude: coordinate?[safe: 0],
+                    payloadJSON: OfflineJSONCodec.encode(feature),
+                    updatedAt: updatedAt
+                )
+                try record.save(db)
+            }
+        }
+    }
+
+    func upsertParcels(campaignId: String, features: [ParcelFeature]) async {
+        let updatedAt = OfflineDateCodec.string(from: Date())
+        try? await dbQueue.write { db in
+            try CachedParcelRecord.filter(Column("campaign_id") == campaignId).deleteAll(db)
+            for feature in features {
+                let sourceId = feature.properties.parcelId
+                    ?? feature.properties.externalId
+                    ?? feature.properties.id
+                    ?? feature.id
+                    ?? UUID().uuidString
+                let record = CachedParcelRecord(
+                    id: cacheScopedId(campaignId: campaignId, entityId: sourceId),
+                    campaignId: campaignId,
+                    externalId: feature.properties.externalId ?? feature.properties.parcelId,
+                    geometryGeoJSON: OfflineJSONCodec.encode(feature.geometry) ?? "{}",
+                    propertiesJSON: OfflineJSONCodec.encode(feature.properties),
                     payloadJSON: OfflineJSONCodec.encode(feature),
                     updatedAt: updatedAt
                 )
@@ -1828,6 +1966,207 @@ final class CampaignRepository {
         }
     }
 
+    @discardableResult
+    func replaceCampaignMapBundle(campaignId: String, bundle: CanonicalCampaignMapBundle) async -> Bool {
+        let updatedAt = bundle.updatedAt ?? OfflineDateCodec.string(from: Date())
+
+        do {
+            try await dbQueue.write { db in
+                let existingLinks = try CachedBuildingAddressLinkRecord
+                    .filter(Column("campaign_id") == campaignId)
+                    .fetchAll(db)
+                let protectedLinks = existingLinks.filter {
+                    ($0.source ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased().hasPrefix("manual")
+                }
+                let protectedAddressIds = Set(
+                    protectedLinks.map { $0.addressId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+                )
+
+                try CachedBuildingRecord.filter(Column("campaign_id") == campaignId).deleteAll(db)
+                try CachedAddressRecord.filter(Column("campaign_id") == campaignId).deleteAll(db)
+                try CachedParcelRecord.filter(Column("campaign_id") == campaignId).deleteAll(db)
+                try CachedRoadRecord.filter(Column("campaign_id") == campaignId).deleteAll(db)
+
+                let generatedLinkIds = existingLinks
+                    .filter {
+                        !($0.source ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased().hasPrefix("manual")
+                    }
+                    .map(\.id)
+                if !generatedLinkIds.isEmpty {
+                    try CachedBuildingAddressLinkRecord
+                        .filter(generatedLinkIds.contains(Column("id")))
+                        .deleteAll(db)
+                }
+
+                for feature in bundle.buildings.features {
+                    let sourceId = feature.properties.canonicalBuildingIdentifier ?? feature.id ?? UUID().uuidString
+                    let record = CachedBuildingRecord(
+                        id: cacheScopedId(campaignId: campaignId, entityId: sourceId),
+                        campaignId: campaignId,
+                        sourceId: sourceId,
+                        externalId: feature.properties.gersId ?? feature.properties.buildingId,
+                        geometryGeoJSON: OfflineJSONCodec.encode(feature.geometry) ?? "{}",
+                        propertiesJSON: OfflineJSONCodec.encode(feature.properties),
+                        payloadJSON: OfflineJSONCodec.encode(feature),
+                        updatedAt: updatedAt
+                    )
+                    try record.save(db)
+                }
+
+                for feature in bundle.addresses.features {
+                    let sourceId = feature.properties.id ?? feature.id ?? UUID().uuidString
+                    let coordinate = feature.geometry.asPoint
+                    let formatted = feature.properties.formatted?.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let record = CachedAddressRecord(
+                        id: cacheScopedId(campaignId: campaignId, entityId: sourceId),
+                        campaignId: campaignId,
+                        buildingId: feature.properties.buildingGersId,
+                        address: formatted?.isEmpty == false ? formatted : [feature.properties.houseNumber, feature.properties.streetName].compactMap { $0 }.joined(separator: " "),
+                        unit: nil,
+                        city: feature.properties.locality,
+                        province: nil,
+                        postalCode: feature.properties.postalCode,
+                        latitude: coordinate?[safe: 1],
+                        longitude: coordinate?[safe: 0],
+                        payloadJSON: OfflineJSONCodec.encode(feature),
+                        updatedAt: updatedAt
+                    )
+                    try record.save(db)
+                }
+
+                for feature in bundle.parcels.features {
+                    let sourceId = feature.properties.parcelId
+                        ?? feature.properties.externalId
+                        ?? feature.properties.id
+                        ?? feature.id
+                        ?? UUID().uuidString
+                    let record = CachedParcelRecord(
+                        id: cacheScopedId(campaignId: campaignId, entityId: sourceId),
+                        campaignId: campaignId,
+                        externalId: feature.properties.externalId ?? feature.properties.parcelId,
+                        geometryGeoJSON: OfflineJSONCodec.encode(feature.geometry) ?? "{}",
+                        propertiesJSON: OfflineJSONCodec.encode(feature.properties),
+                        payloadJSON: OfflineJSONCodec.encode(feature),
+                        updatedAt: updatedAt
+                    )
+                    try record.save(db)
+                }
+
+                for feature in bundle.roads.features {
+                    let sourceId = feature.properties.id ?? feature.id ?? UUID().uuidString
+                    let record = CachedRoadRecord(
+                        id: cacheScopedId(campaignId: campaignId, entityId: sourceId),
+                        campaignId: campaignId,
+                        geometryGeoJSON: OfflineJSONCodec.encode(feature.geometry) ?? "{}",
+                        propertiesJSON: OfflineJSONCodec.encode(feature.properties),
+                        updatedAt: updatedAt
+                    )
+                    try record.save(db)
+                }
+
+                var linksByAddress: [String: ClientBuildingAddressLink] = [:]
+                for link in bundle.links {
+                    let normalizedAddressId = link.addressId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                    let normalizedBuildingId = link.buildingId.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !normalizedAddressId.isEmpty,
+                          !normalizedBuildingId.isEmpty,
+                          !protectedAddressIds.contains(normalizedAddressId) else {
+                        continue
+                    }
+                    if let existing = linksByAddress[normalizedAddressId],
+                       existing.confidence >= link.confidence {
+                        continue
+                    }
+                    linksByAddress[normalizedAddressId] = link
+                }
+
+                func applyAddressLink(addressId: String, buildingId: String) throws {
+                    let normalizedAddressId = addressId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                    guard !normalizedAddressId.isEmpty else { return }
+                    let addressRecords = try CachedAddressRecord
+                        .filter(Column("campaign_id") == campaignId)
+                        .fetchAll(db)
+                        .filter { Self.record($0, campaignId: campaignId, matchesAddressId: normalizedAddressId) }
+
+                    for addressRecord in addressRecords {
+                        let feature = OfflineJSONCodec.decode(AddressFeature.self, from: addressRecord.payloadJSON)
+                        let updatedFeature = feature.map {
+                            AddressFeature(
+                                type: $0.type,
+                                id: $0.id,
+                                geometry: $0.geometry,
+                                properties: AddressProperties(
+                                    id: $0.properties.id,
+                                    gersId: $0.properties.gersId,
+                                    buildingGersId: buildingId,
+                                    houseNumber: $0.properties.houseNumber,
+                                    streetName: $0.properties.streetName,
+                                    postalCode: $0.properties.postalCode,
+                                    locality: $0.properties.locality,
+                                    formatted: $0.properties.formatted,
+                                    source: $0.properties.source
+                                )
+                            )
+                        }
+                        let updated = CachedAddressRecord(
+                            id: addressRecord.id,
+                            campaignId: addressRecord.campaignId,
+                            buildingId: buildingId,
+                            address: addressRecord.address,
+                            unit: addressRecord.unit,
+                            city: addressRecord.city,
+                            province: addressRecord.province,
+                            postalCode: addressRecord.postalCode,
+                            latitude: addressRecord.latitude,
+                            longitude: addressRecord.longitude,
+                            payloadJSON: updatedFeature.flatMap { OfflineJSONCodec.encode($0) } ?? addressRecord.payloadJSON,
+                            updatedAt: updatedAt
+                        )
+                        try updated.save(db)
+                    }
+                }
+
+                for link in linksByAddress.values {
+                    let normalizedAddressId = link.addressId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                    let normalizedBuildingId = link.buildingId.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let record = CachedBuildingAddressLinkRecord(
+                        id: cacheScopedId(campaignId: campaignId, entityId: "\(normalizedBuildingId.lowercased()):\(normalizedAddressId)"),
+                        campaignId: campaignId,
+                        buildingId: normalizedBuildingId,
+                        addressId: normalizedAddressId,
+                        confidence: link.confidence,
+                        source: link.matchType,
+                        updatedAt: updatedAt
+                    )
+                    try record.save(db)
+                    try applyAddressLink(addressId: normalizedAddressId, buildingId: normalizedBuildingId)
+                }
+
+                for link in protectedLinks {
+                    try applyAddressLink(addressId: link.addressId, buildingId: link.buildingId)
+                }
+
+                let metadata = CachedCampaignMapBundleRecord(
+                    campaignId: campaignId,
+                    assetSignature: bundle.assetSignature,
+                    sourceVersion: bundle.sourceVersion,
+                    displayModeHint: bundle.displayModeHint,
+                    linksStatus: bundle.linksStatus,
+                    countsJSON: bundle.counts.flatMap { OfflineJSONCodec.encode($0) },
+                    layerFetchedAtJSON: bundle.layerFetchedAt.flatMap { OfflineJSONCodec.encode($0) },
+                    builtAt: bundle.builtAt,
+                    expiresAt: bundle.expiresAt,
+                    updatedAt: updatedAt
+                )
+                try metadata.save(db)
+            }
+            return true
+        } catch {
+            print("⚠️ [CampaignRepository] Failed to replace campaign map bundle atomically: \(error.localizedDescription)")
+            return false
+        }
+    }
+
     private static func decodeCachedBuildingFeature(from record: CachedBuildingRecord) -> BuildingFeature? {
         if let feature = OfflineJSONCodec.decode(BuildingFeature.self, from: record.payloadJSON) {
             return feature
@@ -1839,6 +2178,22 @@ final class CampaignRepository {
         return BuildingFeature(
             type: "Feature",
             id: record.sourceId ?? record.id,
+            geometry: geometry,
+            properties: properties
+        )
+    }
+
+    private static func decodeCachedParcelFeature(from record: CachedParcelRecord) -> ParcelFeature? {
+        if let feature = OfflineJSONCodec.decode(ParcelFeature.self, from: record.payloadJSON) {
+            return feature
+        }
+        guard let geometry = OfflineJSONCodec.decode(MapFeatureGeoJSONGeometry.self, from: record.geometryGeoJSON),
+              let properties = OfflineJSONCodec.decode(ParcelProperties.self, from: record.propertiesJSON) else {
+            return nil
+        }
+        return ParcelFeature(
+            type: "Feature",
+            id: record.externalId ?? record.id,
             geometry: geometry,
             properties: properties
         )
@@ -1904,8 +2259,14 @@ final class CampaignRepository {
             let roadRecords = try CachedRoadRecord
                 .filter(Column("campaign_id") == campaignId)
                 .fetchAll(db)
+            let parcelRecords = try CachedParcelRecord
+                .filter(Column("campaign_id") == campaignId)
+                .fetchAll(db)
+            let metadataRecord = try CachedCampaignMapBundleRecord
+                .filter(Column("campaign_id") == campaignId)
+                .fetchOne(db)
 
-            guard !buildingRecords.isEmpty || !addressRecords.isEmpty || !roadRecords.isEmpty else {
+            guard !buildingRecords.isEmpty || !addressRecords.isEmpty || !parcelRecords.isEmpty || !roadRecords.isEmpty else {
                 return nil
             }
 
@@ -1921,6 +2282,7 @@ final class CampaignRepository {
             let addresses = addressRecords.compactMap { record in
                 OfflineJSONCodec.decode(AddressFeature.self, from: record.payloadJSON)
             }
+            let parcels = parcelRecords.compactMap(Self.decodeCachedParcelFeature(from:))
             let linkedBundle = Self.mergeCachedBuildingAddressLinks(
                 linkRecords,
                 buildings: mergedBuildings,
@@ -1942,8 +2304,19 @@ final class CampaignRepository {
             return OfflineCampaignMapBundle(
                 buildings: BuildingFeatureCollection(type: "FeatureCollection", features: linkedBundle.buildings),
                 addresses: AddressFeatureCollection(type: "FeatureCollection", features: linkedBundle.addresses),
-                roads: RoadFeatureCollection(type: "FeatureCollection", features: roads)
+                parcels: ParcelFeatureCollection(type: "FeatureCollection", features: parcels),
+                roads: RoadFeatureCollection(type: "FeatureCollection", features: roads),
+                metadata: metadataRecord?.metadata
             )
+        }
+    }
+
+    func getCampaignMapBundleMetadata(campaignId: String) async -> CachedCampaignMapBundleMetadata? {
+        try? await dbQueue.read { db in
+            try CachedCampaignMapBundleRecord
+                .filter(Column("campaign_id") == campaignId)
+                .fetchOne(db)?
+                .metadata
         }
     }
 
@@ -1975,10 +2348,10 @@ final class CampaignRepository {
             let links = identifiers.flatMap { linksByBuilding[$0] ?? [] }
             guard !links.isEmpty else { return feature }
 
-            let linkedAddresses = links.compactMap {
-                addressesById[$0.addressId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()]
-            }
-            let addressIds = Array(Set(feature.properties.addressIds + links.map(\.addressId))).sorted()
+            let addressIds = Array(Set(links.map {
+                $0.addressId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            }.filter { !$0.isEmpty })).sorted()
+            let linkedAddresses = addressIds.compactMap { addressesById[$0] }
             let firstAddress = linkedAddresses.first
             let bestConfidence = max(
                 feature.properties.confidence ?? 0,
@@ -1998,8 +2371,8 @@ final class CampaignRepository {
                 height: feature.properties.height,
                 heightM: feature.properties.heightM,
                 minHeight: feature.properties.minHeight,
-                isTownhome: feature.properties.isTownhome || addressIds.count > 1,
-                unitsCount: max(feature.properties.unitsCount, addressIds.count),
+                isTownhome: addressIds.count > 1,
+                unitsCount: max(addressIds.count, 1),
                 addressText: addressIds.count == 1 ? firstAddress?.properties.formatted ?? feature.properties.addressText : feature.properties.addressText,
                 matchMethod: feature.properties.matchMethod ?? bestMatch,
                 featureStatus: "matched",
@@ -2012,11 +2385,11 @@ final class CampaignRepository {
                 streetName: addressIds.count == 1 ? firstAddress?.properties.streetName ?? feature.properties.streetName : feature.properties.streetName,
                 confidence: bestConfidence > 0 ? bestConfidence : feature.properties.confidence,
                 source: feature.properties.source,
-                addressCount: max(feature.properties.addressCount ?? 0, addressIds.count),
+                addressCount: addressIds.count,
                 areaSqm: feature.properties.areaSqm,
                 buildingType: feature.properties.buildingType,
                 qrScanned: feature.properties.qrScanned,
-                isLinked: true
+                isLinked: !addressIds.isEmpty
             )
             return BuildingFeature(
                 type: feature.type,

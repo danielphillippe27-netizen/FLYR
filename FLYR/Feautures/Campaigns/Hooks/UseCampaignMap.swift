@@ -104,7 +104,10 @@ final class UseCampaignMap: ObservableObject {
   func loadFootprints() async {
     guard !homes.isEmpty else {
       print("⚠️ [MVT] No homes to process")
-      await createProxiesForAll()
+      await MainActor.run {
+        self.buildingFeatureCollection = FeatureCollection(features: [])
+        self.buildingStats = "Buildings: 0/0"
+      }
       return
     }
     
@@ -250,27 +253,15 @@ final class UseCampaignMap: ObservableObject {
         mapboxFeatures.append(mapboxFeature)
       }
       
-      // Step 4: Create proxy circles for addresses without polygons
       let missingAddressIds = Set(homes.map { $0.id.uuidString }).subtracting(matchedAddressIds)
-      var proxyCount = 0
-      for home in homes {
-        if missingAddressIds.contains(home.id.uuidString) {
-          let g = Geometry.polygon(Polygon(center: home.coord, radiusMeters: 3.5, segments: 20))
-          var proxyFeature = Feature(geometry: g)
-          proxyFeature.properties = [
-            "address_id": .string(home.id.uuidString),
-            "is_proxy": .boolean(true)
-          ]
-          mapboxFeatures.append(proxyFeature)
-          proxyCount += 1
-        }
+      if !missingAddressIds.isEmpty {
+        print("🏗️ [MVT] Skipping \(missingAddressIds.count) address(es) without building footprints; manual add required")
       }
-      
-      print("✅ [MVT] Rendering: \(mapboxFeatures.count - proxyCount) polygons, \(proxyCount) proxies")
+
+      print("✅ [MVT] Rendering: \(mapboxFeatures.count) polygons, 0 proxies")
       
       // Update building stats
-      let polygonCount = mapboxFeatures.count - proxyCount
-      let stats = "Buildings: \(polygonCount)/\(homes.count)"
+      let stats = "Buildings: \(mapboxFeatures.count)/\(homes.count)"
       
       await MainActor.run {
         self.buildingFeatureCollection = FeatureCollection(features: mapboxFeatures)
@@ -279,8 +270,11 @@ final class UseCampaignMap: ObservableObject {
       
     } catch {
       print("❌ [MVT] Error: \(error)")
-      // Fallback: render all proxies
-      await createProxiesForAll()
+      await MainActor.run {
+        if self.buildingFeatureCollection.features.isEmpty {
+          self.buildingStats = "Buildings: 0/\(self.homes.count)"
+        }
+      }
     }
   }
   
@@ -330,20 +324,6 @@ final class UseCampaignMap: ObservableObject {
       
     default:
       return nil
-    }
-  }
-  
-  /// Create proxy circles for all addresses (fallback when no building layer)
-  private func createProxiesForAll() async {
-    var features: [Feature] = []
-    for h in homes {
-      let g = Geometry.polygon(Polygon(center: h.coord, radiusMeters: 3.5, segments: 20))
-      var proxyFeature = Feature(geometry: g)
-      proxyFeature.properties = ["address_id": .string(h.id.uuidString), "is_proxy": .boolean(true)]
-      features.append(proxyFeature)
-    }
-    await MainActor.run {
-      self.buildingFeatureCollection = FeatureCollection(features: features)
     }
   }
   

@@ -624,6 +624,7 @@ async function persistPreparedParcels(
     return [{
       externalId: parcel.externalId,
       geometry,
+      properties: parcel.properties ?? {},
     }];
   });
 
@@ -645,6 +646,8 @@ async function persistPreparedParcels(
         external_id: parcel.externalId,
         geom: JSON.stringify(parcel.geometry),
         properties: {
+          ...parcel.properties,
+          parcel_id: parcel.externalId,
           source: 'bedrock_link_geometry',
         },
       })));
@@ -1989,12 +1992,6 @@ export async function POST(request: NextRequest) {
           timings.count('links_created', postProcessing.linkedAddressCount);
           await persistProvisionTimings(supabase, campaignId!, timings.snapshot());
 
-          if (postProcessing.optimized) {
-            await sendCampaignReadyNotificationOnce(campaignId!).catch((error) => {
-              console.error('[Provision] Campaign-ready push notification failed:', error);
-            });
-          }
-
           if (!postProcessing.optimized) {
             await updateCampaignProvision(supabase, campaignId!, {
               provision_status: 'ready',
@@ -2008,6 +2005,10 @@ export async function POST(request: NextRequest) {
               provision_timings: timings.snapshot(),
             });
           }
+
+          await sendCampaignReadyNotificationOnce(campaignId!).catch((error) => {
+            console.error('[Provision] Campaign-ready push notification failed:', error);
+          });
 
           const responseBuildingLinkConfidence = finalAddressCount > 0
             ? Number(((postProcessing.linkedAddressCount / finalAddressCount) * 100).toFixed(2))
