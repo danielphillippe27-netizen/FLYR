@@ -1,4 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { createHash } from 'crypto';
+import { fetchScopedPmtilesBuildingFeatures } from '@/app/api/campaigns/_utils/scoped-pmtiles-buildings';
+import { resolvePmtilesKey, type CampaignSnapshotRow } from '@/lib/diamond/geometry';
 
 type GeoJSONFeature = {
   id?: unknown;
@@ -47,6 +50,8 @@ type CampaignMapBundleLink = {
 
 type DisplayModeHint = 'buildings' | 'addresses';
 type LinksStatus = 'fresh' | 'stale_reused' | 'client_fallback_required';
+type Bbox = [number, number, number, number];
+export type CampaignMapBundleTimingRecorder = (name: string, durationMs: number) => void;
 
 export type CampaignMapBundleServiceResult =
   | { status: 'not_modified'; assetSignature: string; sourceVersion: string }
@@ -120,19 +125,57 @@ function featureIdentity(feature: GeoJSONFeature, keys: string[]): string | null
   return rootId?.toLowerCase() ?? null;
 }
 
-function fnv1a64(values: string[]): string {
-  let hash = 14_695_981_039_346_656_037n;
-  const prime = 1_099_511_628_211n;
-  const mask = 0xffff_ffff_ffff_ffffn;
-  for (const value of values) {
-    for (const byte of Buffer.from(value, 'utf8')) {
-      hash ^= BigInt(byte);
-      hash = (hash * prime) & mask;
-    }
-    hash ^= 0xffn;
-    hash = (hash * prime) & mask;
+function collectCoordinatePairs(value: unknown, output: Array<[number, number]>) {
+  if (!Array.isArray(value)) return;
+  if (
+    value.length >= 2 &&
+    typeof value[0] === 'number' &&
+    typeof value[1] === 'number' &&
+    Number.isFinite(value[0]) &&
+    Number.isFinite(value[1])
+  ) {
+    output.push([value[0], value[1]]);
+    return;
   }
-  return hash.toString(16);
+  for (const child of value) {
+    collectCoordinatePairs(child, output);
+  }
+}
+
+function bboxFromGeometry(value: unknown): Bbox | null {
+  if (!value || typeof value !== 'object') return null;
+  const coordinates = (value as { coordinates?: unknown }).coordinates;
+  const positions: Array<[number, number]> = [];
+  collectCoordinatePairs(coordinates, positions);
+  if (positions.length === 0) return null;
+
+  let minLon = Infinity;
+  let minLat = Infinity;
+  let maxLon = -Infinity;
+  let maxLat = -Infinity;
+  for (const [lon, lat] of positions) {
+    minLon = Math.min(minLon, lon);
+    minLat = Math.min(minLat, lat);
+    maxLon = Math.max(maxLon, lon);
+    maxLat = Math.max(maxLat, lat);
+  }
+  return [minLon, minLat, maxLon, maxLat];
+}
+
+function polygonBoundary(value: unknown): GeoJSON.Polygon | null {
+  if (!value || typeof value !== 'object') return null;
+  const geometry = value as { type?: unknown; coordinates?: unknown };
+  if (geometry.type !== 'Polygon' || !Array.isArray(geometry.coordinates)) return null;
+  return geometry as GeoJSON.Polygon;
+}
+
+function stableHash(values: string[]): string {
+  const hash = createHash('sha256');
+  for (const value of values) {
+    hash.update(value);
+    hash.update('\0');
+  }
+  return hash.digest('hex').slice(0, 16);
 }
 
 function assetSignature(
@@ -163,9 +206,9 @@ function assetSignature(
 
   return [
     campaignId.toLowerCase(),
-    `b${buildings.features.length}:${fnv1a64(buildingIds)}`,
-    `a${addresses.features.length}:${fnv1a64(addressIds)}`,
-    `p${parcels.features.length}:${fnv1a64(parcelIds)}`,
+    `b${buildings.features.length}:${stableHash(buildingIds)}`,
+    `a${addresses.features.length}:${stableHash(addressIds)}`,
+    `p${parcels.features.length}:${stableHash(parcelIds)}`,
   ].join(':');
 }
 
@@ -239,11 +282,23 @@ function responseFromRow(row: CurrentBundleRow): CanonicalCampaignMapBundleRespo
 }
 
 export class CampaignMapBundleService {
-  constructor(private readonly supabase: SupabaseClient) {}
+  constructor(
+    private readonly supabase: SupabaseClient,
+    private readonly recordTiming: CampaignMapBundleTimingRecorder = () => {}
+  ) {}
+
+  private async measure<T>(name: string, operation: () => Promise<T>): Promise<T> {
+    const startedAt = performance.now();
+    try {
+      return await operation();
+    } finally {
+      this.recordTiming(name, performance.now() - startedAt);
+    }
+  }
 
   async resolve(campaignId: string, localSignature?: string | null): Promise<CampaignMapBundleServiceResult> {
-    const source = await this.fetchSourceVersion(campaignId);
-    const current = await this.fetchCurrentBundle(campaignId);
+    const source = await this.measure('source', () => this.fetchSourceVersion(campaignId));
+    const current = await this.measure('current', () => this.fetchCurrentBundle(campaignId));
 
     if (
       current &&
@@ -306,22 +361,42 @@ export class CampaignMapBundleService {
     const sameSource = current?.source_version === sourceVersion;
     const currentFetchedAt = current?.layer_fetched_at ?? {};
 
-    const linkResult = await this.refreshLinksWithBudget(campaignId, current);
     const shouldReuseAddresses = sameSource && current && isFresh(currentFetchedAt.addresses, ADDRESS_TTL_MS);
     const shouldReuseBuildings = sameSource && current && isFresh(currentFetchedAt.buildings, STATIC_GEOMETRY_TTL_MS);
     const shouldReuseParcels = sameSource && current && isFresh(currentFetchedAt.parcels, STATIC_GEOMETRY_TTL_MS);
     const shouldReuseRoads = sameSource && current && isFresh(currentFetchedAt.roads, STATIC_GEOMETRY_TTL_MS);
 
-    const [addresses, buildings, parcels, roads] = await Promise.all([
-      shouldReuseAddresses ? Promise.resolve(asFeatureCollection(current!.addresses_geojson)) : this.fetchFeatureCollection('rpc_get_campaign_addresses', campaignId),
-      shouldReuseBuildings ? Promise.resolve(asFeatureCollection(current!.buildings_geojson)) : this.fetchFeatureCollection('rpc_get_campaign_renderable_buildings', campaignId),
-      shouldReuseParcels ? Promise.resolve(asFeatureCollection(current!.parcels_geojson)) : this.fetchFeatureCollection('rpc_get_campaign_parcels', campaignId),
-      shouldReuseRoads ? Promise.resolve(asFeatureCollection(current!.roads_geojson)) : this.fetchFeatureCollection('rpc_get_campaign_roads_v2', campaignId),
+    const [addresses, buildings, parcels, roads, linkBundle] = await Promise.all([
+      this.measure('addresses', () =>
+        shouldReuseAddresses
+          ? Promise.resolve(asFeatureCollection(current!.addresses_geojson))
+          : this.fetchFeatureCollection('rpc_get_campaign_addresses', campaignId)
+      ),
+      this.measure('buildings', () =>
+        shouldReuseBuildings
+          ? Promise.resolve(asFeatureCollection(current!.buildings_geojson))
+          : this.fetchBuildingsFeatureCollection(campaignId)
+      ),
+      this.measure('parcels', () =>
+        shouldReuseParcels
+          ? Promise.resolve(asFeatureCollection(current!.parcels_geojson))
+          : this.fetchFeatureCollection('rpc_get_campaign_parcels', campaignId)
+      ),
+      this.measure('roads', () =>
+        shouldReuseRoads
+          ? Promise.resolve(asFeatureCollection(current!.roads_geojson))
+          : this.fetchFeatureCollection('rpc_get_campaign_roads_v2', campaignId)
+      ),
+      this.measure('links', async () => {
+        const linkResult = await this.refreshLinksWithBudget(campaignId, current);
+        const links = linkResult.status === 'fresh'
+          ? await this.fetchLinks(campaignId)
+          : linkResult.links;
+        return { linkResult, links };
+      }),
     ]);
 
-    const links = linkResult.status === 'fresh'
-      ? await this.fetchLinks(campaignId)
-      : linkResult.links;
+    const { linkResult, links } = linkBundle;
     const signature = assetSignature(campaignId, buildings, addresses, parcels);
     const layerFetchedAt = {
       addresses: shouldReuseAddresses ? currentFetchedAt.addresses ?? nowIso : nowIso,
@@ -343,7 +418,7 @@ export class CampaignMapBundleService {
     };
     const hint = displayModeHint(buildings, addresses, links);
 
-    const { data, error } = await this.supabase.rpc('rpc_upsert_campaign_map_bundle', {
+    const { data, error } = await this.measure('persist', async () => await this.supabase.rpc('rpc_upsert_campaign_map_bundle', {
       p_campaign_id: campaignId,
       p_asset_signature: signature,
       p_source_version: sourceVersion,
@@ -358,7 +433,7 @@ export class CampaignMapBundleService {
       p_links_status: linkResult.status,
       p_built_at: nowIso,
       p_expires_at: expiresAt,
-    });
+    }));
     if (error) {
       throw new Error(`Failed to persist campaign map bundle: ${error.message}`);
     }
@@ -389,9 +464,10 @@ export class CampaignMapBundleService {
   ): Promise<{ status: LinksStatus; links: CampaignMapBundleLink[] }> {
     try {
       await withTimeout(
-        this.supabase.rpc('rpc_refresh_campaign_map_links', { p_campaign_id: campaignId }).then(({ error }) => {
+        (async () => {
+          const { error } = await this.supabase.rpc('rpc_refresh_campaign_map_links', { p_campaign_id: campaignId });
           if (error) throw new Error(error.message);
-        }),
+        })(),
         LINK_REFRESH_BUDGET_MS,
         'Campaign map link refresh'
       );
@@ -415,14 +491,128 @@ export class CampaignMapBundleService {
     return asFeatureCollection(data);
   }
 
+  private async fetchBuildingsFeatureCollection(campaignId: string): Promise<FeatureCollection> {
+    const cached = await this.fetchPolishedBuildingCache(campaignId);
+    if (cached.features.length > 0) return cached;
+
+    const scopedPmtiles = await this.fetchSnapshotBuildingsGeoJSON(campaignId);
+    if (scopedPmtiles.features.length > 0) return scopedPmtiles;
+
+    return this.fetchFeatureCollection('rpc_get_campaign_renderable_buildings', campaignId);
+  }
+
+  private async fetchPolishedBuildingCache(campaignId: string): Promise<FeatureCollection> {
+    const { data, error } = await this.supabase
+      .from('campaign_polished_building_features')
+      .select('feature_collection, feature_count')
+      .eq('campaign_id', campaignId)
+      .maybeSingle();
+    if (error) {
+      console.warn('[CampaignMapBundle] Polished building cache read failed:', error.message);
+      return { ...EMPTY_FEATURE_COLLECTION };
+    }
+
+    const row = data as { feature_collection?: unknown; feature_count?: number | null } | null;
+    if (!row || (row.feature_count ?? 0) <= 0) return { ...EMPTY_FEATURE_COLLECTION };
+    return asFeatureCollection(row.feature_collection);
+  }
+
+  private async fetchSnapshotBuildingsGeoJSON(campaignId: string): Promise<FeatureCollection> {
+    try {
+      const [{ data: campaign, error: campaignError }, { data: snapshot, error: snapshotError }, { data: hiddenRows }] = await Promise.all([
+        this.supabase
+          .from('campaigns')
+          .select('territory_boundary')
+          .eq('id', campaignId)
+          .maybeSingle(),
+        this.supabase
+          .from('campaign_snapshots')
+          .select('bucket, prefix, buildings_key, addresses_key, buildings_url, metadata_key, buildings_count, created_at, tile_metrics')
+          .eq('campaign_id', campaignId)
+          .maybeSingle(),
+        this.supabase
+          .from('campaign_hidden_buildings')
+          .select('public_building_id')
+          .eq('campaign_id', campaignId),
+      ]);
+
+      if (campaignError) {
+        console.warn('[CampaignMapBundle] Campaign boundary read failed:', campaignError.message);
+        return { ...EMPTY_FEATURE_COLLECTION };
+      }
+      if (snapshotError) {
+        console.warn('[CampaignMapBundle] Campaign snapshot read failed:', snapshotError.message);
+        return { ...EMPTY_FEATURE_COLLECTION };
+      }
+
+      const snap = snapshot as CampaignSnapshotRow | null;
+      if (!snap || !resolvePmtilesKey(snap)) return { ...EMPTY_FEATURE_COLLECTION };
+
+      const boundaryValue = (campaign as { territory_boundary?: unknown } | null)?.territory_boundary ?? null;
+      const bbox = bboxFromGeometry(boundaryValue);
+      if (!bbox) return { ...EMPTY_FEATURE_COLLECTION };
+
+      const hiddenBuildingIds = new Set(
+        ((hiddenRows ?? []) as Array<{ public_building_id?: string | null }>)
+          .map((row) => normalizedString(row.public_building_id)?.toLowerCase() ?? '')
+          .filter((value) => value.length > 0)
+      );
+
+      const featureCollection = await fetchScopedPmtilesBuildingFeatures(
+        snap,
+        bbox,
+        hiddenBuildingIds,
+        polygonBoundary(boundaryValue)
+      );
+      return asFeatureCollection(featureCollection);
+    } catch (error) {
+      console.warn(
+        '[CampaignMapBundle] Scoped PMTiles building GeoJSON failed:',
+        error instanceof Error ? error.message : error
+      );
+      return { ...EMPTY_FEATURE_COLLECTION };
+    }
+  }
+
   private async fetchLinks(campaignId: string): Promise<CampaignMapBundleLink[]> {
+    const { data, error } = await this.supabase
+      .from('building_address_links')
+      .select('id, building_id, address_id, match_type, confidence, distance_meters')
+      .eq('campaign_id', campaignId);
+    if (error) {
+      console.warn('[CampaignMapBundle] Failed to fetch links:', error.message);
+      return this.fetchCampaignAddressLinks(campaignId);
+    }
+    return ((data ?? []) as Array<{
+      id: string;
+      building_id: string | null;
+      address_id: string | null;
+      match_type: string | null;
+      confidence: number | null;
+      distance_meters: number | null;
+    }>).flatMap((row) => {
+      const buildingId = normalizedString(row.building_id);
+      const addressId = normalizedString(row.address_id);
+      if (!buildingId || !addressId) return [];
+      return [{
+        id: normalizedString(row.id) ?? `${buildingId.toLowerCase()}:${addressId.toLowerCase()}`,
+        building_id: buildingId,
+        address_id: addressId,
+        match_type: row.match_type ?? 'auto',
+        confidence: row.confidence ?? 0.5,
+        distance_meters: row.distance_meters ?? 0,
+      }];
+    });
+  }
+
+  private async fetchCampaignAddressLinks(campaignId: string): Promise<CampaignMapBundleLink[]> {
     const { data, error } = await this.supabase
       .from('campaign_addresses')
       .select('id, building_gers_id, match_source, confidence')
       .eq('campaign_id', campaignId)
       .not('building_gers_id', 'is', null);
     if (error) {
-      console.warn('[CampaignMapBundle] Failed to fetch links:', error.message);
+      console.warn('[CampaignMapBundle] Failed to fetch address-embedded links:', error.message);
       return [];
     }
     return ((data ?? []) as Array<{

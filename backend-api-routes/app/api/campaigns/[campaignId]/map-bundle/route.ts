@@ -18,6 +18,24 @@ const JSON_NO_STORE_HEADERS = {
   'Cache-Control': 'no-store, max-age=0',
 };
 
+type ServerTimingSpan = { name: string; durationMs: number };
+
+function serverTimingValue(spans: ServerTimingSpan[]): string {
+  return spans
+    .map((span) => {
+      const name = span.name.replace(/[^A-Za-z0-9_-]/g, '_');
+      return `${name};dur=${Math.max(0, span.durationMs).toFixed(1)}`;
+    })
+    .join(', ');
+}
+
+function headersWithTiming(spans: ServerTimingSpan[]) {
+  const headers: Record<string, string> = { ...JSON_NO_STORE_HEADERS };
+  const timing = serverTimingValue(spans);
+  if (timing) headers['Server-Timing'] = timing;
+  return headers;
+}
+
 function getAuthToken(request: Request): string | null {
   const authHeader = request.headers.get('authorization');
   return authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
@@ -67,32 +85,49 @@ async function authenticate(request: Request, campaignId: string) {
 }
 
 export async function GET(request: Request, context: RouteContext): Promise<Response> {
+  const startedAt = performance.now();
+  const timings: ServerTimingSpan[] = [];
+  const recordTiming = (name: string, durationMs: number) => {
+    timings.push({ name, durationMs });
+  };
+  const finalizeHeaders = () => {
+    if (!timings.some((span) => span.name === 'total')) {
+      recordTiming('total', performance.now() - startedAt);
+    }
+    return headersWithTiming(timings);
+  };
+
   try {
     const { campaignId } = await context.params;
     const auth = await authenticate(request, campaignId);
-    if (auth.error) return auth.error;
+    if (auth.error) {
+      return new Response(await auth.error.text(), {
+        status: auth.error.status,
+        headers: finalizeHeaders(),
+      });
+    }
 
     const requestUrl = new URL(request.url);
     const localSignature = requestUrl.searchParams.get('signature');
-    const service = new CampaignMapBundleService(auth.admin);
+    const service = new CampaignMapBundleService(auth.admin, recordTiming);
     const result = await service.resolve(campaignId, localSignature);
 
     if (result.status === 'not_modified') {
       return new Response(null, {
         status: 304,
-        headers: JSON_NO_STORE_HEADERS,
+        headers: finalizeHeaders(),
       });
     }
 
     return NextResponse.json(result.bundle, {
       status: 200,
-      headers: JSON_NO_STORE_HEADERS,
+      headers: finalizeHeaders(),
     });
   } catch (error) {
     console.error('[map-bundle] GET failed:', error);
     return NextResponse.json(
       { error: 'Failed to resolve campaign map bundle' },
-      { status: 500, headers: JSON_NO_STORE_HEADERS }
+      { status: 500, headers: finalizeHeaders() }
     );
   }
 }
