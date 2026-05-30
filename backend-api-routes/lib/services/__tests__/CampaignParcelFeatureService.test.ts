@@ -202,6 +202,18 @@ async function main() {
     assert.match(sql, /cmb\.counts->>'parcel_source'[\s\S]*'campaign_parcels'/);
     assert.match(sql, /is_current = FALSE/);
   });
+
+  await test('PMTiles parcel fallback backfills campaign parcel state for downstream surfaces', () => {
+    const source = readFileSync(
+      resolve(process.cwd(), 'lib/services/CampaignParcelFeatureService.ts'),
+      'utf8'
+    );
+
+    assert.match(source, /function backfillResolvedPmtilesParcels/);
+    assert.match(source, /from\('campaign_parcels'\)[\s\S]*\.upsert\(chunk, \{ onConflict: 'campaign_id,external_id' \}\)/);
+    assert.match(source, /parcel_source_id:\s*'snapshot_pmtiles'/);
+    assert.match(source, /backfilled \? 'campaign_parcels' : 'snapshot_pmtiles'/);
+  });
 }
 
 void main();

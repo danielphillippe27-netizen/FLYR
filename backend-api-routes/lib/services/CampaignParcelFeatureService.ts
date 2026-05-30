@@ -20,9 +20,11 @@ import {
   isResidentialParcelFeature,
 } from '@/lib/geo/parcelFilters';
 import { isParcelRegionSupported } from '@/lib/geo/parcelRegions';
+import { invalidateCampaignMapBundle } from '@/lib/services/CampaignMapBundleInvalidation';
 import { ParcelEnrichmentService } from '@/lib/services/ParcelEnrichmentService';
 
 const PARCEL_SEAM_SAFE_MAX_ZOOM = 13;
+const PARCEL_BACKFILL_BATCH_SIZE = 500;
 const PARCEL_FAILURE_CACHE_TTL_MS = 5 * 60 * 1000;
 const parcelFailureCache = new Map<string, number>();
 
@@ -775,6 +777,15 @@ function parcelResponseToFeature(parcel: CampaignParcelResponse): GeoJSON.Featur
   }
 }
 
+function parcelResponseGeometry(
+  parcel: CampaignParcelResponse
+): GeoJSON.Polygon | GeoJSON.MultiPolygon | null {
+  const feature = parcelResponseToFeature(parcel);
+  return feature?.geometry.type === 'Polygon' || feature?.geometry.type === 'MultiPolygon'
+    ? feature.geometry
+    : null;
+}
+
 function filterResidentialParcelResponses(parcels: CampaignParcelResponse[]): CampaignParcelResponse[] {
   return parcels.filter((parcel) => {
     const feature = parcelResponseToFeature(parcel);
@@ -817,6 +828,99 @@ function filterTargetableParcelResponses(parcels: CampaignParcelResponse[]): Cam
     const feature = parcelResponseToFeature(parcel);
     return feature ? !isLikelyInfrastructureParcelFeature(feature) : false;
   });
+}
+
+async function backfillResolvedPmtilesParcels(
+  supabase: SupabaseClient,
+  campaignId: string,
+  parcels: CampaignParcelResponse[],
+  parcelTiles: ParcelPmtilesResolution
+): Promise<boolean> {
+  if (parcels.length === 0) return false;
+
+  const nowIso = new Date().toISOString();
+  const rows = parcels.flatMap((parcel) => {
+    const geometry = parcelResponseGeometry(parcel);
+    if (!geometry) return [];
+
+    const externalId = parcel.external_id || parcel.id;
+    if (!externalId) return [];
+
+    return [{
+      campaign_id: campaignId,
+      external_id: externalId,
+      geom: JSON.stringify(geometry),
+      properties: {
+        ...parcel.properties,
+        parcel_id: externalId,
+        source: parcel.properties.source ?? 'snapshot_pmtiles',
+        source_pmtiles_key: parcelTiles.pmtilesKey,
+        backfilled_from: 'map_bundle_pmtiles',
+      },
+    }];
+  });
+
+  if (rows.length === 0) return false;
+
+  try {
+    for (let index = 0; index < rows.length; index += PARCEL_BACKFILL_BATCH_SIZE) {
+      const chunk = rows.slice(index, index + PARCEL_BACKFILL_BATCH_SIZE);
+      const { error } = await supabase
+        .from('campaign_parcels')
+        .upsert(chunk, { onConflict: 'campaign_id,external_id' });
+
+      if (error) {
+        console.warn('[CampaignParcels] Failed to backfill PMTiles parcels:', {
+          campaignId,
+          code: error.code,
+          message: error.message,
+        });
+        return false;
+      }
+    }
+
+    const { error: campaignError } = await supabase
+      .from('campaigns')
+      .update({
+        has_parcels: true,
+        parcel_enrichment_status: 'ready',
+        parcel_source_id: 'snapshot_pmtiles',
+        parcel_count: rows.length,
+        parcel_enriched_at: nowIso,
+        parcel_enrichment_error: null,
+        parcel_enrichment_debug: {
+          source_id: 'snapshot_pmtiles',
+          source_pmtiles_key: parcelTiles.pmtilesKey,
+          inserted_count: rows.length,
+          backfilled_from: 'map_bundle_pmtiles',
+          completed_at: nowIso,
+        },
+      })
+      .eq('id', campaignId);
+
+    if (campaignError) {
+      console.warn('[CampaignParcels] Failed to update PMTiles parcel metadata:', {
+        campaignId,
+        code: campaignError.code,
+        message: campaignError.message,
+      });
+      return false;
+    }
+
+    await invalidateCampaignMapBundle(supabase, campaignId);
+    console.log('[CampaignParcels] Backfilled PMTiles parcels into campaign_parcels:', {
+      campaignId,
+      count: rows.length,
+      pmtilesKey: parcelTiles.pmtilesKey,
+    });
+    return true;
+  } catch (error) {
+    console.warn('[CampaignParcels] Failed to backfill PMTiles parcels:', {
+      campaignId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return false;
+  }
 }
 
 function featureWithinCampaignScope(
@@ -999,9 +1103,16 @@ export async function resolveCampaignParcels(
         const parcels = await fetchScopedPmtilesParcels(campaignId, snapshot, parcelTiles, bbox, boundary);
         const annotations = inferParcelAddressAnnotations(parcels, addressPoints);
         const annotatedParcels = annotateParcelsWithAddressLinks(parcels, annotations);
+        const targetableParcels = filterTargetableParcelResponses(annotatedParcels);
+        const backfilled = await backfillResolvedPmtilesParcels(
+          supabase,
+          campaignId,
+          targetableParcels,
+          parcelTiles
+        );
         return responseFromParcels(
-          filterTargetableParcelResponses(annotatedParcels),
-          'snapshot_pmtiles'
+          targetableParcels,
+          backfilled ? 'campaign_parcels' : 'snapshot_pmtiles'
         );
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
