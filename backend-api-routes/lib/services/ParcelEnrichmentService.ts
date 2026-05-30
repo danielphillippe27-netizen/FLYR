@@ -8,6 +8,7 @@ import { fetchAllInPages } from '@/lib/supabase/fetchAllInPages';
 import { StableLinkerService, type BuildingFeature as SnapshotBuildingFeature } from '@/lib/services/StableLinkerService';
 import { TownhouseSplitterService } from '@/lib/services/TownhouseSplitterService';
 import { CampaignMapModeService } from '@/lib/services/CampaignMapModeService';
+import { invalidateCampaignMapBundle } from '@/lib/services/CampaignMapBundleInvalidation';
 import regionBounds from '../../scripts/regions.json';
 
 const PARCEL_BUCKET = 'flyr-pro-addresses-2025';
@@ -84,6 +85,7 @@ type ParcelEnrichmentDebug = {
   skipped_reason?: string | null;
   unsupported_localities?: string[];
   locality_counts?: Array<{ source_id: SupportedParcelSourceId; count: number }>;
+  postprocessing_error?: string;
   relink?: {
     strategy?: 'campaign_buildings' | 'snapshot' | 'none';
     gold_linker_ran: boolean;
@@ -538,34 +540,59 @@ export class ParcelEnrichmentService {
         return;
       }
 
-      const relinkResult = await this.relinkCampaign(campaignId, campaign.territory_boundary, result.parcels);
-      const multiUnitFlagsRefreshed = await this.refreshMultiUnitFlags(campaignId);
-      const townhouseRefreshResult = await this.refreshTownhouseUnits(campaignId);
-
       await this.markTerminalState(campaignId, 'ready', {
         sourceId: result.sourceId,
         parcelCount: result.parcelCount,
-        debug: {
-          ...result.debug,
-          relink: {
-            strategy: relinkResult.strategy,
-            gold_linker_ran: relinkResult.gold_linker_ran,
-            consolidated_linker_ran: relinkResult.consolidated_linker_ran,
-            snapshot_linker_ran: relinkResult.snapshot_linker_ran,
-            snapshot_linker_used_parcels: relinkResult.snapshot_linker_used_parcels,
-            multi_unit_flags_refreshed: multiUnitFlagsRefreshed,
-            campaign_building_count: relinkResult.campaign_building_count,
-            snapshot_building_count: relinkResult.snapshot_building_count,
-            townhouse_refresh_attempted: townhouseRefreshResult.attempted,
-            townhouse_refresh_applied: townhouseRefreshResult.applied,
-          },
-          completed_at: new Date().toISOString(),
-        },
+        debug: result.debug,
       });
       await new CampaignMapModeService(this.supabase).computeAndPersist(campaignId, {
         hasParcels: result.parcelCount > 0,
         parcelCount: result.parcelCount,
       });
+      await invalidateCampaignMapBundle(this.supabase, campaignId);
+
+      try {
+        const relinkResult = await this.relinkCampaign(campaignId, campaign.territory_boundary, result.parcels);
+        const multiUnitFlagsRefreshed = await this.refreshMultiUnitFlags(campaignId);
+        const townhouseRefreshResult = await this.refreshTownhouseUnits(campaignId);
+
+        await this.markTerminalState(campaignId, 'ready', {
+          sourceId: result.sourceId,
+          parcelCount: result.parcelCount,
+          debug: {
+            ...result.debug,
+            relink: {
+              strategy: relinkResult.strategy,
+              gold_linker_ran: relinkResult.gold_linker_ran,
+              consolidated_linker_ran: relinkResult.consolidated_linker_ran,
+              snapshot_linker_ran: relinkResult.snapshot_linker_ran,
+              snapshot_linker_used_parcels: relinkResult.snapshot_linker_used_parcels,
+              multi_unit_flags_refreshed: multiUnitFlagsRefreshed,
+              campaign_building_count: relinkResult.campaign_building_count,
+              snapshot_building_count: relinkResult.snapshot_building_count,
+              townhouse_refresh_attempted: townhouseRefreshResult.attempted,
+              townhouse_refresh_applied: townhouseRefreshResult.applied,
+            },
+            completed_at: new Date().toISOString(),
+          },
+        });
+        await invalidateCampaignMapBundle(this.supabase, campaignId);
+      } catch (postProcessError) {
+        const message = postProcessError instanceof Error ? postProcessError.message : String(postProcessError);
+        console.warn('[ParcelEnrichment] Parcel post-processing failed after parcels were persisted:', {
+          campaignId,
+          message,
+        });
+        await this.markTerminalState(campaignId, 'ready', {
+          sourceId: result.sourceId,
+          parcelCount: result.parcelCount,
+          debug: {
+            ...result.debug,
+            postprocessing_error: message,
+            completed_at: new Date().toISOString(),
+          },
+        });
+      }
     } catch (error) {
       await this.markTerminalState(campaignId, 'failed', {
         error: error instanceof Error ? error.message : 'Unknown parcel enrichment error.',
@@ -1163,7 +1190,7 @@ export class ParcelEnrichmentService {
       debug?: ParcelEnrichmentDebug;
     }
   ) {
-    await this.supabase
+    const { error } = await this.supabase
       .from('campaigns')
       .update({
         has_parcels: status === 'ready' && (options.parcelCount ?? 0) > 0,
@@ -1175,5 +1202,9 @@ export class ParcelEnrichmentService {
         parcel_enrichment_debug: options.debug ?? {},
       })
       .eq('id', campaignId);
+
+    if (error) {
+      throw new Error(`Failed to mark parcel enrichment ${status}: ${error.message}`);
+    }
   }
 }

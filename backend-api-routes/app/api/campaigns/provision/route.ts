@@ -11,6 +11,7 @@ import { fetchScopedPmtilesBuildingFeatures } from '@/app/api/campaigns/_utils/s
 import type { CampaignSnapshotRow } from '@/lib/diamond/geometry';
 import {
   ParcelEnrichmentService,
+  type ParcelEnrichmentStatus,
 } from '@/lib/services/ParcelEnrichmentService';
 import { CampaignMapBundleService } from '@/lib/services/CampaignMapBundleService';
 import { isParcelRegionSupported } from '@/lib/geo/parcelRegions';
@@ -688,6 +689,73 @@ async function persistPreparedParcels(
   });
 
   return normalizedParcels.length;
+}
+
+type ProvisionParcelPreparationResult = {
+  count: number;
+  status: ParcelEnrichmentStatus;
+  sourceId: string | null;
+  error: string | null;
+  shouldRunDeferred: boolean;
+};
+
+async function prepareProvisionParcels(params: {
+  supabase: ReturnType<typeof createAdminClient>;
+  campaignId: string;
+  regionCode: string;
+  bedrockLinkGeometry?: BedrockLinkGeometry | null;
+}): Promise<ProvisionParcelPreparationResult> {
+  const preparedLinkGeometryParcels = params.bedrockLinkGeometry?.parcels ?? [];
+  if (preparedLinkGeometryParcels.length > 0) {
+    const count = await persistPreparedParcels(
+      params.supabase,
+      params.campaignId,
+      preparedLinkGeometryParcels
+    );
+    return {
+      count,
+      status: count > 0 ? 'ready' : 'skipped',
+      sourceId: count > 0 ? 'bedrock_link_geometry' : null,
+      error: null,
+      shouldRunDeferred: false,
+    };
+  }
+
+  if (!isParcelRegionSupported(params.regionCode)) {
+    return {
+      count: 0,
+      status: 'skipped',
+      sourceId: null,
+      error: null,
+      shouldRunDeferred: false,
+    };
+  }
+
+  try {
+    const result = await new ParcelEnrichmentService(params.supabase)
+      .prepareParcelsForProvision(params.campaignId);
+    return {
+      count: result.status === 'ready' ? result.parcelCount : 0,
+      status: result.status,
+      sourceId: result.sourceId,
+      error: result.error,
+      shouldRunDeferred: false,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn('[Provision] Gold parcel preparation failed; deferring parcel enrichment retry:', {
+      campaignId: params.campaignId,
+      message,
+    });
+    await new ParcelEnrichmentService(params.supabase).markQueued(params.campaignId);
+    return {
+      count: 0,
+      status: 'queued',
+      sourceId: null,
+      error: message,
+      shouldRunDeferred: true,
+    };
+  }
 }
 
 async function runDeferredParcelEnrichment(campaignId: string) {
@@ -2275,18 +2343,12 @@ export async function POST(request: NextRequest) {
               : snapshotHasStaticBuildingPmtiles(snapshot)
                 ? finalAddressCount
                 : 0;
-          const hasPreparedParcels = (bedrockLinkGeometry?.parcels.length ?? 0) > 0;
-          const parcelEnrichmentStatus = hasPreparedParcels
-            ? 'ready'
-            : isParcelRegionSupported(regionCode)
-              ? 'queued'
-              : 'skipped';
 
           const [
             addressInsertResult,
             materializedBuildingResult,
             _snapshotMetadataResult,
-            preparedParcelCount,
+            parcelPreparationResult,
           ] = await Promise.all([
             timings.measure('address_insert_ms', async () => {
               if (hasResolvedAddresses) {
@@ -2304,25 +2366,21 @@ export async function POST(request: NextRequest) {
               bedrockLinkGeometry,
             })),
             timings.measure('snapshot_metadata_ms', () => upsertSnapshotMetadata(supabase, campaignId!, snapshot)),
-            hasPreparedParcels && bedrockLinkGeometry
-              ? timings.measure('parcel_enrichment_ms', () => persistPreparedParcels(
-                supabase,
-                campaignId!,
-                bedrockLinkGeometry.parcels
-              ))
-              : parcelEnrichmentStatus === 'queued'
-              ? timings.measure('parcel_queue_ms', async () => {
-                await new ParcelEnrichmentService(supabase).markQueued(campaignId!);
-                return 0;
-              })
-              : Promise.resolve(0),
+            timings.measure('parcel_enrichment_ms', () => prepareProvisionParcels({
+              supabase,
+              campaignId: campaignId!,
+              regionCode,
+              bedrockLinkGeometry,
+            })),
           ]);
 
           finalAddressCount = addressInsertResult.count;
           campaignLinkerAddresses = addressInsertResult.addresses;
+          const preparedParcelCount = parcelPreparationResult.count;
+          const parcelEnrichmentStatus = parcelPreparationResult.status;
           timings.count('addresses_inserted', finalAddressCount);
           timings.count('buildings_materialized', materializedBuildingResult.buildings.length);
-          timings.count('parcels_inserted', preparedParcelCount ?? 0);
+          timings.count('parcels_inserted', preparedParcelCount);
 
           if (finalAddressCount > 0) {
             await updateCampaignProvision(supabase, campaignId!, {
@@ -2339,7 +2397,7 @@ export async function POST(request: NextRequest) {
             provision_source: dbProvisionSource(addressSource),
             provisioned_at: readyAt,
             map_ready_at: readyAt,
-            has_parcels: (preparedParcelCount ?? 0) > 0,
+            has_parcels: preparedParcelCount > 0,
             building_link_confidence: buildingLinkConfidence,
             map_mode: mapMode,
             parcel_enrichment_status: parcelEnrichmentStatus,
@@ -2396,8 +2454,8 @@ export async function POST(request: NextRequest) {
             links_created: postProcessing.linkedAddressCount,
             units_created: postProcessing.unitsCreated,
             townhouses_identified: postProcessing.townhousesIdentified,
-            has_parcels: (preparedParcelCount ?? 0) > 0,
-            parcel_count: preparedParcelCount ?? 0,
+            has_parcels: preparedParcelCount > 0,
+            parcel_count: preparedParcelCount,
             building_link_confidence: responseBuildingLinkConfidence,
             map_mode: responseMapMode,
             linked_address_count: postProcessing.linkedAddressCount,
@@ -2430,7 +2488,7 @@ export async function POST(request: NextRequest) {
             message: postProcessing.message,
           };
 
-          if (parcelEnrichmentStatus === 'queued' && !hasPreparedParcels) {
+          if (parcelPreparationResult.shouldRunDeferred) {
             if (waitForLinker) {
               scheduleDeferredParcelEnrichment(campaignId!);
             } else {

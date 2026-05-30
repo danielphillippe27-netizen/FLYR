@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { isResidentialParcelFeature } from '../../geo/parcelFilters';
+import {
+  isLikelyInfrastructureParcelFeature,
+  isResidentialParcelFeature,
+} from '../../geo/parcelFilters';
 import { reconstructParcelFragments } from '../../geo/parcelFragments';
 import { BedrockCountryService, BEDROCK_CANADA_CONFIG } from '../BedrockCountryService';
 
@@ -144,6 +147,22 @@ async function main() {
     }), true);
   });
 
+  await test('unlabeled skinny right-of-way parcel geometry is treated as infrastructure', () => {
+    assert.equal(isLikelyInfrastructureParcelFeature({
+      type: 'Feature',
+      geometry: rectangle(0, 0, 0.00002, 0.002),
+      properties: {},
+    }), true);
+  });
+
+  await test('normal unlabeled residential parcel geometry is not treated as infrastructure', () => {
+    assert.equal(isLikelyInfrastructureParcelFeature({
+      type: 'Feature',
+      geometry: rectangle(0, 0, 0.0004, 0.0004),
+      properties: {},
+    }), false);
+  });
+
   await test('Bedrock Canada snapshots expose parcel PMTiles metadata', () => {
     const service = new BedrockCountryService(BEDROCK_CANADA_CONFIG);
     const snapshot = service.snapshotForCampaign(
@@ -170,6 +189,18 @@ async function main() {
     assert.match(sql, /ST_Intersects\(p\.geom,\s*v_boundary\)/);
     assert.match(sql, /ST_AsGeoJSON\(geom\)::jsonb/);
     assert.doesNotMatch(sql, /ST_Intersection/i);
+  });
+
+  await test('parcel metadata reconciliation promotes persisted parcels as bundle source of truth', () => {
+    const sql = readFileSync(
+      resolve(process.cwd(), '../supabase/migrations/20260529203000_reconcile_campaign_parcel_metadata.sql'),
+      'utf8'
+    );
+
+    assert.match(sql, /parcel_enrichment_status[\s\S]*'ready'/);
+    assert.match(sql, /parcel_source_id = COALESCE\(c\.parcel_source_id, 'campaign_parcels'\)/);
+    assert.match(sql, /cmb\.counts->>'parcel_source'[\s\S]*'campaign_parcels'/);
+    assert.match(sql, /is_current = FALSE/);
   });
 }
 

@@ -156,6 +156,7 @@ const ROAD_INDICATOR_PROPERTY_KEYS = [
 ];
 
 const FALSEY_TEXT_VALUES = new Set(['0', 'false', 'n', 'no', 'none', 'null', 'unknown']);
+const EARTH_METERS_PER_DEGREE_LAT = 110_540;
 
 function normalizeParcelText(value: unknown): string {
   if (typeof value === 'string') {
@@ -226,4 +227,101 @@ export function isResidentialParcelFeature(feature: Pick<GeoJSON.Feature, 'prope
   const intent = normalizeParcelText(propertyValue(properties, 'parcel_intent'));
   if (!intent) return true;
   return intent === 'fee simple title' || intent === 'dcdb' || intent.includes('residential');
+}
+
+function flattenRings(geometry: GeoJSON.Geometry | null | undefined): number[][][] {
+  if (geometry?.type === 'Polygon') return geometry.coordinates;
+  if (geometry?.type === 'MultiPolygon') return geometry.coordinates.flat();
+  return [];
+}
+
+function ringToMeters(ring: number[][], originLat: number): Array<[number, number]> {
+  const lonScale = 111_320 * Math.max(Math.cos((originLat * Math.PI) / 180), 0.000001);
+  return ring
+    .map((position) => [Number(position?.[0]) * lonScale, Number(position?.[1]) * EARTH_METERS_PER_DEGREE_LAT] as [number, number])
+    .filter((position) => Number.isFinite(position[0]) && Number.isFinite(position[1]));
+}
+
+function ringAreaSqm(ring: Array<[number, number]>): number {
+  if (ring.length < 4) return 0;
+  let sum = 0;
+  for (let index = 0; index < ring.length; index += 1) {
+    const current = ring[index];
+    const next = ring[(index + 1) % ring.length];
+    sum += current[0] * next[1] - next[0] * current[1];
+  }
+  return Math.abs(sum) / 2;
+}
+
+function ringPerimeterMeters(ring: Array<[number, number]>): number {
+  if (ring.length < 2) return 0;
+  let perimeter = 0;
+  for (let index = 0; index < ring.length; index += 1) {
+    const current = ring[index];
+    const next = ring[(index + 1) % ring.length];
+    perimeter += Math.hypot(next[0] - current[0], next[1] - current[1]);
+  }
+  return perimeter;
+}
+
+function geometryMetrics(geometry: GeoJSON.Geometry | null | undefined): {
+  areaSqm: number;
+  perimeterMeters: number;
+  bboxAspectRatio: number;
+} | null {
+  const rings = flattenRings(geometry);
+  const positions = rings.flat();
+  if (positions.length === 0) return null;
+
+  const validPositions = positions
+    .map((position) => [Number(position?.[0]), Number(position?.[1])] as [number, number])
+    .filter((position) => Number.isFinite(position[0]) && Number.isFinite(position[1]));
+  if (validPositions.length === 0) return null;
+
+  const originLat = validPositions.reduce((sum, position) => sum + position[1], 0) / validPositions.length;
+  const lonScale = 111_320 * Math.max(Math.cos((originLat * Math.PI) / 180), 0.000001);
+  const xs = validPositions.map((position) => position[0] * lonScale);
+  const ys = validPositions.map((position) => position[1] * EARTH_METERS_PER_DEGREE_LAT);
+  const bboxWidth = Math.max(...xs) - Math.min(...xs);
+  const bboxHeight = Math.max(...ys) - Math.min(...ys);
+
+  let areaSqm = 0;
+  let perimeterMeters = 0;
+  for (const ring of rings) {
+    const projectedRing = ringToMeters(ring, originLat);
+    if (projectedRing.length < 4) continue;
+    areaSqm += ringAreaSqm(projectedRing);
+    perimeterMeters += ringPerimeterMeters(projectedRing);
+  }
+
+  return {
+    areaSqm,
+    perimeterMeters,
+    bboxAspectRatio: Math.max(bboxWidth, bboxHeight) / Math.max(Math.min(bboxWidth, bboxHeight), 0.1),
+  };
+}
+
+export function isLikelyInfrastructureParcelFeature(
+  feature: Pick<GeoJSON.Feature, 'properties'> & Partial<Pick<GeoJSON.Feature, 'geometry'>>
+): boolean {
+  const properties = (feature.properties ?? {}) as Record<string, unknown>;
+  if (hasTruthyRoadIndicatorProperty(properties)) return true;
+  if (
+    PARCEL_CLASSIFICATION_PROPERTY_KEYS.some((key) =>
+      hasNonResidentialParcelTerm(propertyValue(properties, key))
+    )
+  ) {
+    return true;
+  }
+
+  const metrics = geometryMetrics(feature.geometry);
+  if (!metrics || metrics.areaSqm <= 0) return false;
+
+  const compactness = (metrics.perimeterMeters * metrics.perimeterMeters) / metrics.areaSqm;
+  return (
+    (metrics.areaSqm < 40 && compactness > 45) ||
+    (metrics.areaSqm < 120 && compactness > 140) ||
+    (metrics.bboxAspectRatio > 12 && compactness > 45) ||
+    (metrics.areaSqm > 1_000 && compactness > 70)
+  );
 }

@@ -15,7 +15,11 @@ import {
   polygonalGeometry,
   reconstructParcelFragments,
 } from '@/lib/geo/parcelFragments';
-import { isResidentialParcelFeature } from '@/lib/geo/parcelFilters';
+import {
+  isLikelyInfrastructureParcelFeature,
+  isResidentialParcelFeature,
+} from '@/lib/geo/parcelFilters';
+import { isParcelRegionSupported } from '@/lib/geo/parcelRegions';
 import { ParcelEnrichmentService } from '@/lib/services/ParcelEnrichmentService';
 
 const PARCEL_SEAM_SAFE_MAX_ZOOM = 13;
@@ -34,6 +38,8 @@ export type CampaignParcelResponse = {
 type CampaignScopeRow = {
   bbox: unknown;
   territory_boundary: GeoJSON.Polygon | string | null;
+  region?: string | null;
+  parcel_enrichment_status?: string | null;
 };
 
 type CampaignAddressPoint = {
@@ -787,6 +793,32 @@ function filterCampaignScopedParcelResponses(
   });
 }
 
+function parcelHasAddressEvidence(parcel: CampaignParcelResponse): boolean {
+  const properties = parcel.properties ?? {};
+  const addressIds = properties.address_ids;
+  const addressId = properties.address_id;
+
+  return (
+    (Array.isArray(addressIds) &&
+      addressIds.some((value) => String(value ?? '').trim().length > 0)) ||
+    (typeof addressId === 'string' && addressId.trim().length > 0) ||
+    (typeof addressId === 'number' && Number.isFinite(addressId)) ||
+    Number(properties.parcel_address_count) > 0
+  );
+}
+
+function filterTargetableParcelResponses(parcels: CampaignParcelResponse[]): CampaignParcelResponse[] {
+  const hasAnyAddressEvidence = parcels.some(parcelHasAddressEvidence);
+  if (hasAnyAddressEvidence) {
+    return parcels.filter(parcelHasAddressEvidence);
+  }
+
+  return parcels.filter((parcel) => {
+    const feature = parcelResponseToFeature(parcel);
+    return feature ? !isLikelyInfrastructureParcelFeature(feature) : false;
+  });
+}
+
 function featureWithinCampaignScope(
   feature: GeoJSON.Feature,
   bbox: [number, number, number, number],
@@ -895,7 +927,7 @@ export async function resolveCampaignParcels(
   const [{ data: campaign, error: campaignError }, snapshot] = await Promise.all([
     supabase
       .from('campaigns')
-      .select('bbox, territory_boundary')
+      .select('bbox, territory_boundary, region, parcel_enrichment_status')
       .eq('id', campaignId)
       .maybeSingle(),
     getCachedCampaignSnapshot(supabase, campaignId),
@@ -924,10 +956,35 @@ export async function resolveCampaignParcels(
     const annotations = evidenceAnnotations.length > 0
       ? evidenceAnnotations
       : inferParcelAddressAnnotations(residentialPersistedParcels, addressPoints);
+    const annotatedParcels = annotateParcelsWithAddressLinks(residentialPersistedParcels, annotations);
     return responseFromParcels(
-      annotateParcelsWithAddressLinks(residentialPersistedParcels, annotations),
+      filterTargetableParcelResponses(annotatedParcels),
       'campaign_parcels'
     );
+  }
+
+  const shouldTryPreparedParcels =
+    isParcelRegionSupported(String(campaignScope.region ?? '')) &&
+    campaignScope.parcel_enrichment_status !== 'skipped';
+  if (shouldTryPreparedParcels) {
+    const preparedParcels = await fetchPreparedCampaignParcels(supabase, campaignId);
+    const residentialPreparedParcels = filterCampaignScopedParcelResponses(
+      filterResidentialParcelResponses(preparedParcels),
+      bbox,
+      boundary
+    );
+    if (residentialPreparedParcels.length > 0) {
+      const parcelAddressLinks = await fetchPersistedParcelAddressLinks(supabase, campaignId);
+      const evidenceAnnotations = parcelAnnotationsFromEvidence(residentialPreparedParcels, parcelAddressLinks);
+      const annotations = evidenceAnnotations.length > 0
+        ? evidenceAnnotations
+        : inferParcelAddressAnnotations(residentialPreparedParcels, addressPoints);
+      const annotatedParcels = annotateParcelsWithAddressLinks(residentialPreparedParcels, annotations);
+      return responseFromParcels(
+        filterTargetableParcelResponses(annotatedParcels),
+        'campaign_parcels'
+      );
+    }
   }
 
   if (snapshot) {
@@ -941,7 +998,11 @@ export async function resolveCampaignParcels(
       try {
         const parcels = await fetchScopedPmtilesParcels(campaignId, snapshot, parcelTiles, bbox, boundary);
         const annotations = inferParcelAddressAnnotations(parcels, addressPoints);
-        return responseFromParcels(annotateParcelsWithAddressLinks(parcels, annotations), 'snapshot_pmtiles');
+        const annotatedParcels = annotateParcelsWithAddressLinks(parcels, annotations);
+        return responseFromParcels(
+          filterTargetableParcelResponses(annotatedParcels),
+          'snapshot_pmtiles'
+        );
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
         if (errorMessage.includes('403')) {
@@ -965,24 +1026,6 @@ export async function resolveCampaignParcels(
         throw error;
       }
     }
-  }
-
-  const preparedParcels = await fetchPreparedCampaignParcels(supabase, campaignId);
-  const residentialPreparedParcels = filterCampaignScopedParcelResponses(
-    filterResidentialParcelResponses(preparedParcels),
-    bbox,
-    boundary
-  );
-  if (residentialPreparedParcels.length > 0) {
-    const parcelAddressLinks = await fetchPersistedParcelAddressLinks(supabase, campaignId);
-    const evidenceAnnotations = parcelAnnotationsFromEvidence(residentialPreparedParcels, parcelAddressLinks);
-    const annotations = evidenceAnnotations.length > 0
-      ? evidenceAnnotations
-      : inferParcelAddressAnnotations(residentialPreparedParcels, addressPoints);
-    return responseFromParcels(
-      annotateParcelsWithAddressLinks(residentialPreparedParcels, annotations),
-      'campaign_parcels'
-    );
   }
 
   return emptyResolution();
