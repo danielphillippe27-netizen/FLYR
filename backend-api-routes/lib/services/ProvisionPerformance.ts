@@ -461,6 +461,31 @@ function nearbyBucketBuildings(
   return candidates;
 }
 
+function bucketBuildingsForBbox(
+  bbox: [number, number, number, number],
+  buckets: Map<string, PreparedBuilding[]>,
+  bucketDegrees: number
+): PreparedBuilding[] {
+  const minX = bucketIndex(bbox[0], bucketDegrees);
+  const maxX = bucketIndex(bbox[2], bucketDegrees);
+  const minY = bucketIndex(bbox[1], bucketDegrees);
+  const maxY = bucketIndex(bbox[3], bucketDegrees);
+  const candidates: PreparedBuilding[] = [];
+  const seen = new Set<string>();
+
+  for (let x = minX; x <= maxX; x += 1) {
+    for (let y = minY; y <= maxY; y += 1) {
+      for (const building of buckets.get(bucketKey(x, y)) ?? []) {
+        if (seen.has(building.id)) continue;
+        seen.add(building.id);
+        candidates.push(building);
+      }
+    }
+  }
+
+  return candidates;
+}
+
 function findNearestBuilding(
   coordinates: [number, number],
   point: GeoJSON.Feature<GeoJSON.Point>,
@@ -710,7 +735,10 @@ export function buildCanonicalBuildingLinksFromPreparedRows(params: {
     if (!coordinates) continue;
 
     const point = turf.point(coordinates);
-    const containingBuilding = findContainingBuilding(point, params.buildings);
+    const candidateBuildings = buckets
+      ? nearbyBucketBuildings(coordinates, buckets, bucketDegrees)
+      : params.buildings;
+    const containingBuilding = findContainingBuilding(point, candidateBuildings);
     const containmentScore = addressContainmentScore(address);
     const containmentRejectedByScore = Boolean(
       containingBuilding && containmentScore !== null && containmentScore < 0.4
@@ -726,7 +754,14 @@ export function buildCanonicalBuildingLinksFromPreparedRows(params: {
     }
 
     const parcel = parcels.length > 0 ? findSmallestContainingParcel(point, parcels) : null;
-    const parcelBest = parcel ? findNearestBuildingOnParcel(point, parcel, params.buildings) : null;
+    const parcelCandidateBuildings = parcel && buckets
+      ? bucketBuildingsForBbox(parcel.bbox, buckets, bucketDegrees)
+      : params.buildings;
+    const parcelBest = parcel ? findNearestBuildingOnParcel(
+      point,
+      parcel,
+      parcelCandidateBuildings.length > 0 ? parcelCandidateBuildings : params.buildings
+    ) : null;
     if (parcelBest) {
       pushLink(address, parcelBest.building, {
         match_type: 'parcel_bridge',
@@ -737,9 +772,6 @@ export function buildCanonicalBuildingLinksFromPreparedRows(params: {
       continue;
     }
 
-    const candidateBuildings = buckets
-      ? nearbyBucketBuildings(coordinates, buckets, bucketDegrees)
-      : params.buildings;
     const rankedBuildings = rankNearestBuildings(
       coordinates,
       point,

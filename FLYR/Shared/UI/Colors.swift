@@ -1,16 +1,32 @@
 import SwiftUI
+import UIKit
 
 extension Color {
     // MARK: - Base Colors (Monochrome)
     
-    /// Primary background - white in light mode, near-black in dark mode
-    static let bg = Color(uiColor: .systemBackground)
+    /// Primary background - white in light mode, charcoal in dark mode
+    static let bg = Color(uiColor: UIColor { traits in
+        traits.userInterfaceStyle == .dark ? UIColor(red: 0.071, green: 0.075, blue: 0.086, alpha: 1) : .systemBackground
+    })
     
     /// Secondary background - light gray in light mode, dark gray in dark mode
-    static let bgSecondary = Color(uiColor: .secondarySystemBackground)
+    static let bgSecondary = Color(uiColor: UIColor { traits in
+        traits.userInterfaceStyle == .dark ? UIColor(red: 0.102, green: 0.106, blue: 0.125, alpha: 1) : .secondarySystemBackground
+    })
     
     /// Tertiary background - lighter gray in light mode, darker gray in dark mode
-    static let bgTertiary = Color(uiColor: .tertiarySystemBackground)
+    static let bgTertiary = Color(uiColor: UIColor { traits in
+        traits.userInterfaceStyle == .dark ? UIColor(red: 0.137, green: 0.141, blue: 0.165, alpha: 1) : .tertiarySystemBackground
+    })
+
+    /// Shared dark-mode surface used instead of pure black for map chrome and cards.
+    static let darkSurface = Color(hex: "#121316")
+
+    /// Elevated dark-mode surface for nested panels and expanded sections.
+    static let darkSurfaceElevated = Color(hex: "#1A1B20")
+
+    /// Dark-mode control fill for buttons, fields, and segmented controls.
+    static let darkControlSurface = Color(hex: "#23242A")
     
     // MARK: - Text Colors (WCAG AA Compliant)
     
@@ -94,4 +110,3 @@ extension Color {
         )
     }
 }
-

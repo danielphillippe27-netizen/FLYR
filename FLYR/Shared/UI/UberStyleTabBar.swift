@@ -42,7 +42,7 @@ struct UberStyleTabBar: View {
         }
         .padding(.top, 10)
         .padding(.bottom, 6)
-        .background(Color(UIColor.systemBackground))
+        .background(barBackground)
     }
 
     private func tabItem(_ tab: Tab) -> some View {
@@ -58,6 +58,10 @@ struct UberStyleTabBar: View {
 
     private var selectedColor: Color {
         colorScheme == .dark ? .white : .black
+    }
+
+    private var barBackground: Color {
+        colorScheme == .dark ? .darkSurface : Color(uiColor: .systemBackground)
     }
 }
 

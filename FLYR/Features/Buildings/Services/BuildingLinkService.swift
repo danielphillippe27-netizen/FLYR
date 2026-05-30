@@ -45,6 +45,31 @@ private actor BuildingFetchDeduper {
     }
 }
 
+private actor MapBundleFetchDeduper {
+    private var tasks: [String: Task<CampaignMapBundleFetchResult, Error>] = [:]
+
+    func task(
+        for campaignId: String,
+        localSignature: String?,
+        creating createTask: () -> Task<CampaignMapBundleFetchResult, Error>
+    ) -> (task: Task<CampaignMapBundleFetchResult, Error>, isExisting: Bool) {
+        let signature = localSignature?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let key = "\(campaignId.lowercased())|\(signature?.isEmpty == false ? signature! : "none")"
+        if let existing = tasks[key] {
+            return (existing, true)
+        }
+        let task = createTask()
+        tasks[key] = task
+        return (task, false)
+    }
+
+    func clear(for campaignId: String, localSignature: String?) {
+        let signature = localSignature?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let key = "\(campaignId.lowercased())|\(signature?.isEmpty == false ? signature! : "none")"
+        tasks.removeValue(forKey: key)
+    }
+}
+
 struct CanonicalCampaignMapBundleCounts: Codable, Sendable {
     let addresses: Int
     let buildings: Int
@@ -110,6 +135,7 @@ final class BuildingLinkService {
     private let campaignRepository = CampaignRepository.shared
     private let outboxRepository = OutboxRepository.shared
     private let buildingFetchDeduper = BuildingFetchDeduper()
+    private let mapBundleFetchDeduper = MapBundleFetchDeduper()
     
     private init() {
         self.supabaseClient = SupabaseManager.shared.client
@@ -160,8 +186,7 @@ final class BuildingLinkService {
     private func freshCachedBuildingsFromBundle(campaignId: String) async -> [BuildingFeature]? {
         guard let cachedBundle = await campaignRepository.getCampaignMapBundle(campaignId: campaignId),
               let metadata = cachedBundle.metadata,
-              metadata.isFresh,
-              !metadata.requiresClientFallback,
+              metadata.hasUsableFreshCanonicalBundle,
               !cachedBundle.addresses.features.isEmpty,
               !cachedBundle.buildings.features.isEmpty else {
             return nil
@@ -174,6 +199,59 @@ final class BuildingLinkService {
             "reason=fresh_canonical_bundle cached=\(cachedBundle.buildings.features.count) renderable=\(polygonCount)"
         )
         return cachedBundle.buildings.features
+    }
+
+    private func freshCachedAddressesFromBundle(
+        campaignId: String,
+        caller: String
+    ) async -> AddressFeatureCollection? {
+        guard let cachedBundle = await campaignRepository.getCampaignMapBundle(campaignId: campaignId),
+              let metadata = cachedBundle.metadata,
+              metadata.hasUsableFreshCanonicalBundle,
+              !cachedBundle.addresses.features.isEmpty else {
+            return nil
+        }
+
+        print(
+            "🧪 [MAP_DEBUG] addresses_geojson_network_skipped campaign=\(campaignId) " +
+            "reason=fresh_canonical_bundle caller=\(caller) cached=\(cachedBundle.addresses.features.count) " +
+            "hasLocalBundle=true bundleFresh=\(metadata.isFresh) canonicalRefresh=local_cache " +
+            "linksStatus=\(metadata.linksStatus ?? "unknown")"
+        )
+        return cachedBundle.addresses
+    }
+
+    private func freshCachedLinksFromBundle(
+        campaignId: String,
+        caller: String
+    ) async -> [BuildingAddressLink]? {
+        guard let metadata = await campaignRepository.getCampaignMapBundleMetadata(campaignId: campaignId),
+              metadata.hasUsableFreshCanonicalBundle else {
+            return nil
+        }
+
+        let cachedLinks = await campaignRepository.getBuildingAddressLinks(campaignId: campaignId)
+        if !cachedLinks.isEmpty {
+            print(
+                "🧪 [MAP_DEBUG] building_links_fetch_skipped campaign=\(campaignId) " +
+                "reason=canonical_bundle_links_ready caller=\(caller) cached=\(cachedLinks.count) " +
+                "hasLocalBundle=true bundleFresh=\(metadata.isFresh) canonicalRefresh=local_cache " +
+                "linksStatus=\(metadata.linksStatus ?? "unknown")"
+            )
+            return cachedLinks
+        }
+
+        if metadata.cachedLinkCount == 0 {
+            print(
+                "🧪 [MAP_DEBUG] building_links_fetch_skipped campaign=\(campaignId) " +
+                "reason=canonical_bundle_links_ready_empty caller=\(caller) cached=0 expected=0 " +
+                "hasLocalBundle=true bundleFresh=\(metadata.isFresh) canonicalRefresh=local_cache " +
+                "linksStatus=\(metadata.linksStatus ?? "unknown")"
+            )
+            return []
+        }
+
+        return nil
     }
 
     private func fetchBuildingsUncoalesced(campaignId: String) async throws -> [BuildingFeature] {
@@ -320,6 +398,13 @@ final class BuildingLinkService {
     /// Fetches campaign address GeoJSON from the backend. The backend returns DB/RPC addresses first,
     /// and falls back to the Silver snapshot only for non-Gold campaigns with no DB rows.
     func fetchCampaignAddresses(campaignId: String) async throws -> AddressFeatureCollection {
+        if let cachedAddresses = await freshCachedAddressesFromBundle(
+            campaignId: campaignId,
+            caller: "BuildingLinkService.fetchCampaignAddresses"
+        ) {
+            return cachedAddresses
+        }
+
         guard let url = URL(string: "\(baseURL)/api/campaigns/\(campaignId)/addresses") else {
             throw BuildingLinkError.invalidURL
         }
@@ -376,6 +461,43 @@ final class BuildingLinkService {
     }
 
     func fetchCanonicalCampaignMapBundle(
+        campaignId: String,
+        localSignature: String?
+    ) async throws -> CampaignMapBundleFetchResult {
+        let taskResult = await mapBundleFetchDeduper.task(
+            for: campaignId,
+            localSignature: localSignature
+        ) { [self] in
+            Task { [self] in
+                try await fetchCanonicalCampaignMapBundleUncoalesced(
+                    campaignId: campaignId,
+                    localSignature: localSignature
+                )
+            }
+        }
+
+        if taskResult.isExisting {
+            print(
+                "🧪 [MAP_DEBUG] canonical_map_bundle_coalesced campaign=\(campaignId) " +
+                "signature=\(localSignature ?? "none")"
+            )
+        }
+
+        do {
+            let result = try await taskResult.task.value
+            if !taskResult.isExisting {
+                await mapBundleFetchDeduper.clear(for: campaignId, localSignature: localSignature)
+            }
+            return result
+        } catch {
+            if !taskResult.isExisting {
+                await mapBundleFetchDeduper.clear(for: campaignId, localSignature: localSignature)
+            }
+            throw error
+        }
+    }
+
+    private func fetchCanonicalCampaignMapBundleUncoalesced(
         campaignId: String,
         localSignature: String?
     ) async throws -> CampaignMapBundleFetchResult {
@@ -545,6 +667,13 @@ final class BuildingLinkService {
 
     /// Get all building-address links for a campaign
     func fetchLinks(campaignId: String) async throws -> [BuildingAddressLink] {
+        if let cachedLinks = await freshCachedLinksFromBundle(
+            campaignId: campaignId,
+            caller: "BuildingLinkService.fetchLinks"
+        ) {
+            return cachedLinks
+        }
+
         print("🔗 [BuildingLinkService] Fetching links for campaign: \(campaignId)")
 
         let rawLinks: [RawBuildingAddressLink] = try await supabaseClient
@@ -1866,20 +1995,21 @@ final class BuildingLinkService {
         }
     }
 
-    func deleteBuildingAndAddresses(campaignId: String, buildingId: String) async throws {
+    @discardableResult
+    func deleteBuildingAndAddresses(campaignId: String, buildingId: String) async throws -> OfflineDeletedBuildingSnapshot {
         let normalizedBuildingId = buildingId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalizedBuildingId.isEmpty else {
             throw BuildingLinkError.fetchFailed
         }
 
-        _ = await campaignRepository.deleteBuildingLocally(
+        let localSnapshot = await campaignRepository.deleteBuildingLocally(
             campaignId: campaignId,
             buildingId: normalizedBuildingId
         )
 
         if !NetworkMonitor.shared.isOnline {
             try await enqueueDeleteBuilding(campaignId: campaignId, buildingId: normalizedBuildingId)
-            return
+            return localSnapshot
         }
 
         do {
@@ -1888,6 +2018,8 @@ final class BuildingLinkService {
         } catch {
             try await enqueueDeleteBuilding(campaignId: campaignId, buildingId: normalizedBuildingId)
         }
+
+        return localSnapshot
     }
     
     // MARK: - Fetch Addresses

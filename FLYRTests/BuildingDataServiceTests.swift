@@ -37,7 +37,10 @@ final class BuildingDataServiceTests: XCTestCase {
         isTownhome: Bool = true,
         unitsCount: Int = 3,
         addressCount: Int? = 3,
-        addressIds: [UUID] = []
+        addressIds: [UUID] = [],
+        houseNumber: String? = nil,
+        streetName: String? = nil,
+        isLinked: Bool? = nil
     ) throws -> BuildingFeature {
         var properties: [String: Any] = [
             "id": gersId,
@@ -56,6 +59,21 @@ final class BuildingDataServiceTests: XCTestCase {
         }
         if !addressIds.isEmpty {
             properties["address_ids"] = addressIds.map(\.uuidString)
+        }
+        if addressIds.count == 1 {
+            properties["address_id"] = addressIds[0].uuidString
+        }
+        if let houseNumber {
+            properties["house_number"] = houseNumber
+        }
+        if let streetName {
+            properties["street_name"] = streetName
+        }
+        if let houseNumber, let streetName {
+            properties["address_text"] = "\(houseNumber) \(streetName)"
+        }
+        if let isLinked {
+            properties["is_linked"] = isLinked
         }
 
         let payload: [String: Any] = [
@@ -639,6 +657,53 @@ final class BuildingDataServiceTests: XCTestCase {
         XCTAssertEqual(coordinates[0].latitude, firstCoordinate[1], accuracy: 0.0000001)
         XCTAssertEqual(coordinates[1].longitude, secondCoordinate[0], accuracy: 0.0000001)
         XCTAssertEqual(coordinates[1].latitude, secondCoordinate[1], accuracy: 0.0000001)
+    }
+
+    func testAddressNumberLabelsIncludeLinkedBuildingFallbackWithoutAddressPoint() throws {
+        let addressId = UUID()
+        let building = try makeBuildingFeature(
+            gersId: "linked-building-label",
+            isTownhome: false,
+            unitsCount: 1,
+            addressCount: 1,
+            addressIds: [addressId],
+            houseNumber: "42",
+            streetName: "Maple Street",
+            isLinked: true
+        )
+
+        let data = try MapLayerManager.buildAddressNumberLabelPointGeoJSON(
+            addresses: [],
+            buildings: [building],
+            orderedAddressIdsByBuilding: [:]
+        )
+        let features = try geoJSONFeatures(from: data)
+        let properties = try XCTUnwrap(features.first?["properties"] as? [String: Any])
+
+        XCTAssertEqual(features.count, 1)
+        XCTAssertEqual(properties["house_number_label"] as? String, "42")
+        XCTAssertEqual(properties["geometry_source"] as? String, "building")
+    }
+
+    func testAddressNumberLabelsKeepOrphanBuildingFallbackHidden() throws {
+        let building = try makeBuildingFeature(
+            gersId: "orphan-building-label",
+            isTownhome: false,
+            unitsCount: 1,
+            addressCount: 0,
+            houseNumber: "44",
+            streetName: "Maple Street",
+            isLinked: false
+        )
+
+        let data = try MapLayerManager.buildAddressNumberLabelPointGeoJSON(
+            addresses: [],
+            buildings: [building],
+            orderedAddressIdsByBuilding: [:]
+        )
+        let features = try geoJSONFeatures(from: data)
+
+        XCTAssertTrue(features.isEmpty)
     }
 
     func testTownhomeOverlayBuildsMixedRedGreenBlueSegments() throws {

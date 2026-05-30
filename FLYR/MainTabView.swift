@@ -101,7 +101,7 @@ struct MainTabView: View {
                 )
             }
         }
-        .background(Color(UIColor.systemGroupedBackground))
+        .background(Color.bg)
         .campaignContext(campaignContext)
         .onChange(of: sessionManager.isActive) { _, isActive in
             withAnimation(.easeInOut(duration: 0.25)) {

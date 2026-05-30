@@ -83,8 +83,7 @@ final class MapLayerManager {
     
     /// Shared layer min zoom for 3D address markers.
     private static let addressMarkersLayerMinZoom: Double = 11.8
-    
-    /// Delay house number labels until the user is at a tighter, house-level zoom.
+    /// House numbers are only readable at close range; keep them out of overview zooms.
     private static let addressNumbersLayerMinZoom: Double = 17.0
     private static let addressHouseIconImageId = "campaign-address-house-emblem"
 
@@ -618,7 +617,7 @@ final class MapLayerManager {
         }
     }
     
-    /// Opacity vs camera zoom for house number labels; shifted later than the address circles.
+    /// Opacity vs camera zoom for house number labels.
     private static var addressNumbersZoomOpacityExpression: Exp {
         Exp(.interpolate) {
             Exp(.linear)
@@ -2021,7 +2020,6 @@ final class MapLayerManager {
               lastAppliedDiamondAddressVisibility != desiredDiamondAddressVisibility ||
               lastAppliedDiamondAddressNumberVisibility != desiredDiamondAddressNumberVisibility else { return }
 
-        let hasAddressNumberOverride = desiredDiamondAddressNumberVisibility != nil
         let shouldShowAddressNumbers = desiredDiamondAddressNumberVisibility ?? desiredDiamondAddressVisibility
 
         for layerId in layerIds where existingLayerIds.contains(layerId) {
@@ -2037,9 +2035,9 @@ final class MapLayerManager {
             } else if isAddressCircleLayer {
                 shouldShow = desiredDiamondAddressVisibility
             } else if isAddressNumberLayer {
-                shouldShow = shouldShowAddressNumbers
+                shouldShow = shouldShowAddressNumbers && desiredDiamondAddressVisibility
             } else if isBuildingAddressNumberLayer {
-                shouldShow = hasAddressNumberOverride ? false : desiredDiamondBuildingVisibility
+                shouldShow = shouldShowAddressNumbers && desiredDiamondBuildingVisibility
             } else {
                 shouldShow = desiredDiamondBuildingVisibility
             }
@@ -2243,14 +2241,21 @@ final class MapLayerManager {
             orderedAddressIdsByBuilding: orderedAddressIdsByBuilding
         )
         var nextCounts: [String: Int] = [:]
+        var changedAudits: [TownhomeOverlayAudit] = []
         for audit in audits {
             nextCounts[audit.buildingId] = audit.renderedSliceCount
             guard lastTownhomeOverlayRenderedUnitCounts[audit.buildingId] != audit.renderedSliceCount else {
                 continue
             }
+            changedAudits.append(audit)
+        }
+        if !changedAudits.isEmpty {
+            let sample = changedAudits.prefix(5).map {
+                "\($0.buildingId):\($0.linkedCount)->\($0.renderedSliceCount)"
+            }.joined(separator: ",")
             print(
-                "🧪 [MapLayer] townhome_overlay_units building=\(audit.buildingId) " +
-                "source=\(audit.source.rawValue) linked=\(audit.linkedCount) rendered=\(audit.renderedSliceCount)"
+                "🧪 [MapLayer] townhome_overlay_units_changed count=\(changedAudits.count) " +
+                "sample=\(sample)"
             )
         }
         lastTownhomeOverlayRenderedUnitCounts = nextCounts
@@ -2443,7 +2448,7 @@ final class MapLayerManager {
                     pointData,
                     radiusMeters: 2.0,
                     height: Self.addressMarkerExtrusionHeight,
-                    segments: 18
+                    segments: 12
                 )
                 cachedAddressPointSignature = pointSignature
                 cachedAddressPolygonData = polygonData
@@ -2747,6 +2752,24 @@ final class MapLayerManager {
         if map.layerExists(withId: VectorTileDiamondGeometryProvider.addressNumberLayerId) {
             try? map.updateLayer(withId: VectorTileDiamondGeometryProvider.addressNumberLayerId, type: SymbolLayer.self) {
                 $0.minZoom = addressLabelMinZoom
+                $0.textOpacity = .expression(
+                    VectorTileDiamondGeometryProvider.linkedAddressNumberOpacityExpression(
+                        linkedExpression: VectorTileDiamondGeometryProvider.linkedAddressNumberExpression,
+                        isAddressMode: isAddressMode
+                    )
+                )
+            }
+        }
+
+        if map.layerExists(withId: VectorTileDiamondGeometryProvider.buildingAddressNumberLayerId) {
+            try? map.updateLayer(withId: VectorTileDiamondGeometryProvider.buildingAddressNumberLayerId, type: SymbolLayer.self) {
+                $0.minZoom = addressLabelMinZoom
+                $0.textOpacity = .expression(
+                    VectorTileDiamondGeometryProvider.linkedAddressNumberOpacityExpression(
+                        linkedExpression: VectorTileDiamondGeometryProvider.linkedBuildingNumberExpression,
+                        isAddressMode: isAddressMode
+                    )
+                )
             }
         }
 
@@ -2926,9 +2949,35 @@ final class MapLayerManager {
             keepSingleAddressCoordinate: true
         )
 
+        let existingAddressFeatureIds = Set(addressPointFeatures.compactMap { feature -> String? in
+            guard let id = feature["id"] as? String else { return nil }
+            return id.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        })
+        let existingBuildingIdentifiers = Set(addressPointFeatures.flatMap { feature -> [String] in
+            guard let properties = feature["properties"] as? [String: Any] else { return [] }
+            if let identifiers = properties["linked_building_identifiers"] as? [String] {
+                return identifiers.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+                    .filter { !$0.isEmpty }
+            }
+            return [
+                properties["building_gers_id"],
+                properties["public_building_id"],
+                properties["canonical_building_id"]
+            ]
+            .compactMap { $0 as? String }
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            .filter { !$0.isEmpty }
+        })
+        let buildingFallbackFeatures = buildingAddressLabelPointFeatures(
+            buildings: buildings,
+            buildingByIdentifier: buildingByIdentifier,
+            existingFeatureIds: existingAddressFeatureIds,
+            existingBuildingIdentifiers: existingBuildingIdentifiers
+        )
+
         return try stableJSONData(withJSONObject: [
             "type": "FeatureCollection",
-            "features": addressPointFeatures
+            "features": addressPointFeatures + buildingFallbackFeatures
         ])
     }
 
@@ -3078,6 +3127,17 @@ final class MapLayerManager {
                 "geometry_source": usesBuildingPlacement ? "building" : "address_point",
                 "has_building_geometry": linkedBuilding != nil
             ]
+            if let linkedBuilding {
+                labelProperties["linked_building_identifiers"] = linkedBuilding.identifiers
+                if labelProperties["building_gers_id"] == nil,
+                   let buildingIdentifier = linkedBuilding.identifiers.first {
+                    labelProperties["building_gers_id"] = buildingIdentifier
+                }
+                if let publicBuildingIdentifier = linkedBuilding.identifiers.first {
+                    labelProperties["public_building_id"] = publicBuildingIdentifier
+                    labelProperties["canonical_building_id"] = publicBuildingIdentifier
+                }
+            }
             if !houseLabel.isEmpty { labelProperties["house_number_label"] = houseLabel }
             if let formatted = feature.properties.formatted { labelProperties["formatted"] = formatted }
             if let houseNumber = feature.properties.houseNumber { labelProperties["house_number"] = houseNumber }
@@ -3103,10 +3163,12 @@ final class MapLayerManager {
     private static func buildingAddressLabelPointFeatures(
         buildings: [BuildingFeature],
         buildingByIdentifier: [String: LabelBuildingContext],
-        existingFeatureIds: Set<String>
+        existingFeatureIds: Set<String>,
+        existingBuildingIdentifiers: Set<String>
     ) -> [[String: Any]] {
         buildings.compactMap { building -> [String: Any]? in
             let properties = building.properties
+            guard properties.effectiveIsLinked else { return nil }
             let houseLabel = normalizedHouseNumberLabel(from: [
                 "house_number": properties.houseNumber as Any,
                 "formatted": properties.addressText as Any
@@ -3116,6 +3178,7 @@ final class MapLayerManager {
             let identifiers = properties.buildingIdentifierCandidates
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
                 .filter { !$0.isEmpty }
+            guard !identifiers.contains(where: existingBuildingIdentifiers.contains) else { return nil }
             let linkedBuilding = identifiers.compactMap { buildingByIdentifier[$0] }.first
             let directAddressId = properties.addressId?.trimmingCharacters(in: .whitespacesAndNewlines)
             let rawFeatureId = directAddressId.flatMap { $0.isEmpty ? nil : $0 }
@@ -3644,9 +3707,18 @@ final class MapLayerManager {
             state["is_linked"] = isLinked
         }
 
+        if let existing = buildingFeatureStateCache[featureId],
+           existing["status"] as? String == status,
+           existing["scans_total"] as? Int == scansTotal,
+           existing["qr_scanned"] as? Bool == (scansTotal > 0),
+           existing["visit_owner"] as? String == (visitOwner ?? ""),
+           isLinked.map({ (existing["is_linked"] as? Bool) == $0 }) ?? true {
+            return
+        }
+
         buildingFeatureStateCache[featureId] = state
         guard let mapView else { return }
-        applyBuildingFeatureState(featureId: featureId, state: state, mapView: mapView, logSuccess: true)
+        applyBuildingFeatureState(featureId: featureId, state: state, mapView: mapView, logSuccess: false)
     }
 
     /// Update an address circle's feature state (for 3D address pillars). Use addressId (UUID string) as featureId.
@@ -3662,9 +3734,17 @@ final class MapLayerManager {
             "visit_owner": visitOwner ?? ""
         ]
 
+        if let existing = addressFeatureStateCache[normalizedId],
+           existing["status"] as? String == status,
+           existing["scans_total"] as? Int == scansTotal,
+           existing["qr_scanned"] as? Bool == (scansTotal > 0),
+           existing["visit_owner"] as? String == (visitOwner ?? "") {
+            return
+        }
+
         addressFeatureStateCache[normalizedId] = state
         guard let mapView else { return }
-        applyAddressFeatureState(featureId: normalizedId, state: state, mapView: mapView, logSuccess: true)
+        applyAddressFeatureState(featureId: normalizedId, state: state, mapView: mapView, logSuccess: false)
     }
 
     private func applyBuildingFeatureState(

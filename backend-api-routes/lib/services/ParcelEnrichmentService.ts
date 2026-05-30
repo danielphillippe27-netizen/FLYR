@@ -1,9 +1,24 @@
 import { GetObjectCommand, ListObjectsV2Command, S3Client } from '@aws-sdk/client-s3';
+import { VectorTile } from '@mapbox/vector-tile';
 import { bbox as turfBbox, booleanIntersects, feature } from '@turf/turf';
 import type { SupabaseClient } from '@supabase/supabase-js';
+import Pbf from 'pbf';
 import { createGunzip, gunzipSync } from 'zlib';
 import { Readable } from 'stream';
 import * as wkx from 'wkx';
+import {
+  getCachedCampaignSnapshot,
+  getCachedPmtilesArchive,
+} from '@/app/api/campaigns/_utils/tile-cache';
+import {
+  resolveArtifactUrl,
+  resolvePmtilesKey,
+} from '@/lib/diamond/geometry';
+import {
+  polygonalGeometry,
+  reconstructParcelFragments,
+} from '@/lib/geo/parcelFragments';
+import { isResidentialParcelFeature } from '@/lib/geo/parcelFilters';
 import { fetchAllInPages } from '@/lib/supabase/fetchAllInPages';
 import { StableLinkerService, type BuildingFeature as SnapshotBuildingFeature } from '@/lib/services/StableLinkerService';
 import { TownhouseSplitterService } from '@/lib/services/TownhouseSplitterService';
@@ -14,6 +29,8 @@ import regionBounds from '../../scripts/regions.json';
 const PARCEL_BUCKET = 'flyr-pro-addresses-2025';
 const PARCEL_ROOT_PREFIX = 'gold-standard';
 const PARCEL_BATCH_SIZE = 500;
+const PARCEL_PMTILES_SEAM_SAFE_MAX_ZOOM = 16;
+const PARCEL_FRAGMENT_TILE_PADDING = 2;
 
 export type ParcelEnrichmentStatus =
   | 'not_started'
@@ -50,6 +67,29 @@ type NormalizedParcelRecord = {
   properties: Record<string, unknown>;
 };
 
+type CampaignSnapshotRow = {
+  bucket: string;
+  prefix: string | null;
+  buildings_key: string | null;
+  addresses_key?: string | null;
+  buildings_url: string | null;
+  metadata_key: string | null;
+  buildings_count: number | null;
+  created_at: string | null;
+  tile_metrics: Record<string, unknown> | null;
+};
+
+type ParcelPmtilesResolution = {
+  bucket: string;
+  pmtilesKey: string;
+  tilejsonKey: string;
+  datePart: string;
+  sourceLayer: 'parcels';
+  promoteId: 'parcel_id';
+  minzoom: number;
+  maxzoom: number;
+};
+
 type CampaignBuildingRow = {
   id: string;
   gers_id: string;
@@ -76,6 +116,11 @@ type ParcelEnrichmentDebug = {
   mode?: 'bbox_only' | 'polygon_intersects';
   source_id?: string | null;
   s3_key?: string | null;
+  source_pmtiles_key?: string | null;
+  pmtiles_tile_z?: number;
+  pmtiles_touched_tiles?: number;
+  pmtiles_scanned_features?: number;
+  pmtiles_fragments?: number;
   available_source_ids?: string[];
   scanned_lines?: number;
   parsed_records?: number;
@@ -272,6 +317,114 @@ function getCampaignBbox(campaign: CampaignRow): number[] | null {
       return turfBbox(feature(campaign.territory_boundary));
     } catch {
       return null;
+    }
+  }
+
+  return null;
+}
+
+function stringMetric(metrics: Record<string, unknown> | null | undefined, key: string): string | null {
+  const value = metrics?.[key];
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
+}
+
+function numberMetric(metrics: Record<string, unknown> | null | undefined, key: string): number | null {
+  const value = metrics?.[key];
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function parcelTilesFromSnapshot(snapshot: CampaignSnapshotRow | null): ParcelPmtilesResolution | null {
+  if (!snapshot) return null;
+
+  const pmtilesKey = stringMetric(snapshot.tile_metrics, 'parcels_pmtiles_key');
+  if (!pmtilesKey) {
+    const buildingPmtilesKey = resolvePmtilesKey(snapshot);
+    const bedrockCountryCode = stringMetric(snapshot.tile_metrics, 'bedrock_country_code');
+    const isBedrockCountrySnapshot =
+      snapshot.tile_metrics?.bedrock_mode === true &&
+      bedrockCountryCode !== 'US' &&
+      buildingPmtilesKey?.endsWith('/buildings/buildings.pmtiles');
+
+    if (!isBedrockCountrySnapshot || !buildingPmtilesKey) return null;
+
+    const derivedPmtilesKey = buildingPmtilesKey.replace(/\/buildings\/buildings\.pmtiles$/i, '/parcels/parcels.pmtiles');
+    return {
+      bucket: snapshot.bucket,
+      pmtilesKey: derivedPmtilesKey,
+      tilejsonKey: derivedPmtilesKey.replace(/\.pmtiles$/i, '.json'),
+      datePart: 'snapshot',
+      sourceLayer: 'parcels',
+      promoteId: 'parcel_id',
+      minzoom: numberMetric(snapshot.tile_metrics, 'parcel_minzoom') ?? 10,
+      maxzoom: numberMetric(snapshot.tile_metrics, 'parcel_maxzoom') ?? 16,
+    };
+  }
+
+  return {
+    bucket: snapshot.bucket,
+    pmtilesKey,
+    tilejsonKey:
+      stringMetric(snapshot.tile_metrics, 'parcels_tilejson_key') ??
+      pmtilesKey.replace(/\.pmtiles$/i, '.json'),
+    datePart: 'snapshot',
+    sourceLayer: 'parcels',
+    promoteId: 'parcel_id',
+    minzoom: numberMetric(snapshot.tile_metrics, 'parcel_minzoom') ?? 10,
+    maxzoom: numberMetric(snapshot.tile_metrics, 'parcel_maxzoom') ?? 16,
+  };
+}
+
+function lonLatToTile(lon: number, lat: number, z: number) {
+  const n = 2 ** z;
+  const clampedLat = Math.max(Math.min(lat, 85.05112878), -85.05112878);
+  const x = Math.floor(((lon + 180) / 360) * n);
+  const latRad = (clampedLat * Math.PI) / 180;
+  const y = Math.floor(((1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2) * n);
+  return {
+    x: Math.max(0, Math.min(n - 1, x)),
+    y: Math.max(0, Math.min(n - 1, y)),
+  };
+}
+
+function tileRangeForBbox(
+  bbox: number[],
+  maxZoom: number,
+  minZoom: number,
+  padding = PARCEL_FRAGMENT_TILE_PADDING
+) {
+  const [minLon, minLat, maxLon, maxLat] = bbox;
+  for (let z = Math.min(maxZoom, PARCEL_PMTILES_SEAM_SAFE_MAX_ZOOM); z >= Math.max(8, minZoom); z -= 1) {
+    const nw = lonLatToTile(minLon, maxLat, z);
+    const se = lonLatToTile(maxLon, minLat, z);
+    const maxTile = 2 ** z - 1;
+    const minX = Math.max(0, Math.min(nw.x, se.x) - padding);
+    const maxX = Math.min(maxTile, Math.max(nw.x, se.x) + padding);
+    const minY = Math.max(0, Math.min(nw.y, se.y) - padding);
+    const maxY = Math.min(maxTile, Math.max(nw.y, se.y) + padding);
+    const tileCount = (maxX - minX + 1) * (maxY - minY + 1);
+    if (tileCount <= 96 || z === Math.max(8, minZoom)) {
+      return { z, minX, maxX, minY, maxY };
+    }
+  }
+  return null;
+}
+
+function getFeatureExternalId(parcelFeature: GeoJSON.Feature): string | null {
+  const properties = (parcelFeature.properties ?? {}) as Record<string, unknown>;
+  const candidates = [
+    properties.parcel_id,
+    properties.external_id,
+    properties.PARCELID,
+    properties.gisid,
+    properties.roll_number,
+    properties.id,
+    parcelFeature.id,
+  ];
+
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' || typeof candidate === 'number') {
+      const normalized = String(candidate).trim();
+      if (normalized) return normalized;
     }
   }
 
@@ -493,6 +646,26 @@ export class ParcelEnrichmentService {
     return result;
   }
 
+  async prepareSnapshotParcelsForProvision(campaignId: string): Promise<ParcelPreparationResult> {
+    const campaign = await this.getCampaign(campaignId);
+    const result = await this.loadCampaignParcels(campaignId, campaign, undefined, {
+      allowGoldFallback: false,
+    });
+
+    if (result.status === 'ready') {
+      await this.replaceCampaignParcels(campaignId, result.parcels);
+    }
+
+    await this.markTerminalState(campaignId, result.status, {
+      sourceId: result.sourceId,
+      parcelCount: result.parcelCount,
+      error: result.error,
+      debug: result.debug,
+    });
+
+    return result;
+  }
+
   async runForCampaign(campaignId: string) {
     const campaign = await this.getCampaign(campaignId);
     const campaignPolygon = campaign.territory_boundary;
@@ -618,10 +791,126 @@ export class ParcelEnrichmentService {
     return campaign;
   }
 
+  private async loadSnapshotPmtilesParcels(
+    campaignId: string,
+    bbox: number[],
+    campaignPolygon: GeoJSONPolygon | null,
+    debug: ParcelEnrichmentDebug
+  ): Promise<ParcelPreparationResult | null> {
+    const snapshot = await getCachedCampaignSnapshot(this.supabase, campaignId) as CampaignSnapshotRow | null;
+    const parcelTiles = parcelTilesFromSnapshot(snapshot);
+    if (!snapshot || !parcelTiles) {
+      return null;
+    }
+
+    const pmtilesUrl = await resolveArtifactUrl(snapshot, parcelTiles.pmtilesKey);
+    const archive = getCachedPmtilesArchive(pmtilesUrl);
+    const header = await archive.getHeader();
+    const range = tileRangeForBbox(
+      bbox,
+      Math.min(header.maxZoom, parcelTiles.maxzoom),
+      parcelTiles.minzoom
+    );
+    if (!range) {
+      return null;
+    }
+
+    const fragments: Array<{
+      id: string;
+      geometry: GeoJSON.Polygon | GeoJSON.MultiPolygon;
+      properties: Record<string, unknown>;
+      include: boolean;
+    }> = [];
+    let touchedTiles = 0;
+    let scannedFeatures = 0;
+
+    for (let x = range.minX; x <= range.maxX; x += 1) {
+      for (let y = range.minY; y <= range.maxY; y += 1) {
+        const tile = await archive.getZxy(range.z, x, y);
+        if (!tile) continue;
+        touchedTiles += 1;
+
+        const vectorTile = new VectorTile(new Pbf(Buffer.from(tile.data)));
+        const layer = vectorTile.layers[parcelTiles.sourceLayer];
+        if (!layer) continue;
+
+        for (let index = 0; index < layer.length; index += 1) {
+          scannedFeatures += 1;
+          const vectorFeature = layer.feature(index);
+          const parcelFeature = vectorFeature.toGeoJSON(x, y, range.z) as GeoJSON.Feature;
+          const geometry = polygonalGeometry(parcelFeature.geometry);
+          if (!geometry) continue;
+          if (!isResidentialParcelFeature(parcelFeature)) continue;
+
+          const externalId = getFeatureExternalId(parcelFeature);
+          if (!externalId) continue;
+
+          const multiPolygon = toMultiPolygonGeometry(geometry);
+          if (!multiPolygon) continue;
+
+          fragments.push({
+            id: externalId,
+            geometry,
+            properties: {
+              ...((parcelFeature.properties ?? {}) as Record<string, unknown>),
+              parcel_id: externalId,
+              source: 'snapshot_pmtiles',
+              source_pmtiles_key: parcelTiles.pmtilesKey,
+            },
+            include:
+              intersectsBbox(multiPolygon, bbox) &&
+              (!campaignPolygon || isWithinCampaignPolygon(multiPolygon, campaignPolygon)),
+          });
+        }
+      }
+    }
+
+    const parcels = reconstructParcelFragments(fragments).flatMap((parcelFeature) => {
+      const externalId = String(parcelFeature.id ?? parcelFeature.properties?.parcel_id ?? '').trim();
+      const geometry = toMultiPolygonGeometry(parcelFeature.geometry);
+      if (!externalId || !geometry) return [];
+      return [{
+        externalId,
+        geometry,
+        properties: {
+          ...(parcelFeature.properties ?? {}),
+          parcel_id: externalId,
+          source: 'snapshot_pmtiles',
+          source_pmtiles_key: parcelTiles.pmtilesKey,
+        },
+      }];
+    });
+
+    debug.source_id = 'snapshot_pmtiles';
+    debug.source_pmtiles_key = parcelTiles.pmtilesKey;
+    debug.pmtiles_tile_z = range.z;
+    debug.pmtiles_touched_tiles = touchedTiles;
+    debug.pmtiles_scanned_features = scannedFeatures;
+    debug.pmtiles_fragments = fragments.length;
+    debug.bbox_candidates = fragments.length;
+    debug.polygon_matches = parcels.length;
+    debug.inserted_count = parcels.length;
+    debug.completed_at = new Date().toISOString();
+
+    if (parcels.length === 0) {
+      return null;
+    }
+
+    return {
+      status: 'ready',
+      sourceId: 'snapshot_pmtiles',
+      parcelCount: parcels.length,
+      parcels,
+      error: null,
+      debug,
+    };
+  }
+
   private async loadCampaignParcels(
     campaignId: string,
     campaign: CampaignRow,
-    debugOverride?: ParcelEnrichmentDebug
+    debugOverride?: ParcelEnrichmentDebug,
+    options: { allowGoldFallback?: boolean } = {}
   ): Promise<ParcelPreparationResult> {
     const regionCode = (campaign.region || '').trim().toUpperCase();
     const regionMetadata = getRegionMetadata(regionCode);
@@ -667,6 +956,34 @@ export class ParcelEnrichmentService {
       started_at: debugOverride?.started_at ?? new Date().toISOString(),
       ...debugOverride,
     };
+
+    try {
+      const snapshotResult = await this.loadSnapshotPmtilesParcels(campaignId, bbox, campaignPolygon, debug);
+      if (snapshotResult?.status === 'ready') {
+        return snapshotResult;
+      }
+    } catch (error) {
+      console.warn('[ParcelEnrichment] Snapshot PMTiles parcel extraction failed; falling back to gold NDJSON:', {
+        campaignId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      debug.postprocessing_error = error instanceof Error ? error.message : String(error);
+    }
+
+    if (options.allowGoldFallback === false) {
+      return {
+        status: 'skipped',
+        sourceId: null,
+        parcelCount: 0,
+        parcels: [],
+        error: 'No snapshot parcel PMTiles were available for fast parcel preparation.',
+        debug: {
+          ...debug,
+          skipped_reason: 'Snapshot parcel PMTiles unavailable or empty; gold NDJSON fallback disabled.',
+          completed_at: new Date().toISOString(),
+        },
+      };
+    }
 
     const regionDatasets = await this.listLatestParcelDatasetsForRegion(regionMetadata);
     debug.available_source_ids = regionDatasets.map((dataset) => dataset.sourceId);

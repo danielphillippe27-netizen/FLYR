@@ -632,12 +632,17 @@ struct NewCampaignScreen: View {
     /// If polygonFromSheet is non-nil, use it for the map flow (avoids relying on state when coming from sheet).
     @MainActor
     private func createCampaignTapped(polygonFromSheet: [CLLocationCoordinate2D]? = nil) async {
+        let trace = PerfTrace.begin("campaign_create", "create_campaign_tapped", fields: [
+            "hasPolygonFromSheet": polygonFromSheet != nil,
+            "drawnPoints": (polygonFromSheet ?? drawnPolygon)?.count ?? 0
+        ])
         defer { isSubmittingCampaign = false }
         let effectivePolygon = polygonFromSheet ?? drawnPolygon
         print("🚀 [CAMPAIGN DEBUG] Starting campaign creation workflow")
 
         guard let polygon = effectivePolygon, polygon.count >= 3 else {
             createHook.error = "Draw a polygon on the map"
+            trace.end(status: "missing_polygon")
             return
         }
 
@@ -645,24 +650,41 @@ struct NewCampaignScreen: View {
         cancelProvisionError = nil
         provisionStatusText = "Creating campaign"
         provisionProgressPercent = 0
+        let planTrace = PerfTrace.begin("campaign_create", "plan_gate", fields: [
+            "points": polygon.count
+        ])
         guard await canCreateCampaignInCurrentPlan() else {
+            planTrace.end(status: "blocked")
             showPaywall = true
             creationStage = .territory
+            trace.end(status: "plan_blocked")
             return
         }
+        planTrace.end(status: "allowed")
         guard !Task.isCancelled else { return }
         print("🗺️ [CAMPAIGN DEBUG] Using drawn polygon (\(polygon.count) points) - will provision in background")
         print("🗺️ [CAMPAIGN DEBUG] Polygon bounds: \(polygonBoundsSummary(for: polygon))")
+        let regionTrace = PerfTrace.begin("campaign_create", "infer_provision_region", fields: [
+            "points": polygon.count
+        ])
         let provisionRegionCode = await inferredProvisionRegionCode(for: polygon)
+        regionTrace.end(status: provisionRegionCode == nil ? "none" : "resolved", fields: [
+            "region": provisionRegionCode ?? "nil"
+        ])
         guard !Task.isCancelled else { return }
         if let provisionRegionCode {
             print("🗺️ [CAMPAIGN DEBUG] Inferred provision region: \(provisionRegionCode)")
         }
+        let workspaceTrace = PerfTrace.begin("campaign_create", "resolve_workspace", fields: [:])
         let workspaceId = await RoutePlansAPI.shared.primaryWorkspaceIdForCurrentUser()
+        workspaceTrace.end(status: workspaceId == nil ? "missing" : "resolved", fields: [
+            "workspace": workspaceId?.uuidString ?? "nil"
+        ])
         guard !Task.isCancelled else { return }
         guard let workspaceId else {
             createHook.error = "No workspace found. Please sign out and back in, or try again."
             creationStage = .territory
+            trace.end(status: "no_workspace")
             return
         }
         let payload = CampaignCreatePayloadV2(
@@ -678,33 +700,48 @@ struct NewCampaignScreen: View {
             addressesJSON: [],
             workspaceId: workspaceId
         )
+        let createTrace = PerfTrace.begin("campaign_create", "create_campaign_shell", fields: [
+            "workspace": workspaceId.uuidString,
+            "points": polygon.count
+        ])
         if var created = await createHook.createV2(payload: payload, store: store, polygon: polygon) {
+            createTrace.end(status: "success", fields: [
+                "campaign": created.id.uuidString
+            ])
             if Task.isCancelled {
                 try? await CampaignsAPI.shared.deleteCampaign(campaignId: created.id)
                 store.remove(id: created.id)
+                trace.end(status: "cancelled_after_create", fields: [
+                    "campaign": created.id.uuidString
+                ])
                 return
             }
             print("✅ [CAMPAIGN DEBUG] Campaign created with ID: \(created.id)")
             created.type = campaignType
             createdCampaign = created
             createHook.error = nil
-            uiState.selectCampaign(
-                id: created.id,
-                name: created.name,
-                boundaryCoordinates: polygon
-            )
             startBackgroundProvision(campaign: created, polygon: polygon, regionCode: provisionRegionCode)
+            trace.end(status: "created_background_provision_started", fields: [
+                "campaign": created.id.uuidString
+            ])
         } else {
             print("❌ [CAMPAIGN DEBUG] Campaign creation failed")
             creationStage = .territory
+            createTrace.end(status: "failed")
+            trace.end(status: "create_failed")
         }
     }
 
     @MainActor
     private func saveCampaignDetailsTapped() async {
         guard var campaign = createdCampaign else { return }
+        let trace = PerfTrace.begin("campaign_create", "save_campaign_details", fields: [
+            "campaign": campaign.id.uuidString,
+            "mapReady": campaignMapDataReady
+        ])
         if detailsSaved && !isProvisioningCampaign && campaignMapDataReady {
             await openCreatedCampaign()
+            trace.end(status: "already_saved_opened")
             return
         }
 
@@ -742,8 +779,14 @@ struct NewCampaignScreen: View {
                     creationStage = .creating
                 }
             }
+            trace.end(status: "success", fields: [
+                "mapReady": campaignMapDataReady
+            ])
         } catch {
             createHook.error = "Could not save campaign details: \(error.localizedDescription)"
+            trace.end(status: "error", fields: [
+                "error": error.localizedDescription
+            ])
         }
     }
 
@@ -863,6 +906,9 @@ struct NewCampaignScreen: View {
     }
 
     private func continueMonitoringProvision(campaignId: UUID, campaignName: String) async {
+        let trace = PerfTrace.begin("campaign_create", "continue_monitoring_provision", fields: [
+            "campaign": campaignId.uuidString
+        ])
         do {
             let state = try await CampaignsAPI.shared.waitForProvisionReady(
                 campaignId: campaignId,
@@ -883,6 +929,10 @@ struct NewCampaignScreen: View {
                 campaignName: campaignName
             )
             guard isProvisionMapUsable(status: state.provisionStatus, phase: state.provisionPhase) else {
+                trace.end(status: "not_usable", fields: [
+                    "status": state.provisionStatus?.rawValue ?? "nil",
+                    "phase": state.provisionPhase?.rawValue ?? "nil"
+                ])
                 return
             }
 
@@ -903,32 +953,61 @@ struct NewCampaignScreen: View {
                 campaignName: createdCampaign?.name ?? campaignName
             )
             startMapWarmupAfterReady(campaignId: campaignId)
+            trace.end(status: "ready", fields: [
+                "status": state.provisionStatus?.rawValue ?? "nil",
+                "phase": state.provisionPhase?.rawValue ?? "nil"
+            ])
         } catch {
             guard !Task.isCancelled else { return }
             #if DEBUG
             print("⚠️ [CAMPAIGN DEBUG] Background provision monitor failed: \(error.localizedDescription)")
             #endif
+            trace.end(status: "error", fields: [
+                "error": error.localizedDescription
+            ])
         }
     }
 
     @MainActor
     private func provisionCampaignInBackground(campaign: CampaignV2, polygon: [CLLocationCoordinate2D], regionCode: String?) async {
+        let trace = PerfTrace.begin("campaign_create", "provision_campaign_background", fields: [
+            "campaign": campaign.id.uuidString,
+            "points": polygon.count,
+            "region": regionCode ?? "nil"
+        ])
         var workingCampaign = campaign
         let geoJSON = polygonToGeoJSON(polygon)
 
         do {
+            let boundaryTrace = PerfTrace.begin("campaign_create", "update_territory_boundary", fields: [
+                "campaign": campaign.id.uuidString,
+                "points": polygon.count,
+                "region": regionCode ?? "nil"
+            ])
             try await CampaignsAPI.shared.updateTerritoryBoundary(
                 campaignId: campaign.id,
                 polygonGeoJSON: geoJSON,
                 regionCode: regionCode
             )
+            boundaryTrace.end(status: "success")
             guard !Task.isCancelled else { return }
             provisionStatusText = CampaignProvisionMonitor.runningStatusText
             updateProvisionProgress(18)
+            let provisionTrace = PerfTrace.begin("campaign_create", "provision_request", fields: [
+                "campaign": campaign.id.uuidString,
+                "waitUntilReady": false
+            ])
             let provisionResponse = try await CampaignsAPI.shared.provisionCampaign(
                 campaignId: campaign.id,
                 waitUntilReady: false
             )
+            provisionTrace.end(status: "accepted_or_complete", fields: [
+                "accepted": provisionResponse?.accepted ?? false,
+                "status": provisionResponse?.provisionStatus?.rawValue ?? "nil",
+                "phase": provisionResponse?.provisionPhase?.rawValue ?? "nil",
+                "addresses": provisionResponse?.addressesSaved ?? 0,
+                "buildings": provisionResponse?.buildingsSaved ?? 0
+            ])
             guard !Task.isCancelled else { return }
             updateProvisionProgress(35)
             if let confidence = provisionResponse?.dataConfidenceSummary {
@@ -968,6 +1047,10 @@ struct NewCampaignScreen: View {
                 Task {
                     await PushRegistrationService.shared.requestCampaignReadyPermissionAndRegister()
                 }
+                trace.end(status: "accepted_background_monitoring", fields: [
+                    "status": provisionResponse?.provisionStatus?.rawValue ?? "nil",
+                    "phase": provisionResponse?.provisionPhase?.rawValue ?? "nil"
+                ])
                 return
             }
 
@@ -978,6 +1061,9 @@ struct NewCampaignScreen: View {
             var finalProvisionStatus = provisionResponse?.provisionStatus
             if needsProvisionWait {
                 provisionStatusText = CampaignProvisionMonitor.runningStatusText
+                let waitTrace = PerfTrace.begin("campaign_create", "wait_for_provision_ready", fields: [
+                    "campaign": campaign.id.uuidString
+                ])
                 let provisionState = try await CampaignsAPI.shared.waitForProvisionReady(
                     campaignId: campaign.id,
                     requireOptimized: false,
@@ -989,6 +1075,10 @@ struct NewCampaignScreen: View {
                         )
                     }
                 )
+                waitTrace.end(status: "complete", fields: [
+                    "status": provisionState.provisionStatus?.rawValue ?? "nil",
+                    "phase": provisionState.provisionPhase?.rawValue ?? "nil"
+                ])
                 guard !Task.isCancelled else { return }
                 workingCampaign.provisionStatus = provisionState.provisionStatus
                 workingCampaign.provisionSource = provisionState.provisionSource
@@ -1017,6 +1107,10 @@ struct NewCampaignScreen: View {
                     campaignName: workingCampaign.name
                 )
                 startMapWarmupAfterReady(campaignId: campaign.id)
+                trace.end(status: "ready", fields: [
+                    "addresses": addressesSaved,
+                    "buildings": buildingsSaved
+                ])
             } else {
                 provisionFailed = true
                 provisionStatusText = "Created, but setup needs another try."
@@ -1028,6 +1122,9 @@ struct NewCampaignScreen: View {
                     statusText: "Setup needs attention. Open the campaign to retry.",
                     progressPercent: provisionProgressPercent
                 )
+                trace.end(status: "not_ready", fields: [
+                    "status": finalProvisionStatus?.rawValue ?? "unknown"
+                ])
             }
         } catch {
             guard !Task.isCancelled else { return }
@@ -1045,6 +1142,9 @@ struct NewCampaignScreen: View {
                     statusText: CampaignProvisionMonitor.runningStatusText,
                     progressPercent: provisionProgressPercent
                 )
+                trace.end(status: "geometry_warmup", fields: [
+                    "error": error.localizedDescription
+                ])
             } else {
                 print("❌ [CAMPAIGN DEBUG] Provision failed: \(error)")
                 provisionFailed = true
@@ -1057,6 +1157,9 @@ struct NewCampaignScreen: View {
                     statusText: "Setup needs attention. Open the campaign to retry.",
                     progressPercent: provisionProgressPercent
                 )
+                trace.end(status: "error", fields: [
+                    "error": error.localizedDescription
+                ])
             }
         }
 
@@ -1091,6 +1194,7 @@ struct NewCampaignScreen: View {
 
     @MainActor
     private func markCampaignReadyToOpen(campaignId: UUID, campaignName: String) async {
+        await prewarmCampaignMapBundleForOpen(campaignId: campaignId)
         campaignMapDataReady = true
         provisionFailed = false
         provisionStatusText = "Campaign is ready."
@@ -1106,6 +1210,31 @@ struct NewCampaignScreen: View {
         if detailsSaved {
             await openCreatedCampaign()
         }
+    }
+
+    @MainActor
+    private func prewarmCampaignMapBundleForOpen(campaignId: UUID) async {
+        let campaignIdString = campaignId.uuidString
+        let trace = PerfTrace.begin("campaign_create", "prewarm_campaign_map_bundle", fields: [
+            "campaign": campaignIdString
+        ])
+
+        if let cachedBundle = await CampaignRepository.shared.getCampaignMapBundle(campaignId: campaignIdString),
+           !cachedBundle.buildings.features.isEmpty || !cachedBundle.addresses.features.isEmpty || !cachedBundle.parcels.features.isEmpty {
+            trace.end(status: "local_bundle_ready", fields: [
+                "buildings": cachedBundle.buildings.features.count,
+                "addresses": cachedBundle.addresses.features.count,
+                "parcels": cachedBundle.parcels.features.count
+            ])
+            return
+        }
+
+        await MapFeaturesService.shared.fetchAllCampaignFeatures(campaignId: campaignIdString, forceRefresh: false)
+        trace.end(status: "fetched", fields: [
+            "buildings": MapFeaturesService.shared.buildings?.features.count ?? 0,
+            "addresses": MapFeaturesService.shared.addresses?.features.count ?? 0,
+            "parcels": MapFeaturesService.shared.parcels?.features.count ?? 0
+        ])
     }
 
     @MainActor
@@ -1336,7 +1465,7 @@ struct NewCampaignScreen: View {
         uiState.selectedTabIndex = 1
         dismiss()
         Task {
-            await CampaignDownloadService.shared.prefetchIfNeeded(campaignId: campaign.id.uuidString)
+            await CampaignDownloadService.shared.refreshMapAssetReadiness(campaignId: campaign.id.uuidString)
         }
     }
 }

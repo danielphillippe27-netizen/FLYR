@@ -36,6 +36,110 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
     static let parcelOverviewMaxZoom: Double = 24.0
     static let addressLayerMinZoom: Double = 11.8
     static let addressNumberLayerMinZoom: Double = 17.0
+    static var addressNumberZoomOpacityExpression: Exp {
+        Exp(.interpolate) {
+            Exp(.linear)
+            Exp(.zoom)
+            Self.addressNumberLayerMinZoom
+            0.0
+            17.25
+            0.28
+            17.5
+            0.62
+            17.8
+            0.9
+            18.1
+            1.0
+        }
+    }
+
+    static var addressNumberOpacityExpression: Exp {
+        addressNumberZoomOpacityExpression
+    }
+
+    static func linkedAddressNumberOpacityExpression(linkedExpression: Exp, isAddressMode: Bool = false) -> Exp {
+        _ = isAddressMode
+        return Exp(.switchCase) {
+            linkedExpression
+            Self.addressNumberZoomOpacityExpression
+            0.0
+        }
+    }
+
+    static var linkedBuildingNumberExpression: Exp {
+        Exp(.any) {
+            Exp(.eq) {
+                Exp(.coalesce) {
+                    Exp(.featureState) { "is_linked" }
+                    Exp(.get) { "is_linked" }
+                    false
+                }
+                true
+            }
+            linkedFeatureStatusExpression
+            Exp(.gt) {
+                Exp(.toNumber) {
+                    Exp(.coalesce) {
+                        Exp(.get) { "linked_address_count" }
+                        Exp(.get) { "address_count" }
+                        0
+                    }
+                }
+                0
+            }
+        }
+    }
+
+    static var linkedAddressNumberExpression: Exp {
+        Exp(.any) {
+            Exp(.eq) {
+                Exp(.coalesce) {
+                    Exp(.featureState) { "is_linked" }
+                    Exp(.get) { "is_linked" }
+                    false
+                }
+                true
+            }
+            Exp(.neq) {
+                Exp(.coalesce) {
+                    Exp(.get) { "building_gers_id" }
+                    Exp(.get) { "linked_building_id" }
+                    ""
+                }
+                ""
+            }
+            linkedFeatureStatusExpression
+            Exp(.gt) {
+                Exp(.toNumber) {
+                    Exp(.coalesce) {
+                        Exp(.get) { "linked_address_count" }
+                        Exp(.get) { "address_count" }
+                        0
+                    }
+                }
+                0
+            }
+        }
+    }
+
+    private static var linkedFeatureStatusExpression: Exp {
+        Exp(.any) {
+            Exp(.eq) {
+                Exp(.coalesce) {
+                    Exp(.get) { "feature_status" }
+                    ""
+                }
+                "linked"
+            }
+            Exp(.eq) {
+                Exp(.coalesce) {
+                    Exp(.get) { "feature_status" }
+                    ""
+                }
+                "matched"
+            }
+        }
+    }
 
     private let buildingSourceId = VectorTileDiamondGeometryProvider.buildingSourceId
     private let addressSourceId = VectorTileDiamondGeometryProvider.addressSourceId
@@ -115,7 +219,7 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
                 tileTemplate: parcelTileTemplate,
                 minzoom: manifest.parcelMinzoom ?? 10,
                 maxzoom: manifest.parcelMaxzoom ?? 16,
-                bounds: manifest.bounds,
+                bounds: expandedParcelSourceBounds(manifest.bounds),
                 promoteIds: [
                     parcelLayer: manifest.joinKey ?? manifest.parcelPromoteId ?? manifest.promoteIds?.parcels ?? "parcel_id"
                 ]
@@ -280,6 +384,28 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
         try map.addSource(source)
     }
 
+    private func expandedParcelSourceBounds(_ bounds: [Double]?) -> [Double]? {
+        guard let bounds, bounds.count == 4 else { return bounds }
+        let minLon = bounds[0]
+        let minLat = bounds[1]
+        let maxLon = bounds[2]
+        let maxLat = bounds[3]
+        guard [minLon, minLat, maxLon, maxLat].allSatisfy(\.isFinite),
+              minLon < maxLon,
+              minLat < maxLat else {
+            return bounds
+        }
+
+        let lonPadding = max((maxLon - minLon) * 0.35, 0.002)
+        let latPadding = max((maxLat - minLat) * 0.35, 0.002)
+        return [
+            max(-180.0, minLon - lonPadding),
+            max(-85.05112878, minLat - latPadding),
+            min(180.0, maxLon + lonPadding),
+            min(85.05112878, maxLat + latPadding),
+        ]
+    }
+
     private func nonEmpty(_ value: String?) -> String? {
         guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
               !trimmed.isEmpty else {
@@ -376,6 +502,9 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
         labels.textAllowOverlap = .constant(true)
         labels.textIgnorePlacement = .constant(true)
         labels.textOcclusionOpacity = .constant(1.0)
+        labels.textOpacity = .expression(
+            Self.linkedAddressNumberOpacityExpression(linkedExpression: Self.linkedBuildingNumberExpression)
+        )
         labels.symbolPlacement = .constant(.point)
         labels.symbolZOrder = .constant(.auto)
         labels.symbolZElevate = .constant(true)
@@ -409,11 +538,6 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
             Exp(.neq) {
                 houseNumberLabelExpression()
                 ""
-            }
-            Exp(.any) {
-                Exp(.has) { "linked_address_count" }
-                Exp(.has) { "address_count" }
-                Exp(.has) { "units_count" }
             }
             Exp(.lte) {
                 Exp(.toNumber) {
@@ -472,7 +596,6 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
         currentAddressUsesCirclePolygons = usesCirclePolygons
         let pointFilter = scopedPointFilter()
         let polygonFilter = scopedPolygonFilter()
-        let addressFilter = addressGeometryFilter(usesCirclePolygons: usesCirclePolygons)
 
         if usesCirclePolygons {
             var circles = FillExtrusionLayer(id: addressCircleLayerId, source: sourceId)
@@ -591,6 +714,9 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
         labels.textAllowOverlap = .constant(true)
         labels.textIgnorePlacement = .constant(true)
         labels.textOcclusionOpacity = .constant(1.0)
+        labels.textOpacity = .expression(
+            Self.linkedAddressNumberOpacityExpression(linkedExpression: Self.linkedAddressNumberExpression)
+        )
         labels.symbolPlacement = .constant(.point)
         labels.symbolZOrder = .constant(.auto)
         if usesCirclePolygons {
@@ -610,7 +736,7 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
             }
         )
         labels.minZoom = Self.addressNumberLayerMinZoom
-        labels.filter = addressFilter
+        labels.filter = addressNumberFilter(usesCirclePolygons: usesCirclePolygons)
         try map.addLayer(labels, layerPosition: .above(selectedAddressCircleLayerId))
     }
 
@@ -624,6 +750,16 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
 
     private func addressGeometryFilter(usesCirclePolygons: Bool) -> Exp {
         usesCirclePolygons ? scopedPolygonFilter() : scopedPointFilter()
+    }
+
+    private func addressNumberFilter(usesCirclePolygons: Bool) -> Exp {
+        Exp(.all) {
+            addressGeometryFilter(usesCirclePolygons: usesCirclePolygons)
+            Exp(.neq) {
+                houseNumberLabelExpression()
+                ""
+            }
+        }
     }
 
     private func scopedPointOrLineFilter(_ baseFilter: Exp) -> Exp {

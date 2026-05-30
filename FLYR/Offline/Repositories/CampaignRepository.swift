@@ -46,6 +46,31 @@ struct CachedCampaignMapBundleMetadata: Sendable {
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased() == "client_fallback_required"
     }
+
+    var canonicalLinksAreReady: Bool {
+        switch linksStatus?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "ok", "fresh", "ready":
+            return true
+        default:
+            return false
+        }
+    }
+
+    var hasUsableFreshCanonicalBundle: Bool {
+        isFresh && canonicalLinksAreReady && !requiresClientFallback
+    }
+
+    var cachedLinkCount: Int? {
+        guard let countsJSON,
+              let data = countsJSON.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        if let links = object["links"] as? Int {
+            return links
+        }
+        return (object["links"] as? NSNumber)?.intValue
+    }
 }
 
 struct CachedClientLinkBatch: Sendable {

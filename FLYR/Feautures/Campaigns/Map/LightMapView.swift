@@ -21,7 +21,7 @@ struct LightMapView: UIViewRepresentable {
     }
     
     func makeUIView(context: Context) -> MapView {
-        let mapView = MapView(frame: .zero)
+        let mapView = MapView(frame: CGRect(origin: .zero, size: CGSize(width: 320, height: max(120, height))))
         
         // Load custom light style
         mapView.mapboxMap.loadStyle(StyleURI(rawValue: "mapbox://styles/fliper27/cml6z0dhg002301qo9xxc08k4")!)

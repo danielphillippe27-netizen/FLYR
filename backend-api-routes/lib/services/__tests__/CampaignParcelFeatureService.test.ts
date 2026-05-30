@@ -136,6 +136,32 @@ async function main() {
     }), false);
   });
 
+  await test('parcel infrastructure aliases are filtered without geometry work', () => {
+    assert.equal(isResidentialParcelFeature({
+      type: 'Feature',
+      geometry: rectangle(0, 0, 1, 1),
+      properties: { lot_type: 'Road Allowance' },
+    }), false);
+
+    assert.equal(isResidentialParcelFeature({
+      type: 'Feature',
+      geometry: rectangle(0, 0, 1, 1),
+      properties: { property_use: 'Sidewalk Easement' },
+    }), false);
+
+    assert.equal(isResidentialParcelFeature({
+      type: 'Feature',
+      geometry: rectangle(0, 0, 1, 1),
+      properties: { municipal_use: 'Utility Corridor' },
+    }), false);
+
+    assert.equal(isResidentialParcelFeature({
+      type: 'Feature',
+      geometry: rectangle(0, 0, 1, 1),
+      properties: { path: true },
+    }), false);
+  });
+
   await test('residential parcels are not filtered out just because an address street contains Road', () => {
     assert.equal(isResidentialParcelFeature({
       type: 'Feature',
@@ -143,6 +169,7 @@ async function main() {
       properties: {
         parcel_intent: 'Fee Simple Title',
         street_name: 'Pine Road',
+        address_line: '100 Pathway Court',
       },
     }), true);
   });

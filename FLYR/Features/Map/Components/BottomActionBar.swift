@@ -26,8 +26,8 @@ struct BottomActionBar: View {
     private let cardCornerRadius: CGFloat = 34
 
     private var isLightMode: Bool { colorScheme == .light }
-    private var cardBackground: Color { isLightMode ? .white : Color.black.opacity(0.98) }
-    private var expandedBackground: Color { isLightMode ? .white : Color.black.opacity(0.96) }
+    private var cardBackground: Color { isLightMode ? .white : .darkSurface }
+    private var expandedBackground: Color { isLightMode ? .white : .darkSurfaceElevated }
     private var handleColor: Color { isLightMode ? Color.black.opacity(0.22) : Color.white.opacity(0.22) }
     private var cardStroke: Color { isLightMode ? Color.black.opacity(0.08) : Color.white.opacity(0.08) }
     private var dividerColor: Color { isLightMode ? Color.black.opacity(0.08) : Color.white.opacity(0.08) }

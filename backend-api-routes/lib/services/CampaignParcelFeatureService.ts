@@ -23,7 +23,8 @@ import { isParcelRegionSupported } from '@/lib/geo/parcelRegions';
 import { invalidateCampaignMapBundle } from '@/lib/services/CampaignMapBundleInvalidation';
 import { ParcelEnrichmentService } from '@/lib/services/ParcelEnrichmentService';
 
-const PARCEL_SEAM_SAFE_MAX_ZOOM = 13;
+const PARCEL_SEAM_SAFE_MAX_ZOOM = 16;
+const PARCEL_FRAGMENT_TILE_PADDING = 2;
 const PARCEL_BACKFILL_BATCH_SIZE = 500;
 const PARCEL_FAILURE_CACHE_TTL_MS = 5 * 60 * 1000;
 const parcelFailureCache = new Map<string, number>();
@@ -722,7 +723,11 @@ function lonLatToTile(lon: number, lat: number, z: number) {
   };
 }
 
-function tileRangesForBbox(bbox: [number, number, number, number], maxZoom: number, padding = 1) {
+function tileRangesForBbox(
+  bbox: [number, number, number, number],
+  maxZoom: number,
+  padding = PARCEL_FRAGMENT_TILE_PADDING
+) {
   const [minLon, minLat, maxLon, maxLat] = bbox;
   for (let z = Math.min(maxZoom, PARCEL_SEAM_SAFE_MAX_ZOOM); z >= 10; z -= 1) {
     const nw = lonLatToTile(minLon, maxLat, z);
@@ -1062,7 +1067,7 @@ export async function resolveCampaignParcels(
       : inferParcelAddressAnnotations(residentialPersistedParcels, addressPoints);
     const annotatedParcels = annotateParcelsWithAddressLinks(residentialPersistedParcels, annotations);
     return responseFromParcels(
-      filterTargetableParcelResponses(annotatedParcels),
+      annotatedParcels,
       'campaign_parcels'
     );
   }
@@ -1085,7 +1090,7 @@ export async function resolveCampaignParcels(
         : inferParcelAddressAnnotations(residentialPreparedParcels, addressPoints);
       const annotatedParcels = annotateParcelsWithAddressLinks(residentialPreparedParcels, annotations);
       return responseFromParcels(
-        filterTargetableParcelResponses(annotatedParcels),
+        annotatedParcels,
         'campaign_parcels'
       );
     }
@@ -1103,15 +1108,14 @@ export async function resolveCampaignParcels(
         const parcels = await fetchScopedPmtilesParcels(campaignId, snapshot, parcelTiles, bbox, boundary);
         const annotations = inferParcelAddressAnnotations(parcels, addressPoints);
         const annotatedParcels = annotateParcelsWithAddressLinks(parcels, annotations);
-        const targetableParcels = filterTargetableParcelResponses(annotatedParcels);
         const backfilled = await backfillResolvedPmtilesParcels(
           supabase,
           campaignId,
-          targetableParcels,
+          annotatedParcels,
           parcelTiles
         );
         return responseFromParcels(
-          targetableParcels,
+          annotatedParcels,
           backfilled ? 'campaign_parcels' : 'snapshot_pmtiles'
         );
       } catch (error) {

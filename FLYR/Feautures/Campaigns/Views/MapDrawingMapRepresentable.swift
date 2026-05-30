@@ -78,7 +78,14 @@ struct MapDrawingMapRepresentable: UIViewRepresentable {
     }
 
     func makeUIView(context: Context) -> MapView {
-        let mapView = MapView(frame: .zero)
+        let screenBounds = UIScreen.main.bounds
+        let initialFrame = CGRect(
+            x: 0,
+            y: 0,
+            width: max(320, screenBounds.width),
+            height: max(480, screenBounds.height)
+        )
+        let mapView = MapView(frame: initialFrame)
         mapView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         mapView.ornaments.options.scaleBar.visibility = .hidden
         mapView.ornaments.options.logo.margins = CGPoint(x: 8, y: 8)

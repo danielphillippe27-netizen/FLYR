@@ -29,7 +29,7 @@ final class MapboxOfflineService {
 
     private let offlineManager = OfflineManager()
     private let tileStore = TileStore.default
-    private let zoomRange: ClosedRange<UInt8> = 6...16
+    private let zoomRange: ClosedRange<UInt8> = 6...17
 
     private init() {}
 
@@ -146,16 +146,46 @@ final class MapboxOfflineService {
         boundaryGeoJSON: String?,
         addresses: [AddressFeature]
     ) throws -> Geometry {
+        let boundaryCoordinates = boundaryGeoJSON.flatMap(coordinatesFromBoundaryGeoJSON) ?? []
+        let addressCoordinates = coordinatesFromAddresses(addresses)
+        if let paddedGeometry = paddedBoundsGeometry(for: boundaryCoordinates + addressCoordinates) {
+            return paddedGeometry
+        }
+
         if let boundaryGeoJSON,
            let geometry = geometryFromBoundaryGeoJSON(boundaryGeoJSON) {
             return geometry
         }
 
-        if let fallback = geometryFromAddresses(addresses) {
-            return fallback
+        throw CampaignOfflineMapError.missingRegionGeometry
+    }
+
+    private func coordinatesFromBoundaryGeoJSON(_ geoJSON: String) -> [CLLocationCoordinate2D] {
+        guard let data = geoJSON.data(using: .utf8) else { return [] }
+
+        if let polygon = try? JSONDecoder().decode(OfflinePolygonGeoJSON.self, from: data),
+           polygon.type.caseInsensitiveCompare("Polygon") == .orderedSame {
+            return polygon.coordinates.flatMap { ring in
+                ring.compactMap { coordinate in
+                    guard coordinate.count >= 2 else { return nil }
+                    return CLLocationCoordinate2D(latitude: coordinate[1], longitude: coordinate[0])
+                }
+            }
         }
 
-        throw CampaignOfflineMapError.missingRegionGeometry
+        if let multiPolygon = try? JSONDecoder().decode(OfflineMultiPolygonGeoJSON.self, from: data),
+           multiPolygon.type.caseInsensitiveCompare("MultiPolygon") == .orderedSame {
+            return multiPolygon.coordinates.flatMap { polygon in
+                polygon.flatMap { ring in
+                    ring.compactMap { coordinate in
+                        guard coordinate.count >= 2 else { return nil }
+                        return CLLocationCoordinate2D(latitude: coordinate[1], longitude: coordinate[0])
+                    }
+                }
+            }
+        }
+
+        return []
     }
 
     private func geometryFromBoundaryGeoJSON(_ geoJSON: String) -> Geometry? {
@@ -186,16 +216,15 @@ final class MapboxOfflineService {
         return nil
     }
 
-    private func geometryFromAddresses(_ addresses: [AddressFeature]) -> Geometry? {
-        let coordinates = addresses.compactMap { feature -> CLLocationCoordinate2D? in
+    private func coordinatesFromAddresses(_ addresses: [AddressFeature]) -> [CLLocationCoordinate2D] {
+        addresses.compactMap { feature -> CLLocationCoordinate2D? in
             guard let point = feature.geometry.asPoint, point.count >= 2 else { return nil }
             return CLLocationCoordinate2D(latitude: point[1], longitude: point[0])
         }
+    }
 
+    private func paddedBoundsGeometry(for coordinates: [CLLocationCoordinate2D]) -> Geometry? {
         guard let first = coordinates.first else { return nil }
-        guard coordinates.count > 1 else {
-            return .point(Point(first))
-        }
 
         var minLat = first.latitude
         var maxLat = first.latitude
@@ -209,14 +238,18 @@ final class MapboxOfflineService {
             maxLon = max(maxLon, coordinate.longitude)
         }
 
-        let latPadding = max((maxLat - minLat) * 0.1, 0.0015)
-        let lonPadding = max((maxLon - minLon) * 0.1, 0.0015)
+        let latPadding = max((maxLat - minLat) * 0.25, 0.003)
+        let lonPadding = max((maxLon - minLon) * 0.25, 0.003)
+        let paddedMinLat = max(-85, minLat - latPadding)
+        let paddedMaxLat = min(85, maxLat + latPadding)
+        let paddedMinLon = max(-180, minLon - lonPadding)
+        let paddedMaxLon = min(180, maxLon + lonPadding)
         let ring = [
-            LocationCoordinate2D(latitude: minLat - latPadding, longitude: minLon - lonPadding),
-            LocationCoordinate2D(latitude: minLat - latPadding, longitude: maxLon + lonPadding),
-            LocationCoordinate2D(latitude: maxLat + latPadding, longitude: maxLon + lonPadding),
-            LocationCoordinate2D(latitude: maxLat + latPadding, longitude: minLon - lonPadding),
-            LocationCoordinate2D(latitude: minLat - latPadding, longitude: minLon - lonPadding)
+            LocationCoordinate2D(latitude: paddedMinLat, longitude: paddedMinLon),
+            LocationCoordinate2D(latitude: paddedMinLat, longitude: paddedMaxLon),
+            LocationCoordinate2D(latitude: paddedMaxLat, longitude: paddedMaxLon),
+            LocationCoordinate2D(latitude: paddedMaxLat, longitude: paddedMinLon),
+            LocationCoordinate2D(latitude: paddedMinLat, longitude: paddedMinLon)
         ]
 
         return .polygon(Polygon([ring]))
@@ -232,7 +265,5 @@ private struct OfflineMultiPolygonGeoJSON: Decodable {
     let type: String
     let coordinates: [[[[Double]]]]
 }
-
-
 
 

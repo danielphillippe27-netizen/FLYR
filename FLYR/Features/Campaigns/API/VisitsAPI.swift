@@ -402,99 +402,18 @@ final class VisitsAPI {
         let uniqueAddressIds = deduplicated(addressIds)
         guard !uniqueAddressIds.isEmpty else { return [] }
 
-        do {
-            let now = Date()
-            let localRows = await campaignRepository.updateStatusLocally(
-                addressIds: uniqueAddressIds,
-                campaignId: campaignId,
-                buildingId: sessionTargetId,
-                status: status,
-                notes: notes,
-                occurredAt: now,
-                sessionId: sessionId
-            )
-            invalidateStatusCache(campaignId: campaignId)
-            cacheStatuses(localRows, scope: StatusFetchScope(campaignId: campaignId, farmCycleNumber: nil))
-            let farmExecutionContext = await MainActor.run { SessionManager.shared.currentFarmExecutionContext }
-            let matchingFarmExecutionContext = farmExecutionContext?.campaignId == campaignId ? farmExecutionContext : nil
-
-            let payload = AddressStatusOutboxPayload(
-                campaignId: campaignId.uuidString,
-                addressIds: uniqueAddressIds.map(\.uuidString),
-                buildingId: sessionTargetId,
-                status: status.rawValue,
-                notes: notes,
-                sessionId: sessionId?.uuidString,
-                sessionTargetId: sessionTargetId,
-                sessionEventType: sessionEventType?.rawValue,
-                latitude: location?.coordinate.latitude,
-                longitude: location?.coordinate.longitude,
-                occurredAt: OfflineDateCodec.string(from: now),
-                farmExecutionContext: matchingFarmExecutionContext.map(OfflineFarmExecutionPayload.init(context:))
-            )
-
-            if NetworkMonitor.shared.isOnline {
-                do {
-                    let remoteRows = try await performRemoteTargetStatusUpdate(
-                        addressIds: uniqueAddressIds,
-                        campaignId: campaignId,
-                        status: status,
-                        notes: notes,
-                        sessionId: sessionId,
-                        sessionTargetId: sessionTargetId,
-                        sessionEventType: sessionEventType,
-                        location: location,
-                        occurredAt: now
-                    )
-                    let rows = remoteRows.isEmpty ? localRows : remoteRows
-                    if remoteRows.isEmpty {
-                        await campaignRepository.markStatusRowsSynced(
-                            campaignId: campaignId,
-                            addressIds: uniqueAddressIds
-                        )
-                    }
-                    cacheStatuses(rows, scope: StatusFetchScope(campaignId: campaignId, farmCycleNumber: nil))
-                    debugLog("✅ [VisitsAPI] Pushed target status update to \(status.rawValue)")
-                    return rows
-                } catch {
-                    debugLog("⚠️ [VisitsAPI] Immediate status sync failed, queueing offline retry: \(error.localizedDescription)")
-                }
-            }
-
-            await outboxRepository.enqueue(
-                entityType: "address_status",
-                entityId: uniqueAddressIds.map(\.uuidString).joined(separator: ","),
-                operation: .upsertAddressStatus,
-                payload: payload,
-                dependencyKey: matchingFarmExecutionContext.map {
-                    "farm_touch:\($0.touchId.uuidString.lowercased())"
-                } ?? "address_status:\(campaignId.uuidString.lowercased()):\(uniqueAddressIds.map { $0.uuidString.lowercased() }.joined(separator: ","))"
-            )
-            if let matchingFarmExecutionContext,
-               sessionId != nil {
-                let occurredAt = OfflineDateCodec.date(from: payload.occurredAt) ?? now
-                for addressId in uniqueAddressIds {
-                    await FarmOfflineRepository.shared.recordAddressOutcome(
-                        context: matchingFarmExecutionContext,
-                        addressId: addressId,
-                        status: status,
-                        notes: notes,
-                        occurredAt: occurredAt,
-                        dirty: true
-                    )
-                }
-            }
-
-            if NetworkMonitor.shared.isOnline {
-                await MainActor.run {
-                    OfflineSyncCoordinator.shared.scheduleProcessOutbox()
-                }
-            }
-
-            debugLog("✅ [VisitsAPI] Queued target status update to \(status.rawValue)")
-            return localRows
-        } catch {
-            debugLog("⚠️ [VisitsAPI] Local-first status update failed, falling back to direct remote sync: \(error.localizedDescription)")
+        let now = Date()
+        let localRows = await campaignRepository.updateStatusLocally(
+            addressIds: uniqueAddressIds,
+            campaignId: campaignId,
+            buildingId: sessionTargetId,
+            status: status,
+            notes: notes,
+            occurredAt: now,
+            sessionId: sessionId
+        )
+        guard !localRows.isEmpty else {
+            debugLog("⚠️ [VisitsAPI] Local status update returned no rows, falling back to direct remote sync")
             return try await performRemoteTargetStatusUpdate(
                 addressIds: uniqueAddressIds,
                 campaignId: campaignId,
@@ -506,6 +425,59 @@ final class VisitsAPI {
                 location: location
             )
         }
+
+        invalidateStatusCache(campaignId: campaignId)
+        cacheStatuses(localRows, scope: StatusFetchScope(campaignId: campaignId, farmCycleNumber: nil))
+        let farmExecutionContext = await MainActor.run { SessionManager.shared.currentFarmExecutionContext }
+        let matchingFarmExecutionContext = farmExecutionContext?.campaignId == campaignId ? farmExecutionContext : nil
+
+        let payload = AddressStatusOutboxPayload(
+            campaignId: campaignId.uuidString,
+            addressIds: uniqueAddressIds.map(\.uuidString),
+            buildingId: sessionTargetId,
+            status: status.rawValue,
+            notes: notes,
+            sessionId: sessionId?.uuidString,
+            sessionTargetId: sessionTargetId,
+            sessionEventType: sessionEventType?.rawValue,
+            latitude: location?.coordinate.latitude,
+            longitude: location?.coordinate.longitude,
+            occurredAt: OfflineDateCodec.string(from: now),
+            farmExecutionContext: matchingFarmExecutionContext.map(OfflineFarmExecutionPayload.init(context:))
+        )
+
+        await outboxRepository.enqueue(
+            entityType: "address_status",
+            entityId: uniqueAddressIds.map(\.uuidString).joined(separator: ","),
+            operation: .upsertAddressStatus,
+            payload: payload,
+            dependencyKey: matchingFarmExecutionContext.map {
+                "farm_touch:\($0.touchId.uuidString.lowercased())"
+            } ?? "address_status:\(campaignId.uuidString.lowercased()):\(uniqueAddressIds.map { $0.uuidString.lowercased() }.joined(separator: ","))"
+        )
+        if let matchingFarmExecutionContext,
+           sessionId != nil {
+            let occurredAt = OfflineDateCodec.date(from: payload.occurredAt) ?? now
+            for addressId in uniqueAddressIds {
+                await FarmOfflineRepository.shared.recordAddressOutcome(
+                    context: matchingFarmExecutionContext,
+                    addressId: addressId,
+                    status: status,
+                    notes: notes,
+                    occurredAt: occurredAt,
+                    dirty: true
+                )
+            }
+        }
+
+        if NetworkMonitor.shared.isOnline {
+            await MainActor.run {
+                OfflineSyncCoordinator.shared.scheduleProcessOutbox()
+            }
+        }
+
+        debugLog("✅ [VisitsAPI] Saved target status locally and queued background sync to \(status.rawValue)")
+        return localRows
     }
 
     func performRemoteStatusUpdate(

@@ -159,8 +159,22 @@ struct SupabaseClientShim {
     }
     
     /// Call RPC function with parameters and return raw response data (for map FeatureCollection decoding).
-    func callRPCData(_ function: String, params: [String: Any]) async throws -> Data {
-        print("🔷 [SHIM] CALL RPC \(function)")
+    func callRPCData(
+        _ function: String,
+        params: [String: Any],
+        reason: String? = nil,
+        caller: String? = nil,
+        hasLocalBundle: Bool? = nil,
+        bundleFresh: Bool? = nil,
+        canonicalRefresh: String? = nil
+    ) async throws -> Data {
+        var diagnostics: [String] = []
+        if let reason { diagnostics.append("reason=\(reason)") }
+        if let caller { diagnostics.append("caller=\(caller)") }
+        if let hasLocalBundle { diagnostics.append("hasLocalBundle=\(hasLocalBundle)") }
+        if let bundleFresh { diagnostics.append("bundleFresh=\(bundleFresh)") }
+        if let canonicalRefresh { diagnostics.append("canonicalRefresh=\(canonicalRefresh)") }
+        print("🔷 [SHIM] CALL RPC \(function)\(diagnostics.isEmpty ? "" : " \(diagnostics.joined(separator: " "))")")
         let encodableParams = params.mapValues { AnyCodable($0) }
         let response = try await client.rpc(function, params: encodableParams).execute()
         #if DEBUG

@@ -6,6 +6,8 @@ import Combine
 final class CampaignV2Store: ObservableObject {
     @Published private(set) var campaigns: [CampaignV2] = []
     private let logCampaignLookups = false
+    private let campaignSetLogPreviewLimit = 5
+    private var lastHydratedAt: Date?
     
     var routeToV2Detail: ((UUID) -> Void)?
     
@@ -19,10 +21,14 @@ final class CampaignV2Store: ObservableObject {
     /// Replace all campaigns
     func set(_ items: [CampaignV2]) {
         print("📦 [STORE DEBUG] Setting \(items.count) campaigns in store")
-        for (index, campaign) in items.enumerated() {
+        for (index, campaign) in items.prefix(campaignSetLogPreviewLimit).enumerated() {
             print("📦 [STORE DEBUG] Campaign \(index + 1): '\(campaign.name)' (ID: \(campaign.id))")
         }
+        if items.count > campaignSetLogPreviewLimit {
+            print("📦 [STORE DEBUG] ... \(items.count - campaignSetLogPreviewLimit) more campaign(s)")
+        }
         campaigns = items
+        lastHydratedAt = Date()
     }
     
     /// Add a new campaign
@@ -32,6 +38,7 @@ final class CampaignV2Store: ObservableObject {
         print("📦 [STORE DEBUG] Address count: \(campaign.addresses.count)")
         print("📦 [STORE DEBUG] Progress: \(Int(campaign.progress * 100))%")
         campaigns.append(campaign)
+        lastHydratedAt = Date()
         print("📦 [STORE DEBUG] Store now contains \(campaigns.count) campaigns")
     }
     
@@ -54,8 +61,14 @@ final class CampaignV2Store: ObservableObject {
     func update(_ campaign: CampaignV2) {
         if let index = campaigns.firstIndex(where: { $0.id == campaign.id }) {
             campaigns[index] = campaign
+            lastHydratedAt = Date()
             print("📦 [STORE DEBUG] Updated campaign '\(campaign.name)'")
         }
+    }
+
+    func hasFreshData(maxAge: TimeInterval) -> Bool {
+        guard !campaigns.isEmpty, let lastHydratedAt else { return false }
+        return Date().timeIntervalSince(lastHydratedAt) < maxAge
     }
 
     /// Mark campaign as archived (updates in-memory only; call API separately to persist).
@@ -110,6 +123,7 @@ final class CampaignV2Store: ObservableObject {
         print("📦 [STORE DEBUG] Clearing all campaigns from store")
         let count = campaigns.count
         campaigns.removeAll()
+        lastHydratedAt = nil
         print("📦 [STORE DEBUG] Cleared \(count) campaigns")
     }
     
@@ -117,5 +131,6 @@ final class CampaignV2Store: ObservableObject {
     func clearMockData() {
         print("📦 [STORE DEBUG] Clearing mock data and starting fresh")
         campaigns.removeAll()
+        lastHydratedAt = nil
     }
 }

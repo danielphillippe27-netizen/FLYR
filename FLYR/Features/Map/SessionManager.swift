@@ -1290,18 +1290,32 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         routeAssignmentId: UUID? = nil,
         farmExecutionContext: FarmExecutionContext? = nil
     ) async throws {
+        let trace = PerfTrace.begin("session_start", "session_manager_start", fields: [
+            "campaign": campaignId.uuidString,
+            "mode": mode.rawValue,
+            "targets": targetBuildings.count,
+            "sharedLive": enableSharedLiveCanvassing,
+            "online": NetworkMonitor.shared.isOnline
+        ])
         sessionRestoredThisLaunch = false
         guard let userId = AuthManager.shared.user?.id else {
             print("⚠️ [SessionManager] Cannot start building session: not authenticated")
+            trace.end(status: "no_user")
             return
         }
         if let inFlight = startInFlightCampaignId {
+            trace.end(status: "already_in_flight", fields: [
+                "inFlight": inFlight.uuidString
+            ])
             if inFlight == campaignId {
                 throw SessionStartError.startAlreadyInFlight(campaignId: campaignId)
             }
             throw SessionStartError.startAlreadyInFlight(campaignId: inFlight)
         }
         if let blockReason = await CampaignsAPI.shared.sessionStartBlockReason(campaignId: campaignId) {
+            trace.end(status: "campaign_blocked", fields: [
+                "reason": blockReason
+            ])
             throw SessionStartError.campaignNotProvisioned(campaignId: campaignId, reason: blockReason)
         }
         startInFlightCampaignId = campaignId
@@ -1338,6 +1352,10 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
             startedAt: sessionStartedAt
         )
 
+        let localTrace = PerfTrace.begin("session_start", "create_local_session", fields: [
+            "campaign": campaignId.uuidString,
+            "session": newSessionId.uuidString
+        ])
         await sessionRepository.createLocalSession(
             id: newSessionId,
             remoteId: nil,
@@ -1347,9 +1365,14 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
             createdOffline: !NetworkMonitor.shared.isOnline,
             payload: offlinePayload
         )
+        localTrace.end(status: "success")
 
         if NetworkMonitor.shared.isOnline {
             do {
+                let remoteTrace = PerfTrace.begin("session_start", "create_remote_session", fields: [
+                    "campaign": campaignId.uuidString,
+                    "session": newSessionId.uuidString
+                ])
                 try await SessionsAPI.shared.createSession(
                     id: newSessionId,
                     userId: userId,
@@ -1369,8 +1392,14 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
                 )
                 await sessionRepository.markSessionRemoteCreated(sessionId: newSessionId)
                 logSessionStart(.createSession, "success session=\(newSessionId.uuidString)")
+                remoteTrace.end(status: "success")
             } catch {
                 logSessionStart(.createSession, "remote create deferred error=\(error.localizedDescription)")
+                PerfTrace.event("session_start", "create_remote_session.error", fields: [
+                    "campaign": campaignId.uuidString,
+                    "session": newSessionId.uuidString,
+                    "error": error.localizedDescription
+                ])
                 await outboxRepository.enqueue(
                     entityType: "session",
                     entityId: newSessionId.uuidString,
@@ -1380,6 +1409,11 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
                 )
             }
         } else {
+            PerfTrace.event("session_start", "create_remote_session.skip", fields: [
+                "campaign": campaignId.uuidString,
+                "session": newSessionId.uuidString,
+                "reason": "offline"
+            ])
             await outboxRepository.enqueue(
                 entityType: "session",
                 entityId: newSessionId.uuidString,
@@ -1391,17 +1425,27 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         }
 
         do {
+            let participantTrace = PerfTrace.begin("session_start", "upsert_host_participant", fields: [
+                "campaign": campaignId.uuidString,
+                "session": newSessionId.uuidString
+            ])
             try await SessionParticipantsService.shared.upsertHostParticipant(
                 sessionId: newSessionId,
                 campaignId: campaignId,
                 userId: userId
             )
+            participantTrace.end(status: "success")
         } catch {
             if SessionParticipantsService.shared.isMissingInfrastructure(error) {
                 print("⚠️ [SessionManager] session_participants not available yet; continuing without durable host membership")
             } else {
                 print("⚠️ [SessionManager] Failed to register host as live session participant: \(error)")
             }
+            PerfTrace.event("session_start", "upsert_host_participant.error", fields: [
+                "campaign": campaignId.uuidString,
+                "session": newSessionId.uuidString,
+                "error": error.localizedDescription
+            ])
         }
 
         // Now set state and start tracking (timer + location). Publish the campaign
@@ -1457,11 +1501,22 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         startElapsedTimer()
         isActive = true
         presentBackgroundLocationUpgradePromptIfNeeded()
+        let liveActivityTrace = PerfTrace.begin("session_start", "start_live_activity", fields: [
+            "campaign": campaignId.uuidString,
+            "session": newSessionId.uuidString
+        ])
         await syncLiveActivity(forceStart: true)
+        liveActivityTrace.end(status: "done")
+        let beaconTrace = PerfTrace.begin("session_start", "restore_safety_beacon", fields: [
+            "session": newSessionId.uuidString
+        ])
         await safetyBeaconService.restoreState(for: newSessionId, startTime: startTime)
         if let currentLocation {
             await safetyBeaconService.recordHeartbeat(location: currentLocation, isPaused: isPaused)
         }
+        beaconTrace.end(status: "done", fields: [
+            "hasLocation": currentLocation != nil
+        ])
 
         if enableSharedLiveCanvassing, !isDemoSession {
             let sharedLiveSessionId = sharedLiveSessionIdOverride ?? newSessionId
@@ -1469,13 +1524,23 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
 
             if sharedLiveSessionId != newSessionId {
                 do {
+                    let participantTrace = PerfTrace.begin("session_start", "upsert_shared_live_participant", fields: [
+                        "campaign": campaignId.uuidString,
+                        "session": sharedLiveSessionId.uuidString
+                    ])
                     try await SessionParticipantsService.shared.upsertParticipant(
                         sessionId: sharedLiveSessionId,
                         campaignId: campaignId,
                         userId: userId,
                         role: "member"
                     )
+                    participantTrace.end(status: "success")
                 } catch {
+                    PerfTrace.event("session_start", "upsert_shared_live_participant.error", fields: [
+                        "campaign": campaignId.uuidString,
+                        "session": sharedLiveSessionId.uuidString,
+                        "error": error.localizedDescription
+                    ])
                     if SessionParticipantsService.shared.isMissingInfrastructure(error) {
                         print("⚠️ [SessionManager] session_participants not available yet; continuing without durable invitee membership")
                     } else {
@@ -1484,6 +1549,10 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
                 }
             }
 
+            let sharedTrace = PerfTrace.begin("session_start", "join_shared_live", fields: [
+                "campaign": campaignId.uuidString,
+                "session": sharedLiveSessionId.uuidString
+            ])
             let joinOutcome = await sharedLiveCanvassingService.joinNonFatal(
                 campaignId: campaignId,
                 sessionId: sharedLiveSessionId,
@@ -1492,12 +1561,21 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
             if case let .continueSolo(reason) = joinOutcome {
                 activeSharedLiveSessionId = nil
                 print("⚠️ [SessionManager] Shared live canvassing unavailable for this start; continuing solo: \(reason)")
+                sharedTrace.end(status: "continue_solo", fields: [
+                    "reason": reason
+                ])
+            } else {
+                sharedTrace.end(status: "joined")
             }
         } else {
             activeSharedLiveSessionId = nil
         }
 
         logSessionStart(.eventLog, "begin")
+        let eventTrace = PerfTrace.begin("session_start", "enqueue_session_started_event", fields: [
+            "campaign": campaignId.uuidString,
+            "session": newSessionId.uuidString
+        ])
         await enqueueSessionEvent(
             sessionId: newSessionId,
             campaignId: campaignId,
@@ -1505,11 +1583,19 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
             eventType: .sessionStarted,
             location: currentLocation
         )
+        eventTrace.end(status: "queued", fields: [
+            "hasLocation": currentLocation != nil
+        ])
         if NetworkMonitor.shared.isOnline {
             OfflineSyncCoordinator.shared.scheduleProcessOutbox()
         }
         logSessionStart(.eventLog, "queued")
         print("✅ [SessionManager] Started building session with \(targetBuildings.count) targets")
+        trace.end(status: "active", fields: [
+            "session": newSessionId.uuidString,
+            "targets": targetBuildings.count,
+            "hasLocation": currentLocation != nil
+        ])
     }
 
     /// After session restore, `buildingCentroids` is cleared; map features repopulate targets.

@@ -16,7 +16,10 @@ struct RecordHomeView: View {
 
     /// One stable campaign id for the map so starting a session does not swap view branches (avoids full map reload).
     private var recordTabMapCampaignId: UUID? {
-        sessionManager.campaignId ?? uiState.selectedMapCampaignId
+        if sessionManager.sessionId != nil || sessionManager.isActive {
+            return sessionManager.campaignId ?? uiState.selectedMapCampaignId
+        }
+        return uiState.selectedMapCampaignId
     }
 
     private var inSessionMode: Bool {

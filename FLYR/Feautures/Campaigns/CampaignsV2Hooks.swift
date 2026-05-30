@@ -17,13 +17,21 @@ final class UseCampaignsV2: ObservableObject {
         self.api = api ?? sharedV2API
     }
     
-    func load(store: CampaignV2Store) {
+    func load(store: CampaignV2Store, force: Bool = false) {
         Task {
-            await loadCampaigns(store: store)
+            await loadCampaigns(store: store, force: force)
         }
     }
     
-    private func loadCampaigns(store: CampaignV2Store) async {
+    private func loadCampaigns(store: CampaignV2Store, force: Bool) async {
+        if !force, store.hasFreshData(maxAge: 60) {
+            items = store.campaigns
+            isLoading = false
+            error = nil
+            print("📦 [STORE DEBUG] Skipping campaign list refresh; shared store is fresh")
+            return
+        }
+
         isLoading = true
         error = nil
         let workspaceId = WorkspaceContext.shared.workspaceId

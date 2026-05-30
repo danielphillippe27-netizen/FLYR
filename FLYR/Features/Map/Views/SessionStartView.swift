@@ -54,11 +54,10 @@ struct SessionStartView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { sessionToolbar }
             .task(id: "sessionStartData") {
-                await loadData()
-                if let pre = preselectedCampaign {
-                    let campaign = campaigns.first { $0.id == pre.id } ?? pre
-                    openCampaign(campaign)
+                if let pre = preselectedCampaign, mapCampaign?.id != pre.id {
+                    openCampaign(pre)
                 }
+                await loadData()
             }
             .navigationDestination(isPresented: $showCampaignMap) {
                 campaignMapDestination
@@ -384,18 +383,32 @@ struct SessionStartView: View {
     // MARK: - Helpers
 
     private func openCampaign(_ campaign: CampaignV2) {
+        PerfTrace.event("session_start", "open_campaign", fields: [
+            "campaign": campaign.id.uuidString,
+            "name": campaign.name
+        ])
         HapticManager.light()
         mapCampaign = campaign
         showCampaignMap = true
     }
 
     private func openRoute(_ route: RouteAssignmentSummary) async {
+        let trace = PerfTrace.begin("session_start", "open_route", fields: [
+            "assignment": route.id.uuidString,
+            "routePlan": route.routePlanId.uuidString
+        ])
         HapticManager.light()
         openingRouteAssignmentId = route.id
         defer { openingRouteAssignmentId = nil }
 
         do {
+            let detailTrace = PerfTrace.begin("session_start", "fetch_route_assignment_detail", fields: [
+                "assignment": route.id.uuidString
+            ])
             let detail = try await RouteAssignmentsAPI.shared.fetchAssignmentDetail(assignmentId: route.id)
+            detailTrace.end(status: "remote_success", fields: [
+                "campaign": detail.campaignId?.uuidString ?? "nil"
+            ])
             await SessionStartCacheRepository.shared.upsertRouteAssignmentDetail(detail)
             openResolvedRoute(
                 context: RouteWorkContext(detail: detail),
@@ -403,8 +416,13 @@ struct SessionStartView: View {
                 routeName: detail.displayPlanName,
                 fallbackAssignmentId: route.id
             )
+            trace.end(status: "assignment_detail_remote")
         } catch {
             let originalError = error
+            PerfTrace.event("session_start", "fetch_route_assignment_detail.error", fields: [
+                "assignment": route.id.uuidString,
+                "error": error.localizedDescription
+            ])
             if let detail = await SessionStartCacheRepository.shared.getCachedRouteAssignmentDetail(assignmentId: route.id) {
                 openResolvedRoute(
                     context: RouteWorkContext(detail: detail),
@@ -412,10 +430,17 @@ struct SessionStartView: View {
                     routeName: detail.displayPlanName,
                     fallbackAssignmentId: route.id
                 )
+                trace.end(status: "assignment_detail_cache_fallback")
                 return
             }
             do {
+                let planTrace = PerfTrace.begin("session_start", "fetch_route_plan_detail", fields: [
+                    "routePlan": route.routePlanId.uuidString
+                ])
                 let planDetail = try await RoutePlansAPI.shared.fetchRoutePlanDetail(routePlanId: route.routePlanId)
+                planTrace.end(status: "remote_success", fields: [
+                    "campaign": planDetail.campaignId?.uuidString ?? "nil"
+                ])
                 await SessionStartCacheRepository.shared.upsertRoutePlanDetail(planDetail)
                 openResolvedRoute(
                     context: RouteWorkContext(assignment: route, planDetail: planDetail),
@@ -423,7 +448,12 @@ struct SessionStartView: View {
                     routeName: RouteAssignmentSummary.displayName(fromRoutePlanName: planDetail.name),
                     fallbackAssignmentId: route.id
                 )
+                trace.end(status: "plan_detail_remote_fallback")
             } catch {
+                PerfTrace.event("session_start", "fetch_route_plan_detail.error", fields: [
+                    "routePlan": route.routePlanId.uuidString,
+                    "error": error.localizedDescription
+                ])
                 if let planDetail = await SessionStartCacheRepository.shared.getCachedRoutePlanDetail(routePlanId: route.routePlanId) {
                     openResolvedRoute(
                         context: RouteWorkContext(assignment: route, planDetail: planDetail),
@@ -431,10 +461,14 @@ struct SessionStartView: View {
                         routeName: RouteAssignmentSummary.displayName(fromRoutePlanName: planDetail.name),
                         fallbackAssignmentId: route.id
                     )
+                    trace.end(status: "plan_detail_cache_fallback")
                 } else {
                     await MainActor.run {
                         routeOpenErrorMessage = originalError.localizedDescription
                     }
+                    trace.end(status: "error", fields: [
+                        "error": originalError.localizedDescription
+                    ])
                 }
             }
         }
@@ -490,6 +524,7 @@ struct SessionStartView: View {
     private func loadData() async {
         guard !isFetchingData else { return }
         if let last = lastFetchTime, Date().timeIntervalSince(last) < 3 { return }
+        let trace = PerfTrace.begin("session_start", "load_data")
         isFetchingData = true
         lastFetchTime = Date()
         isLoadingData = true
@@ -501,33 +536,68 @@ struct SessionStartView: View {
         async let campaignsDone: Void = loadCampaigns()
         async let routesDone: Void = loadRoutes()
         _ = await (campaignsDone, routesDone)
+        trace.end(status: "done", fields: [
+            "campaigns": campaigns.count,
+            "routes": routeAssignments.count
+        ])
     }
 
     private func loadCampaigns() async {
+        if CampaignV2Store.shared.hasFreshData(maxAge: 60) {
+            let trace = PerfTrace.begin("session_start", "load_campaigns")
+            campaigns = CampaignV2Store.shared.campaigns
+            print("✅ [SessionStart] Using fresh shared campaign store: \(campaigns.count) campaigns")
+            trace.end(status: "shared_store_cache", fields: [
+                "campaigns": campaigns.count
+            ])
+            return
+        }
+
+        let trace = PerfTrace.begin("session_start", "load_campaigns", fields: [
+            "source": "remote"
+        ])
         do {
             campaigns = try await CampaignsAPI.shared.fetchCampaignsV2(workspaceId: WorkspaceContext.shared.workspaceId)
+            CampaignV2Store.shared.set(campaigns)
             print("✅ Loaded \(campaigns.count) campaigns")
+            trace.end(status: "remote_success", fields: [
+                "campaigns": campaigns.count,
+                "workspace": WorkspaceContext.shared.workspaceId?.uuidString ?? "nil"
+            ])
         } catch {
             // CRITICAL: Don't treat cancellation as failure - prevents infinite retry loop
             if (error as NSError).code == NSURLErrorCancelled {
                 print("Fetch cancelled (view disposed) - not retrying")
+                trace.end(status: "cancelled")
                 return
             }
             print("❌ Failed to load campaigns: \(error)")
             campaigns = []
+            trace.end(status: "error", fields: [
+                "error": error.localizedDescription
+            ])
         }
     }
 
     private func loadRoutes() async {
+        let trace = PerfTrace.begin("session_start", "load_routes", fields: [
+            "preferredWorkspace": WorkspaceContext.shared.workspaceId?.uuidString ?? "nil",
+            "online": NetworkMonitor.shared.isOnline
+        ])
         let preferredWorkspaceId = WorkspaceContext.shared.workspaceId
         if !NetworkMonitor.shared.isOnline, let preferredWorkspaceId {
             let cached = await SessionStartCacheRepository.shared.getCachedRouteAssignments(workspaceId: preferredWorkspaceId)
             routeAssignments = cached
+            trace.end(status: "offline_cache", fields: [
+                "routes": cached.count,
+                "workspace": preferredWorkspaceId.uuidString
+            ])
             return
         }
 
         guard let workspaceId = await RoutePlansAPI.shared.resolveWorkspaceId(preferred: preferredWorkspaceId) else {
             routeAssignments = []
+            trace.end(status: "no_workspace")
             return
         }
 
@@ -535,16 +605,31 @@ struct SessionStartView: View {
             let result = try await RouteAssignmentsAPI.shared.fetchAssignments(workspaceId: workspaceId)
             routeAssignments = result.assignments
             await SessionStartCacheRepository.shared.upsertRouteAssignments(result.assignments, workspaceId: workspaceId)
+            trace.end(status: "assignments_remote_success", fields: [
+                "routes": result.assignments.count,
+                "workspace": workspaceId.uuidString
+            ])
         } catch {
             if (error as NSError).code == NSURLErrorCancelled {
+                trace.end(status: "cancelled")
                 return
             }
             do {
                 routeAssignments = try await RoutePlansAPI.shared.fetchMyAssignedRoutes(workspaceId: workspaceId)
                 await SessionStartCacheRepository.shared.upsertRouteAssignments(routeAssignments, workspaceId: workspaceId)
+                trace.end(status: "legacy_routes_remote_fallback", fields: [
+                    "routes": routeAssignments.count,
+                    "workspace": workspaceId.uuidString,
+                    "primaryError": error.localizedDescription
+                ])
             } catch {
                 let cached = await SessionStartCacheRepository.shared.getCachedRouteAssignments(workspaceId: workspaceId)
                 routeAssignments = cached
+                trace.end(status: "cache_fallback", fields: [
+                    "routes": cached.count,
+                    "workspace": workspaceId.uuidString,
+                    "error": error.localizedDescription
+                ])
             }
         }
     }

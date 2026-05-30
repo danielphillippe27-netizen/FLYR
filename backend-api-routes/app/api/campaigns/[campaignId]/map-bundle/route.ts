@@ -10,6 +10,7 @@ export const revalidate = 0;
 export const maxDuration = 300;
 
 type RouteContext = { params: Promise<{ campaignId: string }> };
+type RecordTiming = (name: string, durationMs: number) => void;
 
 const JSON_NO_STORE_HEADERS = {
   'Content-Type': 'application/json',
@@ -52,7 +53,24 @@ function createAdminClient() {
   return createSupabaseAdminClient();
 }
 
-async function authenticate(request: Request, campaignId: string) {
+async function measureTiming<T>(
+  recordTiming: RecordTiming | undefined,
+  name: string,
+  operation: () => Promise<T>
+): Promise<T> {
+  const startedAt = performance.now();
+  try {
+    return await operation();
+  } finally {
+    recordTiming?.(name, performance.now() - startedAt);
+  }
+}
+
+async function authenticate(
+  request: Request,
+  campaignId: string,
+  recordTiming?: RecordTiming
+) {
   const token = getAuthToken(request);
   if (!token) {
     return { error: NextResponse.json({ error: 'Unauthorized' }, { status: 401, headers: JSON_NO_STORE_HEADERS }) };
@@ -62,14 +80,16 @@ async function authenticate(request: Request, campaignId: string) {
   const {
     data: { user },
     error: userError,
-  } = await anon.auth.getUser(token);
+  } = await measureTiming(recordTiming, 'auth_user', () => anon.auth.getUser(token));
 
   if (userError || !user) {
     return { error: NextResponse.json({ error: 'Unauthorized' }, { status: 401, headers: JSON_NO_STORE_HEADERS }) };
   }
 
   const admin = createAdminClient();
-  const allowed = await ensureCampaignAccess(admin, campaignId, user.id);
+  const allowed = await measureTiming(recordTiming, 'campaign_access', () =>
+    ensureCampaignAccess(admin, campaignId, user.id)
+  );
   if (!allowed) {
     return { error: NextResponse.json({ error: 'Forbidden' }, { status: 403, headers: JSON_NO_STORE_HEADERS }) };
   }
@@ -91,8 +111,8 @@ export async function GET(request: Request, context: RouteContext): Promise<Resp
   };
 
   try {
-    const { campaignId } = await context.params;
-    const auth = await authenticate(request, campaignId);
+    const { campaignId } = await measureTiming(recordTiming, 'params', () => context.params);
+    const auth = await authenticate(request, campaignId, recordTiming);
     if (auth.error) {
       return new Response(await auth.error.text(), {
         status: auth.error.status,

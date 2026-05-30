@@ -249,7 +249,7 @@ struct CampaignsListView: View {
                 scrollToTop(proxy)
             }
             .refreshable {
-                hooksV2.load(store: storeV2)
+                hooksV2.load(store: storeV2, force: true)
                 HapticManager.rigid()
             }
             .sheet(isPresented: $showSessionStartSheet) {

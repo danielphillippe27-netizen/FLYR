@@ -236,10 +236,9 @@ struct NewCampaignDetailView: View {
                         .foregroundColor(.text)
                     
                     ZStack {
-                        CampaignMapView(
-                            campaignId: campaignID.uuidString,
-                            initialCenter: mapCenter,
-                            showPreSessionStartButton: false
+                        CampaignAreaPreview(
+                            campaign: hook.item,
+                            center: mapCenter
                         )
                         .frame(height: 260)
                         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
@@ -700,7 +699,6 @@ struct NewCampaignDetailView: View {
             hook.load(id: campaignID, store: store)
             Task {
                 await campaignDownloadService.refreshState(campaignId: campaignID.uuidString)
-                await campaignDownloadService.prefetchIfNeeded(campaignId: campaignID.uuidString)
                 await refreshCampaignDetailData()
             }
         }
@@ -712,7 +710,6 @@ struct NewCampaignDetailView: View {
                 updateMapCenter(for: campaign)
                 Task {
                     await campaignDownloadService.refreshState(campaignId: campaignID.uuidString)
-                    await campaignDownloadService.prefetchIfNeeded(campaignId: campaignID.uuidString)
                     await refreshCampaignDetailData()
                 }
             }
@@ -1788,6 +1785,181 @@ struct FullscreenMapView: View {
             // MainTabView can present the global Share Activity full-screen cover.
             onClose()
         }
+    }
+}
+
+private struct CampaignAreaPreview: View {
+    let campaign: CampaignV2?
+    let center: CLLocationCoordinate2D?
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var coordinates: [CLLocationCoordinate2D] {
+        let addressCoordinates = campaign?.addresses
+            .compactMap(\.coordinate)
+            .filter(CLLocationCoordinate2DIsValid) ?? []
+        if !addressCoordinates.isEmpty {
+            return addressCoordinates
+        }
+        if let center, CLLocationCoordinate2DIsValid(center) {
+            return [center]
+        }
+        return []
+    }
+
+    var body: some View {
+        GeometryReader { geometry in
+            let points = projectedPoints(in: geometry.size)
+            ZStack {
+                previewBackground
+                previewGrid
+                if points.count >= 3 {
+                    territoryShape(points: points)
+                        .fill(Color.accent.opacity(colorScheme == .dark ? 0.24 : 0.18))
+                    territoryShape(points: points)
+                        .stroke(Color.accent.opacity(0.9), lineWidth: 2)
+                }
+                ForEach(Array(points.enumerated()), id: \.offset) { _, point in
+                    Circle()
+                        .fill(Color.white)
+                        .frame(width: 5, height: 5)
+                        .overlay(Circle().stroke(Color.accent, lineWidth: 1.5))
+                        .position(point)
+                }
+
+                VStack {
+                    Spacer()
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(campaign?.name ?? "Campaign Area")
+                                .font(.caption.weight(.semibold))
+                                .foregroundColor(.white)
+                                .lineLimit(1)
+                            Text(previewSubtitle)
+                                .font(.caption2)
+                                .foregroundColor(.white.opacity(0.82))
+                        }
+                        Spacer()
+                    }
+                    .padding(12)
+                    .background(
+                        LinearGradient(
+                            colors: [.black.opacity(0), .black.opacity(0.64)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
+                }
+            }
+        }
+        .background(Color.bgSecondary)
+    }
+
+    private var previewBackground: some View {
+        LinearGradient(
+            colors: colorScheme == .dark
+                ? [Color(red: 0.09, green: 0.10, blue: 0.11), Color(red: 0.05, green: 0.06, blue: 0.07)]
+                : [Color(red: 0.81, green: 0.85, blue: 0.82), Color(red: 0.66, green: 0.74, blue: 0.73)],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+    }
+
+    private var previewGrid: some View {
+        Canvas { context, size in
+            var path = Path()
+            let spacing: CGFloat = 34
+            for x in stride(from: -size.height, through: size.width + size.height, by: spacing) {
+                path.move(to: CGPoint(x: x, y: 0))
+                path.addLine(to: CGPoint(x: x + size.height, y: size.height))
+            }
+            for y in stride(from: spacing, through: size.height, by: spacing) {
+                path.move(to: CGPoint(x: 0, y: y))
+                path.addLine(to: CGPoint(x: size.width, y: y - size.width))
+            }
+            context.stroke(path, with: .color(.white.opacity(colorScheme == .dark ? 0.08 : 0.18)), lineWidth: 1)
+        }
+    }
+
+    private var previewSubtitle: String {
+        let count = campaign?.addresses.count ?? 0
+        guard count > 0 else { return "Map bundle ready preview" }
+        return "\(count) address\(count == 1 ? "" : "es")"
+    }
+
+    private func territoryShape(points: [CGPoint]) -> Path {
+        Path { path in
+            guard let first = points.first else { return }
+            path.move(to: first)
+            points.dropFirst().forEach { path.addLine(to: $0) }
+            path.closeSubpath()
+        }
+    }
+
+    private func projectedPoints(in size: CGSize) -> [CGPoint] {
+        guard size.width > 1, size.height > 1, !coordinates.isEmpty else { return [] }
+        let lats = coordinates.map(\.latitude)
+        let lons = coordinates.map(\.longitude)
+        guard let minLat = lats.min(), let maxLat = lats.max(),
+              let minLon = lons.min(), let maxLon = lons.max() else { return [] }
+
+        let latSpan = max(maxLat - minLat, 0.0001)
+        let lonSpan = max(maxLon - minLon, 0.0001)
+        let padding: CGFloat = 34
+        let drawableWidth = max(1, size.width - padding * 2)
+        let drawableHeight = max(1, size.height - padding * 2)
+
+        let source = coordinates.count >= 3 ? convexHull(coordinates) : coordinates
+        return source.map { coordinate in
+            let x = padding + CGFloat((coordinate.longitude - minLon) / lonSpan) * drawableWidth
+            let y = padding + CGFloat((maxLat - coordinate.latitude) / latSpan) * drawableHeight
+            return CGPoint(x: x, y: y)
+        }
+    }
+
+    private func convexHull(_ coordinates: [CLLocationCoordinate2D]) -> [CLLocationCoordinate2D] {
+        let unique = Dictionary(grouping: coordinates) {
+            "\(String(format: "%.6f", $0.latitude)),\(String(format: "%.6f", $0.longitude))"
+        }
+        .compactMap(\.value.first)
+        .sorted {
+            if abs($0.longitude - $1.longitude) < 0.000001 {
+                return $0.latitude < $1.latitude
+            }
+            return $0.longitude < $1.longitude
+        }
+
+        guard unique.count > 2 else { return unique }
+
+        func cross(
+            _ origin: CLLocationCoordinate2D,
+            _ a: CLLocationCoordinate2D,
+            _ b: CLLocationCoordinate2D
+        ) -> Double {
+            (a.longitude - origin.longitude) * (b.latitude - origin.latitude)
+                - (a.latitude - origin.latitude) * (b.longitude - origin.longitude)
+        }
+
+        var lower: [CLLocationCoordinate2D] = []
+        for point in unique {
+            while lower.count >= 2,
+                  cross(lower[lower.count - 2], lower[lower.count - 1], point) <= 0 {
+                lower.removeLast()
+            }
+            lower.append(point)
+        }
+
+        var upper: [CLLocationCoordinate2D] = []
+        for point in unique.reversed() {
+            while upper.count >= 2,
+                  cross(upper[upper.count - 2], upper[upper.count - 1], point) <= 0 {
+                upper.removeLast()
+            }
+            upper.append(point)
+        }
+
+        lower.removeLast()
+        upper.removeLast()
+        return lower + upper
     }
 }
 

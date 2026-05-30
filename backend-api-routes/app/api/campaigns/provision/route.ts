@@ -699,11 +699,37 @@ type ProvisionParcelPreparationResult = {
   shouldRunDeferred: boolean;
 };
 
+async function queueProvisionParcelEnrichment(params: {
+  supabase: ReturnType<typeof createAdminClient>;
+  campaignId: string;
+  regionCode: string;
+}): Promise<ProvisionParcelPreparationResult> {
+  if (!isParcelRegionSupported(params.regionCode)) {
+    return {
+      count: 0,
+      status: 'skipped',
+      sourceId: null,
+      error: null,
+      shouldRunDeferred: false,
+    };
+  }
+
+  await new ParcelEnrichmentService(params.supabase).markQueued(params.campaignId);
+  return {
+    count: 0,
+    status: 'queued',
+    sourceId: null,
+    error: null,
+    shouldRunDeferred: true,
+  };
+}
+
 async function prepareProvisionParcels(params: {
   supabase: ReturnType<typeof createAdminClient>;
   campaignId: string;
   regionCode: string;
   bedrockLinkGeometry?: BedrockLinkGeometry | null;
+  snapshotOnly?: boolean;
 }): Promise<ProvisionParcelPreparationResult> {
   const preparedLinkGeometryParcels = params.bedrockLinkGeometry?.parcels ?? [];
   if (preparedLinkGeometryParcels.length > 0) {
@@ -732,8 +758,10 @@ async function prepareProvisionParcels(params: {
   }
 
   try {
-    const result = await new ParcelEnrichmentService(params.supabase)
-      .prepareParcelsForProvision(params.campaignId);
+    const parcelService = new ParcelEnrichmentService(params.supabase);
+    const result = params.snapshotOnly
+      ? await parcelService.prepareSnapshotParcelsForProvision(params.campaignId)
+      : await parcelService.prepareParcelsForProvision(params.campaignId);
     return {
       count: result.status === 'ready' ? result.parcelCount : 0,
       status: result.status,
@@ -1431,6 +1459,20 @@ async function refreshGroupedBuildingLinkClassifications(
   supabase: ReturnType<typeof createAdminClient>,
   campaignId: string
 ): Promise<void> {
+  const { error: rpcError } = await supabase.rpc('refresh_grouped_building_link_classifications', {
+    p_campaign_id: campaignId,
+  });
+
+  if (!rpcError) {
+    return;
+  }
+
+  console.warn('[Provision] Bulk grouped-link classification RPC unavailable; falling back to per-building updates:', {
+    campaignId,
+    code: rpcError.code,
+    message: rpcError.message,
+  });
+
   const linkRows = await fetchAllCampaignRows<{
     building_id: string | null;
     address_id: string | null;
@@ -1560,8 +1602,9 @@ async function autoLinkCampaignAddressesFromMemory(params: {
   sourceVersion?: string | null;
   timings?: ProvisionTimingRecorder;
 }): Promise<AutoLinkCampaignAddressesResult> {
-  await clearRefreshableAutoBuildingLinks(params.supabase, params.campaignId);
-  const persistedParcels = await fetchCampaignLinkerParcels(params.supabase, params.campaignId).catch((error) => {
+  const persistedParcels = await (params.timings
+    ? params.timings.measure('persisted_parcel_fetch_ms', () => fetchCampaignLinkerParcels(params.supabase, params.campaignId), 'linker')
+    : fetchCampaignLinkerParcels(params.supabase, params.campaignId)).catch((error) => {
     console.warn('[Provision] Persisted parcel evidence unavailable for in-memory linker:', {
       campaignId: params.campaignId,
       message: error instanceof Error ? error.message : String(error),
@@ -1572,13 +1615,29 @@ async function autoLinkCampaignAddressesFromMemory(params: {
     ? persistedParcels
     : params.bedrockLinkGeometry.parcels ?? [];
   const parcelAddressLinks = persistedParcels.length > 0
-    ? buildParcelAddressLinksFromPreparedRows({
+    ? (params.timings
+      ? params.timings.measureSync('parcel_link_build_ms', () => buildParcelAddressLinksFromPreparedRows({
+        campaignId: params.campaignId,
+        addresses: params.addresses,
+        parcels: persistedParcels,
+      }), 'linker')
+      : buildParcelAddressLinksFromPreparedRows({
       campaignId: params.campaignId,
       addresses: params.addresses,
       parcels: persistedParcels,
-    })
+    }))
     : [];
-  const canonicalLinkResult = buildCanonicalBuildingLinksFromMemory({
+  const canonicalLinkResult = params.timings
+    ? params.timings.measureSync('canonical_link_build_ms', () => buildCanonicalBuildingLinksFromMemory({
+      campaignId: params.campaignId,
+      addresses: params.addresses,
+      materializedBuildings: params.materializedBuildings,
+      sourceBuildings: params.bedrockLinkGeometry.buildings ?? [],
+      parcels: parcelsForLinking,
+      distanceMeters: AUTO_LINK_DISTANCE_METERS,
+      sourceVersion: params.sourceVersion,
+    }), 'linker')
+    : buildCanonicalBuildingLinksFromMemory({
     campaignId: params.campaignId,
     addresses: params.addresses,
     materializedBuildings: params.materializedBuildings,
@@ -1622,8 +1681,29 @@ async function autoLinkCampaignAddressesInProcess(params: {
   sourceVersion?: string | null;
   timings?: ProvisionTimingRecorder;
 }): Promise<AutoLinkCampaignAddressesResult> {
-  await clearRefreshableAutoBuildingLinks(params.supabase, params.campaignId);
-  const [addresses, buildingRows, parcelRows] = await Promise.all([
+  const [addresses, buildingRows, parcelRows] = await (params.timings
+    ? params.timings.measure('db_linker_row_fetch_ms', async () => Promise.all([
+      fetchAllCampaignRows<CampaignAddressLinkerRow>(
+        params.supabase,
+        'campaign_addresses',
+        'id, coordinate, geom',
+        params.campaignId
+      ),
+      fetchAllCampaignRows<CampaignBuildingLinkerRow>(
+        params.supabase,
+        'buildings',
+        'id, gers_id, geom, height_m, units_count, is_townhome_row',
+        params.campaignId
+      ),
+      fetchCampaignLinkerParcels(params.supabase, params.campaignId).catch((error) => {
+        console.warn('[Provision] Parcel linker enrichment unavailable:', {
+          campaignId: params.campaignId,
+          message: error instanceof Error ? error.message : String(error),
+        });
+        return [] as CampaignParcelLinkerRow[];
+      }),
+    ]), 'linker')
+    : Promise.all([
     fetchAllCampaignRows<CampaignAddressLinkerRow>(
       params.supabase,
       'campaign_addresses',
@@ -1643,9 +1723,18 @@ async function autoLinkCampaignAddressesInProcess(params: {
       });
       return [] as CampaignParcelLinkerRow[];
     }),
-  ]);
+  ]));
 
-  const canonicalLinkResult = buildCanonicalBuildingLinksFromPreparedRows({
+  const canonicalLinkResult = params.timings
+    ? params.timings.measureSync('canonical_link_build_ms', () => buildCanonicalBuildingLinksFromPreparedRows({
+      campaignId: params.campaignId,
+      addresses,
+      buildings: prepareBuildingsFromRows(buildingRows),
+      parcels: parcelRows,
+      distanceMeters: AUTO_LINK_DISTANCE_METERS,
+      sourceVersion: params.sourceVersion,
+    }), 'linker')
+    : buildCanonicalBuildingLinksFromPreparedRows({
     campaignId: params.campaignId,
     addresses,
     buildings: prepareBuildingsFromRows(buildingRows),
@@ -1654,11 +1743,17 @@ async function autoLinkCampaignAddressesInProcess(params: {
     sourceVersion: params.sourceVersion,
   });
   const links = canonicalLinkResult.links;
-  const parcelAddressLinks = buildParcelAddressLinksFromPreparedRows({
-    campaignId: params.campaignId,
-    addresses,
-    parcels: parcelRows,
-  });
+  const parcelAddressLinks = params.timings
+    ? params.timings.measureSync('parcel_link_build_ms', () => buildParcelAddressLinksFromPreparedRows({
+      campaignId: params.campaignId,
+      addresses,
+      parcels: parcelRows,
+    }), 'linker')
+    : buildParcelAddressLinksFromPreparedRows({
+      campaignId: params.campaignId,
+      addresses,
+      parcels: parcelRows,
+    });
 
   await Promise.all([
     params.timings
@@ -2343,6 +2438,7 @@ export async function POST(request: NextRequest) {
               : snapshotHasStaticBuildingPmtiles(snapshot)
                 ? finalAddressCount
                 : 0;
+          const hasPreparedLinkGeometryParcels = (bedrockLinkGeometry?.parcels?.length ?? 0) > 0;
 
           const [
             addressInsertResult,
@@ -2366,12 +2462,22 @@ export async function POST(request: NextRequest) {
               bedrockLinkGeometry,
             })),
             timings.measure('snapshot_metadata_ms', () => upsertSnapshotMetadata(supabase, campaignId!, snapshot)),
-            timings.measure('parcel_enrichment_ms', () => prepareProvisionParcels({
-              supabase,
-              campaignId: campaignId!,
-              regionCode,
-              bedrockLinkGeometry,
-            })),
+            timings.measure('parcel_enrichment_ms', () => {
+              if (hasPreparedLinkGeometryParcels || isParcelRegionSupported(regionCode)) {
+                return prepareProvisionParcels({
+                  supabase,
+                  campaignId: campaignId!,
+                  regionCode,
+                  bedrockLinkGeometry,
+                  snapshotOnly: !hasPreparedLinkGeometryParcels,
+                });
+              }
+              return queueProvisionParcelEnrichment({
+                supabase,
+                campaignId: campaignId!,
+                regionCode,
+              });
+            }),
           ]);
 
           finalAddressCount = addressInsertResult.count;
@@ -2392,9 +2498,11 @@ export async function POST(request: NextRequest) {
           const cachedBuildingGeoJSONCount = materializedBuildingResult.count;
 
           await updateCampaignProvision(supabase, campaignId!, {
-            provision_status: 'pending',
+            provision_status: 'ready',
             provision_phase: 'map_ready',
             provision_source: dbProvisionSource(addressSource),
+            provision_error: null,
+            provision_message: 'Map is ready. Building link optimization will continue in the background.',
             provisioned_at: readyAt,
             map_ready_at: readyAt,
             has_parcels: preparedParcelCount > 0,
@@ -2407,18 +2515,46 @@ export async function POST(request: NextRequest) {
           console.log('[Provision] Static S3 geometry is map-ready; no legacy Gold/Lambda/White Gold fallbacks will run.', {
             cachedBuildingGeoJSONCount,
           });
-          const postProcessing = await timings.measure('postprocessing_ms', () => runCampaignPostProcessing({
-            supabase,
-            campaignId: campaignId!,
-            source: addressSource,
-            insertedCount: finalAddressCount,
-            readyAt,
-            expectedBuildingCount: cachedBuildingGeoJSONCount,
-            materializedBuildings: materializedBuildingResult.buildings,
-            campaignAddresses: campaignLinkerAddresses,
-            bedrockLinkGeometry,
-            timings,
-          }));
+          let postProcessing: CampaignPostProcessingResult;
+          try {
+            postProcessing = await timings.measure('postprocessing_ms', () => runCampaignPostProcessing({
+              supabase,
+              campaignId: campaignId!,
+              source: addressSource,
+              insertedCount: finalAddressCount,
+              readyAt,
+              expectedBuildingCount: cachedBuildingGeoJSONCount,
+              materializedBuildings: materializedBuildingResult.buildings,
+              campaignAddresses: campaignLinkerAddresses,
+              bedrockLinkGeometry,
+              timings,
+            }));
+          } catch (postProcessingError) {
+            console.error('[Provision] Campaign is map-ready, but link post-processing failed:', {
+              campaignId,
+              error: postProcessingError,
+            });
+            postProcessing = {
+              optimized: false,
+              postprocessDeferred: false,
+              linkedAddressCount: 0,
+              skippedManualCount: 0,
+              unlinkedAddressCount: finalAddressCount,
+              unitsCreated: 0,
+              townhousesIdentified: 0,
+              linkerPath: 'deferred',
+              message: `${sourceDisplayName(addressSource)} campaign is map-ready. Building linking will need retry.`,
+            };
+            await updateCampaignProvision(supabase, campaignId!, {
+              provision_status: 'ready',
+              provision_phase: finalAddressCount > 0 ? 'linking_failed' : 'map_ready',
+              provision_error: null,
+              provision_message: 'Map is ready. Building link optimization did not complete.',
+              provisioned_at: readyAt,
+              map_ready_at: readyAt,
+              provision_timings: timings.snapshot(),
+            });
+          }
           timings.count('links_created', postProcessing.linkedAddressCount);
           await persistProvisionTimings(supabase, campaignId!, timings.snapshot());
 

@@ -165,7 +165,7 @@ struct YouViewContent: View {
                                     )
                                     CompactStatRow(
                                         icon: "person.badge.plus",
-                                        label: "Lead",
+                                        label: "Leads",
                                         progress: progress(actual: Double(vm.stats?.leads_created ?? 0), max: StatsProgressMax.leads),
                                         value: "\(vm.stats?.leads_created ?? 0)"
                                     )

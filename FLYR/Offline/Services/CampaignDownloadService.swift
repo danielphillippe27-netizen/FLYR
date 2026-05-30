@@ -63,7 +63,6 @@ final class CampaignDownloadService: ObservableObject {
     @Published private(set) var mapAssetReadiness: [String: CampaignMapAssetReadiness] = [:]
 
     private let campaignRepository = CampaignRepository.shared
-    private let supabase = SupabaseClientShim()
     private var activeDownloads = Set<String>()
     private var activeMapAssetDownloads = Set<String>()
 
@@ -250,7 +249,7 @@ final class CampaignDownloadService: ObservableObject {
         mapAssetReadiness[campaignId] = CampaignMapAssetReadiness(
             campaignId: campaignId,
             isMapReady: false,
-            missingComponents: ["buildings", "addresses"],
+            missingComponents: ["map bundle", "buildings", "addresses"],
             buildingsCount: 0,
             addressesCount: 0,
             linksCount: 0,
@@ -270,25 +269,8 @@ final class CampaignDownloadService: ObservableObject {
                 downloadedAt: nil
             )
 
-            async let buildingsTask = BuildingLinkService.shared.fetchBuildings(campaignId: campaignId)
-            async let addressesTask = fetchMapAddresses(campaignId: campaignUUID)
-            async let linksTask = fetchMapLinks(campaignId: campaignId)
-            async let roadsTask = CampaignRoadService.shared.getRoadsForSession(campaignId: campaignId)
-
-            let buildings = try await buildingsTask
-            await campaignRepository.upsertBuildings(campaignId: campaignId, features: buildings)
-            await updateMapAssetProgress(campaignId: campaignId, progressPercent: 35)
-
-            let addresses = try await addressesTask
-            await campaignRepository.upsertAddresses(campaignId: campaignId, features: addresses.features)
-            await updateMapAssetProgress(campaignId: campaignId, progressPercent: 65)
-
-            let links = await linksTask
-            await campaignRepository.upsertBuildingAddressLinks(campaignId: campaignId, links: links)
-
-            let corridors = await roadsTask
-            await campaignRepository.upsertRoads(campaignId: campaignId, corridors: corridors)
-            await updateMapAssetProgress(campaignId: campaignId, progressPercent: 90)
+            _ = try await fetchAndPersistCampaignMapBundle(campaignId: campaignId)
+            await updateMapAssetProgress(campaignId: campaignId, progressPercent: 100)
 
             await refreshMapAssetReadiness(campaignId: campaignId)
             return true
@@ -314,33 +296,17 @@ final class CampaignDownloadService: ObservableObject {
         )
     }
 
-    private func fetchMapAddresses(campaignId: UUID) async throws -> AddressFeatureCollection {
-        do {
-            return try await BuildingLinkService.shared.fetchCampaignAddresses(campaignId: campaignId.uuidString)
-        } catch {
-            print("⚠️ [CampaignDownload] Backend address endpoint failed; falling back to RPC for map assets")
-            return try await fetchAddresses(campaignId: campaignId)
-        }
-    }
-
-    private func fetchMapLinks(campaignId: String) async -> [BuildingAddressLink] {
-        do {
-            return try await BuildingLinkService.shared.fetchLinks(campaignId: campaignId)
-        } catch {
-            print("⚠️ [CampaignDownload] Building-address links unavailable for map assets: \(error.localizedDescription)")
-            return []
-        }
-    }
-
     func computeMapAssetReadiness(campaignId: String) async -> CampaignMapAssetReadiness {
         let assetCounts = await campaignRepository.getOfflineAssetCounts(campaignId: campaignId)
         let bundle = await campaignRepository.getCampaignMapBundle(campaignId: campaignId)
+        let hasCanonicalBundle = bundle?.metadata != nil
         let buildingsCount = bundle?.buildings.features.count ?? assetCounts.buildings
         let addressesCount = bundle?.addresses.features.count ?? assetCounts.addresses
         let roadsCount = bundle?.roads.features.count ?? assetCounts.roads
         let hasLinkedAddressIdentity = Self.hasLinkedAddressIdentity(bundle: bundle)
 
         var missing: [String] = []
+        if !hasCanonicalBundle { missing.append("map bundle") }
         if buildingsCount == 0 { missing.append("buildings") }
         if addressesCount == 0 { missing.append("addresses") }
 
@@ -386,9 +352,16 @@ final class CampaignDownloadService: ObservableObject {
     }
 
     func makeAvailableOffline(campaignId: String) async {
-        guard let campaignUUID = UUID(uuidString: campaignId) else { return }
+        let trace = PerfTrace.begin("campaign_open", "make_available_offline", fields: [
+            "campaign": campaignId
+        ])
+        guard let campaignUUID = UUID(uuidString: campaignId) else {
+            trace.end(status: "invalid_campaign_id")
+            return
+        }
         guard !activeDownloads.contains(campaignId) else {
             await refreshState(campaignId: campaignId)
+            trace.end(status: "already_downloading")
             return
         }
 
@@ -405,7 +378,9 @@ final class CampaignDownloadService: ObservableObject {
         await refreshState(campaignId: campaignId)
 
         do {
+            let metadataTrace = PerfTrace.begin("campaign_open", "offline_fetch_campaign_metadata", fields: ["campaign": campaignId])
             let metadata = try await fetchCampaignMetadata(campaignId: campaignUUID)
+            metadataTrace.end(status: "success", fields: ["hasBoundary": metadata.boundaryGeoJSON != nil])
             await campaignRepository.upsertCampaign(
                 id: campaignId,
                 name: metadata.name,
@@ -415,40 +390,50 @@ final class CampaignDownloadService: ObservableObject {
                 downloadedAt: nil
             )
 
-            let buildings = try await BuildingLinkService.shared.fetchBuildings(campaignId: campaignId)
-            await campaignRepository.upsertBuildings(campaignId: campaignId, features: buildings)
-            await campaignRepository.updateDownloadState(campaignId: campaignId, status: "downloading", progress: 0.30, startedAt: startedAt)
-
-            let addresses = try await fetchAddresses(campaignId: campaignUUID)
-            await campaignRepository.upsertAddresses(campaignId: campaignId, features: addresses.features)
+            let bundleTrace = PerfTrace.begin("campaign_open", "offline_fetch_map_bundle", fields: ["campaign": campaignId])
+            let mapBundle = try await fetchAndPersistCampaignMapBundle(campaignId: campaignId)
+            bundleTrace.end(status: "success", fields: [
+                "buildings": mapBundle.buildings.features.count,
+                "addresses": mapBundle.addresses.features.count,
+                "parcels": mapBundle.parcels.features.count,
+                "roads": mapBundle.roads.features.count,
+                "links": mapBundle.links.count
+            ])
             await campaignRepository.updateDownloadState(campaignId: campaignId, status: "downloading", progress: 0.50, startedAt: startedAt)
 
-            let links = try await BuildingLinkService.shared.fetchLinks(campaignId: campaignId)
-            await campaignRepository.upsertBuildingAddressLinks(campaignId: campaignId, links: links)
-
+            let orphansTrace = PerfTrace.begin("campaign_open", "offline_fetch_address_orphans", fields: ["campaign": campaignId])
             let addressOrphans = try await fetchAddressOrphans(campaignId: campaignUUID)
+            orphansTrace.end(status: "success", fields: ["orphans": addressOrphans.count])
             await campaignRepository.upsertAddressOrphans(campaignId: campaignId, orphans: addressOrphans)
             await campaignRepository.updateDownloadState(campaignId: campaignId, status: "downloading", progress: 0.55, startedAt: startedAt)
 
+            let addressMetadataTrace = PerfTrace.begin("campaign_open", "offline_fetch_address_metadata", fields: ["campaign": campaignId])
             let addressMetadata = try await fetchCampaignAddressMetadata(campaignId: campaignUUID)
+            addressMetadataTrace.end(status: "success", fields: ["rows": addressMetadata.count])
             await campaignRepository.upsertAddressCaptureMetadata(
                 campaignId: campaignUUID,
                 responses: addressMetadata,
                 dirty: false
             )
 
+            let statusesTrace = PerfTrace.begin("campaign_open", "offline_fetch_statuses", fields: ["campaign": campaignId])
             let statuses = try await VisitsAPI.shared.fetchStatuses(campaignId: campaignUUID, forceRefresh: true)
+            statusesTrace.end(status: "success", fields: ["statuses": statuses.count])
             await campaignRepository.upsertStatuses(rows: Array(statuses.values))
             await campaignRepository.updateDownloadState(campaignId: campaignId, status: "downloading", progress: 0.80, startedAt: startedAt)
 
+            let contactsTrace = PerfTrace.begin("campaign_open", "offline_fetch_contacts", fields: ["campaign": campaignId])
             let contacts = try await fetchCampaignContacts(campaignId: campaignUUID)
+            contactsTrace.end(status: "success", fields: ["contacts": contacts.count])
             await ContactRepository.shared.upsertContacts(contacts, userId: nil, workspaceId: nil, dirty: false, syncedAt: Date())
 
+            let activitiesTrace = PerfTrace.begin("campaign_open", "offline_fetch_contact_activities", fields: [
+                "campaign": campaignId,
+                "contacts": contacts.count
+            ])
             let contactActivities = try await fetchCampaignContactActivities(contactIds: contacts.map(\.id))
+            activitiesTrace.end(status: "success", fields: ["activities": contactActivities.count])
             await ContactRepository.shared.upsertActivities(contactActivities, dirty: false, syncedAt: Date())
-
-            let corridors = await CampaignRoadService.shared.getRoadsForSession(campaignId: campaignId)
-            await campaignRepository.upsertRoads(campaignId: campaignId, corridors: corridors)
 
             setTransientState(
                 campaignId: campaignId,
@@ -458,10 +443,14 @@ final class CampaignDownloadService: ObservableObject {
                 errorMessage: nil
             )
 
+            let tilesTrace = PerfTrace.begin("campaign_open", "offline_download_mapbox_region", fields: [
+                "campaign": campaignId,
+                "addresses": mapBundle.addresses.features.count
+            ])
             try await MapboxOfflineService.shared.downloadCampaignRegion(
                 campaignId: campaignId,
                 boundaryGeoJSON: metadata.boundaryGeoJSON,
-                addresses: addresses.features,
+                addresses: mapBundle.addresses.features,
                 onProgress: { [weak self] progress in
                     Task { @MainActor [weak self] in
                         self?.setTransientState(
@@ -474,15 +463,16 @@ final class CampaignDownloadService: ObservableObject {
                     }
                 }
             )
+            tilesTrace.end(status: "success")
 
             let readiness = await computeReadiness(
                 campaignId: campaignId,
                 expected: OfflineExpectedCounts(
-                    buildings: buildings.count,
-                    addresses: addresses.features.count,
-                    buildingLinks: links.count,
+                    buildings: mapBundle.buildings.features.count,
+                    addresses: mapBundle.addresses.features.count,
+                    buildingLinks: mapBundle.links.count,
                     statuses: statuses.count,
-                    roads: corridors.count,
+                    roads: mapBundle.roads.features.count,
                     metadata: addressMetadata.count,
                     contacts: contacts.count,
                     activities: contactActivities.count
@@ -491,6 +481,9 @@ final class CampaignDownloadService: ObservableObject {
             )
             self.readiness[campaignId] = readiness
             guard readiness.isVerified else {
+                trace.end(status: "verification_failed", fields: [
+                    "missing": readiness.missingComponents.joined(separator: ",")
+                ])
                 throw CampaignOfflineVerificationError.verificationFailed(readiness.missingComponents)
             }
 
@@ -503,7 +496,18 @@ final class CampaignDownloadService: ObservableObject {
                 completedAt: completedAt,
                 lastSyncedAt: completedAt
             )
+            trace.end(status: "ready", fields: [
+                "buildings": readiness.buildingsCount,
+                "addresses": readiness.addressesCount,
+                "contacts": readiness.contactsCount,
+                "activities": readiness.activitiesCount,
+                "statuses": readiness.statusesCount,
+                "roads": readiness.roadsCount
+            ])
         } catch {
+            trace.end(status: "error", fields: [
+                "error": error.localizedDescription
+            ])
             await campaignRepository.updateDownloadState(
                 campaignId: campaignId,
                 status: "failed",
@@ -535,12 +539,30 @@ final class CampaignDownloadService: ObservableObject {
         )
     }
 
-    private func fetchAddresses(campaignId: UUID) async throws -> AddressFeatureCollection {
-        let data = try await supabase.callRPCData(
-            "rpc_get_campaign_addresses",
-            params: ["p_campaign_id": campaignId.uuidString]
+    private func fetchAndPersistCampaignMapBundle(campaignId: String) async throws -> CanonicalCampaignMapBundle {
+        let result = try await BuildingLinkService.shared.fetchCanonicalCampaignMapBundle(
+            campaignId: campaignId,
+            localSignature: nil
         )
-        return try JSONDecoder().decode(AddressFeatureCollection.self, from: data)
+
+        guard case .bundle(let bundle) = result else {
+            throw CampaignOfflineVerificationError.mapBundleUnavailable
+        }
+
+        let persisted = await campaignRepository.replaceCampaignMapBundle(
+            campaignId: campaignId,
+            bundle: bundle
+        )
+        guard persisted else {
+            throw CampaignOfflineVerificationError.mapBundlePersistFailed
+        }
+
+        print(
+            "🧪 [MAP_DEBUG] offline_map_bundle_persisted campaign=\(campaignId) " +
+            "buildings=\(bundle.buildings.features.count) addresses=\(bundle.addresses.features.count) " +
+            "parcels=\(bundle.parcels.features.count) roads=\(bundle.roads.features.count) links=\(bundle.links.count)"
+        )
+        return bundle
     }
 
     private func fetchCampaignAddressMetadata(campaignId: UUID) async throws -> [CampaignAddressResponse] {
@@ -671,6 +693,7 @@ final class CampaignDownloadService: ObservableObject {
         mapTilesReady: Bool? = nil
     ) async -> CampaignOfflineReadiness {
         let assetCounts = await campaignRepository.getOfflineAssetCounts(campaignId: campaignId)
+        let mapBundle = await campaignRepository.getCampaignMapBundle(campaignId: campaignId)
         let contactCounts = await ContactRepository.shared.getOfflineCounts(campaignId: UUID(uuidString: campaignId) ?? UUID())
         let currentState = if let cachedState = states[campaignId] {
             cachedState
@@ -690,6 +713,7 @@ final class CampaignDownloadService: ObservableObject {
 
         var missing: [String] = []
         if !resolvedMapTilesReady { missing.append("map tiles") }
+        if mapBundle?.metadata == nil { missing.append("map bundle") }
         if assetCounts.buildings < requiredBuildings || assetCounts.buildings == 0 { missing.append("buildings") }
         if assetCounts.addresses < requiredAddresses || assetCounts.addresses == 0 { missing.append("addresses") }
         if assetCounts.buildingLinks < requiredLinks { missing.append("building links") }
@@ -758,10 +782,16 @@ private struct OfflineExpectedCounts {
 }
 
 private enum CampaignOfflineVerificationError: LocalizedError {
+    case mapBundleUnavailable
+    case mapBundlePersistFailed
     case verificationFailed([String])
 
     var errorDescription: String? {
         switch self {
+        case .mapBundleUnavailable:
+            return "Campaign map bundle could not be downloaded."
+        case .mapBundlePersistFailed:
+            return "Campaign map bundle could not be saved on this device."
         case .verificationFailed(let missing):
             return "Offline verification failed: missing \(missing.joined(separator: ", "))."
         }

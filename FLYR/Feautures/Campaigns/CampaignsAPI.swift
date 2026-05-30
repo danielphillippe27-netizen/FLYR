@@ -957,6 +957,11 @@ final class CampaignsAPI {
         waitForLinker: Bool = false,
         waitUntilReady: Bool = true
     ) async throws -> CampaignProvisionResponse? {
+        let trace = PerfTrace.begin("campaign_create", "api_provision_campaign", fields: [
+            "campaign": campaignId.uuidString,
+            "waitForLinker": waitForLinker,
+            "waitUntilReady": waitUntilReady
+        ])
         let url = URL(string: "\(Self.provisionRequestBaseURL)/api/campaigns/provision")!
         print("🌐 [API DEBUG] Provision URL: \(url.absoluteString)")
         var request = URLRequest(url: url)
@@ -991,9 +996,17 @@ final class CampaignsAPI {
                 )
                 if state.provisionStatus == .ready {
                     print("✅ [API DEBUG] Provision completed server-side after client timeout for campaign \(campaignId)")
+                    trace.end(status: "timeout_then_ready", fields: [
+                        "status": state.provisionStatus?.rawValue ?? "nil",
+                        "phase": state.provisionPhase?.rawValue ?? "nil"
+                    ])
                     return Self.provisionResponse(from: state)
                 }
                 if state.provisionStatus == .failed {
+                    trace.end(status: "timeout_then_failed", fields: [
+                        "status": state.provisionStatus?.rawValue ?? "nil",
+                        "phase": state.provisionPhase?.rawValue ?? "nil"
+                    ])
                     throw NSError(
                         domain: "CampaignsAPI",
                         code: NSURLErrorTimedOut,
@@ -1002,9 +1015,13 @@ final class CampaignsAPI {
                 }
                 print("⚠️ [API DEBUG] Provision still not ready after timeout; last status=\(state.provisionStatus?.rawValue ?? "unknown"), phase=\(state.provisionPhase?.rawValue ?? "unknown")")
             }
+            trace.end(status: "network_error", fields: [
+                "error": error.localizedDescription
+            ])
             throw error
         }
         guard let http = response as? HTTPURLResponse else {
+            trace.end(status: "invalid_response")
             throw NSError(domain: "CampaignsAPI", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid response"])
         }
         if let body = String(data: data, encoding: .utf8), !body.isEmpty {
@@ -1019,17 +1036,30 @@ final class CampaignsAPI {
                 let msg = provisionErr.error
                     ?? provisionErr.message
                     ?? "Provisioning did not meet readiness requirements (e.g. addresses or map roads)."
+                trace.end(status: "server_422", fields: [
+                    "http": http.statusCode,
+                    "error": msg
+                ])
                 throw NSError(domain: "CampaignsAPI", code: 422, userInfo: [NSLocalizedDescriptionKey: msg])
             }
             let bodyStr = String(data: data, encoding: .utf8) ?? ""
             let userMessage = Self.extractMessageFromErrorBody(data)
             let displayMessage = userMessage ?? bodyStr
+            trace.end(status: "server_error", fields: [
+                "http": http.statusCode,
+                "error": String(displayMessage.prefix(160))
+            ])
             throw NSError(domain: "CampaignsAPI", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: "Provision failed: \(displayMessage.prefix(300))"])
         }
         if let provisionResponse = try? JSONDecoder().decode(CampaignProvisionResponse.self, from: data) {
             if provisionResponse.accepted == true || provisionResponse.provisionStatus == .pending {
                 guard waitUntilReady else {
                     print("🧭 [API] Provision accepted for campaign \(campaignId); server will finish in the background.")
+                    trace.end(status: "accepted", fields: [
+                        "http": http.statusCode,
+                        "status": provisionResponse.provisionStatus?.rawValue ?? "nil",
+                        "phase": provisionResponse.provisionPhase?.rawValue ?? "nil"
+                    ])
                     return provisionResponse
                 }
                 print("🧭 [API] Provision accepted for campaign \(campaignId); polling until ready or failed...")
@@ -1039,6 +1069,11 @@ final class CampaignsAPI {
                     timeoutSeconds: Self.provisionResourceTimeout,
                     pollIntervalSeconds: 2
                 )
+                trace.end(status: "accepted_then_polled", fields: [
+                    "http": http.statusCode,
+                    "status": state.provisionStatus?.rawValue ?? "nil",
+                    "phase": state.provisionPhase?.rawValue ?? "nil"
+                ])
                 return Self.provisionResponse(from: state)
             }
             if waitForLinker,
@@ -1050,6 +1085,11 @@ final class CampaignsAPI {
                     timeoutSeconds: Self.provisionResourceTimeout,
                     pollIntervalSeconds: 2
                 )
+                trace.end(status: "waited_for_linker", fields: [
+                    "http": http.statusCode,
+                    "status": state.provisionStatus?.rawValue ?? "nil",
+                    "phase": state.provisionPhase?.rawValue ?? "nil"
+                ])
                 return Self.provisionResponse(from: state)
             }
             if provisionResponse.provisionSource == .diamond {
@@ -1057,9 +1097,20 @@ final class CampaignsAPI {
             }
             let roadsLogged = provisionResponse.roadsCount ?? provisionResponse.roadsSaved ?? 0
             print("✅ [API] Provision completed for campaign \(campaignId): addresses=\(provisionResponse.addressesSaved ?? 0), buildings=\(provisionResponse.buildingsSaved ?? 0), roads=\(roadsLogged)")
+            trace.end(status: "completed", fields: [
+                "http": http.statusCode,
+                "status": provisionResponse.provisionStatus?.rawValue ?? "nil",
+                "phase": provisionResponse.provisionPhase?.rawValue ?? "nil",
+                "addresses": provisionResponse.addressesSaved ?? 0,
+                "buildings": provisionResponse.buildingsSaved ?? 0,
+                "roads": roadsLogged
+            ])
             return provisionResponse
         } else {
             print("✅ [API] Provision completed for campaign \(campaignId) (response not decoded)")
+            trace.end(status: "completed_undecoded", fields: [
+                "http": http.statusCode
+            ])
             return nil
         }
     }
@@ -1072,20 +1123,43 @@ final class CampaignsAPI {
         pollIntervalSeconds: TimeInterval = 2,
         onProgress: ((CampaignProvisionState) async -> Void)? = nil
     ) async throws -> CampaignProvisionState {
+        let trace = PerfTrace.begin("campaign_create", "api_wait_for_provision_ready", fields: [
+            "campaign": campaignId.uuidString,
+            "requireOptimized": requireOptimized,
+            "timeoutSeconds": Int(timeoutSeconds),
+            "pollIntervalSeconds": pollIntervalSeconds
+        ])
         let timeoutNanos = UInt64(timeoutSeconds * 1_000_000_000)
         let pollNanos = UInt64(max(0.5, pollIntervalSeconds) * 1_000_000_000)
         let start = Date()
+        var pollCount = 0
 
         while Date().timeIntervalSince(start) * 1_000_000_000 < Double(timeoutNanos) {
             let state = try await fetchProvisionState(campaignId: campaignId)
+            pollCount += 1
             await onProgress?(state)
             let failureReason = state.provisionMessage ?? state.provisionError
             print("🧭 [API] Provision state campaign=\(campaignId) status=\(state.provisionStatus?.rawValue ?? "nil") phase=\(state.provisionPhase?.rawValue ?? "nil")\(failureReason.map { " reason=\($0)" } ?? "")")
+            PerfTrace.event("campaign_create", "api_provision_poll", fields: [
+                "campaign": campaignId.uuidString,
+                "poll": pollCount,
+                "status": state.provisionStatus?.rawValue ?? "nil",
+                "phase": state.provisionPhase?.rawValue ?? "nil"
+            ])
 
             if state.provisionStatus == .ready && (!requireOptimized || state.provisionPhase?.isLinkComplete == true) {
+                trace.end(status: "ready", fields: [
+                    "polls": pollCount,
+                    "phase": state.provisionPhase?.rawValue ?? "nil"
+                ])
                 return state
             }
             if state.provisionStatus == .failed {
+                trace.end(status: "failed", fields: [
+                    "polls": pollCount,
+                    "phase": state.provisionPhase?.rawValue ?? "nil",
+                    "reason": failureReason ?? "nil"
+                ])
                 return state
             }
 
@@ -1094,6 +1168,11 @@ final class CampaignsAPI {
 
         let state = try await fetchProvisionState(campaignId: campaignId)
         await onProgress?(state)
+        trace.end(status: "timeout_return_last_state", fields: [
+            "polls": pollCount,
+            "status": state.provisionStatus?.rawValue ?? "nil",
+            "phase": state.provisionPhase?.rawValue ?? "nil"
+        ])
         return state
     }
 
