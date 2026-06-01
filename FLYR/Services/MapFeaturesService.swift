@@ -1703,10 +1703,13 @@ final class MapFeaturesService: ObservableObject {
                     "🧪 [MAP_DEBUG] canonical_map_bundle_optimization_poll campaign=\(campaignId) " +
                     "attempt=\(attempt + 1)"
                 )
+                let localSignature = await self.campaignRepository
+                    .getCampaignMapBundleMetadata(campaignId: campaignId)?
+                    .assetSignature
                 _ = await self.fetchCanonicalCampaignMapBundle(
                     campaignId: campaignId,
                     requestId: requestId,
-                    localSignature: nil,
+                    localSignature: localSignature,
                     startedAt: Date(),
                     timeoutNanoseconds: nil
                 )
