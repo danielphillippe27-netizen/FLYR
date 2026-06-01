@@ -159,6 +159,305 @@ async function writeManualAddress(
 const ADDRESS_SELECT =
   "id, formatted, house_number, street_name, locality, region, postal_code, building_id, building_gers_id, match_source, confidence, source";
 
+type DuplicateAddressRow = {
+  id: string;
+  formatted: string | null;
+  house_number: string | null;
+  street_name: string | null;
+  locality: string | null;
+  region: string | null;
+  postal_code: string | null;
+  building_id?: string | null;
+  building_gers_id?: string | null;
+  match_source?: string | null;
+  confidence?: number | null;
+  source?: string | null;
+};
+
+type NormalizedAddressIdentity = {
+  primary: string;
+  postalCode: string | null;
+};
+
+function normalizedHouseNumber(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().toLowerCase().replace(/\s+/g, "");
+  return normalized.length > 0 ? normalized : null;
+}
+
+function normalizedPostalCode(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.toUpperCase().replace(/[^A-Z0-9]/g, "");
+  return normalized.length > 0 ? normalized : null;
+}
+
+function normalizedStreetName(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const words = value
+    .toLowerCase()
+    .replace(/[.,]/g, " ")
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean)
+    .map((word) => {
+      switch (word) {
+        case "st":
+        case "str":
+          return "street";
+        case "rd":
+          return "road";
+        case "ave":
+        case "av":
+          return "avenue";
+        case "blvd":
+          return "boulevard";
+        case "dr":
+          return "drive";
+        case "ct":
+          return "court";
+        case "cres":
+          return "crescent";
+        case "ln":
+          return "lane";
+        case "pl":
+          return "place";
+        case "trl":
+          return "trail";
+        case "pkwy":
+          return "parkway";
+        case "hwy":
+          return "highway";
+        default:
+          return word;
+      }
+    });
+
+  const normalized = words.join(" ");
+  return normalized.length > 0 ? normalized : null;
+}
+
+function parsedAddressParts(formatted: unknown): {
+  houseNumber: string | null;
+  streetName: string | null;
+  postalCode: string | null;
+} {
+  if (typeof formatted !== "string") {
+    return { houseNumber: null, streetName: null, postalCode: null };
+  }
+  const trimmed = formatted.trim();
+  if (!trimmed) {
+    return { houseNumber: null, streetName: null, postalCode: null };
+  }
+
+  const firstAddressLine = trimmed.split(",", 1)[0]?.trim() ?? trimmed;
+  const tokens = firstAddressLine.split(/\s+/).filter(Boolean);
+  const houseNumber = normalizedHouseNumber(tokens[0]);
+  const streetName = tokens.length > 1 ? normalizedStreetName(tokens.slice(1).join(" ")) : null;
+  const postalCode = trimmed
+    .split(/[^A-Za-z0-9]+/)
+    .filter(Boolean)
+    .reverse()
+    .map(normalizedPostalCode)
+    .find((value): value is string =>
+      Boolean(value && value.length >= 4 && value.length <= 10 && /\d/.test(value))
+    ) ?? null;
+
+  return { houseNumber, streetName, postalCode };
+}
+
+function normalizedAddressIdentityParts(input: {
+  house_number?: unknown;
+  street_name?: unknown;
+  postal_code?: unknown;
+  formatted?: unknown;
+}): NormalizedAddressIdentity | null {
+  const parsed = parsedAddressParts(input.formatted);
+  const house = normalizedHouseNumber(input.house_number) ?? parsed.houseNumber;
+  const street = normalizedStreetName(input.street_name) ?? parsed.streetName;
+  if (!house || !street) return null;
+
+  return {
+    primary: `${house}|${street}`,
+    postalCode: normalizedPostalCode(input.postal_code) ?? parsed.postalCode,
+  };
+}
+
+function addressIdentitiesMatch(
+  lhs: NormalizedAddressIdentity | null,
+  rhs: NormalizedAddressIdentity | null
+): boolean {
+  if (!lhs || !rhs) return false;
+  if (lhs.primary !== rhs.primary) return false;
+  if (lhs.postalCode && rhs.postalCode) {
+    return lhs.postalCode === rhs.postalCode;
+  }
+  return true;
+}
+
+function duplicateAddressSortScore(row: DuplicateAddressRow): number {
+  const source = row.source?.trim().toLowerCase();
+  const sourceScore = source === "manual" ? 10 : 0;
+  const linkScore = row.building_id || row.building_gers_id ? 0 : 1;
+  return sourceScore + linkScore;
+}
+
+async function findExistingReverseGeocodedAddress(
+  supabase: any,
+  campaignId: string,
+  input: {
+    formatted: string;
+    house_number: string | null;
+    street_name: string | null;
+    postal_code: string | null;
+  }
+): Promise<DuplicateAddressRow | null> {
+  const targetIdentity = normalizedAddressIdentityParts(input);
+  if (!targetIdentity) return null;
+
+  const { data, error } = await supabase
+    .from("campaign_addresses")
+    .select(ADDRESS_SELECT)
+    .eq("campaign_id", campaignId);
+
+  if (error) {
+    console.warn("[manual-address] duplicate lookup skipped:", error);
+    return null;
+  }
+
+  const matches = ((data ?? []) as DuplicateAddressRow[])
+    .filter((row) => addressIdentitiesMatch(
+      targetIdentity,
+      normalizedAddressIdentityParts({
+        house_number: row.house_number,
+        street_name: row.street_name,
+        postal_code: row.postal_code,
+        formatted: row.formatted,
+      })
+    ))
+    .sort((lhs, rhs) => {
+      const scoreDelta = duplicateAddressSortScore(lhs) - duplicateAddressSortScore(rhs);
+      if (scoreDelta !== 0) return scoreDelta;
+      return String(lhs.formatted ?? "").localeCompare(String(rhs.formatted ?? ""), undefined, { numeric: true });
+    });
+
+  return matches[0] ?? null;
+}
+
+async function attachAddressToBuilding(input: {
+  supabase: any;
+  campaignId: string;
+  address: Record<string, unknown>;
+  linkTarget: Awaited<ReturnType<typeof resolveCampaignBuilding>> | null;
+  userId: string;
+  longitude: number;
+  latitude: number;
+  confidence: number;
+}): Promise<{ responseAddress: Record<string, unknown>; linkWarning: string | null }> {
+  const { supabase, campaignId, address, linkTarget, userId, longitude, latitude, confidence } = input;
+  let responseAddress = address;
+  let linkWarning: string | null = null;
+
+  if (!linkTarget) {
+    return { responseAddress, linkWarning };
+  }
+
+  const addressId = String(address.id ?? "").trim();
+  if (!addressId) {
+    return { responseAddress, linkWarning: "address_id_missing" };
+  }
+
+  try {
+    const linker = new StableLinkerService(supabase);
+    const coordinate = [longitude, latitude] as [number, number];
+    if (linkTarget.rowId) {
+      await linker.assignAddressToBuilding({
+        campaignId,
+        addressId,
+        buildingRowId: linkTarget.rowId,
+        buildingPublicId: linkTarget.publicId,
+        assignedBy: userId,
+        coordinate,
+        confidence,
+      });
+    } else {
+      await linker.assignAddressToExternalBuilding({
+        campaignId,
+        addressId,
+        buildingPublicId: linkTarget.publicId,
+        assignedBy: userId,
+        coordinate,
+        confidence,
+      });
+    }
+
+    const { data: linkedAddress, error: linkedAddressError } = await supabase
+      .from("campaign_addresses")
+      .select(ADDRESS_SELECT)
+      .eq("campaign_id", campaignId)
+      .eq("id", addressId)
+      .maybeSingle();
+
+    if (linkedAddressError) {
+      console.warn("[manual-address] linked address refresh warning:", linkedAddressError);
+    } else if (linkedAddress) {
+      responseAddress = linkedAddress;
+    }
+  } catch (linkError) {
+    console.error("[manual-address] link error:", linkError);
+    const linkPatch: Record<string, unknown> = {
+      building_gers_id: linkTarget.publicId,
+      match_source: "manual",
+      confidence,
+    };
+    if (linkTarget.rowId) {
+      linkPatch.building_id = linkTarget.rowId;
+    }
+
+    let patchResult = await supabase
+      .from("campaign_addresses")
+      .update(linkPatch)
+      .eq("campaign_id", campaignId)
+      .eq("id", addressId)
+      .select(ADDRESS_SELECT)
+      .maybeSingle();
+
+    if (
+      patchResult.error &&
+      (isMissingColumnError(patchResult.error, "match_source") ||
+        isMatchSourceConstraintError(patchResult.error))
+    ) {
+      delete linkPatch.match_source;
+      patchResult = await supabase
+        .from("campaign_addresses")
+        .update(linkPatch)
+        .eq("campaign_id", campaignId)
+        .eq("id", addressId)
+        .select(ADDRESS_SELECT)
+        .maybeSingle();
+    }
+
+    if (patchResult.error && isMissingColumnError(patchResult.error, "confidence")) {
+      delete linkPatch.confidence;
+      patchResult = await supabase
+        .from("campaign_addresses")
+        .update(linkPatch)
+        .eq("campaign_id", campaignId)
+        .eq("id", addressId)
+        .select(ADDRESS_SELECT)
+        .maybeSingle();
+    }
+
+    if (patchResult.error) {
+      linkWarning = "link_not_confirmed";
+      console.warn("[manual-address] fallback link patch warning:", patchResult.error);
+    } else if (patchResult.data) {
+      responseAddress = patchResult.data;
+      linkWarning = "link_table_not_confirmed";
+    }
+  }
+
+  return { responseAddress, linkWarning };
+}
+
 export async function POST(request: Request, context: RouteContext): Promise<Response> {
   try {
     const token = getAuthToken(request);
@@ -225,15 +524,57 @@ export async function POST(request: Request, context: RouteContext): Promise<Res
     }
 
     const confidence = isReverseGeocodeConfirmed ? 0.65 : 1;
+    const houseNumber = String((body as { house_number?: unknown }).house_number ?? "").trim() || null;
+    const streetName = String((body as { street_name?: unknown }).street_name ?? "").trim() || null;
+    const locality = String((body as { locality?: unknown }).locality ?? "").trim() || null;
+    const region = String((body as { region?: unknown }).region ?? "").trim() || null;
+    const postalCode = String((body as { postal_code?: unknown }).postal_code ?? "").trim() || null;
+    const country = String((body as { country?: unknown }).country ?? "").trim() || null;
+
+    if (isReverseGeocodeConfirmed) {
+      const existingAddress = await findExistingReverseGeocodedAddress(
+        supabase,
+        campaignId,
+        {
+          formatted,
+          house_number: houseNumber,
+          street_name: streetName,
+          postal_code: postalCode,
+        }
+      );
+
+      if (existingAddress) {
+        const { responseAddress, linkWarning } = await attachAddressToBuilding({
+          supabase,
+          campaignId,
+          address: existingAddress as unknown as Record<string, unknown>,
+          linkTarget,
+          userId: user.id,
+          longitude,
+          latitude,
+          confidence,
+        });
+
+        await invalidateCampaignMapBundle(supabase, campaignId);
+
+        return NextResponse.json({
+          address: responseAddress,
+          linked_building_id: linkTarget?.publicId ?? null,
+          link_warning: linkWarning,
+          resolved_existing_address: true,
+        });
+      }
+    }
+
     const addressInsert: Record<string, unknown> = {
       ...(requestedAddressId ? { id: requestedAddressId } : {}),
       campaign_id: campaignId,
-      house_number: String((body as { house_number?: unknown }).house_number ?? "").trim() || null,
-      street_name: String((body as { street_name?: unknown }).street_name ?? "").trim() || null,
-      locality: String((body as { locality?: unknown }).locality ?? "").trim() || null,
-      region: String((body as { region?: unknown }).region ?? "").trim() || null,
-      postal_code: String((body as { postal_code?: unknown }).postal_code ?? "").trim() || null,
-      country: String((body as { country?: unknown }).country ?? "").trim() || null,
+      house_number: houseNumber,
+      street_name: streetName,
+      locality,
+      region,
+      postal_code: postalCode,
+      country,
       formatted,
       source: "manual",
       building_gers_id: null,
@@ -252,101 +593,16 @@ export async function POST(request: Request, context: RouteContext): Promise<Res
       );
     }
 
-    let responseAddress = insertedAddress;
-    let linkWarning: string | null = null;
-
-    if (linkTarget) {
-      try {
-        const linker = new StableLinkerService(supabase);
-        const addressId = (insertedAddress as { id: string }).id;
-        const coordinate = [longitude, latitude] as [number, number];
-        if (linkTarget.rowId) {
-          await linker.assignAddressToBuilding({
-            campaignId,
-            addressId,
-            buildingRowId: linkTarget.rowId,
-            buildingPublicId: linkTarget.publicId,
-            assignedBy: user.id,
-            coordinate,
-            confidence,
-          });
-        } else {
-          await linker.assignAddressToExternalBuilding({
-            campaignId,
-            addressId,
-            buildingPublicId: linkTarget.publicId,
-            assignedBy: user.id,
-            coordinate,
-            confidence,
-          });
-        }
-
-        const { data: linkedAddress, error: linkedAddressError } = await supabase
-          .from("campaign_addresses")
-          .select(ADDRESS_SELECT)
-          .eq("campaign_id", campaignId)
-          .eq("id", addressId)
-          .maybeSingle();
-
-        if (linkedAddressError) {
-          console.warn("[manual-address] linked address refresh warning:", linkedAddressError);
-        } else if (linkedAddress) {
-          responseAddress = linkedAddress;
-        }
-      } catch (linkError) {
-        console.error("[manual-address] link error:", linkError);
-        const linkPatch: Record<string, unknown> = {
-          building_gers_id: linkTarget.publicId,
-          match_source: "manual",
-          confidence,
-        };
-        if (linkTarget.rowId) {
-          linkPatch.building_id = linkTarget.rowId;
-        }
-
-        let patchResult = await supabase
-          .from("campaign_addresses")
-          .update(linkPatch)
-          .eq("campaign_id", campaignId)
-          .eq("id", (insertedAddress as { id: string }).id)
-          .select(ADDRESS_SELECT)
-          .maybeSingle();
-
-        if (
-          patchResult.error &&
-          (isMissingColumnError(patchResult.error, "match_source") ||
-            isMatchSourceConstraintError(patchResult.error))
-        ) {
-          delete linkPatch.match_source;
-          patchResult = await supabase
-            .from("campaign_addresses")
-            .update(linkPatch)
-            .eq("campaign_id", campaignId)
-            .eq("id", (insertedAddress as { id: string }).id)
-            .select(ADDRESS_SELECT)
-            .maybeSingle();
-        }
-
-        if (patchResult.error && isMissingColumnError(patchResult.error, "confidence")) {
-          delete linkPatch.confidence;
-          patchResult = await supabase
-            .from("campaign_addresses")
-            .update(linkPatch)
-            .eq("campaign_id", campaignId)
-            .eq("id", (insertedAddress as { id: string }).id)
-            .select(ADDRESS_SELECT)
-            .maybeSingle();
-        }
-
-        if (patchResult.error) {
-          linkWarning = "link_not_confirmed";
-          console.warn("[manual-address] fallback link patch warning:", patchResult.error);
-        } else if (patchResult.data) {
-          responseAddress = patchResult.data;
-          linkWarning = "link_table_not_confirmed";
-        }
-      }
-    }
+    const { responseAddress, linkWarning } = await attachAddressToBuilding({
+      supabase,
+      campaignId,
+      address: insertedAddress as Record<string, unknown>,
+      linkTarget,
+      userId: user.id,
+      longitude,
+      latitude,
+      confidence,
+    });
 
     await invalidateCampaignMapBundle(supabase, campaignId);
 

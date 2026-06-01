@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {
   isStrictCampaignMapBundleLink,
   normalizeCampaignMapBundleLinksForClient,
+  shouldRepairCampaignMapBundleLinks,
   shouldRefreshBundleForCacheVersion,
   shouldRefreshBundleFromPersistedParcels,
   shouldRefreshBundleFromPolishedCache,
@@ -83,6 +84,61 @@ assert.equal(
   }),
   false,
   'does not churn snapshot parcel bundles when no persisted parcel layer exists'
+);
+
+assert.equal(
+  shouldRepairCampaignMapBundleLinks({
+    linksStatus: 'pending_provision',
+    linkCount: 0,
+    addressCount: 24,
+    buildingCount: 10,
+  }),
+  true,
+  'repairs pending bundle links when address and building inputs exist'
+);
+
+assert.equal(
+  shouldRepairCampaignMapBundleLinks({
+    linksStatus: 'pending_provision',
+    linkCount: 0,
+    addressCount: 24,
+    buildingCount: 0,
+  }),
+  false,
+  'does not run link repair when there are no building inputs'
+);
+
+assert.equal(
+  shouldRepairCampaignMapBundleLinks({
+    linksStatus: 'stale_reused',
+    linkCount: 12,
+    addressCount: 24,
+    buildingCount: 10,
+  }),
+  true,
+  'repairs stale reused bundle links'
+);
+
+assert.equal(
+  shouldRepairCampaignMapBundleLinks({
+    linksStatus: 'client_fallback_required',
+    linkCount: 0,
+    addressCount: 24,
+    buildingCount: 10,
+  }),
+  false,
+  'does not repeatedly repair bundles that already fell back to client linking'
+);
+
+assert.equal(
+  shouldRepairCampaignMapBundleLinks({
+    linksStatus: 'ok',
+    linkCount: 12,
+    addressCount: 24,
+    buildingCount: 10,
+  }),
+  false,
+  'keeps bundles whose canonical links are already ready'
 );
 
 assert.equal(

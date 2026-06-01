@@ -82,6 +82,66 @@ struct BuildingProperties: Codable {
         case isLinked = "is_linked"
     }
 
+    private struct FlexiblePropertyKey: CodingKey {
+        let stringValue: String
+        let intValue: Int? = nil
+
+        init?(stringValue: String) {
+            self.stringValue = stringValue
+        }
+
+        init?(intValue: Int) {
+            return nil
+        }
+    }
+
+    private static func decodeTrimmedString(
+        from container: KeyedDecodingContainer<FlexiblePropertyKey>,
+        keys: [String]
+    ) -> String? {
+        for rawKey in keys {
+            guard let key = FlexiblePropertyKey(stringValue: rawKey) else { continue }
+            if let value = try? container.decodeIfPresent(String.self, forKey: key) {
+                let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty { return trimmed }
+            }
+            if let value = try? container.decodeIfPresent(Int.self, forKey: key) {
+                return String(value)
+            }
+            if let value = try? container.decodeIfPresent(Double.self, forKey: key), value.isFinite {
+                let rounded = value.rounded()
+                return abs(value - rounded) < .ulpOfOne ? String(Int64(rounded)) : String(value)
+            }
+        }
+        return nil
+    }
+
+    private static func decodeStringArray(
+        from container: KeyedDecodingContainer<FlexiblePropertyKey>,
+        keys: [String]
+    ) -> [String] {
+        var seen = Set<String>()
+        var values: [String] = []
+        for rawKey in keys {
+            guard let key = FlexiblePropertyKey(stringValue: rawKey) else { continue }
+            let rawValues: [String]
+            if let decoded = try? container.decodeIfPresent([String].self, forKey: key) {
+                rawValues = decoded
+            } else if let decoded = try? container.decodeIfPresent([Int].self, forKey: key) {
+                rawValues = decoded.map(String.init)
+            } else {
+                rawValues = []
+            }
+
+            for value in rawValues {
+                let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty, seen.insert(trimmed.lowercased()).inserted else { continue }
+                values.append(trimmed)
+            }
+        }
+        return values
+    }
+
     init(
         id: String,
         buildingId: String?,
@@ -148,6 +208,7 @@ struct BuildingProperties: Codable {
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        let raw = try decoder.container(keyedBy: FlexiblePropertyKey.self)
 
         func decodeDouble(_ key: CodingKeys, default fallback: Double) -> Double {
             if let value = try? c.decode(Double.self, forKey: key) { return value }
@@ -158,7 +219,10 @@ struct BuildingProperties: Codable {
         id = (try? c.decode(String.self, forKey: .id)) ?? UUID().uuidString
         buildingId = try? c.decodeIfPresent(String.self, forKey: .buildingId)
         addressId = try? c.decodeIfPresent(String.self, forKey: .addressId)
-        addressIds = (try? c.decodeIfPresent([String].self, forKey: .addressIds)) ?? []
+        addressIds = Self.decodeStringArray(
+            from: raw,
+            keys: ["linked_address_ids", "address_ids", "campaign_address_ids"]
+        )
         gersId = try? c.decodeIfPresent(String.self, forKey: .gersId)
         publicBuildingId = try? c.decodeIfPresent(String.self, forKey: .publicBuildingId)
         canonicalBuildingId = try? c.decodeIfPresent(String.self, forKey: .canonicalBuildingId)
@@ -168,7 +232,10 @@ struct BuildingProperties: Codable {
         minHeight = decodeDouble(.minHeight, default: 0)
         isTownhome = (try? c.decodeIfPresent(Bool.self, forKey: .isTownhome)) ?? false
         unitsCount = (try? c.decodeIfPresent(Int.self, forKey: .unitsCount)) ?? 1
-        addressText = try? c.decodeIfPresent(String.self, forKey: .addressText)
+        addressText = Self.decodeTrimmedString(
+            from: raw,
+            keys: ["address_text", "formatted", "formatted_address", "full_address", "display_address", "label", "address"]
+        )
         matchMethod = try? c.decodeIfPresent(String.self, forKey: .matchMethod)
         featureStatus = try? c.decodeIfPresent(String.self, forKey: .featureStatus)
         featureType = try? c.decodeIfPresent(String.self, forKey: .featureType)
@@ -176,8 +243,14 @@ struct BuildingProperties: Codable {
         scansToday = (try? c.decodeIfPresent(Int.self, forKey: .scansToday)) ?? 0
         scansTotal = (try? c.decodeIfPresent(Int.self, forKey: .scansTotal)) ?? 0
         lastScanSecondsAgo = (try? c.decodeIfPresent(Double.self, forKey: .lastScanSecondsAgo)) ?? (try? c.decodeIfPresent(Int.self, forKey: .lastScanSecondsAgo)).map(Double.init)
-        houseNumber = try? c.decodeIfPresent(String.self, forKey: .houseNumber)
-        streetName = try? c.decodeIfPresent(String.self, forKey: .streetName)
+        houseNumber = Self.decodeTrimmedString(
+            from: raw,
+            keys: ["house_number", "house_number_label", "houseNumber", "street_number", "street_no", "address_number", "number", "addr:housenumber"]
+        )
+        streetName = Self.decodeTrimmedString(
+            from: raw,
+            keys: ["street_name", "streetName", "primary_street_name", "street", "road_name", "road", "addr:street"]
+        )
         confidence = (try? c.decodeIfPresent(Double.self, forKey: .confidence)) ?? (try? c.decodeIfPresent(Int.self, forKey: .confidence)).map(Double.init)
         source = try? c.decodeIfPresent(String.self, forKey: .source)
         addressCount = try? c.decodeIfPresent(Int.self, forKey: .addressCount)

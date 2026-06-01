@@ -6,7 +6,7 @@ import {
   isResidentialParcelFeature,
 } from '../../geo/parcelFilters';
 import { reconstructParcelFragments } from '../../geo/parcelFragments';
-import { BedrockCountryService, BEDROCK_CANADA_CONFIG } from '../BedrockCountryService';
+import { BedrockCountryService, BEDROCK_CANADA_CONFIG, BEDROCK_NZ_CONFIG } from '../BedrockCountryService';
 
 function rectangle(minLon: number, minLat: number, maxLon: number, maxLat: number): GeoJSON.Polygon {
   return {
@@ -205,6 +205,31 @@ async function main() {
       'bedrock/canada/current/parcels/parcels.pmtiles'
     );
     assert.equal(snapshot.s3_keys.parcels, 'bedrock/canada/current/parcels/parcels.pmtiles');
+  });
+
+  await test('Bedrock New Zealand snapshots use the shared country provision metadata', () => {
+    const service = new BedrockCountryService(BEDROCK_NZ_CONFIG);
+    const snapshot = service.snapshotForCampaign(
+      'campaign-id',
+      1,
+      scanMetric,
+      {
+        single_file_key: 'bedrock/new-zealand/current/addresses/parquet/addresses.spatial.parquet',
+        partitioning: { scheme: 'single_file_spatial', tile_z: 12 },
+      },
+      'NZ'
+    );
+
+    assert.equal(snapshot.metadata?.tile_metrics?.bedrock_country_code, 'NZ');
+    assert.equal(
+      snapshot.metadata?.tile_metrics?.addresses_pmtiles_key,
+      'bedrock/new-zealand/current/addresses/addresses.pmtiles'
+    );
+    assert.equal(
+      snapshot.metadata?.tile_metrics?.buildings_geojson_key,
+      'bedrock/new-zealand/current/buildings/buildings.geojson.gz'
+    );
+    assert.equal(snapshot.s3_keys.parcels, 'bedrock/new-zealand/current/parcels/parcels.pmtiles');
   });
 
   await test('persisted parcel RPC selects by intersection without clipping stored geometry', () => {

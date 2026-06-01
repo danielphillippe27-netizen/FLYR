@@ -477,11 +477,13 @@ struct NewCampaignScreen: View {
 
         switch tracked.state {
         case .ready:
-            campaignMapDataReady = true
             provisionComplete = true
             provisionFailed = false
             provisionProgressPercent = 100
-            provisionStatusText = "Your campaign is ready"
+            await markCampaignReadyToOpen(
+                campaignId: activeCreatingCampaignId,
+                campaignName: createdCampaign?.name ?? tracked.campaignName
+            )
         case .needsAttention:
             provisionComplete = true
             provisionFailed = true
@@ -1328,6 +1330,15 @@ struct NewCampaignScreen: View {
             ("NZ", 166.0, -48.5, 179.5, -33.0),
             ("AU", 96.0, -44.0, 168.5, -9.0),
             ("GB", -6.5, 49.8, 1.9, 58.8),
+            ("EC", 22.7, -34.4, 30.2, -30.0),
+            ("FS", 24.0, -30.8, 29.8, -26.6),
+            ("GP", 27.1, -26.9, 29.1, -25.1),
+            ("KZN", 28.5, -31.2, 32.9, -26.8),
+            ("LP", 26.4, -25.6, 32.0, -22.1),
+            ("MP", 28.4, -27.5, 32.0, -24.6),
+            ("NC", 16.4, -32.9, 25.9, -24.7),
+            ("NW", 22.6, -28.1, 28.3, -24.6),
+            ("WC", 17.7, -35.0, 24.3, -30.3),
             ("ZA", 16.4, -35.0, 33.1, -22.0),
             ("BC", -139.06, 48.2, -114.03, 60.01),
             ("AB", -120.0, 48.9, -109.0, 60.0),

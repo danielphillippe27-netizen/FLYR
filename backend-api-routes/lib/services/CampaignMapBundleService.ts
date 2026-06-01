@@ -698,6 +698,31 @@ function currentBundleNeedsPersistedParcelRefresh(
   });
 }
 
+export function shouldRepairCampaignMapBundleLinks(params: {
+  linksStatus?: string | null;
+  linkCount?: number | null;
+  addressCount?: number | null;
+  buildingCount?: number | null;
+}): boolean {
+  const addressCount = numericValue(params.addressCount, 0);
+  const buildingCount = numericValue(params.buildingCount, 0);
+  if (addressCount <= 0 || buildingCount <= 0) return false;
+
+  const linksStatus = normalizeLinksStatus(params.linksStatus);
+  if (linksStatus === 'client_fallback_required') return false;
+  if (linksStatus === 'pending_provision' || linksStatus === 'stale_reused') return true;
+  return numericValue(params.linkCount, 0) <= 0;
+}
+
+function currentBundleNeedsLinkRepair(row: CurrentBundleRow): boolean {
+  return shouldRepairCampaignMapBundleLinks({
+    linksStatus: row.links_status,
+    linkCount: numericValue(row.counts?.links, Array.isArray(row.links) ? row.links.length : 0),
+    addressCount: numericValue(row.counts?.addresses, asFeatureCollection(row.addresses_geojson).features.length),
+    buildingCount: numericValue(row.counts?.buildings, asFeatureCollection(row.buildings_geojson).features.length),
+  });
+}
+
 function displayModeHint(buildings: FeatureCollection, addresses: FeatureCollection, links: CampaignMapBundleLink[]): DisplayModeHint {
   const buildingCount = buildings.features.length;
   const addressCount = addresses.features.length;
@@ -782,9 +807,13 @@ export class CampaignMapBundleService {
     const needsPolishedCacheRefresh = current
       ? currentBundleNeedsPolishedCacheRefresh(current, polishedCacheMeta)
       : false;
+    const needsLinkRepair = current
+      ? currentBundleNeedsLinkRepair(current)
+      : false;
 
     if (
       current &&
+      !needsLinkRepair &&
       !needsCacheVersionRefresh &&
       !needsParcelBackfill &&
       !needsPersistedParcelRefresh &&
@@ -807,7 +836,8 @@ export class CampaignMapBundleService {
       needsCacheVersionRefresh ||
       needsParcelBackfill ||
       needsPersistedParcelRefresh ||
-      needsPolishedCacheRefresh;
+      needsPolishedCacheRefresh ||
+      needsLinkRepair;
 
     if (!shouldRebuild && current) {
       return { status: 'ok', bundle: responseFromRow(current) };
@@ -821,14 +851,24 @@ export class CampaignMapBundleService {
     return { status: 'ok', bundle };
   }
 
-  // Manual repair tool only. Not part of the normal map load path.
-  // See: flyr-linking-restructure task 2
-  async refreshLinksForRepair(campaignId: string): Promise<void> {
-    const { error } = await this.supabase.rpc('rpc_refresh_campaign_map_links', {
+  async refreshLinksForRepair(campaignId: string): Promise<unknown> {
+    const { data, error } = await this.supabase.rpc('rpc_refresh_campaign_map_links', {
       p_campaign_id: campaignId,
     });
     if (error) {
       throw new Error(`Failed to repair campaign map links: ${error.message}`);
+    }
+
+    await this.refreshGroupedBuildingLinkClassifications(campaignId);
+    return data;
+  }
+
+  private async refreshGroupedBuildingLinkClassifications(campaignId: string): Promise<void> {
+    const { error } = await this.supabase.rpc('refresh_grouped_building_link_classifications', {
+      p_campaign_id: campaignId,
+    });
+    if (error) {
+      console.warn('[CampaignMapBundle] Grouped link classification refresh failed:', error.message);
     }
   }
 
@@ -902,7 +942,7 @@ export class CampaignMapBundleService {
       current &&
       isFresh(currentFetchedAt.roads, STATIC_GEOMETRY_TTL_MS);
 
-    const [addresses, buildings, parcelBundle, roads, linkBundle] = await Promise.all([
+    const [addresses, buildings, parcelBundle, roads] = await Promise.all([
       this.measure('addresses', () =>
         shouldReuseAddresses
           ? Promise.resolve(asFeatureCollection(current!.addresses_geojson))
@@ -926,14 +966,29 @@ export class CampaignMapBundleService {
           ? Promise.resolve(asFeatureCollection(current!.roads_geojson))
           : this.fetchFeatureCollection('rpc_get_campaign_roads_v2', campaignId)
       ),
-      this.measure('links', async () => {
-        const links = await this.fetchLinks(campaignId);
-        return {
-          linksStatus: linksStatusForStoredLinks(links, linkSourceVersion),
-          links,
-        };
-      }),
     ]);
+
+    let effectiveSourceVersion = sourceVersion;
+    let effectiveLinkSourceVersion = linkSourceVersion;
+    let linkBundle = await this.resolveLinksForBundle(
+      campaignId,
+      effectiveLinkSourceVersion,
+      addresses.features.length,
+      buildings.features.length
+    );
+    if (linkBundle.repaired) {
+      const refreshedSource = await this.measure('source_after_link_repair', () =>
+        this.fetchSourceVersion(campaignId)
+      );
+      effectiveSourceVersion = refreshedSource.sourceVersion;
+      effectiveLinkSourceVersion = refreshedSource.linkSourceVersion;
+      linkBundle = {
+        ...linkBundle,
+        linksStatus: linkBundle.links.length === 0
+          ? 'client_fallback_required'
+          : linksStatusForStoredLinks(linkBundle.links, effectiveLinkSourceVersion),
+      };
+    }
 
     const { linksStatus, links } = linkBundle;
     const parcels = parcelBundle.collection;
@@ -975,7 +1030,7 @@ export class CampaignMapBundleService {
     const { data, error } = await this.measure('persist', async () => await this.supabase.rpc('rpc_upsert_campaign_map_bundle', {
       p_campaign_id: campaignId,
       p_asset_signature: signature,
-      p_source_version: sourceVersion,
+      p_source_version: effectiveSourceVersion,
       p_buildings_geojson: linkedFeatures.buildings,
       p_addresses_geojson: linkedFeatures.addresses,
       p_parcels_geojson: parcels,
@@ -998,7 +1053,7 @@ export class CampaignMapBundleService {
     return {
       campaign_id: campaignId,
       asset_signature: signature,
-      source_version: sourceVersion,
+      source_version: effectiveSourceVersion,
       display_mode_hint: hint,
       links_status: linksStatus,
       addresses: linkedFeatures.addresses,
@@ -1014,6 +1069,51 @@ export class CampaignMapBundleService {
       expires_at: normalizedString(persisted?.expires_at) ?? expiresAt,
       updated_at: normalizedString(persisted?.updated_at),
     };
+  }
+
+  private async resolveLinksForBundle(
+    campaignId: string,
+    linkSourceVersion: string | null,
+    addressCount: number,
+    buildingCount: number
+  ): Promise<{ linksStatus: LinksStatus; links: CampaignMapBundleLink[]; repaired: boolean }> {
+    let links = await this.measure('links', () => this.fetchLinks(campaignId));
+    let linksStatus: LinksStatus = linksStatusForStoredLinks(links, linkSourceVersion);
+    const shouldRepairLinks = shouldRepairCampaignMapBundleLinks({
+      linksStatus,
+      linkCount: links.length,
+      addressCount,
+      buildingCount,
+    });
+
+    if (!shouldRepairLinks) {
+      return { linksStatus, links, repaired: false };
+    }
+
+    try {
+      const repairResult = await this.measure('link_repair', () => this.refreshLinksForRepair(campaignId));
+      console.log('[CampaignMapBundle] Refreshed canonical links during bundle rebuild:', {
+        campaignId,
+        linksStatus,
+        linkCount: links.length,
+        repairResult,
+      });
+      links = await this.measure('links_after_repair', () => this.fetchLinks(campaignId));
+      linksStatus = links.length === 0
+        ? 'client_fallback_required'
+        : linksStatusForStoredLinks(links, linkSourceVersion);
+      return { linksStatus, links, repaired: true };
+    } catch (error) {
+      console.warn(
+        '[CampaignMapBundle] Link repair failed during bundle rebuild:',
+        error instanceof Error ? error.message : error
+      );
+      return {
+        linksStatus: links.length === 0 ? 'client_fallback_required' : linksStatus,
+        links,
+        repaired: false,
+      };
+    }
   }
 
   private async fetchFeatureCollection(rpcName: string, campaignId: string): Promise<FeatureCollection> {

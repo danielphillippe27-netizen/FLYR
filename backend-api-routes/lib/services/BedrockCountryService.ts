@@ -17,16 +17,29 @@ type Bounds = [number, number, number, number];
 type SnapshotTileMetrics = NonNullable<NonNullable<LambdaSnapshotResponse['metadata']>['tile_metrics']>;
 type BedrockLayer = 'addresses' | 'buildings' | 'parcels';
 
-export type BedrockProvisionSource = 'bedrock_au' | 'bedrock_ca' | 'bedrock_us' | 'bedrock_za' | 'bedrock_uk';
+export type BedrockProvisionSource =
+  | 'bedrock_nz'
+  | 'bedrock_au'
+  | 'bedrock_ca'
+  | 'bedrock_us'
+  | 'bedrock_za'
+  | 'bedrock_uk';
 
 type BedrockCountryConfig = {
-  country: 'australia' | 'canada' | 'usa' | 'south-africa' | 'uk';
-  countryCode: 'AU' | 'CA' | 'US' | 'ZA' | 'GB';
+  country: 'new-zealand' | 'australia' | 'canada' | 'usa' | 'south-africa' | 'uk';
+  countryCode: 'NZ' | 'AU' | 'CA' | 'US' | 'ZA' | 'GB';
   provisionSource: BedrockProvisionSource;
-  envPrefix: 'BEDROCK_AU' | 'BEDROCK_CA' | 'BEDROCK_US' | 'BEDROCK_ZA' | 'BEDROCK_UK';
+  envPrefix: 'BEDROCK_NZ' | 'BEDROCK_AU' | 'BEDROCK_CA' | 'BEDROCK_US' | 'BEDROCK_ZA' | 'BEDROCK_UK';
   defaultSource: string;
   overtureRelease: string;
   buildingPrefix?: string;
+  coordinateColumns?: {
+    longitude: string;
+    latitude: string;
+  };
+  singleFileSpatialParquetLayers?: BedrockLayer[];
+  geojsonExtension?: 'ndjson.gz' | 'geojson.gz';
+  metadataFilename?: string;
 };
 
 type ParquetManifest = {
@@ -61,7 +74,10 @@ type BedrockParquetRow = Record<string, unknown> & {
   postcode?: string;
   longitude?: number;
   latitude?: number;
+  lon?: number;
+  lat?: number;
   geometry_json?: string;
+  geometry_geojson?: string;
   properties_json?: string;
 };
 
@@ -447,6 +463,25 @@ function sqlNumber(value: number) {
   return value.toString();
 }
 
+function sqlIdentifier(value: string) {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(value)) {
+    throw new Error(`Invalid SQL identifier: ${value}`);
+  }
+  return value;
+}
+
+function coordinateColumns(config: BedrockCountryConfig) {
+  return {
+    longitude: env(config, 'LONGITUDE_COLUMN') || config.coordinateColumns?.longitude || 'longitude',
+    latitude: env(config, 'LATITUDE_COLUMN') || config.coordinateColumns?.latitude || 'latitude',
+  };
+}
+
+function numericValue(value: unknown): number | null {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 function slippyTile(lon: number, lat: number, zoom: number): [number, number] {
   const n = 1 << zoom;
   const clampedLat = Math.max(Math.min(lat, WEB_MERCATOR_MAX_LAT), -WEB_MERCATOR_MAX_LAT);
@@ -529,31 +564,46 @@ async function readManifest(
     return { manifest, manifestMs: Date.now() - startedAt, cacheHit: false };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
+    const manifestMissing =
+      errorMessage.includes('NoSuchKey') ||
+      errorMessage.includes('The specified key does not exist') ||
+      errorMessage.includes('404');
     const canUseSingleFileSpatialParquet =
-      layer === 'buildings' &&
-      config.country === 'canada' &&
-      (errorMessage.includes('NoSuchKey') || errorMessage.includes('The specified key does not exist'));
+      manifestMissing &&
+      (
+        Boolean(config.singleFileSpatialParquetLayers?.includes(layer)) ||
+        (layer === 'buildings' && config.country === 'canada')
+      );
 
     if (!canUseSingleFileSpatialParquet) {
       throw error;
     }
 
-    const spatialManifestKey = layerKey(config, layer, 'parquet/buildings.spatial.json');
+    const spatialManifestKey = layerKey(config, layer, `parquet/${layer}.spatial.json`);
     const spatialCached = cachedManifest(config, layer, spatialManifestKey);
-    const spatialManifest = spatialCached
-      ? spatialCached as { tile_z?: number; features?: number }
-      : JSON.parse(await s3Text(config, spatialManifestKey)) as { tile_z?: number; features?: number };
+    let spatialManifest = spatialCached as ({ tile_z?: number; features?: number; feature_count?: number } | null);
+    let spatialManifestCacheHit = Boolean(spatialCached);
 
-    if (!spatialCached) {
-      setCachedManifest(config, layer, spatialManifestKey, spatialManifest as ParquetManifest);
+    if (!spatialManifest) {
+      try {
+        spatialManifest = JSON.parse(await s3Text(config, spatialManifestKey)) as {
+          tile_z?: number;
+          features?: number;
+          feature_count?: number;
+        };
+        setCachedManifest(config, layer, spatialManifestKey, spatialManifest as ParquetManifest);
+      } catch {
+        spatialManifest = null;
+        spatialManifestCacheHit = false;
+      }
     }
 
     const manifest = {
-      feature_count: spatialManifest.features,
-      single_file_key: layerKey(config, layer, 'parquet/buildings.spatial.parquet'),
+      feature_count: spatialManifest?.features ?? spatialManifest?.feature_count,
+      single_file_key: layerKey(config, layer, `parquet/${layer}.spatial.parquet`),
       partitioning: {
         scheme: 'single_file_spatial',
-        tile_z: spatialManifest.tile_z ?? 12,
+        tile_z: spatialManifest?.tile_z ?? 12,
       },
       tile_seam_awareness: {
         enabled: false,
@@ -563,7 +613,7 @@ async function readManifest(
     return {
       manifest,
       manifestMs: Date.now() - startedAt,
-      cacheHit: Boolean(spatialCached),
+      cacheHit: spatialManifestCacheHit,
     };
   }
 }
@@ -1013,14 +1063,17 @@ function chooseFormattedAddress(
 }
 
 function normalizeAddress(config: BedrockCountryConfig, campaignId: string, row: BedrockParquetRow): StandardCampaignAddress | null {
-  const lon = Number(row.longitude);
-  const lat = Number(row.latitude);
-  if (!Number.isFinite(lon) || !Number.isFinite(lat)) return null;
+  const columns = coordinateColumns(config);
+  const lon = numericValue(row[columns.longitude]) ?? numericValue(row.longitude) ?? numericValue(row.lon);
+  const lat = numericValue(row[columns.latitude]) ?? numericValue(row.latitude) ?? numericValue(row.lat);
+  if (lon == null || lat == null) return null;
 
   const props = parseProperties(row);
   const geometry =
     typeof row.geometry_json === 'string' && row.geometry_json.trim()
       ? row.geometry_json
+      : typeof row.geometry_geojson === 'string' && row.geometry_geojson.trim()
+        ? row.geometry_geojson
       : JSON.stringify({ type: 'Point', coordinates: [lon, lat] });
   const addressId =
     text(row.address_id) ??
@@ -1506,14 +1559,17 @@ export class BedrockCountryService {
       let addresses: StandardCampaignAddress[] = [];
       let metric: BedrockScanResult;
       let duckDbTimings: DuckDbTimings | undefined;
+      const columns = coordinateColumns(this.config);
+      const longitudeColumn = sqlIdentifier(columns.longitude);
+      const latitudeColumn = sqlIdentifier(columns.latitude);
 
       try {
         const query = await duckDbQuery(
           `
             SELECT *
             FROM read_parquet([${paths.map(sqlString).join(',')}], hive_partitioning=1, union_by_name=true)
-            WHERE longitude BETWEEN ${sqlNumber(bbox[0])} AND ${sqlNumber(bbox[2])}
-              AND latitude BETWEEN ${sqlNumber(bbox[1])} AND ${sqlNumber(bbox[3])}
+            WHERE ${longitudeColumn} BETWEEN ${sqlNumber(bbox[0])} AND ${sqlNumber(bbox[2])}
+              AND ${latitudeColumn} BETWEEN ${sqlNumber(bbox[1])} AND ${sqlNumber(bbox[3])}
           `,
           paths.some((path) => path.startsWith('s3://') || /^https?:\/\//i.test(path))
         );
@@ -1523,9 +1579,9 @@ export class BedrockCountryService {
 
         const filterStartedAt = Date.now();
         for (const row of rows) {
-          const lon = Number(row.longitude);
-          const lat = Number(row.latitude);
-          if (!Number.isFinite(lon) || !Number.isFinite(lat)) continue;
+          const lon = numericValue(row[columns.longitude]) ?? numericValue(row.longitude) ?? numericValue(row.lon);
+          const lat = numericValue(row[columns.latitude]) ?? numericValue(row.latitude) ?? numericValue(row.lat);
+          if (lon == null || lat == null) continue;
           if (!turf.booleanPointInPolygon(turf.point([lon, lat]), options.polygon)) continue;
           const address = normalizeAddress(this.config, options.campaignId, row);
           if (!address) continue;
@@ -1718,6 +1774,8 @@ export class BedrockCountryService {
     const addressPmtilesKey = usaAddressPmtilesKey(this.config, regionCode);
     const snapshotAddressKey = addressPmtilesKey ?? layerKey(this.config, 'addresses', 'addresses.pmtiles');
     const parcelPmtilesKey = usaParcelPmtilesKey(this.config, regionCode);
+    const geojsonExtension = this.config.geojsonExtension ?? 'ndjson.gz';
+    const metadataKey = `${prefix(this.config)}/${this.config.metadataFilename ?? `bedrock-${this.config.country}.json`}`;
     const tileMetrics = {
       artifact_type: 'diamond',
       diamond_mode: true,
@@ -1729,10 +1787,10 @@ export class BedrockCountryService {
       pmtiles_key: buildingPmtilesKey,
       tilejson_key: layerKey(this.config, 'buildings', 'buildings.json'),
       buildings_pmtiles_index_key: layerKey(this.config, 'buildings', 'pmtiles-index.json'),
-      buildings_geojson_key: layerKey(this.config, 'buildings', 'buildings.ndjson.gz'),
+      buildings_geojson_key: layerKey(this.config, 'buildings', `buildings.${geojsonExtension}`),
       addresses_pmtiles_key: addressPmtilesKey,
       addresses_tilejson_key: layerKey(this.config, 'addresses', 'addresses.json'),
-      addresses_geojson_key: layerKey(this.config, 'addresses', 'addresses.ndjson.gz'),
+      addresses_geojson_key: layerKey(this.config, 'addresses', `addresses.${geojsonExtension}`),
       addresses_parquet_prefix: layerKey(this.config, 'addresses', 'parquet'),
       addresses_parquet_manifest_key: layerKey(this.config, 'addresses', 'parquet-manifest.json'),
       addresses_pmtiles_index_key: layerKey(this.config, 'addresses', 'pmtiles-index.json'),
@@ -1797,7 +1855,7 @@ export class BedrockCountryService {
         buildings: snapshotBuildingKey,
         addresses: snapshotAddressKey,
         ...(parcelPmtilesKey ? { parcels: parcelPmtilesKey } : {}),
-        metadata: `${prefix(this.config)}/bedrock-${this.config.country}.json`,
+        metadata: metadataKey,
       },
       urls: {
         buildings: cdnUrl(this.config, snapshotBuildingKey) ?? `s3://${bucket(this.config)}/${snapshotBuildingKey}`,
@@ -1805,7 +1863,7 @@ export class BedrockCountryService {
         ...(parcelPmtilesKey
           ? { parcels: cdnUrl(this.config, parcelPmtilesKey) ?? `s3://${bucket(this.config)}/${parcelPmtilesKey}` }
           : {}),
-        metadata: `s3://${bucket(this.config)}/${prefix(this.config)}/bedrock-${this.config.country}.json`,
+        metadata: `s3://${bucket(this.config)}/${metadataKey}`,
       },
       metadata: {
         elapsed_ms: Math.round(scanMetric.seconds * 1000),
@@ -1824,6 +1882,22 @@ export const BEDROCK_CANADA_CONFIG: BedrockCountryConfig = {
   envPrefix: 'BEDROCK_CA',
   defaultSource: 'Statistics Canada National Address Register',
   overtureRelease: 'bedrock-ca-statcan-nar',
+};
+
+export const BEDROCK_NZ_CONFIG: BedrockCountryConfig = {
+  country: 'new-zealand',
+  countryCode: 'NZ',
+  provisionSource: 'bedrock_nz',
+  envPrefix: 'BEDROCK_NZ',
+  defaultSource: 'LINZ NZ Addresses',
+  overtureRelease: 'bedrock-nz-linz',
+  coordinateColumns: {
+    longitude: 'lon',
+    latitude: 'lat',
+  },
+  singleFileSpatialParquetLayers: ['addresses', 'buildings'],
+  geojsonExtension: 'geojson.gz',
+  metadataFilename: 'bedrock-new-zealand-manifest.json',
 };
 
 export const BEDROCK_AUSTRALIA_CONFIG: BedrockCountryConfig = {

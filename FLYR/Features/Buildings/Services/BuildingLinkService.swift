@@ -255,121 +255,17 @@ final class BuildingLinkService {
     }
 
     private func fetchBuildingsUncoalesced(campaignId: String) async throws -> [BuildingFeature] {
-        if !NetworkMonitor.shared.isOnline {
-            if let cachedBundle = await campaignRepository.getCampaignMapBundle(campaignId: campaignId),
-               !cachedBundle.buildings.features.isEmpty {
-                print(
-                    "📴 [BuildingLinkService] Loaded \(cachedBundle.buildings.features.count) " +
-                    "cached building GeoJSON features while offline"
-                )
-                return cachedBundle.buildings.features
-            }
-            print("📴 [BuildingLinkService] No cached building GeoJSON for offline campaign \(campaignId)")
+        let bundle = try await loadCanonicalBundleForMapLayerCaller(campaignId: campaignId, caller: "fetchBuildings")
+        let features = bundle.buildings.features
+        guard !features.isEmpty else {
+            print("📦 [BuildingLinkService] Canonical bundle has no building features for campaign \(campaignId)")
             throw BuildingLinkError.fetchFailed
         }
-
-        guard let url = URL(string: "\(baseURL)/api/campaigns/\(campaignId)/buildings") else {
-            throw BuildingLinkError.invalidURL
-        }
-
-        let features: [BuildingFeature]
-        do {
-            features = try await fetchBuildings(from: url)
-        } catch {
-            if let bypassURL = cacheBypassURL(from: url) {
-                print("⚠️ [BuildingLinkService] Buildings endpoint failed; retrying with cache bypass")
-                let refreshedFeatures = try await fetchBuildings(from: bypassURL)
-                let refreshedPolygonCount = Self.polygonBuildingCount(in: refreshedFeatures)
-                print("🔗 [BuildingLinkService] Cache-bypass buildings geometry after failure: polygons=\(refreshedPolygonCount) nonPolygons=\(max(refreshedFeatures.count - refreshedPolygonCount, 0))")
-                await persistBuildingGeoJSONCache(campaignId: campaignId, features: refreshedFeatures)
-                return refreshedFeatures
-            }
-            throw error
-        }
-
-        let polygonCount = Self.polygonBuildingCount(in: features)
-        if features.isEmpty, let bypassURL = cacheBypassURL(from: url) {
-            print("⚠️ [BuildingLinkService] Buildings endpoint returned 0 features; retrying with cache bypass")
-            let refreshedFeatures = try await fetchBuildings(from: bypassURL)
-            let refreshedPolygonCount = Self.polygonBuildingCount(in: refreshedFeatures)
-            print("🔗 [BuildingLinkService] Cache-bypass buildings geometry: polygons=\(refreshedPolygonCount) nonPolygons=\(max(refreshedFeatures.count - refreshedPolygonCount, 0))")
-            await persistBuildingGeoJSONCache(campaignId: campaignId, features: refreshedFeatures)
-            return refreshedFeatures
-        }
-
-        if polygonCount == 0, !features.isEmpty, let bypassURL = cacheBypassURL(from: url) {
-            print("⚠️ [BuildingLinkService] Buildings endpoint returned \(features.count) non-polygon feature(s); retrying with cache bypass")
-            let refreshedFeatures = try await fetchBuildings(from: bypassURL)
-            let refreshedPolygonCount = Self.polygonBuildingCount(in: refreshedFeatures)
-            print("🔗 [BuildingLinkService] Cache-bypass buildings geometry: polygons=\(refreshedPolygonCount) nonPolygons=\(max(refreshedFeatures.count - refreshedPolygonCount, 0))")
-            await persistBuildingGeoJSONCache(campaignId: campaignId, features: refreshedFeatures)
-            return refreshedFeatures
-        }
-
-        await persistBuildingGeoJSONCache(campaignId: campaignId, features: features)
+        print(
+            "🧪 [MAP_DEBUG] buildings_geojson_network_skipped campaign=\(campaignId) " +
+            "reason=canonical_bundle_only cached=\(features.count) renderable=\(Self.polygonBuildingCount(in: features))"
+        )
         return features
-    }
-
-    private func persistBuildingGeoJSONCache(campaignId: String, features: [BuildingFeature]) async {
-        guard !features.isEmpty else { return }
-        await campaignRepository.upsertBuildings(campaignId: campaignId, features: features)
-        print("📦 [BuildingLinkService] Cached \(features.count) building GeoJSON features for campaign \(campaignId)")
-    }
-
-    private func fetchBuildings(from url: URL) async throws -> [BuildingFeature] {
-        print("🔗 [BuildingLinkService] Fetching buildings from: \(url)")
-
-        var request = URLRequest(url: url)
-        request.timeoutInterval = 90
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        
-        // Add auth if available
-        if let session = try? await supabaseClient.auth.session {
-            request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
-        }
-        
-        let data: Data
-        let response: URLResponse
-        do {
-            (data, response) = try await URLSession.shared.data(for: request)
-        } catch {
-            print("⚠️ [BuildingLinkService] GET buildings failed for \(url): \(error.localizedDescription)")
-            throw error
-        }
-        
-        guard let httpResponse = response as? HTTPURLResponse else {
-            print("⚠️ [BuildingLinkService] GET buildings returned a non-HTTP response for \(url)")
-            throw BuildingLinkError.fetchFailed
-        }
-
-        guard httpResponse.statusCode == 200 else {
-            let body = String(data: data, encoding: .utf8) ?? ""
-            let preview = body.count > 500 ? String(body.prefix(500)) + "…" : body
-            print("⚠️ [BuildingLinkService] GET buildings HTTP \(httpResponse.statusCode) for \(url). Body: \(preview)")
-            throw BuildingLinkError.fetchFailed
-        }
-        
-        // Decode FeatureCollection
-        let featureCollection = try JSONDecoder().decode(BuildingFeatureCollection.self, from: data)
-        if featureCollection.features.isEmpty, let body = String(data: data, encoding: .utf8) {
-            print("⚠️ [BuildingLinkService] GET buildings returned 0 features (status=200). Response preview: \(body.prefix(400))...")
-        }
-        let polygonCount = Self.polygonBuildingCount(in: featureCollection.features)
-        if polygonCount < featureCollection.features.count {
-            print("✅ [BuildingLinkService] Fetched \(featureCollection.features.count) buildings (polygons=\(polygonCount), nonPolygons=\(featureCollection.features.count - polygonCount))")
-        } else {
-            print("✅ [BuildingLinkService] Fetched \(featureCollection.features.count) buildings")
-        }
-        return featureCollection.features
-    }
-
-    private func cacheBypassURL(from url: URL) -> URL? {
-        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
-        var queryItems = components.queryItems ?? []
-        queryItems.removeAll { $0.name == "cache" || $0.name == "refresh" }
-        queryItems.append(URLQueryItem(name: "cache", value: "bypass"))
-        components.queryItems = queryItems
-        return components.url
     }
 
     private func encodedPathComponent(_ value: String) -> String {
@@ -404,60 +300,82 @@ final class BuildingLinkService {
         ) {
             return cachedAddresses
         }
-
-        guard let url = URL(string: "\(baseURL)/api/campaigns/\(campaignId)/addresses") else {
-            throw BuildingLinkError.invalidURL
-        }
-
-        print("🔗 [BuildingLinkService] Fetching addresses from: \(url)")
-
-        var request = URLRequest(url: url)
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-
-        if let session = try? await supabaseClient.auth.session {
-            request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
-        }
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-
-        guard let httpResponse = response as? HTTPURLResponse,
-              httpResponse.statusCode == 200 else {
+        let bundle = try await loadCanonicalBundleForMapLayerCaller(campaignId: campaignId, caller: "fetchCampaignAddresses")
+        guard !bundle.addresses.features.isEmpty else {
+            print("📦 [BuildingLinkService] Canonical bundle has no address features for campaign \(campaignId)")
             throw BuildingLinkError.fetchFailed
         }
-
-        let featureCollection = try Self.decodeAddressFeatureCollection(from: data)
-        if featureCollection.features.isEmpty, let body = String(data: data, encoding: .utf8) {
-            print("⚠️ [BuildingLinkService] GET addresses returned 0 features (status=200). Response preview: \(body.prefix(400))...")
-        }
-        print("✅ [BuildingLinkService] Fetched \(featureCollection.features.count) addresses")
-        return featureCollection
+        print(
+            "🧪 [MAP_DEBUG] addresses_geojson_network_skipped campaign=\(campaignId) " +
+            "reason=canonical_bundle_only caller=BuildingLinkService.fetchCampaignAddresses cached=\(bundle.addresses.features.count)"
+        )
+        return bundle.addresses
     }
 
     /// Fetches campaign parcel polygons from the backend S3/PMTiles scoped endpoint.
     func fetchCampaignParcels(campaignId: String) async throws -> ParcelFeatureCollection {
-        guard let url = URL(string: "\(baseURL)/api/campaigns/\(campaignId)/parcels") else {
-            throw BuildingLinkError.invalidURL
+        let bundle = try await loadCanonicalBundleForMapLayerCaller(campaignId: campaignId, caller: "fetchCampaignParcels")
+        print(
+            "🧪 [MAP_DEBUG] parcels_geojson_network_skipped campaign=\(campaignId) " +
+            "reason=canonical_bundle_only cached=\(bundle.parcels.features.count)"
+        )
+        return bundle.parcels
+    }
+
+    private func loadCanonicalBundleForMapLayerCaller(
+        campaignId: String,
+        caller: String
+    ) async throws -> OfflineCampaignMapBundle {
+        if let cachedBundle = await campaignRepository.getCampaignMapBundle(campaignId: campaignId),
+           let metadata = cachedBundle.metadata,
+           metadata.hasUsableFreshCanonicalBundle {
+            print(
+                "🧪 [MAP_DEBUG] legacy_geojson_replaced_with_bundle campaign=\(campaignId) " +
+                "caller=\(caller) source=local_cache signature=\(metadata.assetSignature ?? "none")"
+            )
+            return cachedBundle
         }
 
-        print("🔗 [BuildingLinkService] Fetching parcels from: \(url)")
-
-        var request = URLRequest(url: url)
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-
-        if let session = try? await supabaseClient.auth.session {
-            request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
-        }
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse,
-              httpResponse.statusCode == 200 else {
+        guard NetworkMonitor.shared.isOnline else {
+            if let cachedBundle = await campaignRepository.getCampaignMapBundle(campaignId: campaignId) {
+                print(
+                    "📴 [BuildingLinkService] Loaded canonical bundle for \(caller) while offline " +
+                    "campaign=\(campaignId)"
+                )
+                return cachedBundle
+            }
             throw BuildingLinkError.fetchFailed
         }
 
-        let rows = try JSONDecoder().decode([CampaignParcelAPIResponse].self, from: data)
-        let features = rows.compactMap(Self.parcelFeature(from:))
-        print("✅ [BuildingLinkService] Fetched \(features.count) parcels")
-        return ParcelFeatureCollection(type: "FeatureCollection", features: features)
+        let localSignature = await campaignRepository
+            .getCampaignMapBundleMetadata(campaignId: campaignId)?
+            .assetSignature
+        let result = try await fetchCanonicalCampaignMapBundle(
+            campaignId: campaignId,
+            localSignature: localSignature
+        )
+
+        switch result {
+        case .notModified:
+            if let cachedBundle = await campaignRepository.getCampaignMapBundle(campaignId: campaignId) {
+                print(
+                    "🧪 [MAP_DEBUG] legacy_geojson_replaced_with_bundle campaign=\(campaignId) " +
+                    "caller=\(caller) source=304_cache signature=\(localSignature ?? "none")"
+                )
+                return cachedBundle
+            }
+            throw BuildingLinkError.fetchFailed
+        case .bundle(let bundle):
+            guard await campaignRepository.replaceCampaignMapBundle(campaignId: campaignId, bundle: bundle),
+                  let cachedBundle = await campaignRepository.getCampaignMapBundle(campaignId: campaignId) else {
+                throw BuildingLinkError.fetchFailed
+            }
+            print(
+                "🧪 [MAP_DEBUG] legacy_geojson_replaced_with_bundle campaign=\(campaignId) " +
+                "caller=\(caller) source=canonical_200 signature=\(bundle.assetSignature)"
+            )
+            return cachedBundle
+        }
     }
 
     func fetchCanonicalCampaignMapBundle(
@@ -553,6 +471,10 @@ final class BuildingLinkService {
         // DISABLED in production. See: flyr-linking-restructure task 3
         #if DEBUG
         guard !links.isEmpty else { return }
+        guard Self.isClientGeneratedLinkPublishingEnabled else {
+            print("🧪 [MAP_DEBUG] client_link_publish_skipped campaign=\(campaignId) reason=debug_opt_in_disabled links=\(links.count)")
+            return
+        }
         guard let url = URL(string: "\(baseURL)/api/campaigns/\(campaignId)/client-links") else {
             throw BuildingLinkError.invalidURL
         }
@@ -578,32 +500,11 @@ final class BuildingLinkService {
         #endif
     }
 
-    private static func decodeAddressFeatureCollection(from data: Data) throws -> AddressFeatureCollection {
-        let decoder = JSONDecoder()
-        let firstNonWhitespaceByte = data.first { byte in
-            byte != 32 && byte != 10 && byte != 9 && byte != 13
-        }
-
-        if firstNonWhitespaceByte == 91 { // [
-            let features = try decoder.decode([AddressFeature].self, from: data)
-            return AddressFeatureCollection(type: "FeatureCollection", features: features)
-        }
-
-        return try decoder.decode(AddressFeatureCollection.self, from: data)
-    }
-
-    private struct CampaignParcelAPIResponse: Codable {
-        let id: String
-        let externalId: String
-        let geom: String
-        let properties: [String: AnyCodable]?
-
-        enum CodingKeys: String, CodingKey {
-            case id
-            case externalId = "external_id"
-            case geom
-            case properties
-        }
+    private static var isClientGeneratedLinkPublishingEnabled: Bool {
+        let rawValue = (Bundle.main.object(forInfoDictionaryKey: "FLYR_ENABLE_CLIENT_LINK_PUBLISH") as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        return rawValue == "true" || rawValue == "1" || rawValue == "yes"
     }
 
     private struct ClientGeneratedLinksPublishRequest: Encodable {
@@ -632,37 +533,6 @@ final class BuildingLinkService {
         }
     }
 
-    private static func parcelFeature(from row: CampaignParcelAPIResponse) -> ParcelFeature? {
-        guard let data = row.geom.data(using: .utf8),
-              let geometry = try? JSONDecoder().decode(MapFeatureGeoJSONGeometry.self, from: data) else {
-            return nil
-        }
-
-        let parcelId = row.properties?["parcel_id"]?.value as? String ?? row.externalId
-        let addressId = row.properties?["address_id"]?.value as? String
-        let addressIds =
-            row.properties?["address_ids"]?.value as? [String] ??
-            (row.properties?["address_ids"]?.value as? [Any])?.compactMap { $0 as? String }
-        let source = row.properties?["source"]?.value as? String ?? "campaign_parcels"
-        let area =
-            row.properties?["area_sqm"]?.value as? Double ??
-            (row.properties?["area_sqm"]?.value as? Int).map(Double.init)
-        return ParcelFeature(
-            type: "Feature",
-            id: row.id,
-            geometry: geometry,
-            properties: ParcelProperties(
-                id: row.id,
-                parcelId: parcelId,
-                externalId: row.externalId,
-                source: source,
-                areaSqm: area,
-                addressId: addressId,
-                addressIds: addressIds
-            )
-        )
-    }
-    
     // MARK: - Fetch Links (from Supabase)
 
     /// Get all building-address links for a campaign

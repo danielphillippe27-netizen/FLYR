@@ -395,7 +395,7 @@ enum CampaignProvisionPhase: String, Codable, Equatable {
     }
 
     var isMapUsable: Bool {
-        self == .mapReady || self == .linkingFailed || isLinkComplete
+        self == .mapReady || self == .optimizing || self == .linkingFailed || isLinkComplete
     }
 }
 

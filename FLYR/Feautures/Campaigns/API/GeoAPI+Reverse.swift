@@ -41,8 +41,11 @@ extension GeoAPI {
       let upper = value.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
       if upper.count == 2 { return upper }
       let pieces = upper.split(separator: "-")
-      if pieces.count == 2, pieces[1].count == 2 {
-        return String(pieces[1])
+      if pieces.count == 2 {
+        let regionPart = String(pieces[1])
+        if regionPart.count == 2 || regionPart == "KZN" {
+          return regionPart
+        }
       }
       switch upper {
       case "CANADA": return "CA"
@@ -50,6 +53,15 @@ extension GeoAPI {
       case "NEW ZEALAND": return "NZ"
       case "AUSTRALIA": return "AU"
       case "SOUTH AFRICA": return "ZA"
+      case "EASTERN CAPE": return "EC"
+      case "FREE STATE": return "FS"
+      case "GAUTENG": return "GP"
+      case "KWAZULU-NATAL", "KWAZULU NATAL": return "KZN"
+      case "LIMPOPO": return "LP"
+      case "MPUMALANGA": return "MP"
+      case "NORTHERN CAPE": return "NC"
+      case "NORTH WEST": return "NW"
+      case "WESTERN CAPE": return "WC"
       case "UNITED KINGDOM", "GREAT BRITAIN": return "GB"
       default: return nil
       }
@@ -83,8 +95,6 @@ extension GeoAPI {
     throw GeoAPIError.noResults
   }
 }
-
-
 
 
 

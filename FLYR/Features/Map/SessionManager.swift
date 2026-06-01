@@ -426,9 +426,33 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
     }
 
     func requestBackgroundLocationAuthorization() {
+        requestBackgroundLocationAuthorization(afterPromptDismissalDelay: false)
+    }
+
+    func requestBackgroundLocationAuthorizationAfterPromptDismissal() {
+        requestBackgroundLocationAuthorization(afterPromptDismissalDelay: true)
+    }
+
+    private func requestBackgroundLocationAuthorization(afterPromptDismissalDelay shouldDelay: Bool) {
         let status = locationManager.authorizationStatus
         authorizationStatus = status
         showBackgroundLocationUpgradePrompt = false
+        hasShownBackgroundLocationUpgradePromptThisSession = true
+
+        guard shouldDelay else {
+            performBackgroundLocationAuthorizationRequest()
+            return
+        }
+
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            self?.performBackgroundLocationAuthorizationRequest()
+        }
+    }
+
+    private func performBackgroundLocationAuthorizationRequest() {
+        let status = locationManager.authorizationStatus
+        authorizationStatus = status
         if status == .notDetermined {
             locationManager.requestWhenInUseAuthorization()
         } else if status == .authorizedWhenInUse {

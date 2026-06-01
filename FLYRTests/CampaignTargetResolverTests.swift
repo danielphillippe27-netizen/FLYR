@@ -239,6 +239,41 @@ final class CampaignTargetResolverTests: XCTestCase {
         XCTAssertEqual(targets.first?.buildingId, goldBuildingId)
     }
 
+    func testBuildingLabelCombinesStreetAliasWhenFormattedIsOnlyHouseNumber() throws {
+        let buildings = try decodeBuildings("""
+        [
+          {
+            "type": "Feature",
+            "id": "chapel-building",
+            "geometry": {
+              "type": "Polygon",
+              "coordinates": [[
+                [144.9900, -37.8500],
+                [144.9900, -37.8499],
+                [144.9901, -37.8499],
+                [144.9901, -37.8500],
+                [144.9900, -37.8500]
+              ]]
+            },
+            "properties": {
+              "gers_id": "chapel-building",
+              "formatted": "122",
+              "house_number": "122",
+              "street": "Chapel St",
+              "units_count": 1,
+              "address_count": 1
+            }
+          }
+        ]
+        """)
+
+        let targets = CampaignTargetResolver.preferredSessionTargets(buildings: buildings, addresses: [])
+
+        XCTAssertEqual(targets.first?.label, "122 Chapel St")
+        XCTAssertEqual(targets.first?.houseNumber, "122")
+        XCTAssertEqual(targets.first?.streetName, "Chapel St")
+    }
+
     func testAddressFeatureDisplayDedupeCollapsesSameMiltonAddress() throws {
         let duplicateA = UUID().uuidString.lowercased()
         let duplicateB = UUID().uuidString.lowercased()

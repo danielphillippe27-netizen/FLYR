@@ -604,16 +604,21 @@ export async function GET(request: Request, context: RouteContext): Promise<Resp
         includeLinkedCandidates,
       });
       if (orphanCandidates.length > 0) {
+        const reverseCandidate = forceReverseGeocode && seedPoint
+          ? await reverseCandidatePayload(seedPoint)
+          : null;
         return NextResponse.json({
           building_id: buildingId,
           radius_meters: radiusMeters,
           trust_decision: {
-            used_reverse_geocode: false,
-            reason: "orphan_candidates_for_static_building",
+            used_reverse_geocode: Boolean(reverseCandidate),
+            reason: reverseCandidate
+              ? "orphan_candidates_for_static_building_with_reverse_geocode"
+              : "orphan_candidates_for_static_building",
             nearest_candidate_distance_m: orphanCandidates[0]?.distance_meters ?? null,
             nearest_candidate_rejected_reason: null,
           },
-          candidates: orphanCandidates,
+          candidates: reverseCandidate ? [...orphanCandidates, reverseCandidate] : orphanCandidates,
         });
       }
 

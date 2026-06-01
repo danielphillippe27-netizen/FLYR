@@ -211,23 +211,97 @@ struct AddressProperties: Codable {
     let id: String?
     let gersId: String?
     let buildingGersId: String?
+    let linkedBuildingId: String?
     let houseNumber: String?
+    let houseNumberLabel: String?
     let streetName: String?
     let postalCode: String?
     let locality: String?
     let formatted: String?
     let source: String?
+    let parcelId: String?
+    let campaignParcelId: String?
+    let hasBuildingLink: Bool?
+    let hasParcelLink: Bool?
+    let labelVisibilityMode: String?
+    let labelAnchorLon: Double?
+    let labelAnchorLat: Double?
+    let labelGroupKey: String?
+    let labelGroupIndex: Int?
+    let labelGroupCount: Int?
+    let labelPriority: Double?
+
+    init(
+        id: String? = nil,
+        gersId: String? = nil,
+        buildingGersId: String? = nil,
+        linkedBuildingId: String? = nil,
+        houseNumber: String? = nil,
+        houseNumberLabel: String? = nil,
+        streetName: String? = nil,
+        postalCode: String? = nil,
+        locality: String? = nil,
+        formatted: String? = nil,
+        source: String? = nil,
+        parcelId: String? = nil,
+        campaignParcelId: String? = nil,
+        hasBuildingLink: Bool? = nil,
+        hasParcelLink: Bool? = nil,
+        labelVisibilityMode: String? = nil,
+        labelAnchorLon: Double? = nil,
+        labelAnchorLat: Double? = nil,
+        labelGroupKey: String? = nil,
+        labelGroupIndex: Int? = nil,
+        labelGroupCount: Int? = nil,
+        labelPriority: Double? = nil
+    ) {
+        self.id = id
+        self.gersId = gersId
+        self.buildingGersId = buildingGersId
+        self.linkedBuildingId = linkedBuildingId
+        self.houseNumber = houseNumber
+        self.houseNumberLabel = houseNumberLabel
+        self.streetName = streetName
+        self.postalCode = postalCode
+        self.locality = locality
+        self.formatted = formatted
+        self.source = source
+        self.parcelId = parcelId
+        self.campaignParcelId = campaignParcelId
+        self.hasBuildingLink = hasBuildingLink
+        self.hasParcelLink = hasParcelLink
+        self.labelVisibilityMode = labelVisibilityMode
+        self.labelAnchorLon = labelAnchorLon
+        self.labelAnchorLat = labelAnchorLat
+        self.labelGroupKey = labelGroupKey
+        self.labelGroupIndex = labelGroupIndex
+        self.labelGroupCount = labelGroupCount
+        self.labelPriority = labelPriority
+    }
     
     enum CodingKeys: String, CodingKey {
         case id
         case gersId = "gers_id"
         case buildingGersId = "building_gers_id"
+        case linkedBuildingId = "linked_building_id"
         case houseNumber = "house_number"
+        case houseNumberLabel = "house_number_label"
         case streetName = "street_name"
         case postalCode = "postal_code"
         case locality
         case formatted
         case source
+        case parcelId = "parcel_id"
+        case campaignParcelId = "campaign_parcel_id"
+        case hasBuildingLink = "has_building_link"
+        case hasParcelLink = "has_parcel_link"
+        case labelVisibilityMode = "label_visibility_mode"
+        case labelAnchorLon = "label_anchor_lon"
+        case labelAnchorLat = "label_anchor_lat"
+        case labelGroupKey = "label_group_key"
+        case labelGroupIndex = "label_group_index"
+        case labelGroupCount = "label_group_count"
+        case labelPriority = "label_priority"
     }
 }
 
@@ -479,12 +553,19 @@ enum CampaignTargetResolver {
 
     static func displayAddressText(formatted: String?, houseNumber: String?, streetName: String?) -> String? {
         let formattedValue = formatted?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if !formattedValue.isEmpty {
-            return formattedValue
-        }
         let house = houseNumber?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let street = streetName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let combined = "\(house) \(street)".trimmingCharacters(in: .whitespacesAndNewlines)
+        if !combined.isEmpty,
+           !street.isEmpty,
+           (formattedValue.isEmpty
+            || formattedValue.caseInsensitiveCompare(house) == .orderedSame
+            || formattedValue.range(of: "[A-Za-z]", options: .regularExpression) == nil) {
+            return combined
+        }
+        if !formattedValue.isEmpty {
+            return formattedValue
+        }
         return combined.isEmpty ? nil : combined
     }
 
@@ -624,32 +705,6 @@ private func decodeFeatureCollection<F: Codable>(_ data: Data) throws -> MapFeat
     }
 }
 
-private func campaignApiBaseURL() -> URL {
-    Config.backendAPIURL
-}
-
-private func fetchCampaignAddressGeoJSONFromAPI(campaignId: UUID) async throws -> AddressFeatureCollection {
-    let url = campaignApiBaseURL()
-        .appendingPathComponent("api")
-        .appendingPathComponent("campaigns")
-        .appendingPathComponent(campaignId.uuidString)
-        .appendingPathComponent("addresses")
-
-    var request = URLRequest(url: url)
-    request.httpMethod = "GET"
-    request.setValue("application/json", forHTTPHeaderField: "Accept")
-    if let session = try? await SupabaseManager.shared.client.auth.session {
-        request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
-    }
-
-    let (data, response) = try await URLSession.shared.data(for: request)
-    guard let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) else {
-        throw NSError(domain: "MapFeatures", code: -1, userInfo: [NSLocalizedDescriptionKey: "Address GeoJSON request failed"])
-    }
-
-    return try decodeFeatureCollection(data)
-}
-
 // MARK: - Map Features Service
 
 /// Service for fetching map features (buildings, addresses, roads) from Supabase
@@ -668,6 +723,7 @@ final class MapFeaturesService: ObservableObject {
     @Published var displayModeHint: String?
     @Published var isLoading = false
     @Published var clientLinkingProgress: ClientLinkingProgress = .idle
+    @Published var isMapDataOptimizing = false
     @Published var error: Error?
 
     // Campaign-scoped prewarmed building polygons (e.g. Quick Start ensure response before DB links are ready).
@@ -677,12 +733,11 @@ final class MapFeaturesService: ObservableObject {
     private var diamondManifestPrewarmTasks: [String: Task<Void, Never>] = [:]
     private let diamondPMTilesRenderingEnabled = false
     private var unsupportedDiamondManifestCampaigns: Set<String> = []
-    private var parcelRetryTask: Task<Void, Never>?
     private var canonicalBundleRefreshTask: Task<Bool, Never>?
     private var canonicalBundleRefreshCampaignIdLower: String?
     private var canonicalBundleRefreshSignature: String?
-    private var clientLinkingTask: Task<Void, Never>?
-    private var clientLinkingSignature: String?
+    private var backendOptimizationRefreshTask: Task<Void, Never>?
+    private var backendOptimizationRefreshCampaignIdLower: String?
     private var canonicalBundleRefreshResultByCampaign: [String: String] = [:]
     private var currentCanonicalBundleLinksStatus: String?
     /// Tracks latest campaign fetch so stale async responses are ignored.
@@ -695,6 +750,15 @@ final class MapFeaturesService: ObservableObject {
         var roads: RoadFeatureCollection? = nil
         var diamondManifest: DiamondManifest? = nil
         var displayModeHint: String? = nil
+    }
+
+    private static func linksStatusMeansBackendOptimizing(_ status: String?) -> Bool {
+        switch status?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "pending_provision", "optimizing", "linking", "linking_pending", "client_fallback_required", "linking_failed":
+            return true
+        default:
+            return false
+        }
     }
     private var featureSnapshotsByCampaign: [String: CampaignFeatureSnapshot] = [:]
     private let campaignRepository = CampaignRepository.shared
@@ -901,153 +965,9 @@ final class MapFeaturesService: ObservableObject {
         print("💎 [DIAMOND] Disabled PMTiles manifest for campaign \(campaignId); falling back to GeoJSON (\(reason))")
     }
     
-    // MARK: - Campaign Full Features (Fetch Once, Render Forever)
-    
-    /// Fetch ALL features for a campaign without viewport filtering
-    /// This enables buttery smooth pan/zoom without re-fetching
-    func fetchCampaignFullFeatures(campaignId: String) async {
-        isLoading = true
-        error = nil
-        
-        do {
-            print("🗺️ [MapFeatures] Fetching full campaign features for: \(campaignId)")
-            
-            // Defensive: Validate campaign ID format
-            guard let campaignUUID = UUID(uuidString: campaignId) else {
-                print("❌ [MapFeatures] Invalid campaign ID format: \(campaignId)")
-                self.error = NSError(domain: "MapFeatures", code: 400, userInfo: [NSLocalizedDescriptionKey: "Invalid campaign ID format"])
-                isLoading = false
-                return
-            }
-            
-            let data = try await supabase.callRPCData(
-                "rpc_get_campaign_full_features",
-                params: ["p_campaign_id": campaignUUID.uuidString]
-            )
-            
-            // Defensive: Check if data is empty
-            if data.isEmpty {
-                print("⚠️ [MapFeatures] Empty response from RPC")
-                self.buildings = BuildingFeatureCollection(type: "FeatureCollection", features: [])
-                isLoading = false
-                return
-            }
-            
-            // Log raw response for debugging (first 500 chars)
-            if let responseText = String(data: data, encoding: .utf8) {
-                print("🔍 [MapFeatures] RPC response: \(responseText.prefix(500))")
-            }
-            
-            let result: BuildingFeatureCollection = try decodeFeatureCollection(data)
-            let filtered = filteredRenderableBuildingCollection(result)
-            self.buildings = filtered
-            print("✅ [MapFeatures] Loaded \(filtered.features.count) building features")
-            
-        } catch let decodingError as DecodingError {
-            self.error = decodingError
-            print("❌ [MapFeatures] Decoding error: \(decodingError)")
-            // Set empty collection instead of failing completely
-            self.buildings = BuildingFeatureCollection(type: "FeatureCollection", features: [])
-            
-        } catch {
-            self.error = error
-            print("❌ [MapFeatures] Error fetching campaign features: \(error)")
-            // Set empty collection instead of failing completely
-            self.buildings = BuildingFeatureCollection(type: "FeatureCollection", features: [])
-        }
-        
-        isLoading = false
-    }
-    
-    // MARK: - Viewport-Based Queries (Exploration Mode)
-    
-    /// Fetch buildings in a bounding box (for exploration mode without campaign)
-    func fetchBuildingsInBbox(
-        minLon: Double,
-        minLat: Double,
-        maxLon: Double,
-        maxLat: Double,
-        campaignId: String? = nil
-    ) async {
-        isLoading = true
-        error = nil
-        
-        do {
-            var params: [String: Any] = [
-                "min_lon": minLon,
-                "min_lat": minLat,
-                "max_lon": maxLon,
-                "max_lat": maxLat
-            ]
-            
-            if let campaignId = campaignId, let campaignUUID = UUID(uuidString: campaignId) {
-                params["p_campaign_id"] = campaignUUID.uuidString
-            }
-            
-            print("🗺️ [MapFeatures] Fetching buildings in bbox: [\(minLon), \(minLat), \(maxLon), \(maxLat)]")
-            
-            let result: BuildingFeatureCollection = try await supabase.callRPC(
-                "rpc_get_buildings_in_bbox",
-                params: params
-            )
-            
-            let filtered = filteredRenderableBuildingCollection(result)
-            self.buildings = filtered
-            print("✅ [MapFeatures] Loaded \(filtered.features.count) buildings in viewport")
-            
-        } catch {
-            self.error = error
-            print("❌ [MapFeatures] Error fetching buildings: \(error)")
-        }
-        
-        isLoading = false
-    }
-    
-    /// Fetch addresses in a bounding box
-    func fetchAddressesInBbox(
-        minLon: Double,
-        minLat: Double,
-        maxLon: Double,
-        maxLat: Double,
-        campaignId: String? = nil
-    ) async {
-        do {
-            var params: [String: Any] = [
-                "min_lon": minLon,
-                "min_lat": minLat,
-                "max_lon": maxLon,
-                "max_lat": maxLat
-            ]
-            
-            if let campaignId = campaignId, let campaignUUID = UUID(uuidString: campaignId) {
-                params["p_campaign_id"] = campaignUUID.uuidString
-            }
-            
-            print("🗺️ [MapFeatures] Fetching addresses in bbox")
-            
-            let result: AddressFeatureCollection = try await supabase.callRPC(
-                "rpc_get_addresses_in_bbox",
-                params: params
-            )
-            
-            self.addresses = result
-            print("✅ [MapFeatures] Loaded \(result.features.count) addresses")
-            
-        } catch {
-            print("❌ [MapFeatures] Error fetching addresses: \(error)")
-        }
-    }
-    
     // MARK: - Campaign All Features (Buildings + Addresses + Roads)
     
-    /// Fetch all map features for a campaign (buildings, addresses, roads).
-    ///
-    /// Building source priority (handled server-side by /api/campaigns/{id}/buildings):
-    ///   1. Gold, if any Gold buildings exist
-    ///   2. Silver, only when no Gold buildings exist
-    ///
-    /// Addresses come from the backend map address endpoint, which returns DB/RPC rows first
-    /// and falls back to the Silver snapshot for non-Gold campaigns with no DB rows.
+    /// Fetch all map features for a campaign from the canonical map bundle.
     func fetchAllCampaignFeatures(campaignId: String, forceRefresh: Bool = false) async {
         let debugLoadStartedAt = Date()
         let trace = PerfTrace.begin("campaign_open", "fetch_all_campaign_features", fields: [
@@ -1058,7 +978,17 @@ final class MapFeaturesService: ObservableObject {
         if isLoading, activeCampaignIdLower == campaignIdLower, !forceRefresh {
             print("ℹ️ [MapFeatures] Campaign \(campaignId) load already in flight; coalescing duplicate request")
             print("🧪 [MAP_DEBUG] campaign_load_coalesced campaign=\(campaignId)")
-            trace.end(status: "coalesced")
+            let waitStartedAt = Date()
+            while isLoading, activeCampaignIdLower == campaignIdLower, !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+            trace.end(status: "coalesced_waited", fields: [
+                "waitMs": Int(Date().timeIntervalSince(waitStartedAt) * 1000),
+                "buildings": self.buildings?.features.count ?? 0,
+                "addresses": self.addresses?.features.count ?? 0,
+                "parcels": self.parcels?.features.count ?? 0,
+                "roads": self.roads?.features.count ?? 0
+            ])
             return
         }
         if isLoading, activeCampaignIdLower == campaignIdLower, forceRefresh {
@@ -1069,16 +999,20 @@ final class MapFeaturesService: ObservableObject {
         let requestId = UUID()
         activeCampaignRequestId = requestId
         activeCampaignIdLower = campaignIdLower
-        parcelRetryTask?.cancel()
-        parcelRetryTask = nil
         if !isRefreshingSameCampaign || forceRefresh {
             canonicalBundleRefreshTask?.cancel()
             canonicalBundleRefreshTask = nil
             canonicalBundleRefreshCampaignIdLower = nil
             canonicalBundleRefreshSignature = nil
         }
+        if !isRefreshingSameCampaign {
+            backendOptimizationRefreshTask?.cancel()
+            backendOptimizationRefreshTask = nil
+            backendOptimizationRefreshCampaignIdLower = nil
+        }
         currentCanonicalBundleLinksStatus = nil
         clientLinkingProgress = .idle
+        isMapDataOptimizing = false
         isLoading = true
         error = nil
         print("🧪 [MAP_DEBUG] campaign_load_start campaign=\(campaignId) refreshingSameCampaign=\(isRefreshingSameCampaign)")
@@ -1106,6 +1040,11 @@ final class MapFeaturesService: ObservableObject {
             self.roads = cachedBundle.roads
             self.displayModeHint = cachedBundle.metadata?.displayModeHint
             self.currentCanonicalBundleLinksStatus = cachedBundle.metadata?.linksStatus
+            updateBackendOptimizationState(
+                campaignId: campaignId,
+                linksStatus: cachedBundle.metadata?.linksStatus,
+                requestId: requestId
+            )
             cachedBundleMetadata = cachedBundle.metadata
             loadedCachedFirstDrawBundle = true
             cachedBundleIsFresh = cachedBundle.metadata?.isFresh == true
@@ -1129,9 +1068,6 @@ final class MapFeaturesService: ObservableObject {
             )
             if cachedBundleNeedsLinkRefresh {
                 print("🧪 [MAP_DEBUG] cache_bundle_link_identity_missing campaign=\(campaignId) action=refresh_canonical_bundle")
-            }
-            if cachedBundleNeedsLinkRefresh {
-                scheduleClientLinkingIfReady(campaignId: campaignId, requestId: requestId)
             }
             PerfTrace.event("campaign_open", "local_bundle_first_draw", fields: [
                 "campaign": campaignId,
@@ -1235,7 +1171,7 @@ final class MapFeaturesService: ObservableObject {
             } else if !cachedBundleIsFresh {
                 refreshReason = "stale_local_bundle"
             } else if cachedBundleRequiresClientFallback {
-                refreshReason = "client_fallback_required"
+                refreshReason = "backend_links_not_ready"
             } else {
                 refreshReason = "partial_local_bundle"
             }
@@ -1522,6 +1458,10 @@ final class MapFeaturesService: ObservableObject {
         let incomingRenderableBuildings = filteredRenderableBuildingCollection(bundle.buildings)
         guard incomingRenderableBuildings.features.isEmpty else { return bundle }
 
+        let displayModeHint = bundle.displayModeHint?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        let explicitlyAddressOnly = displayModeHint == "addresses"
         let hasLinkedAddressState = !bundle.links.isEmpty
             || (bundle.counts?.links ?? 0) > 0
             || bundle.addresses.features.contains { feature in
@@ -1529,7 +1469,13 @@ final class MapFeaturesService: ObservableObject {
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 return buildingId?.isEmpty == false
             }
-        guard hasLinkedAddressState else { return bundle }
+        let serverReportsBuildings = (bundle.counts?.buildings ?? bundle.buildings.features.count) > 0
+        let shouldPreserveLocalBuildings = !explicitlyAddressOnly && (
+            hasLinkedAddressState ||
+                serverReportsBuildings ||
+                bundle.buildings.features.isEmpty
+        )
+        guard shouldPreserveLocalBuildings else { return bundle }
 
         let inMemoryBuildings = self.buildings.map(filteredRenderableBuildingCollection)
         let cachedBuildings = await campaignRepository
@@ -1549,7 +1495,9 @@ final class MapFeaturesService: ObservableObject {
 
         print(
             "🧪 [MAP_DEBUG] canonical_map_bundle_preserved_local_buildings campaign=\(campaignId) " +
-            "incoming=0 preserved=\(preservedCount) links=\(bundle.links.count)"
+            "incoming=0 preserved=\(preservedCount) links=\(bundle.links.count) " +
+            "reportedBuildings=\(bundle.counts?.buildings ?? bundle.buildings.features.count) " +
+            "displayModeHint=\(bundle.displayModeHint ?? "nil")"
         )
 
         let counts = CanonicalCampaignMapBundleCounts(
@@ -1596,13 +1544,14 @@ final class MapFeaturesService: ObservableObject {
         self.roads = bundle.roads
         self.displayModeHint = bundle.displayModeHint
         self.currentCanonicalBundleLinksStatus = bundle.linksStatus
+        updateBackendOptimizationState(
+            campaignId: campaignId,
+            linksStatus: bundle.linksStatus,
+            requestId: requestId
+        )
         storeCurrentFeatureSnapshot(campaignId: campaignId)
 
-        if !bundle.links.isEmpty {
-            applyClientLinks(bundle.links, toCampaignId: campaignId)
-        }
-
-        scheduleClientLinkingIfReady(campaignId: campaignId, requestId: requestId)
+        recordBackendBundleLinkProgress(campaignId: campaignId, requestId: requestId)
     }
 
     private func loadDiamondManifestIfAvailable(campaignId: String, requestId: UUID? = nil) async -> Bool {
@@ -1696,7 +1645,7 @@ final class MapFeaturesService: ObservableObject {
 
     private static func canonicalLinksAreFresh(_ status: String?) -> Bool {
         switch status?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "ok", "fresh", "ready":
+        case "ok", "fresh", "ready", "no_links_needed":
             return true
         default:
             return false
@@ -1705,6 +1654,81 @@ final class MapFeaturesService: ObservableObject {
 
     private func canonicalBundleRefreshDiagnostic(for campaignId: String) -> String {
         canonicalBundleRefreshResultByCampaign[campaignId.lowercased()] ?? "none"
+    }
+
+    private func updateBackendOptimizationState(campaignId: String, linksStatus: String?, requestId: UUID?) {
+        guard isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else { return }
+        let optimizing = Self.linksStatusMeansBackendOptimizing(linksStatus)
+        isMapDataOptimizing = optimizing
+        if optimizing {
+            scheduleBackendOptimizationRefresh(campaignId: campaignId, requestId: requestId)
+        } else if backendOptimizationRefreshCampaignIdLower == campaignId.lowercased() {
+            backendOptimizationRefreshTask?.cancel()
+            backendOptimizationRefreshTask = nil
+            backendOptimizationRefreshCampaignIdLower = nil
+        }
+    }
+
+    private func scheduleBackendOptimizationRefresh(campaignId: String, requestId: UUID?) {
+        let campaignKey = campaignId.lowercased()
+        if backendOptimizationRefreshTask != nil,
+           backendOptimizationRefreshCampaignIdLower == campaignKey {
+            return
+        }
+
+        backendOptimizationRefreshTask?.cancel()
+        backendOptimizationRefreshCampaignIdLower = campaignKey
+        backendOptimizationRefreshTask = Task { [weak self] in
+            let retryDelaysSeconds: [Double] = [
+                2, 2, 3, 5, 8, 13, 21,
+                30, 30, 30, 30, 30, 30, 30, 30
+            ]
+
+            for (attempt, delaySeconds) in retryDelaysSeconds.enumerated() {
+                do {
+                    try await Task.sleep(for: .seconds(delaySeconds))
+                } catch {
+                    return
+                }
+                guard !Task.isCancelled else { return }
+                guard let self else { return }
+                guard await MainActor.run(body: {
+                    self.isActiveCampaignRequest(campaignId: campaignId, requestId: requestId)
+                        && self.isMapDataOptimizing
+                }) else {
+                    return
+                }
+
+                print(
+                    "🧪 [MAP_DEBUG] canonical_map_bundle_optimization_poll campaign=\(campaignId) " +
+                    "attempt=\(attempt + 1)"
+                )
+                _ = await self.fetchCanonicalCampaignMapBundle(
+                    campaignId: campaignId,
+                    requestId: requestId,
+                    localSignature: nil,
+                    startedAt: Date(),
+                    timeoutNanoseconds: nil
+                )
+                guard !Task.isCancelled else { return }
+                let shouldContinue = await MainActor.run(body: {
+                    self.isActiveCampaignRequest(campaignId: campaignId, requestId: requestId)
+                        && self.isMapDataOptimizing
+                })
+                if !shouldContinue { return }
+            }
+
+            await MainActor.run {
+                if self?.backendOptimizationRefreshCampaignIdLower == campaignKey {
+                    self?.backendOptimizationRefreshTask = nil
+                    self?.backendOptimizationRefreshCampaignIdLower = nil
+                    print(
+                        "🧪 [MAP_DEBUG] canonical_map_bundle_optimization_poll_exhausted campaign=\(campaignId) " +
+                        "attempts=\(retryDelaysSeconds.count)"
+                    )
+                }
+            }
+        }
     }
 
     @discardableResult
@@ -1752,55 +1776,6 @@ final class MapFeaturesService: ObservableObject {
             print("❌ [MapFeatures] Error fetching campaign map bundle: \(error)")
             print("🧪 [MAP_DEBUG] map_bundle_failed campaign=\(campaignId) ms=\(Int(Date().timeIntervalSince(debugStartedAt) * 1000)) error=\(error.localizedDescription)")
             return false
-        }
-    }
-
-    private func fetchCampaignBuildings(campaignId: String, requestId: UUID? = nil) async {
-        let debugStartedAt = Date()
-
-        if let cachedBundle = await campaignRepository.getCampaignMapBundle(campaignId: campaignId),
-           isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) {
-            let filtered = filteredRenderableBuildingCollection(cachedBundle.buildings)
-            self.buildings = filtered
-            storeCurrentFeatureSnapshot(campaignId: campaignId)
-            print(
-                "🧪 [MAP_DEBUG] buildings_geojson_cache_loaded campaign=\(campaignId) " +
-                "cached=\(cachedBundle.buildings.features.count) renderable=\(filtered.features.count)"
-            )
-        }
-
-        guard NetworkMonitor.shared.isOnline else {
-            if self.buildings?.features.isEmpty ?? true {
-                print("📴 [MapFeatures] No cached building GeoJSON available while offline for campaign \(campaignId)")
-            }
-            return
-        }
-
-        do {
-            let features = try await BuildingLinkService.shared.fetchBuildings(campaignId: campaignId)
-            guard isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else { return }
-
-            let collection = BuildingFeatureCollection(type: "FeatureCollection", features: features)
-            await campaignRepository.upsertBuildings(campaignId: campaignId, features: features)
-            let merged = await campaignRepository.mergeLocalFallbackBuildings(campaignId: campaignId, into: collection)
-            let filtered = filteredRenderableBuildingCollection(merged)
-            self.buildings = filtered
-            storeCurrentFeatureSnapshot(campaignId: campaignId)
-            print("✅ [MapFeatures] Loaded \(filtered.features.count) stable linked campaign buildings")
-            print(
-                "🧪 [MAP_DEBUG] buildings_geojson_loaded campaign=\(campaignId) " +
-                "ms=\(Int(Date().timeIntervalSince(debugStartedAt) * 1000)) " +
-                "cached=\(features.count) renderable=\(filtered.features.count) role=state_overlay_or_fallback"
-            )
-            scheduleClientLinkingIfReady(campaignId: campaignId, requestId: requestId)
-        } catch {
-            guard isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else { return }
-
-            print("❌ [MapFeatures] Error fetching stable linked campaign buildings: \(error)")
-            print("🧪 [MAP_DEBUG] buildings_geojson_failed campaign=\(campaignId) ms=\(Int(Date().timeIntervalSince(debugStartedAt) * 1000)) error=\(error.localizedDescription)")
-            if self.buildings?.features.isEmpty ?? true {
-                self.buildings = BuildingFeatureCollection(type: "FeatureCollection", features: [])
-            }
         }
     }
 
@@ -2013,65 +1988,6 @@ final class MapFeaturesService: ObservableObject {
         return String(data: data, encoding: .utf8)
     }
     
-    /// Partition RPC full-features by geometry: Polygon/MultiPolygon -> buildings, Point -> address fallback.
-    private func partitionFeaturesByGeometry(_ features: [BuildingFeature]) -> (polygons: [BuildingFeature], points: [BuildingFeature]) {
-        var polygons: [BuildingFeature] = []
-        var points: [BuildingFeature] = []
-        for f in features {
-            let geoType = f.geometry.type.lowercased()
-            if geoType == "polygon" || geoType == "multipolygon" {
-                polygons.append(f)
-            } else if geoType == "point" {
-                points.append(f)
-            }
-        }
-        return (polygons, points)
-    }
-    
-    /// Convert Point building features (address_point fallback) to AddressFeature for the addresses layer.
-    private func addressFeaturesFromPointBuildingFeatures(_ points: [BuildingFeature]) -> [AddressFeature] {
-        points.compactMap { feature in
-            guard feature.geometry.asPoint != nil else { return nil }
-            let p = feature.properties
-            let formatted = p.addressText ?? "\(p.houseNumber ?? "") \(p.streetName ?? "")".trimmingCharacters(in: .whitespaces)
-            let addrProps = AddressProperties(
-                id: p.addressId,
-                gersId: p.gersId,
-                buildingGersId: p.buildingId,
-                houseNumber: p.houseNumber,
-                streetName: p.streetName,
-                postalCode: nil,
-                locality: nil,
-                formatted: formatted.isEmpty ? nil : formatted,
-                source: p.source
-            )
-            return AddressFeature(
-                type: "Feature",
-                id: p.addressId ?? feature.id,
-                geometry: feature.geometry,
-                properties: addrProps
-            )
-        }
-    }
-    
-    /// Merge address features: existing plus additional, deduped by address id.
-    private func mergeAddressFeatures(existing: AddressFeatureCollection?, additional: [AddressFeature]) -> [AddressFeature] {
-        var seenIds = Set((existing?.features ?? []).compactMap { $0.properties.id ?? $0.id }.map { $0.lowercased() })
-        var result = existing?.features ?? []
-        for addr in additional {
-            let id = (addr.properties.id ?? addr.id ?? "").lowercased()
-            if !id.isEmpty {
-                if !seenIds.contains(id) {
-                    seenIds.insert(id)
-                    result.append(addr)
-                }
-            } else {
-                result.append(addr)
-            }
-        }
-        return result
-    }
-    
     /// Convert GeoJSON feature collection to BuildingFeatureCollection for the map layer.
     private func buildingFeatureCollectionFromGeoJSON(_ collection: GeoJSONFeatureCollection) -> BuildingFeatureCollection {
         let features = collection.features.compactMap { geoFeature -> BuildingFeature? in
@@ -2102,7 +2018,21 @@ final class MapFeaturesService: ObservableObject {
     private func buildingPropertiesFromGeoJSONFeature(_ feature: GeoJSONFeature) -> BuildingProperties {
         let p = feature.properties
         func str(_ key: String) -> String? {
-            (p[key]?.value as? String).flatMap { $0.isEmpty ? nil : $0 }
+            if let string = p[key]?.value as? String {
+                let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+                return trimmed.isEmpty ? nil : trimmed
+            }
+            if let int = p[key]?.value as? Int {
+                return String(int)
+            }
+            if let double = p[key]?.value as? Double, double.isFinite {
+                let rounded = double.rounded()
+                return abs(double - rounded) < .ulpOfOne ? String(Int64(rounded)) : String(double)
+            }
+            return nil
+        }
+        func firstString(_ keys: [String]) -> String? {
+            keys.compactMap(str).first
         }
         func int(_ key: String) -> Int { (p[key]?.value as? Int) ?? (p[key]?.value as? Double).map(Int.init) ?? 0 }
         func double(_ key: String) -> Double { (p[key]?.value as? Double) ?? (p[key]?.value as? Int).map(Double.init) ?? 0 }
@@ -2130,7 +2060,7 @@ final class MapFeaturesService: ObservableObject {
             id: str("building_id") ?? str("id") ?? fallbackId,
             buildingId: str("building_id"),
             addressId: str("address_id"),
-            addressIds: stringArray("address_ids"),
+            addressIds: Array(Set(stringArray("linked_address_ids") + stringArray("address_ids"))).sorted(),
             gersId: rawGersId.lowercased(),
             publicBuildingId: rawPublicId.lowercased(),
             canonicalBuildingId: (str("canonical_building_id") ?? rawPublicId).lowercased(),
@@ -2140,7 +2070,7 @@ final class MapFeaturesService: ObservableObject {
             minHeight: double("min_height"),
             isTownhome: (p["is_townhome"]?.value as? Bool) ?? false,
             unitsCount: int("units_count") > 0 ? int("units_count") : 1,
-            addressText: str("address_text"),
+            addressText: firstString(["address_text", "formatted", "formatted_address", "full_address", "display_address", "label", "address"]),
             matchMethod: str("match_method"),
             featureStatus: str("feature_status"),
             featureType: str("feature_type"),
@@ -2148,8 +2078,8 @@ final class MapFeaturesService: ObservableObject {
             scansToday: int("scans_today"),
             scansTotal: int("scans_total"),
             lastScanSecondsAgo: (p["last_scan_seconds_ago"]?.value as? Double),
-            houseNumber: str("house_number"),
-            streetName: str("street_name"),
+            houseNumber: firstString(["house_number", "house_number_label", "houseNumber", "street_number", "street_no", "address_number", "number", "addr:housenumber"]),
+            streetName: firstString(["street_name", "streetName", "primary_street_name", "street", "road_name", "road", "addr:street"]),
             confidence: (p["confidence"]?.value as? Double).flatMap { $0 >= 0 ? $0 : nil },
             source: str("source"),
             addressCount: int("address_count") > 0 ? int("address_count") : nil,
@@ -2160,88 +2090,6 @@ final class MapFeaturesService: ObservableObject {
         )
     }
     
-    private func applyFreshCanonicalAddressesIfAvailable(
-        campaignId: String,
-        requestId: UUID?,
-        caller: String,
-        startedAt debugStartedAt: Date
-    ) async -> Bool {
-        guard let cachedBundle = await campaignRepository.getCampaignMapBundle(campaignId: campaignId),
-              let metadata = cachedBundle.metadata,
-              metadata.hasUsableFreshCanonicalBundle,
-              !cachedBundle.addresses.features.isEmpty else {
-            return false
-        }
-
-        guard isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else {
-            return true
-        }
-
-        self.addresses = cachedBundle.addresses
-        storeCurrentFeatureSnapshot(campaignId: campaignId)
-        let canonicalRefresh = canonicalBundleRefreshDiagnostic(for: campaignId)
-        print(
-            "🔷 [SHIM] SKIP RPC rpc_get_campaign_addresses reason=fresh_canonical_bundle " +
-            "caller=\(caller) hasLocalBundle=true bundleFresh=\(metadata.isFresh) " +
-            "canonicalRefresh=\(canonicalRefresh)"
-        )
-        print(
-            "🧪 [MAP_DEBUG] addresses_geojson_skipped campaign=\(campaignId) " +
-            "reason=fresh_canonical_bundle caller=\(caller) cached=\(cachedBundle.addresses.features.count) " +
-            "linksStatus=\(metadata.linksStatus ?? "unknown") ms=\(Int(Date().timeIntervalSince(debugStartedAt) * 1000))"
-        )
-        return true
-    }
-
-    /// Fetch Supabase campaign address points when the Diamond manifest has no address tile layer.
-    private func fetchCampaignAddresses(campaignId: String, requestId: UUID? = nil) async {
-        let debugStartedAt = Date()
-        do {
-            guard let campaignUUID = UUID(uuidString: campaignId) else {
-                print("❌ [MapFeatures] Invalid campaign ID format for addresses: \(campaignId)")
-                print("🧪 [MAP_DEBUG] addresses_geojson_failed campaign=\(campaignId) ms=\(Int(Date().timeIntervalSince(debugStartedAt) * 1000)) error=invalid_campaign_id")
-                return
-            }
-            if await applyFreshCanonicalAddressesIfAvailable(
-                campaignId: campaignId,
-                requestId: requestId,
-                caller: "MapFeaturesService.fetchCampaignAddresses",
-                startedAt: debugStartedAt
-            ) {
-                return
-            }
-            let fallbackMetadata = await campaignRepository.getCampaignMapBundleMetadata(campaignId: campaignId)
-            let data = try await supabase.callRPCData(
-                "rpc_get_campaign_addresses",
-                params: ["p_campaign_id": campaignUUID.uuidString],
-                reason: "legacy_geojson_cold_fallback",
-                caller: "MapFeaturesService.fetchCampaignAddresses",
-                hasLocalBundle: fallbackMetadata != nil,
-                bundleFresh: fallbackMetadata?.isFresh,
-                canonicalRefresh: canonicalBundleRefreshDiagnostic(for: campaignId)
-            )
-            let result: AddressFeatureCollection = try decodeFeatureCollection(data)
-            guard isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else { return }
-            let finalResult: AddressFeatureCollection
-            if result.features.isEmpty {
-                let pmtilesResult = try await fetchCampaignAddressGeoJSONFromAPI(campaignId: campaignUUID)
-                finalResult = pmtilesResult.features.isEmpty ? result : pmtilesResult
-            } else {
-                finalResult = result
-            }
-            guard isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else { return }
-            self.addresses = finalResult
-            storeCurrentFeatureSnapshot(campaignId: campaignId)
-            await campaignRepository.upsertAddresses(campaignId: campaignId, features: finalResult.features)
-            print("✅ [MapFeatures] Loaded \(finalResult.features.count) campaign address points")
-            print("🧪 [MAP_DEBUG] addresses_geojson_loaded campaign=\(campaignId) ms=\(Int(Date().timeIntervalSince(debugStartedAt) * 1000)) features=\(finalResult.features.count) role=proximity_and_fallback")
-            scheduleClientLinkingIfReady(campaignId: campaignId, requestId: requestId)
-        } catch {
-            print("❌ [MapFeatures] Error fetching campaign addresses: \(error)")
-            print("🧪 [MAP_DEBUG] addresses_geojson_failed campaign=\(campaignId) ms=\(Int(Date().timeIntervalSince(debugStartedAt) * 1000)) error=\(error.localizedDescription)")
-        }
-    }
-
     /// Load roads from local cache first, then refresh from the existing campaign road service.
     func fetchCampaignRoads(campaignId: String, requestId: UUID? = nil) async {
         let debugStartedAt = Date()
@@ -2262,411 +2110,19 @@ final class MapFeaturesService: ObservableObject {
         }
     }
 
-    private func fetchCampaignParcels(campaignId: String, requestId: UUID? = nil) async {
-        let debugStartedAt = Date()
-        let loadedSuccessfully = await fetchCampaignParcelsOnce(
-            campaignId: campaignId,
-            requestId: requestId,
-            attempt: 1,
-            startedAt: debugStartedAt,
-            clearOnFailure: true
-        )
-
-        if !loadedSuccessfully, isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) {
-            scheduleCampaignParcelsRetry(campaignId: campaignId, requestId: requestId, startedAt: debugStartedAt)
-        }
-    }
-
-    @discardableResult
-    private func fetchCampaignParcelsOnce(
-        campaignId: String,
-        requestId: UUID?,
-        attempt: Int,
-        startedAt debugStartedAt: Date,
-        clearOnFailure: Bool
-    ) async -> Bool {
-        do {
-            guard let campaignUUID = UUID(uuidString: campaignId) else {
-                print("❌ [MapFeatures] Invalid campaign ID format for parcels: \(campaignId)")
-                print("🧪 [MAP_DEBUG] parcels_geojson_failed campaign=\(campaignId) attempt=\(attempt) ms=\(Int(Date().timeIntervalSince(debugStartedAt) * 1000)) error=invalid_campaign_id")
-                return true
-            }
-
-            let result: ParcelFeatureCollection
-            do {
-                let apiResult = try await BuildingLinkService.shared.fetchCampaignParcels(campaignId: campaignId)
-                if apiResult.features.isEmpty {
-                    let data = try await supabase.callRPCData(
-                        "rpc_get_campaign_parcels",
-                        params: ["p_campaign_id": campaignUUID.uuidString]
-                    )
-                    result = try decodeFeatureCollection(data)
-                } else {
-                    result = apiResult
-                }
-            } catch {
-                let data = try await supabase.callRPCData(
-                    "rpc_get_campaign_parcels",
-                    params: ["p_campaign_id": campaignUUID.uuidString]
-                )
-                result = try decodeFeatureCollection(data)
-            }
-            guard isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else { return false }
-            self.parcels = result
-            storeCurrentFeatureSnapshot(campaignId: campaignId)
-            await campaignRepository.upsertParcels(campaignId: campaignId, features: result.features)
-            print("✅ [MapFeatures] Loaded \(result.features.count) campaign parcels")
-            print("🧪 [MAP_DEBUG] parcels_geojson_loaded campaign=\(campaignId) attempt=\(attempt) ms=\(Int(Date().timeIntervalSince(debugStartedAt) * 1000)) features=\(result.features.count) role=geojson_render")
-            scheduleClientLinkingIfReady(campaignId: campaignId, requestId: requestId)
-            return true
-        } catch {
-            guard isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else { return false }
-            if clearOnFailure {
-                self.parcels = ParcelFeatureCollection(type: "FeatureCollection", features: [])
-                storeCurrentFeatureSnapshot(campaignId: campaignId)
-            }
-            print("❌ [MapFeatures] Error fetching campaign parcels: \(error)")
-            print("🧪 [MAP_DEBUG] parcels_geojson_failed campaign=\(campaignId) attempt=\(attempt) ms=\(Int(Date().timeIntervalSince(debugStartedAt) * 1000)) error=\(error.localizedDescription)")
-            return false
-        }
-    }
-
-    private func scheduleCampaignParcelsRetry(campaignId: String, requestId: UUID?, startedAt debugStartedAt: Date) {
-        parcelRetryTask?.cancel()
-        parcelRetryTask = Task { [weak self] in
-            let delays: [UInt64] = [
-                2_000_000_000,
-                4_000_000_000,
-                8_000_000_000,
-                15_000_000_000
-            ]
-
-            for (index, delay) in delays.enumerated() {
-                do {
-                    try await Task.sleep(nanoseconds: delay)
-                } catch {
-                    return
-                }
-
-                guard !Task.isCancelled, let self else { return }
-                guard self.isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else { return }
-                print("🧪 [MAP_DEBUG] parcels_geojson_retry campaign=\(campaignId) attempt=\(index + 2)")
-                let loadedSuccessfully = await self.fetchCampaignParcelsOnce(
-                    campaignId: campaignId,
-                    requestId: requestId,
-                    attempt: index + 2,
-                    startedAt: debugStartedAt,
-                    clearOnFailure: false
-                )
-                if loadedSuccessfully {
-                    return
-                }
-            }
-
-            guard let self, self.isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else { return }
-            print("🧪 [MAP_DEBUG] parcels_geojson_retry_exhausted campaign=\(campaignId) ms=\(Int(Date().timeIntervalSince(debugStartedAt) * 1000))")
-        }
-    }
-
-    private static func clientLinkingSignature(
-        campaignId: String,
-        buildings: BuildingFeatureCollection,
-        addresses: AddressFeatureCollection,
-        parcels: ParcelFeatureCollection?
-    ) -> String {
-        let buildingIds = buildings.features
-            .compactMap { $0.properties.canonicalBuildingIdentifier ?? $0.id }
-            .map { $0.lowercased() }
-            .sorted()
-        let addressIds = addresses.features
-            .compactMap { $0.properties.id ?? $0.id }
-            .map { $0.lowercased() }
-            .sorted()
-        let parcelIds = (parcels?.features ?? [])
-            .compactMap { $0.properties.parcelId ?? $0.properties.externalId ?? $0.id }
-            .map { $0.lowercased() }
-            .sorted()
-
-        return [
-            campaignId.lowercased(),
-            "b\(buildings.features.count):\(stableSignatureHash(buildingIds))",
-            "a\(addresses.features.count):\(stableSignatureHash(addressIds))",
-            "p\(parcels?.features.count ?? 0):\(stableSignatureHash(parcelIds))"
-        ].joined(separator: ":")
-    }
-
-    private static func stableSignatureHash(_ values: [String]) -> String {
-        var hash: UInt64 = 14_695_981_039_346_656_037
-        let prime: UInt64 = 1_099_511_628_211
-        for value in values {
-            for byte in value.utf8 {
-                hash ^= UInt64(byte)
-                hash &*= prime
-            }
-            hash ^= 0xff
-            hash &*= prime
-        }
-        return String(hash, radix: 16)
-    }
-
-    private static func unlinkedAddressCount(_ addresses: AddressFeatureCollection) -> Int {
-        addresses.features.filter { feature in
-            let buildingId = feature.properties.buildingGersId?
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            return buildingId?.isEmpty != false
-        }.count
-    }
-
-    private func scheduleClientLinkingIfReady(campaignId: String, requestId: UUID? = nil) {
+    private func recordBackendBundleLinkProgress(campaignId: String, requestId: UUID? = nil) {
         guard isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else { return }
         guard let buildings, let addresses else { return }
-        guard !buildings.features.isEmpty, !addresses.features.isEmpty else {
-            clientLinkingProgress = ClientLinkingProgress(
-                processed: addresses.features.count,
-                total: addresses.features.count,
-                linked: 0
-            )
-            return
-        }
-        if let linksStatus = currentCanonicalBundleLinksStatus,
-           linksStatus != "client_fallback_required",
-           Self.hasLinkedAddressIdentity(buildings: buildings, addresses: addresses) {
-            let linkedAddressCount = addresses.features.filter {
-                let buildingId = $0.properties.buildingGersId?.trimmingCharacters(in: .whitespacesAndNewlines)
-                return buildingId?.isEmpty == false
-            }.count
-            clientLinkingProgress = ClientLinkingProgress(
-                processed: addresses.features.count,
-                total: addresses.features.count,
-                linked: max(linkedAddressCount, 0)
-            )
-            print(
-                "🧪 [MAP_DEBUG] client_linking_skipped campaign=\(campaignId) " +
-                "reason=canonical_bundle_links_status linksStatus=\(linksStatus)"
-            )
-            return
-        }
-
-        let signature = Self.clientLinkingSignature(
-            campaignId: campaignId,
-            buildings: buildings,
-            addresses: addresses,
-            parcels: parcels
+        let linkedAddressCount = addresses.features.filter {
+            let buildingId = $0.properties.buildingGersId?.trimmingCharacters(in: .whitespacesAndNewlines)
+            return buildingId?.isEmpty == false
+        }.count
+        clientLinkingProgress = .idle
+        print(
+            "🧪 [MAP_DEBUG] backend_bundle_links_authoritative campaign=\(campaignId) " +
+            "reason=backend_canonical_only linksStatus=\(currentCanonicalBundleLinksStatus ?? "unknown") " +
+            "buildings=\(buildings.features.count) addresses=\(addresses.features.count) linkedAddresses=\(linkedAddressCount)"
         )
-
-        if clientLinkingSignature == signature,
-           clientLinkingTask != nil || clientLinkingProgress.percent == 100 {
-            return
-        }
-
-        clientLinkingTask?.cancel()
-        clientLinkingSignature = signature
-        let snapshotBuildings = buildings
-        let snapshotAddresses = addresses
-        let snapshotParcels = parcels
-        let unlinkedAddressCount = Self.unlinkedAddressCount(snapshotAddresses)
-
-        clientLinkingTask = Task { [weak self] in
-            guard let self else { return }
-            if NetworkMonitor.shared.isOnline,
-               let canonicalLinks = try? await BuildingLinkService.shared.fetchLinks(campaignId: campaignId),
-               !canonicalLinks.isEmpty {
-                let canonicalClientLinks = canonicalLinks.map { link in
-                    ClientBuildingAddressLink(
-                        id: link.id,
-                        buildingId: link.buildingId,
-                        addressId: link.addressId,
-                        matchType: link.matchType,
-                        confidence: link.confidence,
-                        distanceMeters: 0
-                    )
-                }
-                await MainActor.run {
-                    guard self.isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else { return }
-                    self.applyClientLinks(canonicalClientLinks, toCampaignId: campaignId)
-                    self.clientLinkingProgress = ClientLinkingProgress(
-                        processed: snapshotAddresses.features.count,
-                        total: snapshotAddresses.features.count,
-                        linked: canonicalClientLinks.count
-                    )
-                    self.clientLinkingTask = nil
-                    print(
-                        "🧪 [MAP_DEBUG] backend_links_applied campaign=\(campaignId) " +
-                        "links=\(canonicalClientLinks.count) source=supabase"
-                    )
-                }
-                return
-            }
-
-            if let cachedBatch = await self.campaignRepository.getClientGeneratedLinkBatch(
-                campaignId: campaignId,
-                assetSignature: signature
-            ) {
-                let cachedLinks = cachedBatch.summary.links
-                if cachedLinks.isEmpty, unlinkedAddressCount > 0, !snapshotBuildings.features.isEmpty {
-                    print(
-                        "🧪 [MAP_DEBUG] client_linking_cache_ignored campaign=\(campaignId) " +
-                        "reason=zero_links_with_unlinked_addresses unlinked=\(unlinkedAddressCount) signature=\(cachedBatch.assetSignature)"
-                    )
-                } else {
-                    await MainActor.run {
-                        guard self.isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else { return }
-                        self.applyClientLinks(cachedLinks, toCampaignId: campaignId)
-                        self.clientLinkingProgress = cachedBatch.summary.progress
-                        self.clientLinkingTask = nil
-                        print(
-                            "🧪 [MAP_DEBUG] client_linking_cache_hit campaign=\(campaignId) " +
-                            "links=\(cachedLinks.count) signature=\(cachedBatch.assetSignature)"
-                        )
-                    }
-                    return
-                }
-            }
-
-            let summary = await ClientMapLinkerService.shared.link(
-                buildings: snapshotBuildings,
-                addresses: snapshotAddresses,
-                parcels: snapshotParcels,
-                progress: { progress in
-                    await MainActor.run {
-                        guard self.isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else { return }
-                        self.clientLinkingProgress = progress
-                    }
-                }
-            )
-            guard !Task.isCancelled else { return }
-            if !summary.links.isEmpty || unlinkedAddressCount == 0 {
-                await self.campaignRepository.upsertClientGeneratedBuildingAddressLinks(
-                    campaignId: campaignId,
-                    links: summary.links,
-                    assetSignature: signature,
-                    buildingCount: snapshotBuildings.features.count,
-                    addressCount: snapshotAddresses.features.count,
-                    parcelCount: snapshotParcels?.features.count ?? 0
-                )
-            } else {
-                print(
-                    "🧪 [MAP_DEBUG] client_linking_zero_not_cached campaign=\(campaignId) " +
-                    "unlinked=\(unlinkedAddressCount) buildings=\(snapshotBuildings.features.count)"
-                )
-            }
-            await MainActor.run {
-                guard self.isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else { return }
-                self.applyClientLinks(summary.links, toCampaignId: campaignId)
-                self.clientLinkingProgress = summary.progress
-                self.clientLinkingTask = nil
-                print(
-                    "🧪 [MAP_DEBUG] client_linking_complete campaign=\(campaignId) " +
-                    "links=\(summary.links.count) total=\(summary.progress.total)"
-                )
-            }
-
-            guard !Task.isCancelled, NetworkMonitor.shared.isOnline, !summary.links.isEmpty else { return }
-            // Client links are local-render-only in production.
-            // Canonical links are written exclusively by the backend provision linker.
-            // See: flyr-linking-restructure task 3
-            #if DEBUG
-            do {
-                try await BuildingLinkService.shared.publishClientGeneratedLinks(
-                    campaignId: campaignId,
-                    links: summary.links,
-                    assetSignature: signature
-                )
-            } catch {
-                print("⚠️ [MapFeatures] Failed to publish client generated links: \(error.localizedDescription)")
-            }
-            #endif
-        }
-    }
-
-    private func applyClientLinks(_ clientLinks: [ClientBuildingAddressLink], toCampaignId campaignId: String) {
-        guard !clientLinks.isEmpty else { return }
-        let linksByBuilding = Dictionary(grouping: clientLinks) { $0.buildingId.lowercased() }
-        let addressesById: [String: AddressFeature] = Dictionary(uniqueKeysWithValues: (addresses?.features ?? []).compactMap { feature -> (String, AddressFeature)? in
-            guard let id = feature.properties.id ?? feature.id else { return nil }
-            return (id.lowercased(), feature)
-        })
-
-        if let currentBuildings = buildings {
-            let updatedFeatures = currentBuildings.features.map { feature -> BuildingFeature in
-                let candidates = feature.properties.buildingIdentifierCandidates.map { $0.lowercased() }
-                let links = candidates.flatMap { linksByBuilding[$0] ?? [] }
-                guard !links.isEmpty else { return feature }
-
-                let linkedAddresses = links.compactMap { addressesById[$0.addressId.lowercased()] }
-                let addressIds = Array(Set(feature.properties.addressIds + links.map(\.addressId))).sorted()
-                let firstAddress = linkedAddresses.first
-                let bestConfidence = max(
-                    feature.properties.confidence ?? 0,
-                    links.map(\.confidence).max() ?? 0
-                )
-                let bestMatch = links.sorted { $0.confidence > $1.confidence }.first?.matchType
-                let updatedProperties = BuildingProperties(
-                    id: feature.properties.id,
-                    buildingId: feature.properties.buildingId ?? links.first?.buildingId,
-                    addressId: addressIds.count == 1 ? addressIds.first : feature.properties.addressId,
-                    addressIds: addressIds,
-                    gersId: feature.properties.gersId,
-                    height: feature.properties.height,
-                    heightM: feature.properties.heightM,
-                    minHeight: feature.properties.minHeight,
-                    isTownhome: feature.properties.isTownhome || addressIds.count > 1,
-                    unitsCount: max(feature.properties.unitsCount, addressIds.count),
-                    addressText: addressIds.count == 1 ? firstAddress?.properties.formatted ?? feature.properties.addressText : feature.properties.addressText,
-                    matchMethod: feature.properties.matchMethod ?? bestMatch,
-                    featureStatus: "matched",
-                    featureType: "matched_house",
-                    status: feature.properties.status,
-                    scansToday: feature.properties.scansToday,
-                    scansTotal: feature.properties.scansTotal,
-                    lastScanSecondsAgo: feature.properties.lastScanSecondsAgo,
-                    houseNumber: addressIds.count == 1 ? firstAddress?.properties.houseNumber ?? feature.properties.houseNumber : feature.properties.houseNumber,
-                    streetName: addressIds.count == 1 ? firstAddress?.properties.streetName ?? feature.properties.streetName : feature.properties.streetName,
-                    confidence: bestConfidence > 0 ? bestConfidence : feature.properties.confidence,
-                    source: feature.properties.source,
-                    addressCount: max(feature.properties.addressCount ?? 0, addressIds.count),
-                    areaSqm: feature.properties.areaSqm,
-                    buildingType: feature.properties.buildingType,
-                    qrScanned: feature.properties.qrScanned,
-                    isLinked: true
-                )
-                return BuildingFeature(
-                    type: feature.type,
-                    id: feature.id,
-                    geometry: feature.geometry,
-                    properties: updatedProperties
-                )
-            }
-            buildings = BuildingFeatureCollection(type: currentBuildings.type, features: updatedFeatures)
-        }
-
-        if let currentAddresses = addresses {
-            let buildingByAddress = Dictionary(uniqueKeysWithValues: clientLinks.map { ($0.addressId.lowercased(), $0.buildingId) })
-            let updatedAddresses = currentAddresses.features.map { feature -> AddressFeature in
-                guard let id = feature.properties.id ?? feature.id,
-                      let buildingId = buildingByAddress[id.lowercased()] else { return feature }
-                let updatedProperties = AddressProperties(
-                    id: feature.properties.id,
-                    gersId: feature.properties.gersId,
-                    buildingGersId: feature.properties.buildingGersId ?? buildingId,
-                    houseNumber: feature.properties.houseNumber,
-                    streetName: feature.properties.streetName,
-                    postalCode: feature.properties.postalCode,
-                    locality: feature.properties.locality,
-                    formatted: feature.properties.formatted,
-                    source: feature.properties.source
-                )
-                return AddressFeature(
-                    type: feature.type,
-                    id: feature.id,
-                    geometry: feature.geometry,
-                    properties: updatedProperties
-                )
-            }
-            addresses = AddressFeatureCollection(type: currentAddresses.type, features: updatedAddresses)
-        }
-
-        storeCurrentFeatureSnapshot(campaignId: campaignId)
     }
     
     // MARK: - Real-time Updates

@@ -1,5 +1,5 @@
 type RegionSource = 'campaign' | 'mapbox' | 'bbox' | 'default';
-type RegionReason = 'missing' | 'legacy_on_default' | null;
+type RegionReason = 'missing' | 'legacy_on_default' | 'country_default' | null;
 
 interface Point {
   lng: number;
@@ -63,6 +63,8 @@ const NON_US_CANADA_REGION_BOUNDS: Record<string, Bounds> = {
   WC: [17.7, -35.0, 24.3, -30.3],
 };
 const SOUTH_AFRICA_REGION_CODES = new Set(['EC', 'FS', 'GP', 'KZN', 'LP', 'MP', 'NC', 'NW', 'WC']);
+const REFINABLE_COUNTRY_REGION_CODES = new Set(['ZA']);
+const COUNTRY_LEVEL_REGION_CODES = new Set(['NZ', 'AU', 'GB', 'ZA']);
 
 const CANADA_REGION_BOUNDS: Record<string, Bounds> = {
   BC: [-139.06, 48.2, -114.03, 60.01],
@@ -93,6 +95,16 @@ const REGION_NAME_TO_CODE: Record<string, string> = {
     acc[row.name.trim().toUpperCase()] = row.code;
     return acc;
   }, {}),
+  'EASTERN CAPE': 'EC',
+  'FREE STATE': 'FS',
+  'GAUTENG': 'GP',
+  'KWAZULU-NATAL': 'KZN',
+  'KWAZULU NATAL': 'KZN',
+  'LIMPOPO': 'LP',
+  'MPUMALANGA': 'MP',
+  'NORTHERN CAPE': 'NC',
+  'NORTH WEST': 'NW',
+  'WESTERN CAPE': 'WC',
   'QUÉBEC': 'QC',
 };
 
@@ -112,7 +124,10 @@ function parseShortCode(value: unknown): string | null {
   const upper = value.trim().toUpperCase();
   if (/^[A-Z]{2}$/.test(upper)) return upper;
   const parts = upper.split('-');
-  if (parts.length === 2 && /^[A-Z]{2}$/.test(parts[1])) {
+  if (
+    parts.length === 2 &&
+    (/^[A-Z]{2}$/.test(parts[1]) || SOUTH_AFRICA_REGION_CODES.has(parts[1]))
+  ) {
     return parts[1];
   }
   return null;
@@ -209,6 +224,9 @@ function inferRegionFromBounds(point: Point): string | null {
   if (matches.length === 0) return null;
 
   matches.sort((a, b) => {
+    const aCountryLevel = COUNTRY_LEVEL_REGION_CODES.has(a.region);
+    const bCountryLevel = COUNTRY_LEVEL_REGION_CODES.has(b.region);
+    if (aCountryLevel !== bCountryLevel) return aCountryLevel ? 1 : -1;
     if (b.depth !== a.depth) return b.depth - a.depth;
     return a.area - b.area;
   });
@@ -269,7 +287,7 @@ export async function resolveCampaignRegion(
   const currentRegion = normalizeRegionCode(input.currentRegion);
 
   // Keep explicit non-default regions and avoid unnecessary lookups.
-  if (currentRegion && currentRegion !== 'ON') {
+  if (currentRegion && currentRegion !== 'ON' && !REFINABLE_COUNTRY_REGION_CODES.has(currentRegion)) {
     return {
       regionCode: currentRegion,
       source: 'campaign',
@@ -311,6 +329,16 @@ export async function resolveCampaignRegion(
       source: inferredSource,
       shouldPersist: true,
       reason: 'legacy_on_default',
+      centroid,
+    };
+  }
+
+  if (currentRegion && REFINABLE_COUNTRY_REGION_CODES.has(currentRegion) && inferredRegion && inferredRegion !== currentRegion) {
+    return {
+      regionCode: inferredRegion,
+      source: inferredSource,
+      shouldPersist: true,
+      reason: 'country_default',
       centroid,
     };
   }
