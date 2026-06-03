@@ -352,11 +352,12 @@ actor ContactsService {
     
     // MARK: - Activities
     
-    func logActivity(contactID: UUID, type: ActivityType, note: String?) async throws -> ContactActivity {
+    func logActivity(contactID: UUID, type: ActivityType, note: String?, timestamp: Date = Date()) async throws -> ContactActivity {
         let activity = await contactRepository.addActivityLocally(
             contactId: contactID,
             type: type,
-            note: note
+            note: note,
+            timestamp: timestamp
         )
         await outboxRepository.enqueue(
             entityType: "contact_activity",
@@ -397,6 +398,50 @@ actor ContactsService {
             }
             throw error
         }
+    }
+
+    func fetchActivities(contactIDs: [UUID], type: ActivityType? = nil, limit: Int = 500) async throws -> [ContactActivity] {
+        guard !contactIDs.isEmpty else { return [] }
+        let cached = await contactRepository.fetchActivities(contactIds: contactIDs, type: type, limit: limit)
+        if await isOffline() {
+            return cached
+        }
+
+        do {
+            var query = client
+                .from("contact_activities")
+                .select()
+                .in("contact_id", values: contactIDs.map(\.uuidString))
+
+            if let type {
+                query = query.eq("type", value: type.rawValue)
+            }
+
+            let response: [ContactActivity] = try await query
+                .order("timestamp", ascending: false)
+                .limit(limit)
+                .execute()
+                .value
+            await contactRepository.upsertActivities(response, dirty: false, syncedAt: Date())
+            let refreshedCached = await contactRepository.fetchActivities(contactIds: contactIDs, type: type, limit: limit)
+            return Self.deduplicatedActivities(response + refreshedCached, limit: limit)
+        } catch {
+            if !cached.isEmpty {
+                return cached
+            }
+            throw error
+        }
+    }
+
+    private static func deduplicatedActivities(_ activities: [ContactActivity], limit: Int) -> [ContactActivity] {
+        var bestById: [UUID: ContactActivity] = [:]
+        for activity in activities {
+            bestById[activity.id] = activity
+        }
+        return bestById.values
+            .sorted { $0.timestamp > $1.timestamp }
+            .prefix(limit)
+            .map { $0 }
     }
 
     func performRemoteUpsertContact(

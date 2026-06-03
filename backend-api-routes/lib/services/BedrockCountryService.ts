@@ -12,6 +12,13 @@ import {
 import { isResidentialParcelFeature } from '@/lib/geo/parcelFilters';
 import type { LambdaSnapshotResponse } from '@/lib/services/TileLambdaService';
 import type { StandardCampaignAddress } from '@/lib/services/AddressAdapter';
+import {
+  canonicalBedrockAddressExternalId,
+  isStreetOnlyOrdinalAddressLabel,
+  isUsableHouseNumberAddressLabel,
+  normalizedAddressDisplayIdentity,
+  normalizedAddressPart,
+} from '@/lib/services/AddressDisplayIdentity';
 
 type Bounds = [number, number, number, number];
 type SnapshotTileMetrics = NonNullable<NonNullable<LambdaSnapshotResponse['metadata']>['tile_metrics']>;
@@ -151,62 +158,7 @@ type BedrockScopedParcelFeature = {
 const DEFAULT_BUCKET = 'flyr-pro-addresses-2025';
 const REGION = process.env.AWS_REGION || process.env.AWS_S3_BUCKET_REGION || 'us-east-2';
 const WEB_MERCATOR_MAX_LAT = 85.05112878;
-const USA_ADDRESS_REGIONS = new Set([
-  'AK',
-  'AL',
-  'AR',
-  'AZ',
-  'CA',
-  'CO',
-  'CT',
-  'DC',
-  'DE',
-  'FL',
-  'GA',
-  'HI',
-  'IA',
-  'ID',
-  'IL',
-  'IN',
-  'KS',
-  'KY',
-  'LA',
-  'MA',
-  'MD',
-  'ME',
-  'MI',
-  'MN',
-  'MO',
-  'MS',
-  'MT',
-  'NC',
-  'ND',
-  'NE',
-  'NH',
-  'NJ',
-  'NM',
-  'NV',
-  'NY',
-  'OH',
-  'OK',
-  'OR',
-  'PA',
-  'PR',
-  'RI',
-  'SC',
-  'SD',
-  'TN',
-  'TX',
-  'UT',
-  'VA',
-  'VI',
-  'VT',
-  'WA',
-  'WI',
-  'WV',
-  'WY',
-]);
-const USA_BUILDING_REGIONS = new Set([
+const USA_FULL_PMTILES_REGIONS = new Set([
   'AK',
   'AL',
   'AR',
@@ -259,59 +211,14 @@ const USA_BUILDING_REGIONS = new Set([
   'WV',
   'WY',
 ]);
-const USA_PARCEL_REGIONS = new Set([
-  'AK',
-  'AL',
-  'AR',
-  'AZ',
-  'CA',
-  'CO',
-  'CT',
-  'DC',
-  'DE',
-  'FL',
-  'GA',
-  'HI',
-  'IA',
-  'ID',
-  'IL',
-  'IN',
-  'KS',
-  'KY',
-  'LA',
-  'MA',
-  'MD',
-  'ME',
-  'MI',
-  'MN',
-  'MO',
-  'MS',
-  'MT',
-  'NC',
-  'ND',
-  'NE',
-  'NH',
-  'NJ',
-  'NM',
-  'NV',
-  'NY',
-  'OH',
-  'OK',
-  'OR',
-  'PA',
-  'RI',
-  'SC',
-  'SD',
-  'TN',
-  'TX',
-  'UT',
-  'VA',
-  'VT',
-  'WA',
-  'WI',
-  'WV',
-  'WY',
-]);
+const USA_ADDRESS_REGIONS = new Set([...USA_FULL_PMTILES_REGIONS, 'PR', 'VI']);
+const USA_BUILDING_REGIONS = USA_FULL_PMTILES_REGIONS;
+const USA_PARCEL_REGIONS = USA_FULL_PMTILES_REGIONS;
+
+export function isBedrockUsFullPmtilesRegion(regionCode: string | null | undefined): boolean {
+  const normalized = regionCode?.trim().toUpperCase();
+  return Boolean(normalized && USA_FULL_PMTILES_REGIONS.has(normalized));
+}
 
 let s3Client: S3Client | null = null;
 let resolvedAwsCredentials:
@@ -1002,7 +909,7 @@ function streetLabelFrom(primary: Record<string, unknown>, secondary: Record<str
 }
 
 function houseNumberFrom(primary: Record<string, unknown>, secondary: Record<string, unknown> = {}): string | undefined {
-  return firstText(
+  const candidate = firstText(
     primary.house_number,
     primary.house_number_label,
     primary.street_number,
@@ -1022,6 +929,7 @@ function houseNumberFrom(primary: Record<string, unknown>, secondary: Record<str
     secondary.housenumber,
     secondary['addr:housenumber']
   );
+  return isUsableHouseNumberAddressLabel(candidate) ? candidate : undefined;
 }
 
 function explicitAddressText(primary: Record<string, unknown>, secondary: Record<string, unknown> = {}): string | undefined {
@@ -1045,6 +953,10 @@ function looksLikeNumericOnlyAddress(value: string): boolean {
   return /^[\d\s#./-]+$/.test(value.trim());
 }
 
+function looksLikeUnusableAddressLabel(value: string): boolean {
+  return looksLikeNumericOnlyAddress(value) || isStreetOnlyOrdinalAddressLabel(value);
+}
+
 function chooseFormattedAddress(
   explicit: string | undefined,
   houseNumber: string | undefined,
@@ -1053,10 +965,10 @@ function chooseFormattedAddress(
   fallback: string
 ) {
   const composed = [houseNumber, streetName, locality].filter(Boolean).join(' ').trim();
-  if (composed && (!explicit || looksLikeNumericOnlyAddress(explicit))) {
+  if (composed && (!explicit || looksLikeUnusableAddressLabel(explicit))) {
     return composed;
   }
-  if (explicit && !looksLikeNumericOnlyAddress(explicit)) {
+  if (explicit && !looksLikeUnusableAddressLabel(explicit)) {
     return explicit;
   }
   return composed || explicit || fallback;
@@ -1075,7 +987,7 @@ function normalizeAddress(config: BedrockCountryConfig, campaignId: string, row:
       : typeof row.geometry_geojson === 'string' && row.geometry_geojson.trim()
         ? row.geometry_geojson
       : JSON.stringify({ type: 'Point', coordinates: [lon, lat] });
-  const addressId =
+  const addressId = canonicalBedrockAddressExternalId(
     text(row.address_id) ??
     text(props.address_id) ??
     text(row.address_detail_pid) ??
@@ -1084,7 +996,8 @@ function normalizeAddress(config: BedrockCountryConfig, campaignId: string, row:
     text(props.source_id) ??
     text(row.uprn) ??
     text(props.uprn) ??
-    text(row.gers_id);
+    text(row.gers_id)
+  );
   const houseNumber = houseNumberFrom(row, props);
   const streetName = streetLabelFrom(row, props);
   const unit = text(row.unit) ?? text(props.unit) ?? text(props.unit_number) ?? text(props.suite);
@@ -1207,12 +1120,13 @@ function normalizePmtilesAddress(
   if (!Number.isFinite(lon) || !Number.isFinite(lat)) return null;
 
   const props = feature.properties ?? {};
-  const addressId =
+  const addressId = canonicalBedrockAddressExternalId(
     text(props.address_id) ??
     text(props.address_detail_pid) ??
     text(props.source_id) ??
     text(props.uprn) ??
-    text(props.gers_id);
+    text(props.gers_id)
+  );
   const houseNumber = houseNumberFrom(props);
   const streetName = streetLabelFrom(props);
   const unit = text(props.unit) ?? text(props.unit_number) ?? text(props.suite);
@@ -1244,22 +1158,11 @@ function normalizePmtilesAddress(
 }
 
 function normalizedAddressFragment(value: string | null | undefined): string {
-  return typeof value === 'string' ? value.trim().toLowerCase() : '';
+  return normalizedAddressPart(value) ?? '';
 }
 
 function normalizedAddressIdentity(address: StandardCampaignAddress): string | null {
-  const unit = normalizedAddressFragment(address.unit);
-  const houseNumber = normalizedAddressFragment(address.house_number);
-  const streetName = normalizedAddressFragment(address.street_name);
-  const locality = normalizedAddressFragment(address.locality);
-  const postalCode = normalizedAddressFragment(address.postal_code);
-
-  if (houseNumber || streetName || locality) {
-    return [unit, houseNumber, streetName, locality, postalCode].join('|');
-  }
-
-  const formatted = normalizedAddressFragment(address.formatted);
-  return formatted || postalCode ? [formatted, postalCode].join('|') : null;
+  return normalizedAddressDisplayIdentity(address);
 }
 
 async function loadAddressesFromPmtiles(options: {
@@ -1578,6 +1481,7 @@ export class BedrockCountryService {
         const queryMs = Date.now() - queryStartedAt;
 
         const filterStartedAt = Date.now();
+        const byIdentity = new Set<string>();
         for (const row of rows) {
           const lon = numericValue(row[columns.longitude]) ?? numericValue(row.longitude) ?? numericValue(row.lon);
           const lat = numericValue(row[columns.latitude]) ?? numericValue(row.latitude) ?? numericValue(row.lat);
@@ -1585,6 +1489,9 @@ export class BedrockCountryService {
           if (!turf.booleanPointInPolygon(turf.point([lon, lat]), options.polygon)) continue;
           const address = normalizeAddress(this.config, options.campaignId, row);
           if (!address) continue;
+          const dedupeKey = normalizedAddressIdentity(address) ?? address.gers_id ?? `${address.formatted}:${lon}:${lat}`;
+          if (byIdentity.has(dedupeKey)) continue;
+          byIdentity.add(dedupeKey);
           addresses.push(address);
           if (options.addressLimit && addresses.length >= options.addressLimit) break;
         }
@@ -1774,7 +1681,7 @@ export class BedrockCountryService {
     const addressPmtilesKey = usaAddressPmtilesKey(this.config, regionCode);
     const snapshotAddressKey = addressPmtilesKey ?? layerKey(this.config, 'addresses', 'addresses.pmtiles');
     const parcelPmtilesKey = usaParcelPmtilesKey(this.config, regionCode);
-    const geojsonExtension = this.config.geojsonExtension ?? 'ndjson.gz';
+    const geojsonExtension = this.config.geojsonExtension ?? null;
     const metadataKey = `${prefix(this.config)}/${this.config.metadataFilename ?? `bedrock-${this.config.country}.json`}`;
     const tileMetrics = {
       artifact_type: 'diamond',
@@ -1787,10 +1694,10 @@ export class BedrockCountryService {
       pmtiles_key: buildingPmtilesKey,
       tilejson_key: layerKey(this.config, 'buildings', 'buildings.json'),
       buildings_pmtiles_index_key: layerKey(this.config, 'buildings', 'pmtiles-index.json'),
-      buildings_geojson_key: layerKey(this.config, 'buildings', `buildings.${geojsonExtension}`),
+      buildings_geojson_key: geojsonExtension ? layerKey(this.config, 'buildings', `buildings.${geojsonExtension}`) : null,
       addresses_pmtiles_key: addressPmtilesKey,
       addresses_tilejson_key: layerKey(this.config, 'addresses', 'addresses.json'),
-      addresses_geojson_key: layerKey(this.config, 'addresses', `addresses.${geojsonExtension}`),
+      addresses_geojson_key: geojsonExtension ? layerKey(this.config, 'addresses', `addresses.${geojsonExtension}`) : null,
       addresses_parquet_prefix: layerKey(this.config, 'addresses', 'parquet'),
       addresses_parquet_manifest_key: layerKey(this.config, 'addresses', 'parquet-manifest.json'),
       addresses_pmtiles_index_key: layerKey(this.config, 'addresses', 'pmtiles-index.json'),

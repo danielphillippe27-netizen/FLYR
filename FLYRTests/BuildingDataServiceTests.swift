@@ -1,8 +1,23 @@
 import XCTest
+import UIKit
 @testable import FLYR
 
 @MainActor
 final class BuildingDataServiceTests: XCTestCase {
+    private func hexString(from color: UIColor) -> String {
+        var red: CGFloat = 0
+        var green: CGFloat = 0
+        var blue: CGFloat = 0
+        var alpha: CGFloat = 0
+        color.getRed(&red, green: &green, blue: &blue, alpha: &alpha)
+        return String(
+            format: "#%02x%02x%02x",
+            Int(round(red * 255)),
+            Int(round(green * 255)),
+            Int(round(blue * 255))
+        )
+    }
+
     private func makeCampaignAddressResponse(
         id: UUID = UUID(),
         houseNumber: String = "123",
@@ -28,6 +43,28 @@ final class BuildingDataServiceTests: XCTestCase {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         return try decoder.decode(CampaignAddressResponse.self, from: data)
+    }
+
+    private func makeResolvedAddress(
+        id: UUID = UUID(),
+        houseNumber: String = "123",
+        streetName: String = "Main St",
+        formatted: String = "123 Main St, Toronto, ON"
+    ) -> ResolvedAddress {
+        let street = [houseNumber, streetName]
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        return ResolvedAddress(
+            id: id,
+            street: street.isEmpty ? formatted : street,
+            formatted: formatted,
+            locality: "Toronto",
+            region: "ON",
+            postalCode: "M5V 2T6",
+            houseNumber: houseNumber,
+            streetName: streetName,
+            gersId: UUID().uuidString
+        )
     }
 
     private func makeBuildingFeature(
@@ -99,6 +136,7 @@ final class BuildingDataServiceTests: XCTestCase {
         id: UUID,
         buildingGersId: String,
         houseNumber: String,
+        streetName: String = "Richfield Square",
         formatted: String,
         coordinate: [Double] = [-79.0, 43.0]
     ) throws -> AddressFeature {
@@ -113,7 +151,7 @@ final class BuildingDataServiceTests: XCTestCase {
                 "id": id.uuidString,
                 "building_gers_id": buildingGersId,
                 "house_number": houseNumber,
-                "street_name": "Richfield Square",
+                "street_name": streetName,
                 "formatted": formatted
             ]
         ]
@@ -146,6 +184,24 @@ final class BuildingDataServiceTests: XCTestCase {
             guard let properties = feature["properties"] as? [String: Any] else { return false }
             return properties["segment_status"] != nil
         }
+    }
+
+    private func townhomeSegmentProperties(from data: Data?) throws -> [[String: Any]] {
+        try townhomeSegmentFeatures(from: data).compactMap { $0["properties"] as? [String: Any] }
+    }
+
+    private func centroidLongitude(fromPolygonFeature feature: [String: Any]) throws -> Double {
+        let geometry = try XCTUnwrap(feature["geometry"] as? [String: Any])
+        let type = try XCTUnwrap(geometry["type"] as? String)
+        let ring: [[Double]]
+        if type == "Polygon" {
+            let coordinates = try XCTUnwrap(geometry["coordinates"] as? [[[Double]]])
+            ring = try XCTUnwrap(coordinates.first)
+        } else {
+            let coordinates = try XCTUnwrap(geometry["coordinates"] as? [[[[Double]]]])
+            ring = try XCTUnwrap(coordinates.first?.first)
+        }
+        return ring.map { $0[0] }.reduce(0, +) / Double(ring.count)
     }
 
     private func makeBuildingGeoJSONFeature(properties: [String: AnyCodable]) -> GeoJSONFeature {
@@ -594,6 +650,37 @@ final class BuildingDataServiceTests: XCTestCase {
         XCTAssertEqual(deduped.map(\.houseNumber), ["83", "85"])
     }
 
+    func testDeduplicatedResolvedAddressesForDisplayCollapsesSameHomeWithDifferentIds() {
+        let firstId = UUID()
+        let duplicateId = UUID()
+        let addresses = [
+            makeResolvedAddress(id: firstId, houseNumber: "2703", streetName: "Addison Ave", formatted: "2703 ADDISON AVE"),
+            makeResolvedAddress(id: duplicateId, houseNumber: "2703", streetName: "ADDISON AVENUE", formatted: "2703 Addison Avenue, TX")
+        ]
+
+        let deduped = BuildingDataService.deduplicatedResolvedAddressesForDisplay(addresses)
+
+        XCTAssertEqual(deduped.count, 1)
+        XCTAssertEqual(deduped.first?.id, firstId)
+    }
+
+    func testDeduplicatedResolvedAddressesForDisplayPreservesRequestedDuplicate() {
+        let firstId = UUID()
+        let requestedId = UUID()
+        let addresses = [
+            makeResolvedAddress(id: firstId, houseNumber: "2703", streetName: "Addison Ave", formatted: "2703 ADDISON AVE"),
+            makeResolvedAddress(id: requestedId, houseNumber: "2703", streetName: "ADDISON AVENUE", formatted: "2703 Addison Avenue, TX")
+        ]
+
+        let deduped = BuildingDataService.deduplicatedResolvedAddressesForDisplay(
+            addresses,
+            requestedAddressId: requestedId
+        )
+
+        XCTAssertEqual(deduped.count, 1)
+        XCTAssertEqual(deduped.first?.id, requestedId)
+    }
+
     func testAddressNumberLabelUsesAddressPointForSingleLinkedHome() throws {
         let building = try makeBuildingFeature(
             gersId: "single-home-1",
@@ -736,6 +823,102 @@ final class BuildingDataServiceTests: XCTestCase {
         XCTAssertEqual(statuses, ["not_visited", "visited", "hot"])
     }
 
+    func testTownhomeOverlayFollowsAddressCoordinateOrderWhenAxisIsReversed() throws {
+        let building = try makeBuildingFeature(gersId: "townhome-reversed-axis", width: 20, depth: 6)
+        let eastId = UUID()
+        let middleId = UUID()
+        let westId = UUID()
+        let addresses = try [
+            makeAddressFeature(
+                id: eastId,
+                buildingGersId: "townhome-reversed-axis",
+                houseNumber: "20",
+                formatted: "20 Pidduck Street",
+                coordinate: [-78.9981, 43.0003]
+            ),
+            makeAddressFeature(
+                id: middleId,
+                buildingGersId: "townhome-reversed-axis",
+                houseNumber: "22",
+                formatted: "22 Pidduck Street",
+                coordinate: [-78.9990, 43.0003]
+            ),
+            makeAddressFeature(
+                id: westId,
+                buildingGersId: "townhome-reversed-axis",
+                houseNumber: "24",
+                formatted: "24 Pidduck Street",
+                coordinate: [-78.9999, 43.0003]
+            )
+        ]
+
+        let data = MapLayerManager.buildTownhomeStatusOverlayGeoJSON(
+            buildings: [building],
+            addresses: addresses,
+            orderedAddressIdsByBuilding: ["townhome-reversed-axis": [eastId, middleId, westId]],
+            addressStatuses: [:]
+        )
+
+        let segmentFeatures = try townhomeSegmentFeatures(from: data)
+        let featuresByAddressId = Dictionary(
+            uniqueKeysWithValues: segmentFeatures.compactMap { feature -> (String, [String: Any])? in
+                guard let properties = feature["properties"] as? [String: Any],
+                      let addressId = properties["address_id"] as? String else {
+                    return nil
+                }
+                return (addressId, feature)
+            }
+        )
+        let eastCentroid = try centroidLongitude(fromPolygonFeature: XCTUnwrap(featuresByAddressId[eastId.uuidString.lowercased()]))
+        let middleCentroid = try centroidLongitude(fromPolygonFeature: XCTUnwrap(featuresByAddressId[middleId.uuidString.lowercased()]))
+        let westCentroid = try centroidLongitude(fromPolygonFeature: XCTUnwrap(featuresByAddressId[westId.uuidString.lowercased()]))
+
+        XCTAssertGreaterThan(eastCentroid, middleCentroid)
+        XCTAssertGreaterThan(middleCentroid, westCentroid)
+    }
+
+    func testTownhomeBaseColorTracksMapTheme() {
+        let original = MapStatusColor.useLightMapBuildingDefault
+        defer { MapStatusColor.useLightMapBuildingDefault = original }
+
+        MapStatusColor.useLightMapBuildingDefault = false
+        XCTAssertEqual(hexString(from: MapStatusColor.townhomeBase), "#000000")
+
+        MapStatusColor.useLightMapBuildingDefault = true
+        XCTAssertEqual(hexString(from: MapStatusColor.townhomeBase), "#ffffff")
+    }
+
+    func testTownhomeOverlayBuildingIdentifiersIncludeBaseFeatureAliases() throws {
+        let firstId = UUID()
+        let secondId = UUID()
+        let building = try makeBuildingFeature(
+            gersId: "Townhome-Base-1",
+            unitsCount: 2,
+            addressCount: 2,
+            addressIds: [firstId, secondId]
+        )
+        let addresses = try [
+            makeAddressFeature(id: firstId, buildingGersId: "Townhome-Base-1", houseNumber: "45", formatted: "45 Richfield Square"),
+            makeAddressFeature(id: secondId, buildingGersId: "Townhome-Base-1", houseNumber: "47", formatted: "47 Richfield Square")
+        ]
+
+        let data = MapLayerManager.buildTownhomeStatusOverlayGeoJSON(
+            buildings: [building],
+            addresses: addresses,
+            orderedAddressIdsByBuilding: ["townhome-base-1": [firstId, secondId]],
+            addressStatuses: [
+                firstId: .untouched,
+                secondId: .delivered
+            ]
+        )
+
+        let identifiers = MapLayerManager.townhomeOverlayBuildingIdentifiers(from: try XCTUnwrap(data))
+        let segmentProperties = try townhomeSegmentProperties(from: data)
+        XCTAssertTrue(identifiers.contains("townhome-base-1"))
+        XCTAssertEqual(segmentProperties.compactMap { $0["segment_status"] as? String }, ["not_visited", "visited"])
+        XCTAssertEqual(segmentProperties.compactMap { ($0["overlay_base"] as? NSNumber)?.doubleValue }, [0, 0])
+    }
+
     func testTownhomeOverlayOmitsRedWhenEveryUnitIsCompleted() throws {
         let building = try makeBuildingFeature(gersId: "townhome-2")
         let firstId = UUID()
@@ -822,6 +1005,42 @@ final class BuildingDataServiceTests: XCTestCase {
             addresses: addresses,
             orderedAddressIdsByBuilding: ["townhome-explicit-single": [firstId]],
             addressStatuses: [:]
+        )
+
+        XCTAssertEqual(try geoJSONFeatures(from: data).count, 0)
+    }
+
+    func testTownhomeOverlayDedupesDuplicateVisibleAddressLinks() throws {
+        let firstId = UUID()
+        let duplicateId = UUID()
+        let building = try makeBuildingFeature(
+            gersId: "townhome-duplicate-visible",
+            unitsCount: 2,
+            addressCount: 2,
+            addressIds: [firstId, duplicateId]
+        )
+        let addresses = try [
+            makeAddressFeature(
+                id: firstId,
+                buildingGersId: "townhome-duplicate-visible",
+                houseNumber: "3869",
+                streetName: "Rawhide St",
+                formatted: "3869 RAWHIDE ST"
+            ),
+            makeAddressFeature(
+                id: duplicateId,
+                buildingGersId: "townhome-duplicate-visible",
+                houseNumber: "3869",
+                streetName: "Rawhide Street",
+                formatted: "3869 Rawhide Street, TX"
+            )
+        ]
+
+        let data = MapLayerManager.buildTownhomeStatusOverlayGeoJSON(
+            buildings: [building],
+            addresses: addresses,
+            orderedAddressIdsByBuilding: ["townhome-duplicate-visible": [firstId, duplicateId]],
+            addressStatuses: [firstId: .delivered]
         )
 
         XCTAssertEqual(try geoJSONFeatures(from: data).count, 0)

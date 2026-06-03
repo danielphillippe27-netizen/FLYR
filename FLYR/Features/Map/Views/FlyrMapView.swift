@@ -59,7 +59,7 @@ struct FlyrMapView: View {
     
     private func initializeMap() {
         let frame = UIScreen.main.bounds
-        let newMapView = MapView(frame: frame)
+        let newMapView = DisplayLinkRecoveringMapView(frame: frame)
         
         // Configure map ornaments
         newMapView.ornaments.options.scaleBar.visibility = .hidden

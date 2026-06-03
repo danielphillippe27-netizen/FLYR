@@ -10,7 +10,7 @@ private enum HomeRoute: Hashable {
     case appointments
     case followUp
     case stats
-    case challenges
+    case leaderboard
     case support
 }
 
@@ -94,8 +94,8 @@ struct HomeView: View {
                         )
                     case .stats:
                         YouStatsView()
-                    case .challenges:
-                        ChallengesHomeView()
+                    case .leaderboard:
+                        LeaderboardTabView()
                     case .support:
                         SupportChatView()
                             .transition(.asymmetric(
@@ -165,9 +165,6 @@ struct HomeView: View {
                         HomeGridTile(title: "Campaign", icon: .system("scope")) {
                             selectedRoute = .campaigns
                         }
-                        HomeGridTile(title: "Stats", icon: .system("chart.bar.fill")) {
-                            selectedRoute = .stats
-                        }
                         HomeGridTile(title: "Activity", icon: .system("figure.walk")) {
                             selectedRoute = .activity
                         }
@@ -177,8 +174,11 @@ struct HomeView: View {
                         HomeGridTile(title: "Appointments", icon: .system("calendar.badge.clock")) {
                             selectedRoute = .appointments
                         }
-                        HomeGridTile(title: "Challenges", icon: .system("flag.fill")) {
-                            selectedRoute = .challenges
+                        HomeGridTile(title: "Stats", icon: .system("chart.bar.fill")) {
+                            selectedRoute = .stats
+                        }
+                        HomeGridTile(title: "Leaderboard", icon: .system("trophy.fill")) {
+                            selectedRoute = .leaderboard
                         }
                     }
                     .padding(.top, 4)

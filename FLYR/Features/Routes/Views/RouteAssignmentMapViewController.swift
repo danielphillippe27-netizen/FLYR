@@ -51,7 +51,7 @@ final class RouteAssignmentMapViewController: UIViewController {
 
     private func setupMap() {
         let options = MapInitOptions(cameraOptions: CameraOptions(zoom: 14))
-        mapView = MapView(frame: view.bounds, mapInitOptions: options)
+        mapView = DisplayLinkRecoveringMapView(frame: view.bounds, mapInitOptions: options)
         mapView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         view.addSubview(mapView)
     }

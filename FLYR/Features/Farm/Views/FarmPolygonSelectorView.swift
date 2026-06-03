@@ -67,7 +67,7 @@ struct FarmPolygonSelectorView: View {
     }
     
     private func initializeMap() {
-        let newMapView = MapView(frame: .zero)
+        let newMapView = DisplayLinkRecoveringMapView(frame: .zero)
         // Configure map with custom light style
         if let map = newMapView.mapboxMap {
             map.loadStyle(StyleURI(rawValue: "mapbox://styles/fliper27/cml6z0dhg002301qo9xxc08k4")!)

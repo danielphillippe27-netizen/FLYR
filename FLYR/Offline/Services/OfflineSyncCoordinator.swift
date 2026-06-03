@@ -28,6 +28,7 @@ final class OfflineSyncCoordinator: ObservableObject {
     private let campaignRepository = CampaignRepository.shared
     private let sessionRepository = SessionRepository.shared
     private let contactRepository = ContactRepository.shared
+    private let calendarEventRepository = CalendarEventRepository.shared
     private let networkMonitor = NetworkMonitor.shared
     private let maxRetryDelaySeconds: TimeInterval = 60
     private let maxRetryAttempts = 8
@@ -459,6 +460,25 @@ final class OfflineSyncCoordinator: ObservableObject {
             }
 
             try await ContactsService.shared.performRemoteDeleteContact(contactId: contactId)
+
+        case .upsertCalendarEvent:
+            guard let payload = entry.decodedPayload(CalendarEventOutboxPayload.self),
+                  let event = OfflineJSONCodec.decode(FlyrCalendarEvent.self, from: payload.eventJSON) else {
+                throw OutboxProcessingError.invalidPayload(operation: entry.operation, entryId: entry.id)
+            }
+
+            let syncedEvent = try await FlyrCalendarService.shared.performRemoteUpsertEvent(event)
+            await calendarEventRepository.upsertEvents([syncedEvent], dirty: false, syncedAt: Date())
+            await calendarEventRepository.markEventsSynced(ids: [syncedEvent.id])
+
+        case .deleteCalendarEvent:
+            guard let payload = entry.decodedPayload(DeleteCalendarEventOutboxPayload.self),
+                  let eventId = UUID(uuidString: payload.eventId) else {
+                throw OutboxProcessingError.invalidPayload(operation: entry.operation, entryId: entry.id)
+            }
+
+            try await FlyrCalendarService.shared.performRemoteDeleteEvent(id: eventId)
+            await calendarEventRepository.markEventsSynced(ids: [eventId])
 
         case .deleteBuilding:
             guard let payload = entry.decodedPayload(DeleteBuildingOutboxPayload.self) else {

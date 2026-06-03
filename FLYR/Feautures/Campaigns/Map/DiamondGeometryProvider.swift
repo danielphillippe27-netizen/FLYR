@@ -32,7 +32,7 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
     static let addressCircleLayerId = "diamond-addresses-circles"
     static let selectedAddressCircleLayerId = "diamond-addresses-selected"
     static let addressNumberLayerId = "diamond-addresses-numbers"
-    static let parcelOverviewMinZoom: Double = 13.5
+    static let parcelOverviewMinZoom: Double = 0.0
     static let parcelOverviewMaxZoom: Double = 24.0
     static let addressLayerMinZoom: Double = 11.8
     static let addressNumberLayerMinZoom: Double = 17.0
@@ -429,7 +429,11 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
         var fill = FillExtrusionLayer(id: buildingFillLayerId, source: sourceId)
         fill.sourceLayer = sourceLayer
         fill.fillExtrusionColor = .expression(
-            statusFillColorExpression(defaultColor: MapStatusColor.untouched, selectedOverridesStatus: true)
+            statusFillColorExpression(
+                defaultColor: MapStatusColor.untouched,
+                selectedOverridesStatus: true,
+                townhomeOverlayBaseOverridesStatus: true
+            )
         )
         fill.fillExtrusionHeight = .expression(
             selectedBuildingHeightExpression(
@@ -574,16 +578,48 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
             Exp(.interpolate) {
                 Exp(.linear)
                 Exp(.zoom)
+                0.0
+                Exp(.switchCase) {
+                    isSelectedExpression()
+                    1.4
+                    0.42
+                }
+                12.0
+                Exp(.switchCase) {
+                    isSelectedExpression()
+                    1.65
+                    0.36
+                }
                 13.5
-                0.15
+                Exp(.switchCase) {
+                    isSelectedExpression()
+                    1.82
+                    0.38
+                }
                 15.0
-                0.45
+                Exp(.switchCase) {
+                    isSelectedExpression()
+                    1.95
+                    0.45
+                }
                 16.8
-                0.85
+                Exp(.switchCase) {
+                    isSelectedExpression()
+                    2.16
+                    0.85
+                }
                 19.0
-                1.2
+                Exp(.switchCase) {
+                    isSelectedExpression()
+                    2.6
+                    1.2
+                }
                 24.0
-                1.3
+                Exp(.switchCase) {
+                    isSelectedExpression()
+                    3.2
+                    1.3
+                }
             }
         )
         line.minZoom = parcelOverviewMinZoom
@@ -865,20 +901,42 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
         Exp(.interpolate) {
             Exp(.linear)
             Exp(.zoom)
-            13.5
             0.0
+            Exp(.switchCase) {
+                isSelectedExpression()
+                1.0
+                0.36
+            }
+            12.0
+            Exp(.switchCase) {
+                isSelectedExpression()
+                1.0
+                0.42
+            }
             14.0
-            0.22
+            Exp(.switchCase) {
+                isSelectedExpression()
+                1.0
+                0.46
+            }
             15.2
-            0.48
+            Exp(.switchCase) {
+                isSelectedExpression()
+                1.0
+                0.48
+            }
             17.4
             Exp(.switchCase) {
+                isSelectedExpression()
+                1.0
                 isActiveStatusExpression()
                 0.9
                 0.62
             }
             20.0
             Exp(.switchCase) {
+                isSelectedExpression()
+                1.0
                 isActiveStatusExpression()
                 0.82
                 0.5
@@ -890,20 +948,42 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
         Exp(.interpolate) {
             Exp(.linear)
             Exp(.zoom)
-            13.5
             0.0
+            Exp(.switchCase) {
+                isSelectedExpression()
+                0.42
+                0.035
+            }
+            12.0
+            Exp(.switchCase) {
+                isSelectedExpression()
+                0.42
+                0.045
+            }
             14.0
-            0.06
+            Exp(.switchCase) {
+                isSelectedExpression()
+                0.42
+                0.06
+            }
             15.2
-            0.10
+            Exp(.switchCase) {
+                isSelectedExpression()
+                0.42
+                0.10
+            }
             17.4
             Exp(.switchCase) {
+                isSelectedExpression()
+                0.42
                 isActiveStatusExpression()
                 0.18
                 0.12
             }
             20.0
             Exp(.switchCase) {
+                isSelectedExpression()
+                0.42
                 isActiveStatusExpression()
                 0.14
                 0.08
@@ -911,49 +991,69 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
         }
     }
 
-    private func statusFillColorExpression(defaultColor: UIColor, selectedOverridesStatus: Bool = false) -> Exp {
-        Exp(.switchCase) {
+    private func statusFillColorExpression(
+        defaultColor: UIColor,
+        selectedOverridesStatus: Bool = false,
+        townhomeOverlayBaseOverridesStatus: Bool = false
+    ) -> Exp {
+        if townhomeOverlayBaseOverridesStatus {
+            return Exp(.switchCase) {
+                MapLayerManager.hasTownhomeOverlayExpression
+                MapStatusColor.townhomeBase
+
+                selectedOverridesStatus ? isSelectedExpression() : isSelectedUnvisitedStatusExpression()
+                MapStatusColor.selectedHome
+
+                statusMatchColorExpression(defaultColor: defaultColor)
+            }
+        }
+
+        return Exp(.switchCase) {
             selectedOverridesStatus ? isSelectedExpression() : isSelectedUnvisitedStatusExpression()
             MapStatusColor.selectedHome
 
-            Exp(.match) {
-                statusValueExpression()
-                "none"
-                MapStatusColor.untouched
-                "not_visited"
-                MapStatusColor.untouched
-                "unvisited"
-                MapStatusColor.untouched
-                "flyer_unvisited"
-                MapStatusColor.flyerUntouched
-                "no_answer"
-                MapStatusColor.noOneHome
-                "talked"
-                MapStatusColor.conversations
-                "hot"
-                MapStatusColor.conversations
-                "conversation"
-                MapStatusColor.conversations
-                "visited"
-                MapStatusColor.touched
-                "delivered"
-                MapStatusColor.touched
-                "lead"
-                MapStatusColor.lead
-                "future_seller"
-                MapStatusColor.hotLead
-                "hot_lead"
-                MapStatusColor.lead
-                "appointment"
-                MapStatusColor.hotLead
-                "follow_up"
-                MapStatusColor.hotLead
-                "do_not_knock"
-                MapStatusColor.doNotKnock
-                "not_interested"
-                MapStatusColor.noOneHome
-                defaultColor
-            }
+            statusMatchColorExpression(defaultColor: defaultColor)
+        }
+    }
+
+    private func statusMatchColorExpression(defaultColor: UIColor) -> Exp {
+        Exp(.match) {
+            statusValueExpression()
+            "none"
+            MapStatusColor.untouched
+            "not_visited"
+            MapStatusColor.untouched
+            "unvisited"
+            MapStatusColor.untouched
+            "flyer_unvisited"
+            MapStatusColor.flyerUntouched
+            "no_answer"
+            MapStatusColor.noOneHome
+            "talked"
+            MapStatusColor.conversations
+            "hot"
+            MapStatusColor.conversations
+            "conversation"
+            MapStatusColor.conversations
+            "visited"
+            MapStatusColor.touched
+            "delivered"
+            MapStatusColor.touched
+            "lead"
+            MapStatusColor.lead
+            "future_seller"
+            MapStatusColor.hotLead
+            "hot_lead"
+            MapStatusColor.lead
+            "appointment"
+            MapStatusColor.hotLead
+            "follow_up"
+            MapStatusColor.hotLead
+            "do_not_knock"
+            MapStatusColor.doNotKnock
+            "not_interested"
+            MapStatusColor.noOneHome
+            defaultColor
         }
     }
 

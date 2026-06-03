@@ -10,10 +10,11 @@ struct TerritoryPreviewMapView: UIViewRepresentable {
     var polygon: [CLLocationCoordinate2D]? = nil
     var useDarkStyle: Bool = false
     var height: CGFloat = 220
+    var showsCenterMarker: Bool = true
 
     private static let defaultCenter = CLLocationCoordinate2D(latitude: 43.65, longitude: -79.38)
     private static let previewBuildingsLayerId = "preview-2d-buildings"
-    private static let lightStyleURI = StyleURI(rawValue: "mapbox://styles/mapbox/streets-v11")!
+    private static let lightStyleURI = MapTheme.campaignOfflineLightStyleURI
     private static let darkStyleURI = StyleURI(rawValue: "mapbox://styles/mapbox/dark-v11")!
 
     private static func add2DBuildingsLayer(to map: MapboxMap, useDarkStyle: Bool) {
@@ -65,29 +66,13 @@ struct TerritoryPreviewMapView: UIViewRepresentable {
     }
 
     func makeUIView(context: Context) -> MapView {
-        let mapView = MapView(frame: CGRect(x: 0, y: 0, width: 320, height: max(200, height)))
+        let mapView = DisplayLinkRecoveringMapView(frame: CGRect(x: 0, y: 0, width: 320, height: max(200, height)))
         mapView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         mapView.ornaments.options.scaleBar.visibility = .hidden
         mapView.ornaments.options.logo.margins = CGPoint(x: 6, y: 6)
         mapView.ornaments.options.compass.visibility = .hidden
         mapView.gestures.options.pitchEnabled = false
         mapView.gestures.options.rotateEnabled = false
-
-        let styleURI = useDarkStyle ? Self.darkStyleURI : Self.lightStyleURI
-        mapView.mapboxMap.loadStyle(styleURI)
-
-        let dark = useDarkStyle
-        let coord = center ?? Self.defaultCenter
-        let initialPolygon = polygon
-        _ = mapView.mapboxMap.onStyleLoaded.observeNext { [weak mapView] _ in
-            guard let mapView = mapView, let map = mapView.mapboxMap else { return }
-            Self.add2DBuildingsLayer(to: map, useDarkStyle: dark)
-            if let poly = initialPolygon, poly.count >= 3 {
-                context.coordinator.setCameraToPolygonBounds(poly, on: mapView)
-            } else {
-                context.coordinator.setCameraToCenter(coord, on: mapView)
-            }
-        }
 
         // Red stick-man location marker (feet anchored at the point)
         let markerManager = mapView.annotations.makePointAnnotationManager()
@@ -102,13 +87,24 @@ struct TerritoryPreviewMapView: UIViewRepresentable {
         context.coordinator.polygonAnnotationManager = polygonManager
 
         context.coordinator.mapView = mapView
-        context.coordinator.updateMarker(at: center)
+        context.coordinator.useDarkStyle = useDarkStyle
+        context.coordinator.center = center
+        context.coordinator.polygon = polygon
+        context.coordinator.showsCenterMarker = showsCenterMarker
+        context.coordinator.bindStyleLoadedObserver(to: mapView)
+        context.coordinator.applyStyleIfNeeded(on: mapView, force: true)
+        context.coordinator.updateMarker(at: center, showsMarker: showsCenterMarker)
         context.coordinator.updatePolygonAnnotation(polygon)
         return mapView
     }
 
     func updateUIView(_ mapView: MapView, context: Context) {
-        context.coordinator.updateMarker(at: center)
+        context.coordinator.useDarkStyle = useDarkStyle
+        context.coordinator.center = center
+        context.coordinator.polygon = polygon
+        context.coordinator.showsCenterMarker = showsCenterMarker
+        context.coordinator.applyStyleIfNeeded(on: mapView)
+        context.coordinator.updateMarker(at: center, showsMarker: showsCenterMarker)
         context.coordinator.updatePolygonAnnotation(polygon)
         if let polygon = polygon, polygon.count >= 3 {
             context.coordinator.setCameraToPolygonBounds(polygon, on: mapView)
@@ -126,12 +122,40 @@ struct TerritoryPreviewMapView: UIViewRepresentable {
         weak var mapView: MapView?
         var pointAnnotationManager: PointAnnotationManager?
         var polygonAnnotationManager: PolygonAnnotationManager?
+        var useDarkStyle = false
+        var center: CLLocationCoordinate2D?
+        var polygon: [CLLocationCoordinate2D]?
+        var showsCenterMarker = true
+        private var styleLoadedObserver: AnyCancelable?
+        private var loadedStyleRawValue: String?
         private var lastCameraCenter: CLLocationCoordinate2D?
         private var lastPolygonSignature: String?
 
-        func updateMarker(at center: CLLocationCoordinate2D?) {
+        private var desiredStyleURI: StyleURI {
+            useDarkStyle ? TerritoryPreviewMapView.darkStyleURI : TerritoryPreviewMapView.lightStyleURI
+        }
+
+        func bindStyleLoadedObserver(to mapView: MapView) {
+            guard styleLoadedObserver == nil else { return }
+            styleLoadedObserver = mapView.mapboxMap.onStyleLoaded.observe { [weak self, weak mapView] _ in
+                guard let self, let mapView else { return }
+                TerritoryPreviewMapView.add2DBuildingsLayer(to: mapView.mapboxMap, useDarkStyle: self.useDarkStyle)
+                self.updateMarker(at: self.center, showsMarker: self.showsCenterMarker)
+                self.updatePolygonAnnotation(self.polygon)
+                self.applyPreferredCamera(on: mapView, force: true)
+            }
+        }
+
+        func applyStyleIfNeeded(on mapView: MapView, force: Bool = false) {
+            let nextStyleRaw = desiredStyleURI.rawValue
+            if !force, loadedStyleRawValue == nextStyleRaw { return }
+            loadedStyleRawValue = nextStyleRaw
+            mapView.mapboxMap.loadStyle(desiredStyleURI)
+        }
+
+        func updateMarker(at center: CLLocationCoordinate2D?, showsMarker: Bool) {
             guard let manager = pointAnnotationManager else { return }
-            guard let center = center, let image = LocationMarkerImage.markerImage else {
+            guard showsMarker, let center = center, let image = LocationMarkerImage.markerImage else {
                 manager.annotations = []
                 return
             }
@@ -157,11 +181,19 @@ struct TerritoryPreviewMapView: UIViewRepresentable {
             manager.annotations = [annotation]
         }
 
-        func setCameraToPolygonBounds(_ polygon: [CLLocationCoordinate2D], on mapView: MapView) {
+        func applyPreferredCamera(on mapView: MapView, force: Bool = false) {
+            if let polygon, polygon.count >= 3 {
+                setCameraToPolygonBounds(polygon, on: mapView, force: force)
+            } else {
+                setCameraToCenter(center ?? TerritoryPreviewMapView.defaultCenter, on: mapView, force: force)
+            }
+        }
+
+        func setCameraToPolygonBounds(_ polygon: [CLLocationCoordinate2D], on mapView: MapView, force: Bool = false) {
             let signature = polygon
                 .map { "\($0.latitude),\($0.longitude)" }
                 .joined(separator: "|")
-            guard signature != lastPolygonSignature else { return }
+            guard force || signature != lastPolygonSignature else { return }
             lastPolygonSignature = signature
             let lats = polygon.map { $0.latitude }
             let lons = polygon.map { $0.longitude }
@@ -171,15 +203,24 @@ struct TerritoryPreviewMapView: UIViewRepresentable {
             let centerLon = (minLon + maxLon) / 2
             let center = CLLocationCoordinate2D(latitude: centerLat, longitude: centerLon)
             let padding = UIEdgeInsets(top: 24, left: 24, bottom: 24, right: 24)
+            let fallback = CameraOptions(center: center, padding: padding, zoom: 14, bearing: 0, pitch: 0)
+            let cameraOptions = (try? mapView.mapboxMap.camera(
+                for: polygon,
+                camera: fallback,
+                coordinatesPadding: padding,
+                maxZoom: 16,
+                offset: nil
+            )) ?? fallback
             mapView.camera.ease(
-                to: CameraOptions(center: center, padding: padding, zoom: 14, bearing: 0, pitch: 0),
-                duration: 0.6
+                to: cameraOptions,
+                duration: force ? 0 : 0.6
             )
         }
 
-        func setCameraToCenter(_ center: CLLocationCoordinate2D, on mapView: MapView) {
+        func setCameraToCenter(_ center: CLLocationCoordinate2D, on mapView: MapView, force: Bool = false) {
             lastPolygonSignature = nil
-            if let last = lastCameraCenter,
+            if !force,
+               let last = lastCameraCenter,
                abs(last.latitude - center.latitude) < 0.0001,
                abs(last.longitude - center.longitude) < 0.0001 {
                 return
@@ -187,7 +228,7 @@ struct TerritoryPreviewMapView: UIViewRepresentable {
             lastCameraCenter = center
             mapView.camera.ease(
                 to: CameraOptions(center: center, zoom: 14, bearing: 0, pitch: 0),
-                duration: 0.6
+                duration: force ? 0 : 0.6
             )
         }
     }

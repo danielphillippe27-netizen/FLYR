@@ -10,14 +10,14 @@ struct UberStyleTabBar: View {
     let accentColor: Color
 
     private enum Tab: Int, CaseIterable {
-        case home = 0, record = 1, leads = 2, leaderboard = 3
+        case home = 0, record = 1, leads = 2, calendar = 3
 
         var title: String {
             switch self {
             case .home: return "Home"
             case .record: return "Session"
             case .leads: return "Leads"
-            case .leaderboard: return "Leaderboard"
+            case .calendar: return "Calendar"
             }
         }
 
@@ -27,7 +27,7 @@ struct UberStyleTabBar: View {
             case .record:
                 return recordHighlight ? "record.circle.fill" : (selected ? "record.circle.fill" : "record.circle")
             case .leads: return "tray.full.fill"
-            case .leaderboard: return "trophy.fill"
+            case .calendar: return "calendar"
             }
         }
     }
@@ -38,7 +38,7 @@ struct UberStyleTabBar: View {
             tabItem(.record)
             UberCreateTabItem(action: onCreate)
             tabItem(.leads)
-            tabItem(.leaderboard)
+            tabItem(.calendar)
         }
         .padding(.top, 10)
         .padding(.bottom, 6)

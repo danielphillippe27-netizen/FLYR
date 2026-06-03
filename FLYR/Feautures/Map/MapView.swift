@@ -691,7 +691,7 @@ struct SimpleMapViewRepresentable: UIViewRepresentable {
     }
 
     func makeUIView(context: Context) -> MapView {
-        let mapView = MapView(frame: CGRect(origin: .zero, size: CGSize(width: 320, height: 260)))
+        let mapView = DisplayLinkRecoveringMapView(frame: CGRect(origin: .zero, size: CGSize(width: 320, height: 260)))
         if mapStyleFromScheme == .light {
             mapView.backgroundColor = MapTheme.lightAtmosphereBlue
         }

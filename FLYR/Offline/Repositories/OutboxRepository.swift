@@ -29,6 +29,8 @@ enum OutboxOperation: String, Codable, Sendable {
     case createFarmLead = "create_farm_lead"
     case updateFarmLead = "update_farm_lead"
     case deleteFarmLead = "delete_farm_lead"
+    case upsertCalendarEvent = "upsert_calendar_event"
+    case deleteCalendarEvent = "delete_calendar_event"
 }
 
 struct OfflineFarmExecutionPayload: Codable, Sendable {

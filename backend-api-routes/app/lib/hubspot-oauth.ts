@@ -1,7 +1,8 @@
 import { createHmac, randomBytes } from "crypto";
 
-const HUBSPOT_CLIENT_ID = process.env.HUBSPOT_CLIENT_ID || "";
-const HUBSPOT_CLIENT_SECRET = process.env.HUBSPOT_CLIENT_SECRET || "";
+const HUBSPOT_CLIENT_ID = process.env.HUBSPOT_CLIENT_ID || process.env.HUBSPOT_OAUTH_CLIENT_ID || "";
+const HUBSPOT_CLIENT_SECRET =
+  process.env.HUBSPOT_CLIENT_SECRET || process.env.HUBSPOT_OAUTH_CLIENT_SECRET || "";
 // Default scopes match HubSpot’s current developer-platform catalog (scope search).
 // Granular `crm.objects.notes.write` / tasks / meetings are not listed there; notes & tasks
 // still use standard CRM activity APIs and typically work with contacts scopes alone.

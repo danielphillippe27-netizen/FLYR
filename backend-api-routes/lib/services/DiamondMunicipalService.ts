@@ -5,6 +5,10 @@ import { PMTiles } from 'pmtiles';
 import Pbf from 'pbf';
 import type { StandardCampaignAddress } from '@/lib/services/AddressAdapter';
 import type { LambdaSnapshotResponse } from '@/lib/services/TileLambdaService';
+import {
+  isStreetOnlyOrdinalAddressLabel,
+  isUsableHouseNumberAddressLabel,
+} from '@/lib/services/AddressDisplayIdentity';
 
 type Bounds = [number, number, number, number];
 type SnapshotTileMetrics = NonNullable<NonNullable<LambdaSnapshotResponse['metadata']>['tile_metrics']>;
@@ -271,7 +275,7 @@ function streetLabelFrom(props: Record<string, unknown>): string | undefined {
 }
 
 function houseNumberFrom(props: Record<string, unknown>): string | undefined {
-  return firstText(
+  const candidate = firstText(
     props.house_number,
     props.house_number_label,
     props.street_number,
@@ -282,6 +286,7 @@ function houseNumberFrom(props: Record<string, unknown>): string | undefined {
     props.housenumber,
     props['addr:housenumber']
   );
+  return isUsableHouseNumberAddressLabel(candidate) ? candidate : undefined;
 }
 
 function explicitAddressText(props: Record<string, unknown>): string | undefined {
@@ -299,6 +304,10 @@ function looksLikeNumericOnlyAddress(value: string): boolean {
   return /^[\d\s#./-]+$/.test(value.trim());
 }
 
+function looksLikeUnusableAddressLabel(value: string): boolean {
+  return looksLikeNumericOnlyAddress(value) || isStreetOnlyOrdinalAddressLabel(value);
+}
+
 function chooseFormattedAddress(
   explicit: string | undefined,
   houseNumber: string | undefined,
@@ -306,10 +315,10 @@ function chooseFormattedAddress(
   locality: string | undefined
 ) {
   const composed = [houseNumber, streetName, locality].filter(Boolean).join(' ').trim();
-  if (composed && (!explicit || looksLikeNumericOnlyAddress(explicit))) {
+  if (composed && (!explicit || looksLikeUnusableAddressLabel(explicit))) {
     return composed;
   }
-  if (explicit && !looksLikeNumericOnlyAddress(explicit)) {
+  if (explicit && !looksLikeUnusableAddressLabel(explicit)) {
     return explicit;
   }
   return composed || explicit || 'Address point';

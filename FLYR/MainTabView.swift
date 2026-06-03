@@ -13,11 +13,15 @@ struct MainTabView: View {
     @State private var endSessionSummaryItem: EndSessionSummaryItem?
 
     private enum Tab: Int {
-        case home = 0, record = 1, leads = 2, leaderboard = 3, settings = 4
+        case home = 0, record = 1, leads = 2, calendar = 3, settings = 4
     }
 
     private var recordHighlight: Bool {
         uiState.selectedMapCampaignId != nil
+    }
+
+    private var shouldShowTabBar: Bool {
+        uiState.showTabBar
     }
 
     private var resumedCreatingCampaignBinding: Binding<Bool> {
@@ -74,8 +78,8 @@ struct MainTabView: View {
                 case Tab.leads.rawValue:
                     // ContactsHubView owns NavigationStack + lead destination.
                     ContactsHubView()
-                case Tab.leaderboard.rawValue:
-                    NavigationStack { LeaderboardTabView() }
+                case Tab.calendar.rawValue:
+                    NavigationStack { CalendarTabView() }
                 case Tab.settings.rawValue:
                     // SettingsView owns NavigationStack around its form.
                     SettingsView()
@@ -85,7 +89,7 @@ struct MainTabView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            if uiState.showTabBar {
+            if shouldShowTabBar {
                 UberStyleTabBar(
                     selectedIndex: uiState.selectedTabIndex,
                     onSelect: { index in

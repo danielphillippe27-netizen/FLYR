@@ -601,12 +601,65 @@ struct NetworkingSessionView: View {
 
         if let pendingAppointment {
             let appointmentNote = "Appointment: \(pendingAppointment.title)\nStarts: \(pendingAppointment.start.formatted(date: .abbreviated, time: .shortened))\nEnds: \(pendingAppointment.end.formatted(date: .abbreviated, time: .shortened))\(pendingAppointment.notes.isEmpty ? "" : "\n\(pendingAppointment.notes)")"
-            _ = try? await ContactsService.shared.logActivity(contactID: updated.id, type: .meeting, note: appointmentNote)
+            _ = try? await ContactsService.shared.logActivity(
+                contactID: updated.id,
+                type: .meeting,
+                note: appointmentNote,
+                timestamp: pendingAppointment.start
+            )
         }
 
         if let pendingFollowUp {
             let followUpNote = "\(pendingFollowUp.kind.label) follow-up on \(pendingFollowUp.date.formatted(date: .abbreviated, time: .shortened))\(pendingFollowUp.notes.isEmpty ? "" : "\n\(pendingFollowUp.notes)")"
             _ = try? await ContactsService.shared.logActivity(contactID: updated.id, type: .note, note: followUpNote)
+        }
+
+        try? await syncLinkedCalendarEvents(for: updated)
+    }
+
+    private func syncLinkedCalendarEvents(for contact: Contact) async throws {
+        if let pendingAppointment {
+            let eventType = FlyrCalendarEventType.appointment
+            let sourceKind = CalendarEventSourceKind.contactAppointment.rawValue
+            let event = FlyrCalendarEvent(
+                id: FlyrCalendarEvent.linkedId(sourceKind: sourceKind, sourceId: contact.id, eventType: eventType),
+                title: pendingAppointment.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    ? eventType.defaultTitle(contactName: contact.fullName)
+                    : pendingAppointment.title,
+                startAt: pendingAppointment.start,
+                endAt: pendingAppointment.end,
+                eventType: eventType.rawValue,
+                contactId: contact.id,
+                contactName: contact.fullName,
+                contactAddress: contact.address,
+                sourceKind: sourceKind,
+                sourceId: contact.id,
+                notes: pendingAppointment.notes.isEmpty ? contact.notes : pendingAppointment.notes,
+                location: contact.address,
+                colorKey: eventType.defaultColorKey
+            )
+            _ = try await FlyrCalendarService.shared.createEvent(event)
+        }
+
+        if let pendingFollowUp {
+            let eventType = FlyrCalendarEventType.followUp
+            let sourceKind = CalendarEventSourceKind.contactFollowUp.rawValue
+            let event = FlyrCalendarEvent(
+                id: FlyrCalendarEvent.linkedId(sourceKind: sourceKind, sourceId: contact.id, eventType: eventType),
+                title: eventType.defaultTitle(contactName: contact.fullName),
+                startAt: pendingFollowUp.date,
+                endAt: Calendar.current.date(byAdding: .minute, value: 30, to: pendingFollowUp.date) ?? pendingFollowUp.date,
+                eventType: eventType.rawValue,
+                contactId: contact.id,
+                contactName: contact.fullName,
+                contactAddress: contact.address,
+                sourceKind: sourceKind,
+                sourceId: contact.id,
+                notes: pendingFollowUp.notes.isEmpty ? contact.notes : pendingFollowUp.notes,
+                location: contact.address,
+                colorKey: eventType.defaultColorKey
+            )
+            _ = try await FlyrCalendarService.shared.createEvent(event)
         }
     }
 }

@@ -317,7 +317,7 @@ struct RoutePreviewMapView: UIViewRepresentable {
     let route: OptimizedRoute
     
     func makeUIView(context: Context) -> MapView {
-        let mapView = MapView(frame: .zero)
+        let mapView = DisplayLinkRecoveringMapView(frame: .zero)
         
         // Configure map
         mapView.mapboxMap.setCamera(to: CameraOptions(

@@ -49,13 +49,15 @@ final class CampaignProvisionMonitor: ObservableObject {
         statusText: String = CampaignProvisionMonitor.runningStatusText,
         progressPercent: Int? = 0
     ) {
-        tracked = TrackedCampaignProvision(
+        let next = TrackedCampaignProvision(
             campaignId: campaign.id,
             campaignName: campaign.name,
             state: state,
             statusText: statusText,
             progressPercent: progressPercent
         )
+        guard tracked != next else { return }
+        tracked = next
         persist()
     }
 
@@ -66,15 +68,17 @@ final class CampaignProvisionMonitor: ObservableObject {
         statusText: String,
         progressPercent: Int? = nil
     ) {
-        guard tracked?.campaignId == campaignId else { return }
+        guard var next = tracked, next.campaignId == campaignId else { return }
         if let campaignName, !campaignName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            tracked?.campaignName = campaignName
+            next.campaignName = campaignName
         }
-        tracked?.state = state
-        tracked?.statusText = statusText
+        next.state = state
+        next.statusText = statusText
         if let progressPercent {
-            tracked?.progressPercent = Self.clampedProgress(progressPercent)
+            next.progressPercent = Self.clampedProgress(progressPercent)
         }
+        guard tracked != next else { return }
+        tracked = next
         persist()
     }
 

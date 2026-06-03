@@ -13,8 +13,9 @@ struct PendingLiveInviteHandoff: Identifiable, Equatable {
 @MainActor
 final class AppUIState: ObservableObject {
     @Published var showTabBar: Bool = true
+    @Published private(set) var calendarTabPresentationDepth: Int = 0
     @Published var colorScheme: ColorScheme? = nil // nil = system default
-    /// Selected main tab: 0 Home, 1 Session, 2 Leads, 3 Leaderboard, 4 Settings.
+    /// Selected main tab: 0 Home, 1 Session, 2 Leads, 3 Calendar, 4 Settings.
     @Published var selectedTabIndex: Int = 0
     /// Campaign selected for the Session tab; the tab can show a filled icon and open this campaign.
     @Published var selectedMapCampaignId: UUID?
@@ -27,6 +28,10 @@ final class AppUIState: ObservableObject {
 
     var isCampaignCreationFlowPresented: Bool {
         campaignCreationPresentationDepth > 0
+    }
+
+    var isCalendarTabPresented: Bool {
+        calendarTabPresentationDepth > 0
     }
     
     private let settingsService = SettingsService.shared
@@ -159,6 +164,14 @@ final class AppUIState: ObservableObject {
         guard let pendingLiveInviteHandoff else { return }
         guard campaignId == nil || pendingLiveInviteHandoff.campaignId == campaignId else { return }
         self.pendingLiveInviteHandoff = nil
+    }
+
+    func beginCalendarTabPresentation() {
+        calendarTabPresentationDepth += 1
+    }
+
+    func endCalendarTabPresentation() {
+        calendarTabPresentationDepth = max(0, calendarTabPresentationDepth - 1)
     }
 
     func campaignCreationFlowDidAppear() {

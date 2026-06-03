@@ -31,8 +31,104 @@ enum SessionVisitCompletionSource: String, Sendable {
     case manual
     case scored
     case legacyDwell
+    case parcelDwell
     case streetCoverage
 }
+
+struct SessionParcelAutoCompleteTarget {
+    let targetId: String
+    let buildingId: String?
+    let addressIds: [UUID]
+    let rings: [[CLLocationCoordinate2D]]
+    private let bbox: SessionParcelAutoCompleteBbox
+
+    init?(
+        targetId: String,
+        buildingId: String?,
+        addressIds: [UUID],
+        rings: [[CLLocationCoordinate2D]]
+    ) {
+        let normalizedTargetId = targetId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanedRings = rings
+            .map { ring in ring.filter { CLLocationCoordinate2DIsValid($0) } }
+            .filter { $0.count >= 3 }
+        guard !normalizedTargetId.isEmpty, !addressIds.isEmpty, !cleanedRings.isEmpty else {
+            return nil
+        }
+
+        self.targetId = normalizedTargetId
+        let normalizedBuildingId = buildingId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        self.buildingId = normalizedBuildingId.isEmpty ? nil : normalizedBuildingId
+        self.addressIds = Array(Set(addressIds))
+        self.rings = cleanedRings
+        bbox = SessionParcelAutoCompleteBbox(coordinates: cleanedRings.flatMap { $0 })
+    }
+
+    static func rings(from geometry: MapFeatureGeoJSONGeometry) -> [[CLLocationCoordinate2D]] {
+        if let polygon = geometry.asPolygon {
+            return polygon.map(coordinates(from:))
+        }
+        if let multiPolygon = geometry.asMultiPolygon {
+            return multiPolygon.flatMap { $0.map(coordinates(from:)) }
+        }
+        return []
+    }
+
+    func contains(_ coordinate: CLLocationCoordinate2D) -> Bool {
+        guard CLLocationCoordinate2DIsValid(coordinate), bbox.contains(coordinate) else { return false }
+        return rings.contains { Self.ringContains(coordinate, ring: $0) }
+    }
+
+    private static func coordinates(from ring: [[Double]]) -> [CLLocationCoordinate2D] {
+        ring.compactMap { pair in
+            guard pair.count >= 2 else { return nil }
+            return CLLocationCoordinate2D(latitude: pair[1], longitude: pair[0])
+        }
+    }
+
+    private static func ringContains(_ point: CLLocationCoordinate2D, ring: [CLLocationCoordinate2D]) -> Bool {
+        guard ring.count >= 3 else { return false }
+        var inside = false
+        var j = ring.count - 1
+
+        for i in 0..<ring.count {
+            let current = ring[i]
+            let previous = ring[j]
+            if ((current.latitude > point.latitude) != (previous.latitude > point.latitude)) &&
+                (point.longitude < (previous.longitude - current.longitude) *
+                    (point.latitude - current.latitude) /
+                    (previous.latitude - current.latitude) +
+                    current.longitude) {
+                inside.toggle()
+            }
+            j = i
+        }
+
+        return inside
+    }
+}
+
+private struct SessionParcelAutoCompleteBbox {
+    let minLongitude: CLLocationDegrees
+    let minLatitude: CLLocationDegrees
+    let maxLongitude: CLLocationDegrees
+    let maxLatitude: CLLocationDegrees
+
+    init(coordinates: [CLLocationCoordinate2D]) {
+        minLongitude = coordinates.map(\.longitude).min() ?? 0
+        minLatitude = coordinates.map(\.latitude).min() ?? 0
+        maxLongitude = coordinates.map(\.longitude).max() ?? 0
+        maxLatitude = coordinates.map(\.latitude).max() ?? 0
+    }
+
+    func contains(_ coordinate: CLLocationCoordinate2D) -> Bool {
+        coordinate.longitude >= minLongitude &&
+            coordinate.longitude <= maxLongitude &&
+            coordinate.latitude >= minLatitude &&
+            coordinate.latitude <= maxLatitude
+    }
+}
+
 
 // #region agent log
 #if DEBUG
@@ -275,6 +371,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
     private var pendingEventQueue: [PendingSessionEvent] = []
     private var targetAddressIdsByTargetId: [String: [UUID]] = [:]
     private var targetBuildingIdsByTargetId: [String: String] = [:]
+    private var parcelAutoCompleteTargets: [SessionParcelAutoCompleteTarget] = []
     private var inFlightVisitConfirmationTasks: [String: Task<Void, Never>] = [:]
     private var progressSyncer = SessionProgressSyncer()
     private let liveActivityManager = SessionLiveActivityManager.shared
@@ -438,6 +535,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         authorizationStatus = status
         showBackgroundLocationUpgradePrompt = false
         hasShownBackgroundLocationUpgradePromptThisSession = true
+        LocalStorage.shared.hasSeenBackgroundLocationUpgradePrompt = true
 
         guard shouldDelay else {
             performBackgroundLocationAuthorizationRequest()
@@ -465,6 +563,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
     func dismissBackgroundLocationUpgradePrompt() {
         showBackgroundLocationUpgradePrompt = false
         hasShownBackgroundLocationUpgradePromptThisSession = true
+        LocalStorage.shared.hasSeenBackgroundLocationUpgradePrompt = true
     }
 
     private func resetBackgroundLocationUpgradePromptState() {
@@ -476,13 +575,15 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         guard isActive,
               authorizationStatus == .authorizedWhenInUse,
               !hasPersistentBackgroundLocationAccess,
-              !hasShownBackgroundLocationUpgradePromptThisSession else {
+              !hasShownBackgroundLocationUpgradePromptThisSession,
+              !LocalStorage.shared.hasSeenBackgroundLocationUpgradePrompt else {
             if hasPersistentBackgroundLocationAccess {
                 showBackgroundLocationUpgradePrompt = false
             }
             return
         }
         hasShownBackgroundLocationUpgradePromptThisSession = true
+        LocalStorage.shared.hasSeenBackgroundLocationUpgradePrompt = true
         showBackgroundLocationUpgradePrompt = true
     }
 
@@ -624,6 +725,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         failedVisitedTargets = [:]
         targetAddressIdsByTargetId = [:]
         targetBuildingIdsByTargetId = [:]
+        parcelAutoCompleteTargets = []
         acceptedRawPointCount = 0
         rejectedPointCounts = [:]
         scoredCompletionCount = 0
@@ -1016,6 +1118,10 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
             let key = normalizeVisitKey(entry.key)
             result[key] = result[key] ?? entry.value
         }
+    }
+
+    func configureParcelAutoCompleteTargets(_ targets: [SessionParcelAutoCompleteTarget]) {
+        parcelAutoCompleteTargets = targets
     }
 
     private func setResolvedAddressIds(_ addressIds: [UUID], for targetId: String) {
@@ -2622,6 +2728,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
             streetCoverageVisitEngine = nil
             flyerTargetIds = []
             flyerCentroids = [:]
+            parcelAutoCompleteTargets = []
             onFlyerAddressesCompleted = nil
             sessionRoadCorridors = []
             showLongSessionPrompt = false
@@ -2712,6 +2819,23 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
             dwellTracker = [:]
             return
         }
+        // Invalid speed (< 0) is common when stationary; treat as slow so dwell can complete.
+        let speedMPS = location.speed >= 0 ? location.speed : 0
+        guard speedMPS < autoCompleteMaxSpeedMPS else {
+            dwellTracker = [:]
+            return
+        }
+
+        if let parcelTarget = parcelAutoCompleteTarget(containing: location.coordinate) {
+            await processAutoCompleteDwell(
+                targetId: parcelTarget.targetId,
+                source: .parcelDwell,
+                location: location,
+                matchedDistanceMeters: nil
+            )
+            return
+        }
+
         guard let nearest = findNearestIncompleteBuilding(from: location) else {
             dwellTracker = [:]
             return
@@ -2722,34 +2846,57 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
             dwellTracker = [:]
             return
         }
-        // Invalid speed (< 0) is common when stationary; treat as slow so dwell can complete.
-        let speedMPS = location.speed >= 0 ? location.speed : 0
-        guard speedMPS < autoCompleteMaxSpeedMPS else {
-            dwellTracker = [:]
-            return
+        await processAutoCompleteDwell(
+            targetId: nearest.buildingId,
+            source: .legacyDwell,
+            location: location,
+            matchedDistanceMeters: distance
+        )
+    }
+
+    func parcelAutoCompleteTarget(containing coordinate: CLLocationCoordinate2D) -> SessionParcelAutoCompleteTarget? {
+        let matches = parcelAutoCompleteTargets.filter { target in
+            !effectiveVisitedTargets().contains(normalizeVisitKey(target.targetId)) &&
+                target.contains(coordinate)
         }
+        let uniqueTargetIds = Set(matches.map { normalizeVisitKey($0.targetId) })
+        guard uniqueTargetIds.count == 1 else {
+            if uniqueTargetIds.count > 1 {
+                appendVisitDebugMessage("⚠️ [VisitPipeline] parcel_overlap_skip targets=\(uniqueTargetIds.count)")
+            }
+            return nil
+        }
+        return matches.first
+    }
+
+    private func processAutoCompleteDwell(
+        targetId: String,
+        source: SessionVisitCompletionSource,
+        location: CLLocation,
+        matchedDistanceMeters: Double?
+    ) async {
         let now = Date()
         if let activeDwell = dwellTracker.values.first,
-           activeDwell.buildingId != nearest.buildingId {
+           activeDwell.buildingId != targetId {
             dwellTracker = [:]
         }
-        if let dwellState = dwellTracker[nearest.buildingId] {
+        if let dwellState = dwellTracker[targetId] {
             let dwellTime = now.timeIntervalSince(dwellState.enteredAt)
             if dwellTime >= autoCompleteDwellSeconds {
                 lastAutoCompleteTime = now
                 dwellTracker = [:]
                 dwellCompletionCount += 1
                 await queueCandidateCompletion(
-                    targetId: nearest.buildingId,
-                    source: .legacyDwell,
+                    targetId: targetId,
+                    source: source,
                     location: location,
-                    matchedDistanceMeters: distance
+                    matchedDistanceMeters: matchedDistanceMeters
                 )
             }
         } else {
             dwellTracker = [
-                nearest.buildingId: DwellState(
-                    buildingId: nearest.buildingId,
+                targetId: DwellState(
+                    buildingId: targetId,
                     enteredAt: now,
                     location: location
                 )

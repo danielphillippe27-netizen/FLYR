@@ -13,9 +13,61 @@ type ParcelFragmentGroup = {
   include: boolean;
 };
 
+function normalizeWrappedLongitude(lon: number): number {
+  if (!Number.isFinite(lon) || (lon >= -180 && lon <= 180)) return lon;
+  return ((((lon + 180) % 360) + 360) % 360) - 180;
+}
+
+function normalizeWrappedPosition(position: number[]): { position: number[]; changed: boolean } {
+  const lon = Number(position[0]);
+  const normalizedLon = normalizeWrappedLongitude(lon);
+  if (normalizedLon === lon) return { position, changed: false };
+  return {
+    position: [normalizedLon, ...position.slice(1)],
+    changed: true,
+  };
+}
+
+function normalizeWrappedRing(ring: number[][]): { ring: number[][]; changed: boolean } {
+  let changed = false;
+  const normalized = ring.map((position) => {
+    const result = normalizeWrappedPosition(position);
+    changed = changed || result.changed;
+    return result.position;
+  });
+  return { ring: changed ? normalized : ring, changed };
+}
+
+function normalizeWrappedPolygonCoordinates(
+  coordinates: number[][][]
+): { coordinates: number[][][]; changed: boolean } {
+  let changed = false;
+  const normalized = coordinates.map((ring) => {
+    const result = normalizeWrappedRing(ring);
+    changed = changed || result.changed;
+    return result.ring;
+  });
+  return { coordinates: changed ? normalized : coordinates, changed };
+}
+
+export function normalizeWrappedParcelGeometry(geometry: ParcelPolygonGeometry): ParcelPolygonGeometry {
+  if (geometry.type === 'Polygon') {
+    const result = normalizeWrappedPolygonCoordinates(geometry.coordinates);
+    return result.changed ? { type: 'Polygon', coordinates: result.coordinates } : geometry;
+  }
+
+  let changed = false;
+  const normalized = geometry.coordinates.map((polygon) => {
+    const result = normalizeWrappedPolygonCoordinates(polygon);
+    changed = changed || result.changed;
+    return result.coordinates;
+  });
+  return changed ? { type: 'MultiPolygon', coordinates: normalized } : geometry;
+}
+
 export function polygonalGeometry(geometry: GeoJSON.Geometry | null | undefined): ParcelPolygonGeometry | null {
   if (geometry?.type === 'Polygon' || geometry?.type === 'MultiPolygon') {
-    return geometry;
+    return normalizeWrappedParcelGeometry(geometry);
   }
   return null;
 }

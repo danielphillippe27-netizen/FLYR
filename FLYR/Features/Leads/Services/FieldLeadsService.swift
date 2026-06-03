@@ -71,11 +71,11 @@ actor FieldLeadsService {
 
     /// `contacts` is the primary lead store. Fall back to legacy `field_leads` rows only when needed.
     func fetchLeads(userId: UUID, workspaceId: UUID? = nil, campaignId: UUID? = nil, sessionId: UUID? = nil) async throws -> [FieldLead] {
+        let cached = sessionId == nil
+            ? await fetchCachedLeads(userId: userId, workspaceId: workspaceId, campaignId: campaignId)
+            : []
         if await isOffline() {
-            let cached = await fetchCachedLeads(userId: userId, workspaceId: workspaceId, campaignId: campaignId)
-            if !cached.isEmpty {
-                return cached
-            }
+            return await enrichedWithAppointmentSignals(cached)
         }
 
         do {
@@ -87,22 +87,24 @@ actor FieldLeadsService {
             )
             if !contacts.isEmpty {
                 await cacheLeadRows(contacts, userId: userId, workspaceId: workspaceId)
-                return Self.deduplicated(contacts.map(Self.makeFieldLead(from:)))
+                let refreshedCached = await fetchCachedLeads(userId: userId, workspaceId: workspaceId, campaignId: campaignId)
+                let leads = Self.deduplicated(contacts.map(Self.makeFieldLead(from:)) + refreshedCached)
+                return await enrichedWithAppointmentSignals(leads)
             }
         } catch {
             print("⚠️ [FieldLeadsService] Contacts fetch failed, falling back to field_leads: \(error.localizedDescription)")
-            let cached = await fetchCachedLeads(userId: userId, workspaceId: workspaceId, campaignId: campaignId)
             if !cached.isEmpty {
-                return cached
+                return await enrichedWithAppointmentSignals(cached)
             }
         }
 
-        return Self.deduplicated(try await fetchLegacyLeads(
+        let legacyLeads = try await fetchLegacyLeads(
             userId: userId,
             workspaceId: workspaceId,
             campaignId: campaignId,
             sessionId: sessionId
-        ))
+        )
+        return await enrichedWithAppointmentSignals(Self.deduplicated(cached + legacyLeads))
     }
 
     // MARK: - Create
@@ -293,7 +295,7 @@ actor FieldLeadsService {
     ) async throws -> [ContactLeadRow] {
         var query = client
             .from("contacts")
-            .select("id,user_id,full_name,phone,email,address,status,notes,qr_code,campaign_id,session_id,external_crm_id,last_synced_at,sync_status,created_at,updated_at")
+            .select("id,user_id,full_name,phone,email,address,status,notes,qr_code,campaign_id,session_id,external_crm_id,last_synced_at,reminder_date,sync_status,created_at,updated_at")
 
         if shouldUseWorkspaceScope(workspaceId: workspaceId, campaignId: campaignId),
            let workspaceId {
@@ -341,12 +343,13 @@ actor FieldLeadsService {
         if let sessionId = lead.sessionId { insertData["session_id"] = AnyCodable(sessionId) }
         if let externalCrmId = lead.externalCrmId { insertData["external_crm_id"] = AnyCodable(externalCrmId) }
         if let lastSyncedAt = lead.lastSyncedAt { insertData["last_synced_at"] = AnyCodable(lastSyncedAt) }
+        if let reminderDate = lead.reminderDate { insertData["reminder_date"] = AnyCodable(reminderDate) }
         if let syncStatus = lead.syncStatus { insertData["sync_status"] = AnyCodable(syncStatus.rawValue) }
 
         let response = try await client
             .from("contacts")
             .insert(insertData)
-            .select("id,user_id,full_name,phone,email,address,status,notes,qr_code,campaign_id,session_id,external_crm_id,last_synced_at,sync_status,created_at,updated_at")
+            .select("id,user_id,full_name,phone,email,address,status,notes,qr_code,campaign_id,session_id,external_crm_id,last_synced_at,reminder_date,sync_status,created_at,updated_at")
             .execute()
 
         let rows = try JSONDecoder.supabaseDates.decode([ContactLeadRow].self, from: response.data)
@@ -371,13 +374,14 @@ actor FieldLeadsService {
         updateData["session_id"] = AnyCodable(lead.sessionId as Any)
         updateData["external_crm_id"] = AnyCodable(lead.externalCrmId as Any)
         updateData["last_synced_at"] = AnyCodable(lead.lastSyncedAt as Any)
+        updateData["reminder_date"] = AnyCodable(lead.reminderDate as Any)
         updateData["sync_status"] = AnyCodable(lead.syncStatus?.rawValue as Any)
 
         let response = try await client
             .from("contacts")
             .update(updateData)
             .eq("id", value: lead.id)
-            .select("id,user_id,full_name,phone,email,address,status,notes,qr_code,campaign_id,session_id,external_crm_id,last_synced_at,sync_status,created_at,updated_at")
+            .select("id,user_id,full_name,phone,email,address,status,notes,qr_code,campaign_id,session_id,external_crm_id,last_synced_at,reminder_date,sync_status,created_at,updated_at")
             .execute()
 
         let rows = try JSONDecoder.supabaseDates.decode([ContactLeadRow].self, from: response.data)
@@ -554,6 +558,7 @@ actor FieldLeadsService {
             sessionId: row.sessionId,
             externalCrmId: row.externalCrmId,
             lastSyncedAt: row.lastSyncedAt,
+            reminderDate: row.reminderDate,
             syncStatus: row.syncStatus.flatMap(FieldLeadSyncStatus.init(rawValue:)),
             createdAt: row.createdAt,
             updatedAt: row.updatedAt
@@ -575,6 +580,7 @@ actor FieldLeadsService {
             sessionId: nil,
             externalCrmId: nil,
             lastSyncedAt: nil,
+            reminderDate: contact.reminderDate,
             syncStatus: nil,
             createdAt: contact.createdAt,
             updatedAt: contact.updatedAt
@@ -596,7 +602,7 @@ actor FieldLeadsService {
             status: contactStatus(from: lead.status),
             lastContacted: lead.lastSyncedAt,
             notes: lead.notes,
-            reminderDate: nil,
+            reminderDate: lead.reminderDate,
             createdAt: lead.createdAt,
             updatedAt: lead.updatedAt
         )
@@ -610,6 +616,7 @@ actor FieldLeadsService {
         merged.email = contact.email
         merged.notes = contact.notes
         merged.campaignId = contact.campaignId
+        merged.reminderDate = contact.reminderDate
         merged.status = fieldLeadStatus(from: contact.status.rawValue)
         merged.updatedAt = contact.updatedAt
         return merged
@@ -667,6 +674,7 @@ actor FieldLeadsService {
         merged.qrCode = preferredNonEmpty(incoming.qrCode, fallback: existing.qrCode)
         merged.campaignId = incoming.campaignId ?? existing.campaignId
         merged.sessionId = incoming.sessionId ?? existing.sessionId
+        merged.reminderDate = incoming.reminderDate ?? existing.reminderDate
         merged.updatedAt = Date()
         return merged
     }
@@ -720,7 +728,7 @@ actor FieldLeadsService {
                 status: Self.contactStatus(from: Self.fieldLeadStatus(from: row.status)),
                 lastContacted: row.lastSyncedAt,
                 notes: row.notes,
-                reminderDate: nil,
+                reminderDate: row.reminderDate,
                 createdAt: row.createdAt,
                 updatedAt: row.updatedAt
             )
@@ -735,6 +743,46 @@ actor FieldLeadsService {
             filter: ContactFilter(campaignId: campaignId)
         )
         return Self.deduplicated(contacts.map { Self.makeFieldLead(from: $0, userId: userId) })
+    }
+
+    private func enrichedWithAppointmentSignals(_ leads: [FieldLead]) async -> [FieldLead] {
+        guard !leads.isEmpty else { return leads }
+        let leadIds = leads.map(\.id)
+        let meetings: [ContactActivity]
+        do {
+            meetings = try await ContactsService.shared.fetchActivities(contactIDs: leadIds, type: .meeting, limit: max(500, leadIds.count))
+        } catch {
+            meetings = await contactRepository.fetchActivities(contactIds: leadIds, type: .meeting, limit: max(500, leadIds.count))
+        }
+        guard !meetings.isEmpty else { return leads }
+
+        let meetingsByContact = Dictionary(grouping: meetings, by: \.contactId)
+        return leads.map { lead in
+            guard let meeting = meetingsByContact[lead.id]?.sorted(by: { $0.timestamp > $1.timestamp }).first else {
+                return lead
+            }
+            var enriched = lead
+            let marker = Self.appointmentSignalNote(from: meeting)
+            if let notes = enriched.notes?.trimmingCharacters(in: .whitespacesAndNewlines), !notes.isEmpty {
+                if !notes.lowercased().contains("appointment") && !notes.lowercased().contains("meeting") {
+                    enriched.notes = "\(notes)\n\(marker)"
+                }
+            } else {
+                enriched.notes = marker
+            }
+            enriched.updatedAt = max(enriched.updatedAt, meeting.timestamp)
+            return enriched
+        }
+    }
+
+    private static func appointmentSignalNote(from activity: ContactActivity) -> String {
+        let note = activity.note?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let note, !note.isEmpty {
+            return note.lowercased().contains("appointment") || note.lowercased().contains("meeting")
+                ? note
+                : "Appointment: \(note)"
+        }
+        return "Appointment: \(activity.timestamp.formatted(date: .abbreviated, time: .shortened))"
     }
 
     private func isOffline() async -> Bool {
@@ -762,6 +810,7 @@ private struct ContactLeadRow: Decodable {
     let sessionId: UUID?
     let externalCrmId: String?
     let lastSyncedAt: Date?
+    let reminderDate: Date?
     let syncStatus: String?
     let createdAt: Date
     let updatedAt: Date
@@ -780,6 +829,7 @@ private struct ContactLeadRow: Decodable {
         case sessionId = "session_id"
         case externalCrmId = "external_crm_id"
         case lastSyncedAt = "last_synced_at"
+        case reminderDate = "reminder_date"
         case syncStatus = "sync_status"
         case createdAt = "created_at"
         case updatedAt = "updated_at"

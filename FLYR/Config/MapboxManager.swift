@@ -1,5 +1,6 @@
 import Foundation
 import CoreLocation
+import UIKit
 import MapboxMaps
 
 /// Manages Mapbox configuration and access tokens
@@ -10,6 +11,26 @@ class MapboxManager {
     
     private init() {
         self.accessToken = Config.mapboxAccessToken
+    }
+}
+
+final class DisplayLinkRecoveringMapView: MapView {
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        refreshDisplayLinkState()
+        DispatchQueue.main.async { [weak self] in
+            self?.refreshDisplayLinkState()
+        }
+    }
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        refreshDisplayLinkState()
+        super.touchesBegan(touches, with: event)
+    }
+
+    private func refreshDisplayLinkState() {
+        let currentDisplayState = displayState
+        displayState = currentDisplayState
     }
 }
 
@@ -265,5 +286,3 @@ private struct OfflineMultiPolygonGeoJSON: Decodable {
     let type: String
     let coordinates: [[[[Double]]]]
 }
-
-

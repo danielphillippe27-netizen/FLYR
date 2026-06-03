@@ -353,7 +353,7 @@ final class UseCampaignMap: ObservableObject {
 
     do {
       try await CampaignsAPI.shared.updateTerritoryBoundary(campaignId: campaignId, polygonGeoJSON: geoJSONString)
-      try await CampaignsAPI.shared.provisionCampaign(campaignId: campaignId)
+      try await CampaignsAPI.shared.provisionCampaign(campaignId: campaignId, waitForLinker: true)
 
       let addresses = try await CampaignsAPI.shared.fetchAddresses(campaignId: campaignId)
       let newHomePoints = addresses.map { row in
@@ -377,7 +377,8 @@ final class UseCampaignMap: ObservableObject {
     } catch {
       print("❌ [POLYGON] Error: \(error)")
       await MainActor.run {
-        self.error = "Failed to provision addresses: \(error.localizedDescription)"
+        self.error = CampaignsAPI.campaignHomeLimitMessage(from: error)
+          ?? "Failed to provision addresses: \(error.localizedDescription)"
       }
     }
   }

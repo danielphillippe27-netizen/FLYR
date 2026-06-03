@@ -27,6 +27,8 @@ const PARCEL_SEAM_SAFE_MAX_ZOOM = 16;
 const PARCEL_FRAGMENT_TILE_PADDING = 2;
 const PARCEL_BACKFILL_BATCH_SIZE = 500;
 const PARCEL_FAILURE_CACHE_TTL_MS = 5 * 60 * 1000;
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const parcelFailureCache = new Map<string, number>();
 
 export type CampaignParcelResponse = {
@@ -42,7 +44,9 @@ type CampaignScopeRow = {
   bbox: unknown;
   territory_boundary: GeoJSON.Polygon | string | null;
   region?: string | null;
+  parcel_source_id?: string | null;
   parcel_enrichment_status?: string | null;
+  parcel_enrichment_debug?: Record<string, unknown> | null;
 };
 
 type CampaignAddressPoint = {
@@ -66,6 +70,13 @@ type ParcelAddressAnnotation = {
   matchType?: string | null;
   linkSource?: string | null;
   confidence?: number | null;
+};
+
+type CampaignParcelBackfillRow = {
+  campaign_id: string;
+  external_id: string;
+  geom: string;
+  properties: Record<string, unknown>;
 };
 
 type PersistedParcelFeatureCollection = {
@@ -294,13 +305,46 @@ function validCampaignAddressPoint(address: CampaignAddressPoint): boolean {
   );
 }
 
+function coordinatePairFromGeometry(value: unknown): { lon: number; lat: number } | null {
+  if (!value || typeof value !== 'object') return null;
+  const geometry = value as { type?: unknown; coordinates?: unknown };
+  if (geometry.type !== 'Point' || !Array.isArray(geometry.coordinates)) return null;
+  const lon = Number(geometry.coordinates[0]);
+  const lat = Number(geometry.coordinates[1]);
+  return Number.isFinite(lon) && Number.isFinite(lat) ? { lon, lat } : null;
+}
+
+function coordinatePairFromCoordinate(value: unknown): { lon: number; lat: number } | null {
+  if (!value || typeof value !== 'object') return null;
+  const coordinate = value as { lon?: unknown; lng?: unknown; longitude?: unknown; lat?: unknown; latitude?: unknown };
+  const lon = Number(coordinate.lon ?? coordinate.lng ?? coordinate.longitude);
+  const lat = Number(coordinate.lat ?? coordinate.latitude);
+  return Number.isFinite(lon) && Number.isFinite(lat) ? { lon, lat } : null;
+}
+
 function campaignAddressPointsFromRows(rows: unknown[] | null): CampaignAddressPoint[] {
   return (rows ?? [])
-    .map((row) => ({
-      id: String((row as { id?: unknown }).id ?? ''),
-      lat: Number((row as { lat?: unknown }).lat),
-      lon: Number((row as { lon?: unknown }).lon),
-    }))
+    .map((row) => {
+      const record = row as {
+        id?: unknown;
+        lat?: unknown;
+        lon?: unknown;
+        coordinate?: unknown;
+        geom?: unknown;
+      };
+      const rowPair = {
+        lon: Number(record.lon),
+        lat: Number(record.lat),
+      };
+      const coordinatePair = Number.isFinite(rowPair.lon) && Number.isFinite(rowPair.lat)
+        ? rowPair
+        : coordinatePairFromCoordinate(record.coordinate) ?? coordinatePairFromGeometry(record.geom);
+      return {
+        id: String(record.id ?? ''),
+        lat: Number(coordinatePair?.lat),
+        lon: Number(coordinatePair?.lon),
+      };
+    })
     .filter(validCampaignAddressPoint);
 }
 
@@ -326,7 +370,7 @@ async function fetchCampaignAddressPoints(
 ): Promise<CampaignAddressPoint[]> {
   const { data: addressRows } = await supabase
     .from('campaign_addresses')
-    .select('id, lat, lon')
+    .select('id, coordinate, geom')
     .eq('campaign_id', campaignId);
   const rowPoints = campaignAddressPointsFromRows(addressRows ?? []);
   if (rowPoints.length > 0) return rowPoints;
@@ -395,6 +439,21 @@ function uniqueStrings(values: Array<string | null | undefined>): string[] {
   );
 }
 
+function normalizedText(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : null;
+}
+
+function campaignParcelSourceId(campaign: CampaignScopeRow): string | null {
+  return normalizedText(campaign.parcel_source_id) ??
+    normalizedText(campaign.parcel_enrichment_debug?.source_id);
+}
+
+function isLegacyPreloadedParcelSource(campaign: CampaignScopeRow): boolean {
+  return campaignParcelSourceId(campaign)?.toLowerCase() === 'preloaded_pmtiles';
+}
+
 function parcelAnnotationsFromEvidence(
   parcels: CampaignParcelResponse[],
   links: ParcelAddressLinkRow[]
@@ -415,6 +474,117 @@ function parcelAnnotationsFromEvidence(
       confidence: link.confidence,
     }];
   });
+}
+
+function isMissingParcelAddressLinksTable(error: { code?: string; message?: string }) {
+  const message = error.message ?? '';
+  return error.code === '42P01' ||
+    error.code === 'PGRST205' ||
+    message.includes('parcel_address_links') && (
+      message.includes('does not exist') ||
+      message.includes('schema cache')
+    );
+}
+
+async function persistInferredParcelAddressLinks(
+  supabase: SupabaseClient,
+  campaignId: string,
+  annotations: ParcelAddressAnnotation[]
+): Promise<number> {
+  const rows = annotations.flatMap((annotation) => {
+    const parcelId = String(annotation.parcelId ?? '').trim();
+    const addressId = annotation.addressId.trim();
+    if (!UUID_RE.test(parcelId) || !UUID_RE.test(addressId)) return [];
+    return [{
+      campaign_id: campaignId,
+      parcel_id: parcelId,
+      address_id: addressId,
+      match_type: annotation.matchType ?? 'centroid_in_parcel',
+      link_source: 'auto',
+      confidence: annotation.confidence ?? 0.9,
+    }];
+  });
+
+  if (rows.length === 0) return 0;
+
+  const { data: manualRows, error: manualError } = await supabase
+    .from('parcel_address_links')
+    .select('address_id')
+    .eq('campaign_id', campaignId)
+    .eq('link_source', 'manual')
+    .in('address_id', rows.map((row) => row.address_id));
+
+  if (manualError) {
+    if (isMissingParcelAddressLinksTable(manualError)) {
+      console.warn('[CampaignParcels] parcel_address_links unavailable; skipping inferred link persistence:', {
+        campaignId,
+        code: manualError.code,
+        message: manualError.message,
+      });
+      return 0;
+    }
+    console.warn('[CampaignParcels] Failed to read manual parcel links before inferred persistence:', {
+      campaignId,
+      code: manualError.code,
+      message: manualError.message,
+    });
+    return 0;
+  }
+
+  const manualAddressIds = new Set((manualRows ?? []).map((row) => String(row.address_id)));
+  const writableRows = rows.filter((row) => !manualAddressIds.has(row.address_id));
+  if (writableRows.length === 0) return 0;
+
+  const { error } = await supabase
+    .from('parcel_address_links')
+    .upsert(writableRows, { onConflict: 'campaign_id,address_id' });
+
+  if (error) {
+    if (isMissingParcelAddressLinksTable(error)) {
+      console.warn('[CampaignParcels] parcel_address_links unavailable; skipping inferred link persistence:', {
+        campaignId,
+        code: error.code,
+        message: error.message,
+      });
+      return 0;
+    }
+    console.warn('[CampaignParcels] Failed to persist inferred parcel-address links:', {
+      campaignId,
+      code: error.code,
+      message: error.message,
+    });
+    return 0;
+  }
+
+  return writableRows.length;
+}
+
+async function markCampaignParcelsReady(
+  supabase: SupabaseClient,
+  campaignId: string,
+  parcelCount: number,
+  sourceId: string
+): Promise<void> {
+  if (parcelCount <= 0) return;
+  const { error } = await supabase
+    .from('campaigns')
+    .update({
+      has_parcels: true,
+      parcel_count: parcelCount,
+      parcel_source_id: sourceId,
+      parcel_enrichment_status: 'ready',
+      parcel_enriched_at: new Date().toISOString(),
+      parcel_enrichment_error: null,
+    })
+    .eq('id', campaignId);
+
+  if (error) {
+    console.warn('[CampaignParcels] Failed to mark campaign parcels ready:', {
+      campaignId,
+      code: error.code,
+      message: error.message,
+    });
+  }
 }
 
 function parseBbox(value: unknown): [number, number, number, number] | null {
@@ -583,7 +753,7 @@ function inferParcelAddressAnnotations(
     if (!match) continue;
     annotations.push({
       parcelKey: canonicalParcelKey(match.parcel),
-      parcelId: match.parcel.external_id,
+      parcelId: match.parcel.id,
       addressId: address.id,
       matchType: 'centroid_in_parcel',
       linkSource: 'inferred',
@@ -791,6 +961,16 @@ function parcelResponseGeometry(
     : null;
 }
 
+function parcelStorageGeometry(
+  geometry: GeoJSON.Polygon | GeoJSON.MultiPolygon
+): GeoJSON.MultiPolygon {
+  if (geometry.type === 'MultiPolygon') return geometry;
+  return {
+    type: 'MultiPolygon',
+    coordinates: [geometry.coordinates],
+  };
+}
+
 function filterResidentialParcelResponses(parcels: CampaignParcelResponse[]): CampaignParcelResponse[] {
   return parcels.filter((parcel) => {
     const feature = parcelResponseToFeature(parcel);
@@ -844,7 +1024,7 @@ async function backfillResolvedPmtilesParcels(
   if (parcels.length === 0) return false;
 
   const nowIso = new Date().toISOString();
-  const rows = parcels.flatMap((parcel) => {
+  const rows: CampaignParcelBackfillRow[] = parcels.flatMap((parcel) => {
     const geometry = parcelResponseGeometry(parcel);
     if (!geometry) return [];
 
@@ -854,7 +1034,7 @@ async function backfillResolvedPmtilesParcels(
     return [{
       campaign_id: campaignId,
       external_id: externalId,
-      geom: JSON.stringify(geometry),
+      geom: JSON.stringify(parcelStorageGeometry(geometry)),
       properties: {
         ...parcel.properties,
         parcel_id: externalId,
@@ -868,6 +1048,7 @@ async function backfillResolvedPmtilesParcels(
   if (rows.length === 0) return false;
 
   try {
+    let usedMissingConstraintFallback = false;
     for (let index = 0; index < rows.length; index += PARCEL_BACKFILL_BATCH_SIZE) {
       const chunk = rows.slice(index, index + PARCEL_BACKFILL_BATCH_SIZE);
       const { error } = await supabase
@@ -875,6 +1056,13 @@ async function backfillResolvedPmtilesParcels(
         .upsert(chunk, { onConflict: 'campaign_id,external_id' });
 
       if (error) {
+        if (error.code === '42P10') {
+          usedMissingConstraintFallback = true;
+          const inserted = await insertMissingCampaignParcelRows(supabase, campaignId, rows);
+          if (!inserted) return false;
+          break;
+        }
+
         console.warn('[CampaignParcels] Failed to backfill PMTiles parcels:', {
           campaignId,
           code: error.code,
@@ -917,10 +1105,63 @@ async function backfillResolvedPmtilesParcels(
       campaignId,
       count: rows.length,
       pmtilesKey: parcelTiles.pmtilesKey,
+      conflictFallback: usedMissingConstraintFallback,
     });
     return true;
   } catch (error) {
     console.warn('[CampaignParcels] Failed to backfill PMTiles parcels:', {
+      campaignId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return false;
+  }
+}
+
+async function insertMissingCampaignParcelRows(
+  supabase: SupabaseClient,
+  campaignId: string,
+  rows: CampaignParcelBackfillRow[]
+): Promise<boolean> {
+  try {
+    for (let index = 0; index < rows.length; index += PARCEL_BACKFILL_BATCH_SIZE) {
+      const chunk = rows.slice(index, index + PARCEL_BACKFILL_BATCH_SIZE);
+      const externalIds = chunk.map((row) => row.external_id);
+      const { data: existing, error: readError } = await supabase
+        .from('campaign_parcels')
+        .select('external_id')
+        .eq('campaign_id', campaignId)
+        .in('external_id', externalIds);
+
+      if (readError) {
+        console.warn('[CampaignParcels] Failed to read existing parcels before fallback backfill:', {
+          campaignId,
+          code: readError.code,
+          message: readError.message,
+        });
+        return false;
+      }
+
+      const existingIds = new Set((existing ?? []).map((row) => String(row.external_id)));
+      const missingRows = chunk.filter((row) => !existingIds.has(row.external_id));
+      if (missingRows.length === 0) continue;
+
+      const { error: insertError } = await supabase
+        .from('campaign_parcels')
+        .insert(missingRows);
+
+      if (insertError) {
+        console.warn('[CampaignParcels] Failed fallback insert for missing PMTiles parcels:', {
+          campaignId,
+          code: insertError.code,
+          message: insertError.message,
+        });
+        return false;
+      }
+    }
+
+    return true;
+  } catch (error) {
+    console.warn('[CampaignParcels] Failed fallback PMTiles parcel backfill:', {
       campaignId,
       error: error instanceof Error ? error.message : String(error),
     });
@@ -1036,7 +1277,7 @@ export async function resolveCampaignParcels(
   const [{ data: campaign, error: campaignError }, snapshot] = await Promise.all([
     supabase
       .from('campaigns')
-      .select('bbox, territory_boundary, region, parcel_enrichment_status')
+      .select('bbox, territory_boundary, region, parcel_source_id, parcel_enrichment_status, parcel_enrichment_debug')
       .eq('id', campaignId)
       .maybeSingle(),
     getCachedCampaignSnapshot(supabase, campaignId),
@@ -1060,11 +1301,52 @@ export async function resolveCampaignParcels(
     boundary
   );
   if (residentialPersistedParcels.length > 0) {
+    let preserveLegacySourceForRetry = false;
+    if (snapshot && isLegacyPreloadedParcelSource(campaignScope)) {
+      const parcelTiles = parcelTilesFromSnapshot(snapshot);
+      if (parcelTiles) {
+        try {
+          const snapshotParcels = await fetchScopedPmtilesParcels(campaignId, snapshot, parcelTiles, bbox, boundary);
+          if (snapshotParcels.length > residentialPersistedParcels.length) {
+            const snapshotAnnotations = inferParcelAddressAnnotations(snapshotParcels, addressPoints);
+            const annotatedSnapshotParcels = annotateParcelsWithAddressLinks(snapshotParcels, snapshotAnnotations);
+            await persistInferredParcelAddressLinks(supabase, campaignId, snapshotAnnotations);
+            await backfillResolvedPmtilesParcels(
+              supabase,
+              campaignId,
+              annotatedSnapshotParcels,
+              parcelTiles
+            );
+            return responseFromParcels(
+              annotatedSnapshotParcels,
+              'campaign_parcels'
+            );
+          }
+        } catch (error) {
+          preserveLegacySourceForRetry = true;
+          console.warn('[CampaignParcels] Legacy preloaded parcel repair failed; using persisted parcels for now:', {
+            campaignId,
+            persistedCount: residentialPersistedParcels.length,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+    }
+
     const parcelAddressLinks = await fetchPersistedParcelAddressLinks(supabase, campaignId);
     const evidenceAnnotations = parcelAnnotationsFromEvidence(residentialPersistedParcels, parcelAddressLinks);
     const annotations = evidenceAnnotations.length > 0
       ? evidenceAnnotations
       : inferParcelAddressAnnotations(residentialPersistedParcels, addressPoints);
+    if (evidenceAnnotations.length === 0) {
+      await persistInferredParcelAddressLinks(supabase, campaignId, annotations);
+    }
+    await markCampaignParcelsReady(
+      supabase,
+      campaignId,
+      residentialPersistedParcels.length,
+      preserveLegacySourceForRetry ? campaignParcelSourceId(campaignScope) ?? 'campaign_parcels' : 'campaign_parcels'
+    );
     const annotatedParcels = annotateParcelsWithAddressLinks(residentialPersistedParcels, annotations);
     return responseFromParcels(
       annotatedParcels,
@@ -1088,6 +1370,15 @@ export async function resolveCampaignParcels(
       const annotations = evidenceAnnotations.length > 0
         ? evidenceAnnotations
         : inferParcelAddressAnnotations(residentialPreparedParcels, addressPoints);
+      if (evidenceAnnotations.length === 0) {
+        await persistInferredParcelAddressLinks(supabase, campaignId, annotations);
+      }
+      await markCampaignParcelsReady(
+        supabase,
+        campaignId,
+        residentialPreparedParcels.length,
+        'campaign_parcels'
+      );
       const annotatedParcels = annotateParcelsWithAddressLinks(residentialPreparedParcels, annotations);
       return responseFromParcels(
         annotatedParcels,

@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct CampaignsListView: View {
+    @EnvironmentObject private var uiState: AppUIState
     @StateObject private var storeV2 = CampaignV2Store.shared
     @StateObject private var hooksV2 = UseCampaignsV2()
     @State private var recentlyCreatedCampaignID: UUID?
@@ -17,6 +18,9 @@ struct CampaignsListView: View {
     @State private var pendingDeleteCampaign: CampaignV2?
     @State private var isBulkActionInProgress = false
     @State private var didPositionListOnInitialLoad = false
+    @State private var assignedCampaignIDs: Set<UUID> = []
+    @State private var assignedRoutesByCampaignID: [UUID: RouteAssignmentSummary] = [:]
+    @State private var campaignAssignmentsByCampaignID: [UUID: CampaignAssignmentSummary] = [:]
     var externalFilter: Binding<CampaignFilter>? = nil
     /// When set, empty state and "+ New Campaign" button set this to true (same as toolbar + button).
     var showCreateCampaign: Binding<Bool>? = nil
@@ -124,6 +128,7 @@ struct CampaignsListView: View {
                             recentlyCreatedCampaignID: recentlyCreatedCampaignID,
                             filter: effectiveFilter,
                             searchText: searchText,
+                            assignedCampaignIDs: assignedCampaignIDs,
                             isSelectionMode: isBulkSelecting,
                             selectedCampaignIDs: selectedCampaignIDs,
                             onCampaignTapped: onCampaignTapped,
@@ -135,8 +140,7 @@ struct CampaignsListView: View {
                             },
                             onPlayTapped: { campaign in
                                 HapticManager.light()
-                                sessionStartCampaign = campaign
-                                showSessionStartSheet = true
+                                Task { await openCampaignForSession(campaign) }
                             },
                             onDeleteRequested: { campaign in
                                 pendingDeleteCampaign = campaign
@@ -245,11 +249,13 @@ struct CampaignsListView: View {
             }
             .task(id: "campaigns") {
                 hooksV2.load(store: storeV2)
+                await loadAssignedCampaignIDs()
                 didPositionListOnInitialLoad = !storeV2.campaigns.isEmpty
                 scrollToTop(proxy)
             }
             .refreshable {
                 hooksV2.load(store: storeV2, force: true)
+                await loadAssignedCampaignIDs()
                 HapticManager.rigid()
             }
             .sheet(isPresented: $showSessionStartSheet) {
@@ -355,6 +361,157 @@ struct CampaignsListView: View {
         } else {
             HapticManager.light()
             onCampaignTapped?(campaign.id)
+        }
+    }
+
+    @MainActor
+    private func openCampaignForSession(_ campaign: CampaignV2) async {
+        guard let assignedRoute = assignedRoutesByCampaignID[campaign.id] else {
+            if campaignAssignmentsByCampaignID[campaign.id] != nil {
+                uiState.selectCampaign(id: campaign.id, name: campaign.name)
+                uiState.selectedTabIndex = 1
+                return
+            }
+            sessionStartCampaign = campaign
+            showSessionStartSheet = true
+            return
+        }
+
+        do {
+            let detail = try await RouteAssignmentsAPI.shared.fetchAssignmentDetail(assignmentId: assignedRoute.id)
+            if let context = RouteWorkContext(detail: detail) {
+                uiState.selectRoute(context)
+                uiState.selectedTabIndex = 1
+                return
+            }
+
+            if let campaignId = detail.campaignId {
+                uiState.selectCampaign(id: campaignId, name: detail.displayPlanName)
+                uiState.selectedTabIndex = 1
+                return
+            }
+        } catch {
+            print("⚠️ [Campaigns] Assigned route open failed: \(error.localizedDescription)")
+        }
+
+        sessionStartCampaign = campaign
+        showSessionStartSheet = true
+    }
+
+    @MainActor
+    private func loadAssignedCampaignIDs() async {
+        guard let workspaceId = await RoutePlansAPI.shared.resolveWorkspaceId(preferred: WorkspaceContext.shared.workspaceId) else {
+            assignedCampaignIDs = []
+            assignedRoutesByCampaignID = [:]
+            campaignAssignmentsByCampaignID = [:]
+            return
+        }
+
+        var campaignIDs = Set<UUID>()
+        var routesByCampaignID: [UUID: RouteAssignmentSummary] = [:]
+
+        do {
+            let result = try await RouteAssignmentsAPI.shared.fetchAssignments(workspaceId: workspaceId)
+            let activeAssignments = result.assignments.filter(Self.isActiveAssignment)
+            await SessionStartCacheRepository.shared.upsertRouteAssignments(activeAssignments, workspaceId: workspaceId)
+            await collectAssignedRouteCampaigns(
+                from: activeAssignments,
+                campaignIDs: &campaignIDs,
+                routesByCampaignID: &routesByCampaignID
+            )
+        } catch {
+            print("⚠️ [Campaigns] Failed to load assigned route campaigns: \(error.localizedDescription)")
+            do {
+                let fallbackAssignments = try await RoutePlansAPI.shared.fetchMyAssignedRoutes(workspaceId: workspaceId)
+                    .filter(Self.isActiveAssignment)
+                await SessionStartCacheRepository.shared.upsertRouteAssignments(fallbackAssignments, workspaceId: workspaceId)
+                await collectAssignedRouteCampaigns(
+                    from: fallbackAssignments,
+                    campaignIDs: &campaignIDs,
+                    routesByCampaignID: &routesByCampaignID
+                )
+            } catch {
+                let cachedAssignments = await SessionStartCacheRepository.shared.getCachedRouteAssignments(workspaceId: workspaceId)
+                    .filter(Self.isActiveAssignment)
+                await collectAssignedRouteCampaigns(
+                    from: cachedAssignments,
+                    campaignIDs: &campaignIDs,
+                    routesByCampaignID: &routesByCampaignID
+                )
+            }
+        }
+
+        let campaignAssignmentsByCampaign: [UUID: CampaignAssignmentSummary]
+        do {
+            let result = try await CampaignAssignmentsAPI.shared.fetchAssignments(workspaceId: workspaceId)
+            campaignAssignmentsByCampaign = Dictionary(
+                result.assignments.filter(\.isActive).map { ($0.campaignId, $0) },
+                uniquingKeysWith: { existing, _ in existing }
+            )
+            campaignIDs.formUnion(campaignAssignmentsByCampaign.keys)
+        } catch {
+            print("⚠️ [Campaigns] Failed to load campaign assignments: \(error.localizedDescription)")
+            campaignAssignmentsByCampaign = [:]
+        }
+
+        assignedCampaignIDs = campaignIDs
+        assignedRoutesByCampaignID = routesByCampaignID
+        campaignAssignmentsByCampaignID = campaignAssignmentsByCampaign
+    }
+
+    private func collectAssignedRouteCampaigns(
+        from assignments: [RouteAssignmentSummary],
+        campaignIDs: inout Set<UUID>,
+        routesByCampaignID: inout [UUID: RouteAssignmentSummary]
+    ) async {
+        for assignment in assignments {
+            guard let campaignId = await campaignID(for: assignment) else { continue }
+            campaignIDs.insert(campaignId)
+            if routesByCampaignID[campaignId] == nil {
+                routesByCampaignID[campaignId] = assignment
+            }
+        }
+    }
+
+    private func campaignID(for assignment: RouteAssignmentSummary) async -> UUID? {
+        if let campaignId = assignment.campaignId {
+            return campaignId
+        }
+
+        do {
+            let detail = try await RouteAssignmentsAPI.shared.fetchAssignmentDetail(assignmentId: assignment.id)
+            await SessionStartCacheRepository.shared.upsertRouteAssignmentDetail(detail)
+            if let campaignId = detail.campaignId {
+                return campaignId
+            }
+        } catch {
+            print("⚠️ [Campaigns] Could not resolve campaign for assignment \(assignment.id): \(error.localizedDescription)")
+        }
+
+        if let cachedDetail = await SessionStartCacheRepository.shared.getCachedRouteAssignmentDetail(assignmentId: assignment.id),
+           let campaignId = cachedDetail.campaignId {
+            return campaignId
+        }
+
+        do {
+            let planDetail = try await RoutePlansAPI.shared.fetchRoutePlanDetail(routePlanId: assignment.routePlanId)
+            await SessionStartCacheRepository.shared.upsertRoutePlanDetail(planDetail)
+            return planDetail.campaignId
+        } catch {
+            print("⚠️ [Campaigns] Could not resolve route plan campaign for assignment \(assignment.id): \(error.localizedDescription)")
+        }
+
+        return await SessionStartCacheRepository.shared
+            .getCachedRoutePlanDetail(routePlanId: assignment.routePlanId)?
+            .campaignId
+    }
+
+    private static func isActiveAssignment(_ assignment: RouteAssignmentSummary) -> Bool {
+        switch assignment.status.lowercased() {
+        case "completed", "cancelled", "canceled", "declined":
+            return false
+        default:
+            return true
         }
     }
 
@@ -514,6 +671,7 @@ struct V2CampaignsListSection: View {
     let recentlyCreatedCampaignID: UUID?
     let filter: CampaignFilter
     var searchText: String = ""
+    var assignedCampaignIDs: Set<UUID> = []
     var isSelectionMode = false
     var selectedCampaignIDs: Set<UUID> = []
     var onCampaignTapped: ((UUID) -> Void)?
@@ -615,6 +773,7 @@ struct V2CampaignsListSection: View {
                                 campaign: campaign,
                                 displayName: displayName(for: campaign),
                                 buildingProgressPercent: buildingProgressPercent(for: campaign),
+                                isAssigned: assignedCampaignIDs.contains(campaign.id),
                                 onPlayTapped: !isSelectionMode && campaign.status != .completed ? { onPlayTapped?(campaign) } : nil,
                                 isSelectionMode: isSelectionMode,
                                 isSelected: selectedCampaignIDs.contains(campaign.id)
@@ -834,4 +993,5 @@ struct LegacyCampaignRow: View {
     NavigationStack {
         CampaignsListView()
     }
+    .environmentObject(AppUIState())
 }

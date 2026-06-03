@@ -11,7 +11,7 @@ struct LegacyCampaignMapView: UIViewRepresentable {
 
   func makeUIView(context: Context) -> MapView {
     // Give MapView a real frame instead of .zero to prevent {64,64} warnings
-    let mv = MapView(frame: CGRect(x: 0, y: 0, width: 320, height: 260))
+    let mv = DisplayLinkRecoveringMapView(frame: CGRect(x: 0, y: 0, width: 320, height: 260))
     mv.ornaments.options.scaleBar.visibility = .hidden
     mv.ornaments.options.logo.margins = CGPoint(x: 8, y: 8)
     mv.ornaments.options.compass.visibility = .adaptive

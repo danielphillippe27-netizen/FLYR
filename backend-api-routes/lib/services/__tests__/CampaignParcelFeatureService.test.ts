@@ -6,7 +6,13 @@ import {
   isResidentialParcelFeature,
 } from '../../geo/parcelFilters';
 import { reconstructParcelFragments } from '../../geo/parcelFragments';
-import { BedrockCountryService, BEDROCK_CANADA_CONFIG, BEDROCK_NZ_CONFIG } from '../BedrockCountryService';
+import {
+  BedrockCountryService,
+  BEDROCK_CANADA_CONFIG,
+  BEDROCK_NZ_CONFIG,
+  BEDROCK_US_CONFIG,
+} from '../BedrockCountryService';
+import { BedrockUsService } from '../BedrockUsService';
 
 function rectangle(minLon: number, minLat: number, maxLon: number, maxLat: number): GeoJSON.Polygon {
   return {
@@ -102,6 +108,33 @@ async function main() {
     ]);
 
     assert.deepEqual(parcels, []);
+  });
+
+  await test('PMTiles wrapped parcel longitudes are normalized before reconstruction', () => {
+    const [parcel] = reconstructParcelFragments([
+      {
+        id: 'wrapped-parcel',
+        geometry: rectangle(-78.7896, 43.9194, -78.7894, 43.9196),
+        properties: { source: 'bedrock_pmtiles' },
+        include: true,
+      },
+      {
+        id: 'wrapped-parcel',
+        geometry: rectangle(281.2104, 43.9194, 281.2106, 43.9196),
+        properties: { source: 'bedrock_pmtiles' },
+        include: true,
+      },
+    ]);
+
+    assert.ok(parcel);
+    const [minLon, , maxLon] = geometryBbox(parcel.geometry);
+    assert.ok(minLon >= -180, `expected normalized min longitude, got ${minLon}`);
+    assert.ok(maxLon <= 180, `expected normalized max longitude, got ${maxLon}`);
+    const bbox = geometryBbox(parcel.geometry);
+    assert.ok(Math.abs(bbox[0] - -78.7896) < 1e-9);
+    assert.ok(Math.abs(bbox[1] - 43.9194) < 1e-9);
+    assert.ok(Math.abs(bbox[2] - -78.7894) < 1e-9);
+    assert.ok(Math.abs(bbox[3] - 43.9196) < 1e-9);
   });
 
   await test('road, right-of-way, and pedestrian parcel classifications are filtered out', () => {
@@ -207,6 +240,33 @@ async function main() {
     assert.equal(snapshot.s3_keys.parcels, 'bedrock/canada/current/parcels/parcels.pmtiles');
   });
 
+  await test('Bedrock USA snapshots expose per-state parcel PMTiles metadata', () => {
+    const service = new BedrockCountryService(BEDROCK_US_CONFIG);
+    const snapshot = service.snapshotForCampaign(
+      'campaign-id',
+      1,
+      scanMetric,
+      { partitioning: { scheme: 'web_mercator_xyz', tile_z: 12 } },
+      'TX'
+    );
+
+    assert.equal(
+      snapshot.metadata?.tile_metrics?.parcels_pmtiles_key,
+      'bedrock/usa/current/parcels/pmtiles_by_state/state=TX/parcels.pmtiles'
+    );
+    assert.equal(
+      snapshot.s3_keys.parcels,
+      'bedrock/usa/current/parcels/pmtiles_by_state/state=TX/parcels.pmtiles'
+    );
+  });
+
+  await test('Bedrock USA provider only advertises full PMTiles coverage regions', () => {
+    assert.equal(BedrockUsService.isUsRegion('TX'), true);
+    assert.equal(BedrockUsService.isUsRegion('DC'), true);
+    assert.equal(BedrockUsService.isUsRegion('PR'), false);
+    assert.equal(BedrockUsService.isUsRegion('VI'), false);
+  });
+
   await test('Bedrock New Zealand snapshots use the shared country provision metadata', () => {
     const service = new BedrockCountryService(BEDROCK_NZ_CONFIG);
     const snapshot = service.snapshotForCampaign(
@@ -263,8 +323,66 @@ async function main() {
 
     assert.match(source, /function backfillResolvedPmtilesParcels/);
     assert.match(source, /from\('campaign_parcels'\)[\s\S]*\.upsert\(chunk, \{ onConflict: 'campaign_id,external_id' \}\)/);
+    assert.match(source, /error\.code === '42P10'/);
+    assert.match(source, /function insertMissingCampaignParcelRows/);
+    assert.match(source, /function parcelStorageGeometry/);
     assert.match(source, /parcel_source_id:\s*'snapshot_pmtiles'/);
     assert.match(source, /backfilled \? 'campaign_parcels' : 'snapshot_pmtiles'/);
+  });
+
+  await test('legacy preloaded PMTiles parcel sets are repaired from snapshot PMTiles', () => {
+    const source = readFileSync(
+      resolve(process.cwd(), 'lib/services/CampaignParcelFeatureService.ts'),
+      'utf8'
+    );
+
+    assert.match(source, /function isLegacyPreloadedParcelSource/);
+    assert.match(source, /parcel_source_id, parcel_enrichment_status, parcel_enrichment_debug/);
+    assert.match(source, /snapshotParcels\.length > residentialPersistedParcels\.length/);
+    assert.match(source, /Legacy preloaded parcel repair failed/);
+  });
+
+  await test('campaign parcel backfill has a database conflict target', () => {
+    const sql = readFileSync(
+      resolve(process.cwd(), '../supabase/migrations/20260601090000_ensure_campaign_parcels_external_unique.sql'),
+      'utf8'
+    );
+
+    assert.match(sql, /PARTITION BY campaign_id,\s*external_id/);
+    assert.match(sql, /CREATE UNIQUE INDEX campaign_parcels_campaign_external_id_uidx/);
+    assert.match(sql, /\(campaign_id,\s*external_id\)/);
+  });
+
+  await test('Bedrock snapshot PMTiles parcel extraction does not require a gold parcel region', () => {
+    const enrichmentSource = readFileSync(
+      resolve(process.cwd(), 'lib/services/ParcelEnrichmentService.ts'),
+      'utf8'
+    );
+    const snapshotAttemptIndex = enrichmentSource.indexOf('this.loadSnapshotPmtilesParcels');
+    const regionMetadataIndex = enrichmentSource.lastIndexOf('const regionMetadata = getRegionMetadata(regionCode)');
+    assert.ok(snapshotAttemptIndex > -1);
+    assert.ok(regionMetadataIndex > -1);
+    assert.ok(snapshotAttemptIndex < regionMetadataIndex);
+
+    const provisionSource = readFileSync(
+      resolve(process.cwd(), 'app/api/campaigns/provision/route.ts'),
+      'utf8'
+    );
+    assert.match(provisionSource, /function snapshotHasStaticParcelPmtiles/);
+    assert.match(provisionSource, /!params\.snapshotOnly && !isParcelRegionSupported/);
+    assert.match(provisionSource, /hasPreparedLinkGeometryParcels \|\| isParcelRegionSupported\(regionCode\) \|\| hasSnapshotParcelPmtiles/);
+  });
+
+  await test('campaign parcel annotation reads address points from coordinate or geom columns', () => {
+    const source = readFileSync(
+      resolve(process.cwd(), 'lib/services/CampaignParcelFeatureService.ts'),
+      'utf8'
+    );
+
+    assert.match(source, /\.select\('id, coordinate, geom'\)/);
+    assert.match(source, /function coordinatePairFromCoordinate/);
+    assert.match(source, /function coordinatePairFromGeometry/);
+    assert.doesNotMatch(source, /\.select\('id, lat, lon'\)/);
   });
 }
 

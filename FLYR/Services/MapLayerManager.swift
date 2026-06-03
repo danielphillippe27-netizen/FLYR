@@ -9,9 +9,14 @@ import CoreLocation
 enum MapStatusColor {
     static let untouchedLight = UIColor(hex: "#cfd8e3")!  // Light blue-grey (unvisited on light maps)
     static let untouchedDark = UIColor(hex: "#475569")!   // Dark Slate (unvisited on dark maps)
+    static let townhomeBaseLight = UIColor(hex: "#ffffff")!
+    static let townhomeBaseDark = UIColor(hex: "#000000")!
     static var useLightMapBuildingDefault = false
     static var untouched: UIColor {
         useLightMapBuildingDefault ? untouchedLight : untouchedDark
+    }
+    static var townhomeBase: UIColor {
+        useLightMapBuildingDefault ? townhomeBaseLight : townhomeBaseDark
     }
     static let flyerUntouched = UIColor(hex: "#ef4444")!  // Red (flyer unvisited)
     static let touched = UIColor(hex: "#22c55e")!         // Green (visited)
@@ -74,7 +79,7 @@ final class MapLayerManager {
     static let parcelsSourceId = "campaign-parcels-source"
     static let parcelsFillLayerId = "campaign-parcels-fill"
     static let parcelsLineLayerId = "campaign-parcels-line"
-    static let parcelsOverviewMinZoom: Double = 13.5
+    static let parcelsOverviewMinZoom: Double = 0.0
     static let parcelsOverviewMaxZoom: Double = 24.0
     private static let addressModeMinimumZoom: Double = 0.0
     private static let addressModeMaximumZoom: Double = 24.0
@@ -200,6 +205,17 @@ final class MapLayerManager {
         }
     }
 
+    static var hasTownhomeOverlayExpression: Exp {
+        Exp(.eq) {
+            Exp(.coalesce) {
+                Exp(.featureState) { "has_townhome_overlay" }
+                Exp(.get) { "has_townhome_overlay" }
+                false
+            }
+            true
+        }
+    }
+
     private static var isSelectedUnvisitedExpression: Exp {
         return Exp(.all) {
             Self.isSelectedExpression
@@ -248,6 +264,101 @@ final class MapLayerManager {
                 Self.selectedBuildingHeightScale
             }
             Self.buildingExtrusionHeightExpression
+        }
+    }
+
+    static var buildingFillColorExpression: Exp {
+        Exp(.switchCase) {
+            Self.hasTownhomeOverlayExpression
+            MapStatusColor.townhomeBase
+
+            Self.isSelectedUnvisitedExpression
+            MapStatusColor.selectedHome
+
+            Exp(.gt) {
+                Self.scansTotalExpression
+                0
+            }
+            MapStatusColor.qrScanned
+
+            Exp(.eq) {
+                Self.layerStatusExpression
+                "hot"
+            }
+            MapStatusColor.conversations
+
+            Exp(.eq) {
+                Self.layerStatusExpression
+                "lead"
+            }
+            MapStatusColor.lead
+
+            Exp(.eq) {
+                Self.layerStatusExpression
+                "appointment"
+            }
+            MapStatusColor.hotLead
+
+            Exp(.eq) {
+                Self.layerStatusExpression
+                "hot_lead"
+            }
+            MapStatusColor.lead
+
+            Exp(.eq) {
+                Self.layerStatusExpression
+                "future_seller"
+            }
+            MapStatusColor.hotLead
+
+            Exp(.eq) {
+                Self.layerStatusExpression
+                "follow_up"
+            }
+            MapStatusColor.hotLead
+
+            Exp(.eq) {
+                Self.layerStatusExpression
+                "flyer_unvisited"
+            }
+            MapStatusColor.flyerUntouched
+
+            Exp(.eq) {
+                Self.layerStatusExpression
+                "do_not_knock"
+            }
+            MapStatusColor.doNotKnock
+
+            Exp(.eq) {
+                Self.layerStatusExpression
+                "no_answer"
+            }
+            MapStatusColor.noOneHome
+
+            Exp(.eq) {
+                Self.layerStatusExpression
+                "pending_visited"
+            }
+            MapStatusColor.pendingVisited
+
+            Exp(.eq) {
+                Self.layerStatusExpression
+                "visited"
+            }
+            Exp(.switchCase) {
+                Exp(.eq) {
+                    Exp(.coalesce) {
+                        Exp(.featureState) { "visit_owner" }
+                        Exp(.get) { "visit_owner" }
+                        ""
+                    }
+                    "teammate"
+                }
+                MapStatusColor.teammateTouched
+                MapStatusColor.touched
+            }
+
+            MapStatusColor.untouched
         }
     }
 
@@ -418,26 +529,50 @@ final class MapLayerManager {
         Exp(.interpolate) {
             Exp(.linear)
             Exp(.zoom)
-            13.5
             0.0
+            Exp(.switchCase) {
+                Self.isSelectedExpression
+                0.42
+                0.035
+            }
+            12.0
+            Exp(.switchCase) {
+                Self.isSelectedExpression
+                0.42
+                0.045
+            }
             14.0
-            0.06
+            Exp(.switchCase) {
+                Self.isSelectedExpression
+                0.42
+                0.06
+            }
             15.2
-            0.10
+            Exp(.switchCase) {
+                Self.isSelectedExpression
+                0.42
+                0.10
+            }
             16.2
             Exp(.switchCase) {
+                Self.isSelectedExpression
+                0.42
                 Self.isActiveStatusExpression
                 0.22
                 0.16
             }
             18.0
             Exp(.switchCase) {
+                Self.isSelectedExpression
+                0.42
                 Self.isActiveStatusExpression
                 0.16
                 0.11
             }
             24.0
             Exp(.switchCase) {
+                Self.isSelectedExpression
+                0.42
                 Self.isActiveStatusExpression
                 0.10
                 0.07
@@ -449,26 +584,50 @@ final class MapLayerManager {
         Exp(.interpolate) {
             Exp(.linear)
             Exp(.zoom)
-            13.5
             0.0
+            Exp(.switchCase) {
+                Self.isSelectedExpression
+                1.0
+                0.36
+            }
+            12.0
+            Exp(.switchCase) {
+                Self.isSelectedExpression
+                1.0
+                0.42
+            }
             14.0
-            0.22
+            Exp(.switchCase) {
+                Self.isSelectedExpression
+                1.0
+                0.46
+            }
             15.2
-            0.48
+            Exp(.switchCase) {
+                Self.isSelectedExpression
+                1.0
+                0.48
+            }
             16.2
             Exp(.switchCase) {
+                Self.isSelectedExpression
+                1.0
                 Self.isActiveStatusExpression
                 1.0
                 0.78
             }
             18.0
             Exp(.switchCase) {
+                Self.isSelectedExpression
+                1.0
                 Self.isActiveStatusExpression
                 0.90
                 0.62
             }
             24.0
             Exp(.switchCase) {
+                Self.isSelectedExpression
+                1.0
                 Self.isActiveStatusExpression
                 0.75
                 0.50
@@ -480,16 +639,48 @@ final class MapLayerManager {
         Exp(.interpolate) {
             Exp(.linear)
             Exp(.zoom)
+            0.0
+            Exp(.switchCase) {
+                Self.isSelectedExpression
+                1.4
+                0.42
+            }
+            12.0
+            Exp(.switchCase) {
+                Self.isSelectedExpression
+                1.65
+                0.36
+            }
             13.5
-            0.15
+            Exp(.switchCase) {
+                Self.isSelectedExpression
+                1.82
+                0.38
+            }
             15.0
-            0.45
+            Exp(.switchCase) {
+                Self.isSelectedExpression
+                1.95
+                0.45
+            }
             16.2
-            0.85
+            Exp(.switchCase) {
+                Self.isSelectedExpression
+                2.04
+                0.85
+            }
             20.0
-            1.05
+            Exp(.switchCase) {
+                Self.isSelectedExpression
+                2.8
+                1.05
+            }
             24.0
-            1.15
+            Exp(.switchCase) {
+                Self.isSelectedExpression
+                3.2
+                1.15
+            }
         }
     }
 
@@ -498,17 +689,57 @@ final class MapLayerManager {
             Exp(.linear)
             Exp(.zoom)
             0.0
-            0.35
+            Exp(.switchCase) {
+                Self.isSelectedExpression
+                1.5
+                0.35
+            }
             13.2
-            0.35
+            Exp(.switchCase) {
+                Self.isSelectedExpression
+                1.86
+                0.35
+            }
             15.0
-            0.55
+            Exp(.switchCase) {
+                Self.isSelectedExpression
+                2.0
+                0.55
+            }
             16.2
-            0.85
+            Exp(.switchCase) {
+                Self.isSelectedExpression
+                2.22
+                0.85
+            }
             20.0
-            1.15
+            Exp(.switchCase) {
+                Self.isSelectedExpression
+                2.9
+                1.15
+            }
             24.0
-            1.3
+            Exp(.switchCase) {
+                Self.isSelectedExpression
+                3.3
+                1.3
+            }
+        }
+    }
+
+    private static var addressModeParcelFillOpacityExpression: Exp {
+        Exp(.switchCase) {
+            Self.isSelectedExpression
+            0.48
+            0.14
+        }
+    }
+
+    private static var addressModeParcelLineOpacityExpression: Exp {
+        Exp(.switchCase) {
+            Self.isSelectedExpression
+            1.0
+            0.72
         }
     }
 
@@ -517,19 +748,35 @@ final class MapLayerManager {
             Exp(.linear)
             Exp(.zoom)
             13.5
-            0.0
+            Exp(.switchCase) {
+                Self.isSelectedExpression
+                0.42
+                0.0
+            }
             14.0
-            0.06
+            Exp(.switchCase) {
+                Self.isSelectedExpression
+                0.42
+                0.06
+            }
             15.2
-            0.10
+            Exp(.switchCase) {
+                Self.isSelectedExpression
+                0.42
+                0.10
+            }
             17.4
             Exp(.switchCase) {
+                Self.isSelectedExpression
+                0.42
                 Self.isActiveStatusExpression
                 0.18
                 0.12
             }
             20.0
             Exp(.switchCase) {
+                Self.isSelectedExpression
+                0.42
                 Self.isActiveStatusExpression
                 0.14
                 0.08
@@ -542,19 +789,35 @@ final class MapLayerManager {
             Exp(.linear)
             Exp(.zoom)
             13.5
-            0.0
+            Exp(.switchCase) {
+                Self.isSelectedExpression
+                1.0
+                0.0
+            }
             14.0
-            0.22
+            Exp(.switchCase) {
+                Self.isSelectedExpression
+                1.0
+                0.22
+            }
             15.2
-            0.48
+            Exp(.switchCase) {
+                Self.isSelectedExpression
+                1.0
+                0.48
+            }
             17.4
             Exp(.switchCase) {
+                Self.isSelectedExpression
+                1.0
                 Self.isActiveStatusExpression
                 0.9
                 0.62
             }
             20.0
             Exp(.switchCase) {
+                Self.isSelectedExpression
+                1.0
                 Self.isActiveStatusExpression
                 0.82
                 0.5
@@ -711,6 +974,7 @@ final class MapLayerManager {
     private var buildingFeatureStateCache: [String: [String: Any]] = [:]
     private var addressFeatureStateCache: [String: [String: Any]] = [:]
     private var townhomeOverlayFeatureIdsByBuildingIdentifier: [String: Set<String>] = [:]
+    private var townhomeOverlayBaseStateBuildingIdentifiers: Set<String> = []
     
     /// When false, 3D building extrusion layer is not added (campaign map shows flat map + addresses/roads only).
     var includeBuildingsLayer: Bool = true
@@ -815,104 +1079,7 @@ final class MapLayerManager {
         // Create fill-extrusion layer
         var layer = FillExtrusionLayer(id: Self.buildingsLayerId, source: Self.buildingsSourceId)
         
-        // Selected homes are recolored on the original extrusion so the full building
-        // highlights cleanly without stacking a duplicate selected extrusion.
-        layer.fillExtrusionColor = .expression(
-            Exp(.switchCase) {
-                Self.isSelectedUnvisitedExpression
-                MapStatusColor.selectedHome
-
-                // QR code: scans_total > 0 (purple)
-                Exp(.gt) {
-                    Self.scansTotalExpression
-                    0
-                }
-                MapStatusColor.qrScanned
-                
-                // Talked: status == "hot"
-                Exp(.eq) {
-                    Self.layerStatusExpression
-                    "hot"
-                }
-                MapStatusColor.conversations
-                
-                Exp(.eq) {
-                    Self.layerStatusExpression
-                    "lead"
-                }
-                MapStatusColor.lead
-
-                Exp(.eq) {
-                    Self.layerStatusExpression
-                    "appointment"
-                }
-                MapStatusColor.hotLead
-
-                Exp(.eq) {
-                    Self.layerStatusExpression
-                    "hot_lead"
-                }
-                MapStatusColor.lead
-
-                Exp(.eq) {
-                    Self.layerStatusExpression
-                    "future_seller"
-                }
-                MapStatusColor.hotLead
-
-                Exp(.eq) {
-                    Self.layerStatusExpression
-                    "follow_up"
-                }
-                MapStatusColor.hotLead
-
-                Exp(.eq) {
-                    Self.layerStatusExpression
-                    "flyer_unvisited"
-                }
-                MapStatusColor.flyerUntouched
-
-                Exp(.eq) {
-                    Self.layerStatusExpression
-                    "do_not_knock"
-                }
-                MapStatusColor.doNotKnock
-
-                Exp(.eq) {
-                    Self.layerStatusExpression
-                    "no_answer"
-                }
-                MapStatusColor.noOneHome
-
-                // Pending local confirmation.
-                Exp(.eq) {
-                    Self.layerStatusExpression
-                    "pending_visited"
-                }
-                MapStatusColor.pendingVisited
-
-                // Touched: status == "visited"
-                Exp(.eq) {
-                    Self.layerStatusExpression
-                    "visited"
-                }
-                Exp(.switchCase) {
-                    Exp(.eq) {
-                        Exp(.coalesce) {
-                            Exp(.featureState) { "visit_owner" }
-                            Exp(.get) { "visit_owner" }
-                            ""
-                        }
-                        "teammate"
-                    }
-                    MapStatusColor.teammateTouched
-                    MapStatusColor.touched
-                }
-
-                // Default: unvisited slate
-                MapStatusColor.untouched
-            }
-        )
+        layer.fillExtrusionColor = .expression(Self.buildingFillColorExpression)
         
         layer.fillExtrusionHeight = .expression(Self.selectedBuildingExtrusionHeightExpression)
         layer.fillExtrusionColorTransition = StyleTransition(duration: 0.18, delay: 0)
@@ -2189,6 +2356,7 @@ final class MapLayerManager {
             mapView.mapboxMap.updateGeoJSONSource(withId: Self.townhomeOverlaySourceId, geoJSON: geoJSON)
             lastTownhomeOverlaySignature = signature
             townhomeOverlayFeatureIdsByBuildingIdentifier = Self.townhomeOverlayFeatureIdsByBuildingIdentifier(from: data)
+            syncTownhomeOverlayBaseStates(nextBuildingIdentifiers: Set(townhomeOverlayFeatureIdsByBuildingIdentifier.keys))
             let overlayCount = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])
                 .flatMap { $0["features"] as? [[String: Any]] }?
                 .count ?? 0
@@ -2199,7 +2367,11 @@ final class MapLayerManager {
         }
     }
 
-    private static func townhomeOverlayFeatureIdsByBuildingIdentifier(from data: Data) -> [String: Set<String>] {
+    static func townhomeOverlayBuildingIdentifiers(from data: Data) -> Set<String> {
+        Set(townhomeOverlayFeatureIdsByBuildingIdentifier(from: data).keys)
+    }
+
+    static func townhomeOverlayFeatureIdsByBuildingIdentifier(from data: Data) -> [String: Set<String>] {
         guard let collection = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let features = collection["features"] as? [[String: Any]] else {
             return [:]
@@ -2224,6 +2396,26 @@ final class MapLayerManager {
             }
         }
         return result
+    }
+
+    private func syncTownhomeOverlayBaseStates(nextBuildingIdentifiers: Set<String>) {
+        let normalizedNext = Set(
+            nextBuildingIdentifiers
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+                .filter { !$0.isEmpty }
+        )
+        let previous = townhomeOverlayBaseStateBuildingIdentifiers
+        let identifiersToEnable = normalizedNext.subtracting(previous)
+        let identifiersToDisable = previous.subtracting(normalizedNext)
+
+        for identifier in identifiersToEnable {
+            updateBuildingTownhomeOverlayState(gersId: identifier, hasTownhomeOverlay: true)
+        }
+        for identifier in identifiersToDisable {
+            updateBuildingTownhomeOverlayState(gersId: identifier, hasTownhomeOverlay: false)
+        }
+
+        townhomeOverlayBaseStateBuildingIdentifiers = normalizedNext
     }
 
     private static func normalizedStringValue(_ value: Any?) -> String? {
@@ -2327,13 +2519,18 @@ final class MapLayerManager {
                 Self.defaultBuildingExtrusionHeight
             )
             let base = max(0, min(building.properties.minHeight, height - 0.01))
-            let overlayBase = height + Self.townhomeOverlayHeightLift
-            let overlayHeight = overlayBase + Self.townhomeOverlayPlateThickness
+            let roofOverlayBase = height + Self.townhomeOverlayHeightLift
+            let overlayHeight = roofOverlayBase + Self.townhomeOverlayPlateThickness
             let dividerHeight = overlayHeight + Self.townhomeDividerLineLift
+            let reverseSliceOrder = shouldReverseTownhomeSliceOrder(
+                polygons: polygons,
+                addresses: linkedAddresses
+            )
 
             for (index, address) in linkedAddresses.enumerated() {
-                let startFraction = Double(index) / Double(linkedAddresses.count)
-                let endFraction = Double(index + 1) / Double(linkedAddresses.count)
+                let sliceIndex = reverseSliceOrder ? linkedAddresses.count - index - 1 : index
+                let startFraction = Double(sliceIndex) / Double(linkedAddresses.count)
+                let endFraction = Double(sliceIndex + 1) / Double(linkedAddresses.count)
 
                 guard let clippedPolygons = slicedPolygons(
                     polygons: polygons,
@@ -2358,7 +2555,7 @@ final class MapLayerManager {
                     "height_m": height,
                     "min_height": base,
                     "overlay_height": overlayHeight,
-                    "overlay_base": overlayBase
+                    "overlay_base": base
                 ]
 
                 var feature: [String: Any] = [
@@ -2397,7 +2594,7 @@ final class MapLayerManager {
                         "height_m": height,
                         "min_height": base,
                         "overlay_height": dividerHeight,
-                        "overlay_base": overlayBase
+                        "overlay_base": base
                     ],
                     "geometry": [
                         "type": "LineString",
@@ -2717,7 +2914,7 @@ final class MapLayerManager {
                 $0.minZoom = parcelMinZoom
                 $0.maxZoom = parcelMaxZoom
                 $0.fillOpacity = isAddressMode
-                    ? .constant(0.14)
+                    ? .expression(Self.addressModeParcelFillOpacityExpression)
                     : .expression(Self.parcelOverviewFillOpacityExpression)
             }
         }
@@ -2727,7 +2924,7 @@ final class MapLayerManager {
                 $0.minZoom = parcelMinZoom
                 $0.maxZoom = parcelMaxZoom
                 $0.lineOpacity = isAddressMode
-                    ? .constant(0.72)
+                    ? .expression(Self.addressModeParcelLineOpacityExpression)
                     : .expression(Self.parcelOverviewLineOpacityExpression)
                 $0.lineWidth = .expression(
                     isAddressMode
@@ -2801,7 +2998,7 @@ final class MapLayerManager {
                 $0.minZoom = parcelMinZoom
                 $0.maxZoom = parcelMaxZoom
                 $0.fillOpacity = isAddressMode
-                    ? .constant(0.14)
+                    ? .expression(Self.addressModeParcelFillOpacityExpression)
                     : .expression(Self.diamondParcelOverviewFillOpacityExpression)
             }
         }
@@ -2811,8 +3008,13 @@ final class MapLayerManager {
                 $0.minZoom = parcelMinZoom
                 $0.maxZoom = parcelMaxZoom
                 $0.lineOpacity = isAddressMode
-                    ? .constant(0.72)
+                    ? .expression(Self.addressModeParcelLineOpacityExpression)
                     : .expression(Self.diamondParcelLineOpacityExpression)
+                $0.lineWidth = .expression(
+                    isAddressMode
+                        ? Self.addressModeParcelLineWidthExpression
+                        : Self.parcelOverviewLineWidthExpression
+                )
             }
         }
     }
@@ -3358,6 +3560,9 @@ final class MapLayerManager {
             if uppercased == "UPRN" || uppercased.hasPrefix("UPRN ") || uppercased.hasPrefix("OS-OPEN-UPRN") {
                 return false
             }
+            if Self.isStreetOnlyOrdinalAddressLabel(normalized) {
+                return false
+            }
             return normalized.range(of: #"^\d+[A-Za-z0-9/\-]*$"#, options: .regularExpression) != nil
         }
 
@@ -3735,7 +3940,7 @@ final class MapLayerManager {
             let polygonOnly = collection.features.filter { feature in
                 let geometryType = feature.geometry.type.lowercased()
                 return geometryType == "polygon" || geometryType == "multipolygon"
-            }
+            }.map(normalizedParcelSelectionIdentity)
             let filtered = ParcelFeatureCollection(type: "FeatureCollection", features: polygonOnly)
             let filteredData = try JSONEncoder().encode(filtered)
             let signature = Self.sourceSignature(for: filteredData)
@@ -3753,6 +3958,35 @@ final class MapLayerManager {
         } catch {
             print("❌ [MapLayer] Error updating parcels: \(error)")
         }
+    }
+
+    private func normalizedParcelSelectionIdentity(_ feature: ParcelFeature) -> ParcelFeature {
+        let trimmedAddressId = feature.properties.addressId?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedAddressId?.isEmpty == false {
+            return feature
+        }
+
+        guard let primaryAddressId = feature.properties.addressIds?
+            .map({ $0.trimmingCharacters(in: .whitespacesAndNewlines) })
+            .first(where: { !$0.isEmpty }) else {
+            return feature
+        }
+
+        let properties = ParcelProperties(
+            id: feature.properties.id,
+            parcelId: feature.properties.parcelId,
+            externalId: feature.properties.externalId,
+            source: feature.properties.source,
+            areaSqm: feature.properties.areaSqm,
+            addressId: primaryAddressId,
+            addressIds: feature.properties.addressIds
+        )
+        return ParcelFeature(
+            type: feature.type,
+            id: feature.id,
+            geometry: feature.geometry,
+            properties: properties
+        )
     }
     
     // MARK: - Real-time Feature State Updates
@@ -3781,6 +4015,19 @@ final class MapLayerManager {
             return
         }
 
+        buildingFeatureStateCache[featureId] = state
+        guard let mapView else { return }
+        applyBuildingFeatureState(featureId: featureId, state: state, mapView: mapView, logSuccess: false)
+    }
+
+    private func updateBuildingTownhomeOverlayState(gersId: String, hasTownhomeOverlay: Bool) {
+        let featureId = gersId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !featureId.isEmpty else { return }
+
+        var state = buildingFeatureStateCache[featureId] ?? [:]
+        guard state["has_townhome_overlay"] as? Bool != hasTownhomeOverlay else { return }
+
+        state["has_townhome_overlay"] = hasTownhomeOverlay
         buildingFeatureStateCache[featureId] = state
         guard let mapView else { return }
         applyBuildingFeatureState(featureId: featureId, state: state, mapView: mapView, logSuccess: false)
@@ -4012,9 +4259,18 @@ final class MapLayerManager {
         }
     }
 
+    private func installedDiamondParcelLayerId() -> String? {
+        let layer = installedDiamondManifest?.parcelSourceLayer ?? installedDiamondManifest?.sourceLayers?.parcels
+        guard let trimmed = layer?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty else {
+            return nil
+        }
+        return trimmed
+    }
+
     private func updateDiamondParcelState(featureId: String, state: [String: Any], logSuccess: Bool = true) {
         guard let mapView = mapView,
-              let parcelLayer = installedDiamondManifest?.sourceLayers?.parcels,
+              let parcelLayer = installedDiamondParcelLayerId(),
               let diamondParcelSourceId = existingDiamondSourceId(
                 preferred: VectorTileDiamondGeometryProvider.parcelSourceId,
                 on: mapView.mapboxMap
@@ -4115,6 +4371,58 @@ final class MapLayerManager {
         }
 
         updateDiamondParcelState(featureId: featureId, state: state)
+    }
+
+    func updateParcelSelection(featureIds: [String], isSelected: Bool) {
+        guard let mapView = mapView else { return }
+        let normalizedFeatureIds = normalizedParcelSelectionFeatureIds(featureIds)
+        guard !normalizedFeatureIds.isEmpty else { return }
+        let state: [String: Any] = ["selected": isSelected]
+
+        for featureId in normalizedFeatureIds {
+            applyParcelFeatureState(featureId: featureId, state: state, mapView: mapView)
+        }
+    }
+
+    private func normalizedParcelSelectionFeatureIds(_ featureIds: [String]) -> [String] {
+        var seen = Set<String>()
+        var normalized: [String] = []
+        for featureId in featureIds {
+            let trimmed = featureId.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            for candidate in [trimmed, trimmed.lowercased()] where seen.insert(candidate).inserted {
+                normalized.append(candidate)
+            }
+        }
+        return normalized
+    }
+
+    private func applyParcelFeatureState(featureId: String, state: [String: Any], mapView: MapView) {
+        if mapView.mapboxMap.sourceExists(withId: Self.parcelsSourceId) {
+            mapView.mapboxMap.setFeatureState(
+                sourceId: Self.parcelsSourceId,
+                sourceLayerId: nil,
+                featureId: featureId,
+                state: state,
+                callback: { _ in }
+            )
+        }
+
+        guard let parcelLayer = installedDiamondParcelLayerId(),
+              let diamondParcelSourceId = existingDiamondSourceId(
+                preferred: VectorTileDiamondGeometryProvider.parcelSourceId,
+                on: mapView.mapboxMap
+              ) else {
+            return
+        }
+
+        mapView.mapboxMap.setFeatureState(
+            sourceId: diamondParcelSourceId,
+            sourceLayerId: parcelLayer,
+            featureId: featureId,
+            state: state,
+            callback: { _ in }
+        )
     }
     
     // MARK: - Status Filters
@@ -4355,6 +4663,7 @@ final class MapLayerManager {
         let houseNumber: String?
         let streetName: String?
         let formatted: String?
+        let coordinate: CLLocationCoordinate2D?
     }
 
     private enum TownhomeAddressResolutionSource: String {
@@ -4387,6 +4696,24 @@ final class MapLayerManager {
         let v: Double
     }
 
+    private struct TownhomeSliceAxis {
+        let center: (lon: Double, lat: Double)
+        let metersPerLat: Double
+        let metersPerLon: Double
+        let angle: Double
+        let minU: Double
+        let maxU: Double
+
+        func rotatedPoint(for coordinate: CLLocationCoordinate2D) -> RotatedPoint {
+            let x = (coordinate.longitude - center.lon) * metersPerLon
+            let y = (coordinate.latitude - center.lat) * metersPerLat
+            return RotatedPoint(
+                u: x * cos(angle) + y * sin(angle),
+                v: -x * sin(angle) + y * cos(angle)
+            )
+        }
+    }
+
     private static func orderedAddressResolutionForTownhome(
         buildingIdentifiers: [String],
         embeddedAddressIds: [UUID],
@@ -4399,8 +4726,11 @@ final class MapLayerManager {
             orderedAddressIdsByBuilding: orderedAddressIdsByBuilding
         ) {
             let normalizedIds = dedupePreservingOrder(mappedIds)
+            let addresses = deduplicatedOverlayAddressesForDisplay(
+                normalizedIds.compactMap { addressesById[$0] }
+            )
             return TownhomeAddressResolution(
-                addresses: normalizedIds.compactMap { addressesById[$0] },
+                addresses: addresses,
                 linkedCount: normalizedIds.count,
                 source: .explicitMap
             )
@@ -4416,6 +4746,7 @@ final class MapLayerManager {
             .sorted(by: compareOverlayAddresses)
 
         ordered.append(contentsOf: matchedAddresses)
+        ordered = deduplicatedOverlayAddressesForDisplay(ordered)
         if !ordered.isEmpty {
             return TownhomeAddressResolution(
                 addresses: ordered,
@@ -4489,7 +4820,8 @@ final class MapLayerManager {
                     .lowercased(),
                 houseNumber: feature.properties.houseNumber,
                 streetName: feature.properties.streetName,
-                formatted: feature.properties.formatted
+                formatted: feature.properties.formatted,
+                coordinate: coordinate(for: feature.geometry)
             )
         }
         return contexts
@@ -4528,6 +4860,20 @@ final class MapLayerManager {
 
     private static func shouldRenderTownhomeOverlay(for addresses: [OverlayAddressContext]) -> Bool {
         Set(addresses.map(\.id)).count >= Self.townhomeOverlayMinimumUnitCount
+    }
+
+    private static func deduplicatedOverlayAddressesForDisplay(_ addresses: [OverlayAddressContext]) -> [OverlayAddressContext] {
+        guard addresses.count > 1 else { return addresses }
+
+        var orderedKeys: [String] = []
+        var keyedAddresses: [String: OverlayAddressContext] = [:]
+        for address in addresses {
+            let key = normalizedAddressIdentity(for: address)
+            guard keyedAddresses[key] == nil else { continue }
+            orderedKeys.append(key)
+            keyedAddresses[key] = address
+        }
+        return orderedKeys.compactMap { keyedAddresses[$0] }
     }
 
     private static func normalizedBuildingIdentifiers(for building: BuildingFeature) -> [String] {
@@ -4599,10 +4945,78 @@ final class MapLayerManager {
         .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    private static func normalizedAddressIdentity(for address: OverlayAddressContext) -> String {
+        let house = normalizedHouseNumberIdentity(
+            houseNumber: address.houseNumber,
+            formatted: address.formatted
+        )
+        let street = normalizedStreetIdentityPart(normalizedStreetName(for: address))
+        let primary = [house, street].filter { !$0.isEmpty }.joined(separator: " ")
+        if !primary.isEmpty {
+            return primary
+        }
+
+        let formatted = (address.formatted ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let streetOnly = formatted.split(separator: ",", maxSplits: 1, omittingEmptySubsequences: true).first.map(String.init) ?? formatted
+        let fallback = normalizedStreetIdentityPart(streetOnly)
+        return fallback.isEmpty ? address.id.uuidString.lowercased() : fallback
+    }
+
+    private static func normalizedHouseNumberIdentity(houseNumber: String?, formatted: String?) -> String {
+        let rawHouseNumber = (houseNumber ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !rawHouseNumber.isEmpty, !isStreetOnlyOrdinalAddressLabel(rawHouseNumber) {
+            return normalizedAddressIdentityPart(rawHouseNumber)
+        }
+
+        let formatted = (formatted ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let streetOnly = formatted.split(separator: ",", maxSplits: 1, omittingEmptySubsequences: true).first.map(String.init) ?? formatted
+        let house = streetOnly.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true).first.map(String.init) ?? ""
+        if isStreetOnlyOrdinalAddressLabel(house) {
+            return ""
+        }
+        return normalizedAddressIdentityPart(house)
+    }
+
+    private static func isStreetOnlyOrdinalAddressLabel(_ value: String?) -> Bool {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !trimmed.isEmpty else { return false }
+        return trimmed.range(of: #"^\d+(?:st|nd|rd|th)$"#, options: [.regularExpression, .caseInsensitive]) != nil
+    }
+
+    private static func normalizedStreetIdentityPart(_ value: String?) -> String {
+        normalizedAddressIdentityPart(value)
+            .split(separator: " ")
+            .map { word -> String in
+                switch word {
+                case "st", "str": return "street"
+                case "rd": return "road"
+                case "ave", "av": return "avenue"
+                case "blvd": return "boulevard"
+                case "dr": return "drive"
+                case "ct", "crt": return "court"
+                case "cres": return "crescent"
+                case "ln": return "lane"
+                case "pl": return "place"
+                case "trl": return "trail"
+                case "pkwy": return "parkway"
+                case "hwy": return "highway"
+                default: return String(word)
+                }
+            }
+            .joined(separator: " ")
+    }
+
+    private static func normalizedAddressIdentityPart(_ value: String?) -> String {
+        (value ?? "")
+            .lowercased()
+            .replacingOccurrences(of: #"[^a-z0-9]+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     private static func houseNumberSortParts(houseNumber: String?, formatted: String?) -> (number: Int?, suffix: String) {
         let rawHouseNumber = (houseNumber ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let rawValue: String
-        if !rawHouseNumber.isEmpty {
+        if !rawHouseNumber.isEmpty, !isStreetOnlyOrdinalAddressLabel(rawHouseNumber) {
             rawValue = rawHouseNumber
         } else {
             let formatted = (formatted ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -4611,6 +5025,9 @@ final class MapLayerManager {
         }
 
         let normalized = rawValue.uppercased()
+        if isStreetOnlyOrdinalAddressLabel(normalized) {
+            return (nil, normalized)
+        }
         guard let range = normalized.range(of: #"^\d+"#, options: .regularExpression) else {
             return (nil, normalized)
         }
@@ -4690,55 +5107,77 @@ final class MapLayerManager {
         return ring
     }
 
+    private static func coordinate(for geometry: MapFeatureGeoJSONGeometry) -> CLLocationCoordinate2D? {
+        if let point = geometry.asPoint, point.count >= 2 {
+            return CLLocationCoordinate2D(latitude: point[1], longitude: point[0])
+        }
+        if let polygon = geometry.asPolygon,
+           let ring = cleanedOuterRing(polygon.first) {
+            return centroidCoordinate(for: [ring])
+        }
+        if let multiPolygon = geometry.asMultiPolygon {
+            let rings = multiPolygon.compactMap { cleanedOuterRing($0.first) }
+            return centroidCoordinate(for: rings)
+        }
+        return nil
+    }
+
+    private static func shouldReverseTownhomeSliceOrder(
+        polygons: [[[Double]]],
+        addresses: [OverlayAddressContext]
+    ) -> Bool {
+        guard addresses.count > 1,
+              let axis = townhomeSliceAxis(for: polygons) else {
+            return false
+        }
+
+        let indexedProjections = addresses.enumerated().compactMap { index, address -> (index: Double, u: Double)? in
+            guard let coordinate = address.coordinate else { return nil }
+            let projected = axis.rotatedPoint(for: coordinate)
+            guard projected.u.isFinite else { return nil }
+            return (Double(index), projected.u)
+        }
+        guard indexedProjections.count >= 2 else { return false }
+
+        let meanIndex = indexedProjections.map(\.index).reduce(0, +) / Double(indexedProjections.count)
+        let meanU = indexedProjections.map(\.u).reduce(0, +) / Double(indexedProjections.count)
+        let covariance = indexedProjections.reduce(0.0) { partial, projection in
+            partial + ((projection.index - meanIndex) * (projection.u - meanU))
+        }
+        guard abs(covariance) > 0.000001 else { return false }
+        return covariance < 0
+    }
+
     private static func slicedPolygons(
         polygons: [[[Double]]],
         startFraction: Double,
         endFraction: Double
     ) -> [[[Double]]]? {
         guard !polygons.isEmpty, endFraction > startFraction else { return nil }
-
-        let center = projectedCenter(for: polygons)
-        let metersPerLat = 111_320.0
-        let metersPerLon = max(cos(center.lat * .pi / 180.0) * metersPerLat, 0.0001)
-
-        let projectedPolygons: [[ProjectedPoint]] = polygons.compactMap { polygon in
-            let openRing = polygon.dropLast()
-            guard openRing.count >= 3 else { return nil }
-            return openRing.map { point in
-                ProjectedPoint(
-                    x: (point[0] - center.lon) * metersPerLon,
-                    y: (point[1] - center.lat) * metersPerLat
-                )
-            }
-        }
-        let allPoints = projectedPolygons.flatMap { $0 }
-        guard allPoints.count >= 3 else { return nil }
-
-        let angle = principalAxisAngle(for: allPoints)
+        guard let axis = townhomeSliceAxis(for: polygons) else { return nil }
+        let projectedPolygons = projectedPolygons(for: polygons, axis: axis)
+        guard !projectedPolygons.isEmpty else { return nil }
         let rotatedPolygons = projectedPolygons.map { polygon in
             polygon.map { point in
                 RotatedPoint(
-                    u: point.x * cos(angle) + point.y * sin(angle),
-                    v: -point.x * sin(angle) + point.y * cos(angle)
+                    u: point.x * cos(axis.angle) + point.y * sin(axis.angle),
+                    v: -point.x * sin(axis.angle) + point.y * cos(axis.angle)
                 )
             }
         }
 
-        let allU = rotatedPolygons.flatMap { $0.map(\.u) }
-        guard let minU = allU.min(), let maxU = allU.max(), maxU - minU > 0.01 else { return nil }
-
-        let sliceStart = minU + (maxU - minU) * startFraction
-        let sliceEnd = minU + (maxU - minU) * endFraction
+        let sliceStart = axis.minU + (axis.maxU - axis.minU) * startFraction
+        let sliceEnd = axis.minU + (axis.maxU - axis.minU) * endFraction
 
         let clippedPolygons: [[[Double]]] = rotatedPolygons.compactMap { polygon in
             let clipped = clipPolygon(polygon, minU: sliceStart, maxU: sliceEnd)
             guard clipped.count >= 3 else { return nil }
 
             var ring: [[Double]] = clipped.map { point in
-                let x = point.u * cos(angle) - point.v * sin(angle)
-                let y = point.u * sin(angle) + point.v * cos(angle)
-                let lon = center.lon + (x / metersPerLon)
-                let lat = center.lat + (y / metersPerLat)
+                let x = point.u * cos(axis.angle) - point.v * sin(axis.angle)
+                let y = point.u * sin(axis.angle) + point.v * cos(axis.angle)
+                let lon = axis.center.lon + (x / axis.metersPerLon)
+                let lat = axis.center.lat + (y / axis.metersPerLat)
                 return [lon, lat]
             }
             guard ring.count >= 3 else { return nil }
@@ -4754,51 +5193,31 @@ final class MapLayerManager {
         unitCount: Int
     ) -> [[[Double]]] {
         guard unitCount > 1, !polygons.isEmpty else { return [] }
-
-        let center = projectedCenter(for: polygons)
-        let metersPerLat = 111_320.0
-        let metersPerLon = max(cos(center.lat * .pi / 180.0) * metersPerLat, 0.0001)
-
-        let projectedPolygons: [[ProjectedPoint]] = polygons.compactMap { polygon in
-            let openRing = polygon.dropLast()
-            guard openRing.count >= 3 else { return nil }
-            return openRing.map { point in
-                ProjectedPoint(
-                    x: (point[0] - center.lon) * metersPerLon,
-                    y: (point[1] - center.lat) * metersPerLat
-                )
-            }
-        }
-        let allPoints = projectedPolygons.flatMap { $0 }
-        guard allPoints.count >= 3 else { return [] }
-
-        let angle = principalAxisAngle(for: allPoints)
+        guard let axis = townhomeSliceAxis(for: polygons) else { return [] }
+        let projectedPolygons = projectedPolygons(for: polygons, axis: axis)
+        guard !projectedPolygons.isEmpty else { return [] }
         let rotatedPolygons = projectedPolygons.map { polygon in
             polygon.map { point in
                 RotatedPoint(
-                    u: point.x * cos(angle) + point.y * sin(angle),
-                    v: -point.x * sin(angle) + point.y * cos(angle)
+                    u: point.x * cos(axis.angle) + point.y * sin(axis.angle),
+                    v: -point.x * sin(axis.angle) + point.y * cos(axis.angle)
                 )
             }
         }
-        let allU = rotatedPolygons.flatMap { $0.map(\.u) }
-        guard let minU = allU.min(), let maxU = allU.max(), maxU - minU > 0.01 else {
-            return []
-        }
 
         func coordinate(from point: RotatedPoint) -> [Double] {
-            let x = point.u * cos(angle) - point.v * sin(angle)
-            let y = point.u * sin(angle) + point.v * cos(angle)
+            let x = point.u * cos(axis.angle) - point.v * sin(axis.angle)
+            let y = point.u * sin(axis.angle) + point.v * cos(axis.angle)
             return [
-                center.lon + (x / metersPerLon),
-                center.lat + (y / metersPerLat)
+                axis.center.lon + (x / axis.metersPerLon),
+                axis.center.lat + (y / axis.metersPerLat)
             ]
         }
 
         var lines: [[[Double]]] = []
         let epsilon = 0.000001
         for divider in 1..<unitCount {
-            let boundaryU = minU + (maxU - minU) * (Double(divider) / Double(unitCount))
+            let boundaryU = axis.minU + (axis.maxU - axis.minU) * (Double(divider) / Double(unitCount))
             for polygon in rotatedPolygons {
                 guard polygon.count >= 3 else { continue }
                 var intersections: [RotatedPoint] = []
@@ -4847,6 +5266,60 @@ final class MapLayerManager {
             }
         }
         return lines
+    }
+
+    private static func townhomeSliceAxis(for polygons: [[[Double]]]) -> TownhomeSliceAxis? {
+        let center = projectedCenter(for: polygons)
+        let metersPerLat = 111_320.0
+        let metersPerLon = max(cos(center.lat * .pi / 180.0) * metersPerLat, 0.0001)
+
+        let projectedPolygons: [[ProjectedPoint]] = polygons.compactMap { polygon in
+            let openRing = polygon.dropLast()
+            guard openRing.count >= 3 else { return nil }
+            return openRing.map { point in
+                ProjectedPoint(
+                    x: (point[0] - center.lon) * metersPerLon,
+                    y: (point[1] - center.lat) * metersPerLat
+                )
+            }
+        }
+        let allPoints = projectedPolygons.flatMap { $0 }
+        guard allPoints.count >= 3 else { return nil }
+
+        let angle = principalAxisAngle(for: allPoints)
+        let rotatedUValues = allPoints.map { point in
+            point.x * cos(angle) + point.y * sin(angle)
+        }
+        guard let minU = rotatedUValues.min(),
+              let maxU = rotatedUValues.max(),
+              maxU - minU > 0.01 else {
+            return nil
+        }
+
+        return TownhomeSliceAxis(
+            center: center,
+            metersPerLat: metersPerLat,
+            metersPerLon: metersPerLon,
+            angle: angle,
+            minU: minU,
+            maxU: maxU
+        )
+    }
+
+    private static func projectedPolygons(
+        for polygons: [[[Double]]],
+        axis: TownhomeSliceAxis
+    ) -> [[ProjectedPoint]] {
+        polygons.compactMap { polygon in
+            let openRing = polygon.dropLast()
+            guard openRing.count >= 3 else { return nil }
+            return openRing.map { point in
+                ProjectedPoint(
+                    x: (point[0] - axis.center.lon) * axis.metersPerLon,
+                    y: (point[1] - axis.center.lat) * axis.metersPerLat
+                )
+            }
+        }
     }
 
     private static func dividerStripRing(from line: [[Double]], widthMeters: Double) -> [[Double]]? {
@@ -5088,15 +5561,91 @@ final class MapLayerManager {
         let houseNumber: String?
         let streetName: String?
         let source: String?
+        let parcelId: String?
+        let campaignParcelId: String?
+        let hasParcelLink: Bool?
         
-        init(addressId: UUID, formatted: String, gersId: String?, buildingGersId: String?, houseNumber: String?, streetName: String?, source: String?) {
+        init(
+            addressId: UUID,
+            formatted: String,
+            gersId: String?,
+            buildingGersId: String?,
+            houseNumber: String?,
+            streetName: String?,
+            source: String?,
+            parcelId: String? = nil,
+            campaignParcelId: String? = nil,
+            hasParcelLink: Bool? = nil
+        ) {
+            let sanitizedHouseNumber = Self.sanitizedHouseNumber(houseNumber)
+            let sanitizedStreetName = Self.sanitizedStreetName(
+                streetName,
+                formatted: formatted,
+                houseNumber: sanitizedHouseNumber
+            )
             self.addressId = addressId
-            self.formatted = formatted
+            self.formatted = Self.sanitizedFormatted(
+                formatted,
+                houseNumber: sanitizedHouseNumber,
+                streetName: sanitizedStreetName
+            )
             self.gersId = gersId
             self.buildingGersId = buildingGersId
-            self.houseNumber = houseNumber
-            self.streetName = streetName
+            self.houseNumber = sanitizedHouseNumber
+            self.streetName = sanitizedStreetName
             self.source = source
+            self.parcelId = parcelId
+            self.campaignParcelId = campaignParcelId
+            self.hasParcelLink = hasParcelLink
+        }
+
+        private static func trimmed(_ value: String?) -> String? {
+            let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return trimmed.isEmpty ? nil : trimmed
+        }
+
+        private static func isStreetOnlyOrdinalLabel(_ value: String?) -> Bool {
+            guard let trimmed = trimmed(value) else { return false }
+            return trimmed.range(of: #"^\d+(?:st|nd|rd|th)$"#, options: [.regularExpression, .caseInsensitive]) != nil
+        }
+
+        private static func sanitizedHouseNumber(_ value: String?) -> String? {
+            guard let trimmed = trimmed(value), !isStreetOnlyOrdinalLabel(trimmed) else { return nil }
+            return trimmed
+        }
+
+        private static func sanitizedStreetName(
+            _ value: String?,
+            formatted: String,
+            houseNumber: String?
+        ) -> String? {
+            guard let trimmed = trimmed(value) else { return nil }
+            if houseNumber == nil,
+               isStreetOnlyOrdinalLabel(trimmed),
+               (formatted.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isStreetOnlyOrdinalLabel(formatted)) {
+                return nil
+            }
+            return trimmed
+        }
+
+        private static func sanitizedFormatted(
+            _ value: String,
+            houseNumber: String?,
+            streetName: String?
+        ) -> String {
+            let trimmedFormatted = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            let combined = [houseNumber, streetName]
+                .compactMap { Self.trimmed($0) }
+                .joined(separator: " ")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+
+            if isStreetOnlyOrdinalLabel(trimmedFormatted) {
+                return combined.isEmpty ? "Address" : combined
+            }
+            if !trimmedFormatted.isEmpty {
+                return trimmedFormatted
+            }
+            return combined.isEmpty ? "Address" : combined
         }
         
         enum CodingKeys: String, CodingKey {
@@ -5108,6 +5657,9 @@ final class MapLayerManager {
             case houseNumber = "house_number"
             case streetName = "street_name"
             case source
+            case parcelId = "parcel_id"
+            case campaignParcelId = "campaign_parcel_id"
+            case hasParcelLink = "has_parcel_link"
         }
         
         init(from decoder: Decoder) throws {
@@ -5119,18 +5671,33 @@ final class MapLayerManager {
                 throw DecodingError.dataCorruptedError(forKey: .addressId, in: c, debugDescription: "Invalid UUID string: \(idString)")
             }
             addressId = uuid
-            formatted = try c.decodeIfPresent(String.self, forKey: .formatted) ?? ""
+            let decodedFormatted = try c.decodeIfPresent(String.self, forKey: .formatted) ?? ""
             gersId = try c.decodeIfPresent(String.self, forKey: .gersId)
             buildingGersId = try c.decodeIfPresent(String.self, forKey: .buildingGersId)
-            houseNumber = try c.decodeIfPresent(String.self, forKey: .houseNumber)
-            streetName = try c.decodeIfPresent(String.self, forKey: .streetName)
+            let decodedHouseNumber = try c.decodeIfPresent(String.self, forKey: .houseNumber)
+            houseNumber = Self.sanitizedHouseNumber(decodedHouseNumber)
+            let decodedStreetName = try c.decodeIfPresent(String.self, forKey: .streetName)
+            streetName = Self.sanitizedStreetName(
+                decodedStreetName,
+                formatted: decodedFormatted,
+                houseNumber: houseNumber
+            )
+            formatted = Self.sanitizedFormatted(
+                decodedFormatted,
+                houseNumber: houseNumber,
+                streetName: streetName
+            )
             source = try c.decodeIfPresent(String.self, forKey: .source)
+            parcelId = try c.decodeIfPresent(String.self, forKey: .parcelId)
+            campaignParcelId = try c.decodeIfPresent(String.self, forKey: .campaignParcelId)
+            hasParcelLink = try c.decodeIfPresent(Bool.self, forKey: .hasParcelLink)
         }
     }
 
     struct ParcelLinkedAddressTapResult {
         let addressIds: [UUID]
         let preferredAddress: AddressTapResult?
+        let parcelFeatureIds: [String]
     }
     
     // MARK: - Click Handling
@@ -5480,18 +6047,29 @@ final class MapLayerManager {
     }
 
     private func flyerAddressLabel(from properties: [String: Any]) -> String {
-        let house = firstNonEmptyProperty(
+        let rawHouse = firstNonEmptyProperty(
             in: properties,
             keys: ["house_number_label", "house_number", "houseNumber", "street_number", "street_no", "address_number", "number", "addr:housenumber"]
         )
-        let street = firstNonEmptyProperty(
+        let rawStreet = firstNonEmptyProperty(
             in: properties,
             keys: ["street_name", "streetName", "primary_street_name", "street", "road_name", "road", "addr:street"]
         )
+        let house = rawHouse.flatMap { Self.isStreetOnlyOrdinalAddressLabel($0) ? nil : $0 }
+        let formattedOrdinalOnly = ["formatted", "address_text", "full_address", "label"]
+            .compactMap { normalizedStringProperty(properties[$0]) }
+            .first
+            .map(Self.isStreetOnlyOrdinalAddressLabel) ?? false
+        let street = (house == nil && formattedOrdinalOnly && Self.isStreetOnlyOrdinalAddressLabel(rawStreet))
+            ? nil
+            : rawStreet
         let combined = "\(house ?? "") \(street ?? "")".trimmingCharacters(in: .whitespacesAndNewlines)
 
         for key in ["formatted", "address_text", "full_address", "label"] {
             if let trimmed = normalizedStringProperty(properties[key]) {
+                if Self.isStreetOnlyOrdinalAddressLabel(trimmed) {
+                    return combined.isEmpty ? "Address" : combined
+                }
                 if !combined.isEmpty,
                    street?.isEmpty == false,
                    (trimmed.caseInsensitiveCompare(house ?? "") == .orderedSame
@@ -5578,9 +6156,45 @@ final class MapLayerManager {
                         return
                     }
                 }
-                DispatchQueue.main.async { completion(nil) }
+                self.getBuildingFeatureInHitbox(at: point, layerIds: layerIds, completion: completion)
             case .failure(let error):
                 print("❌ [MapLayer] Error querying features: \(error)")
+                self.getBuildingFeatureInHitbox(at: point, layerIds: layerIds, completion: completion)
+            }
+        }
+    }
+
+    private func getBuildingFeatureInHitbox(
+        at point: CGPoint,
+        layerIds: [String],
+        completion: @escaping (BuildingFeature?) -> Void
+    ) {
+        guard let mapView = mapView else {
+            DispatchQueue.main.async { completion(nil) }
+            return
+        }
+
+        let radius = Self.buildingTapHitboxRadius
+        let hitbox = CGRect(
+            x: point.x - radius,
+            y: point.y - radius,
+            width: radius * 2,
+            height: radius * 2
+        )
+
+        let options = RenderedQueryOptions(layerIds: layerIds, filter: nil)
+        mapView.mapboxMap.queryRenderedFeatures(with: hitbox, options: options) { result in
+            switch result {
+            case .success(let features):
+                for renderedFeature in features {
+                    if let feature = self.buildingFeature(from: renderedFeature.queriedFeature.feature) {
+                        DispatchQueue.main.async { completion(feature) }
+                        return
+                    }
+                }
+                DispatchQueue.main.async { completion(nil) }
+            case .failure(let error):
+                print("❌ [MapLayer] Error querying building hitbox: \(error)")
                 DispatchQueue.main.async { completion(nil) }
             }
         }
@@ -5844,6 +6458,8 @@ final class MapLayerManager {
         ]
     }
 
+    private static let buildingTapHitboxRadius: CGFloat = 14
+
     private func queryAddressHitbox(
         at point: CGPoint,
         mode: AddressHitMode,
@@ -6005,11 +6621,49 @@ final class MapLayerManager {
                 buildingGersId: converted["building_gers_id"] as? String,
                 houseNumber: converted["house_number"] as? String,
                 streetName: converted["street_name"] as? String,
-                source: converted["source"] as? String
+                source: converted["source"] as? String,
+                parcelId: normalizedStringProperty(converted["parcel_id"]),
+                campaignParcelId: normalizedStringProperty(converted["campaign_parcel_id"]),
+                hasParcelLink: (converted["has_parcel_link"] as? Bool) ?? true
             )
         }
 
-        return ParcelLinkedAddressTapResult(addressIds: addressIds, preferredAddress: preferredAddress)
+        return ParcelLinkedAddressTapResult(
+            addressIds: addressIds,
+            preferredAddress: preferredAddress,
+            parcelFeatureIds: parcelSelectionFeatureIds(
+                from: converted,
+                feature: feature,
+                rawAddressIds: rawAddressIds
+            )
+        )
+    }
+
+    private func parcelSelectionFeatureIds(
+        from properties: [String: Any],
+        feature: Feature,
+        rawAddressIds _: [String]
+    ) -> [String] {
+        let propertyKeys = [
+            "id",
+            "address_id",
+            "campaign_address_id",
+            "campaignAddressId",
+            "parcel_id",
+            "campaign_parcel_id",
+            "external_id",
+            "address_detail_pid",
+            "join_key",
+            "parcel_join_key"
+        ]
+
+        let candidates = [rootFeatureId(from: feature)].compactMap { $0 }
+            + propertyKeys.compactMap { normalizedStringProperty(properties[$0]) }
+
+        var seen = Set<String>()
+        return candidates
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && seen.insert($0).inserted }
     }
     
     // MARK: - Cleanup

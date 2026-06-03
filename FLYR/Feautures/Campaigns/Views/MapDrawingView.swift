@@ -227,7 +227,7 @@ struct MapDrawingView: View {
     private var bottomBar: some View {
         VStack(alignment: .leading, spacing: 12) {
             if showsBottomInstructions {
-                Text(isDrawingEnabled ? "Tap map to add points. Drag a red point to move it. Tap first point again to close polygon." : "Move the map, search an area, or tap Draw to continue outlining.")
+                Text(bottomInstructionText)
                     .font(.flyrSubheadline)
                     .foregroundStyle(.primary.opacity(0.9))
                     .fixedSize(horizontal: false, vertical: true)
@@ -248,6 +248,12 @@ struct MapDrawingView: View {
         }
         .padding(16)
         .background(.ultraThinMaterial)
+    }
+
+    private var bottomInstructionText: String {
+        return isDrawingEnabled
+            ? "Tap map to add points. Drag a red point to move it. Tap first point again to close polygon."
+            : "Move the map, search an area, or tap Draw to continue outlining."
     }
 
     private func handleTap(_ coord: CLLocationCoordinate2D) {
@@ -322,4 +328,5 @@ struct MapDrawingView: View {
             .filter { !$0.isEmpty }
             .joined(separator: ", ")
     }
+
 }

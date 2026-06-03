@@ -20,6 +20,7 @@ struct NewCampaignDetailView: View {
     @ObservedObject private var sessionManager = SessionManager.shared
     @StateObject private var hook = UseCampaignV2()
     @State private var mapCenter: CLLocationCoordinate2D?
+    @State private var territoryBoundary: [CLLocationCoordinate2D] = []
     @State private var isMapFullscreen = false
     @State private var addressStatuses: [String: AddressStatus] = [:]
     @State private var showShareCardView = false
@@ -72,17 +73,11 @@ struct NewCampaignDetailView: View {
     }
 
     private var effectiveCampaignLeads: [FieldLead] {
-        if !campaignLeads.isEmpty {
-            return campaignLeads
-        }
-        return presentation?.syntheticLeads ?? []
+        campaignLeads
     }
 
     private var effectiveCampaignLeadsCount: Int {
-        if campaignLeadsCount > 0 {
-            return campaignLeadsCount
-        }
-        return effectiveCampaignLeads.count
+        campaignLeadsCount
     }
 
     private var shouldShowFullDemoStatsCard: Bool {
@@ -125,6 +120,14 @@ struct NewCampaignDetailView: View {
         }
         
         return markers
+    }
+
+    private var sessionBoundaryCoordinates: [CLLocationCoordinate2D] {
+        let validBoundary = territoryBoundary.filter(CLLocationCoordinate2DIsValid)
+        if !validBoundary.isEmpty {
+            return validBoundary
+        }
+        return mapCenter.map { [$0] } ?? []
     }
 
     /// Placeholder for share card when no session has ended yet (e.g. opened from Campaign Details).
@@ -238,7 +241,8 @@ struct NewCampaignDetailView: View {
                     ZStack {
                         CampaignAreaPreview(
                             campaign: hook.item,
-                            center: mapCenter
+                            center: mapCenter,
+                            territoryBoundary: territoryBoundary
                         )
                         .frame(height: 260)
                         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
@@ -617,7 +621,7 @@ struct NewCampaignDetailView: View {
                     uiState.selectCampaign(
                         id: campaignID,
                         name: hook.item?.name,
-                        boundaryCoordinates: mapCenter.map { [$0] } ?? []
+                        boundaryCoordinates: sessionBoundaryCoordinates
                     )
                     uiState.selectedTabIndex = 1
                 }) {
@@ -707,7 +711,11 @@ struct NewCampaignDetailView: View {
                 print("📱 [DETAIL DEBUG] Campaign loaded: '\(campaign.name)'")
                 print("📱 [DETAIL DEBUG] Campaign progress: \(Int(campaign.progress * 100))%")
                 print("📱 [DETAIL DEBUG] Campaign addresses: \(campaign.addresses.count)")
+                territoryBoundary = []
                 updateMapCenter(for: campaign)
+                Task {
+                    await refreshTerritoryBoundary(for: campaign.id)
+                }
                 Task {
                     await campaignDownloadService.refreshState(campaignId: campaignID.uuidString)
                     await refreshCampaignDetailData()
@@ -919,6 +927,25 @@ struct NewCampaignDetailView: View {
         print("🗺️ [MAP] Centering map on campaign address centroid: \(coordinates.count) coordinates at \(center)")
     }
 
+    private func refreshTerritoryBoundary(for campaignId: UUID) async {
+        let cachedBoundary = await CampaignRepository.shared.getCampaignBoundaryCoordinates(
+            campaignId: campaignId.uuidString
+        ) ?? []
+        let validCachedBoundary = cachedBoundary.filter(CLLocationCoordinate2DIsValid)
+        if !validCachedBoundary.isEmpty {
+            await MainActor.run {
+                territoryBoundary = validCachedBoundary
+            }
+        }
+
+        guard networkMonitor.isOnline else { return }
+        guard let boundary = await CampaignsAPI.shared.fetchTerritoryBoundary(campaignId: campaignId) else { return }
+        let validBoundary = boundary.filter(CLLocationCoordinate2DIsValid)
+        await MainActor.run {
+            territoryBoundary = validBoundary
+        }
+    }
+
     private func refreshCampaignDetailData() async {
         await refreshAddressStatuses()
         guard networkMonitor.isOnline else {
@@ -1100,7 +1127,7 @@ struct NewCampaignDetailView: View {
         uiState.selectCampaign(
             id: campaignID,
             name: hook.item?.name,
-            boundaryCoordinates: mapCenter.map { [$0] } ?? []
+            boundaryCoordinates: sessionBoundaryCoordinates
         )
         uiState.selectedTabIndex = 1
     }
@@ -1791,9 +1818,14 @@ struct FullscreenMapView: View {
 private struct CampaignAreaPreview: View {
     let campaign: CampaignV2?
     let center: CLLocationCoordinate2D?
+    let territoryBoundary: [CLLocationCoordinate2D]
     @Environment(\.colorScheme) private var colorScheme
 
     private var coordinates: [CLLocationCoordinate2D] {
+        let validBoundary = territoryBoundary.filter(CLLocationCoordinate2DIsValid)
+        if !validBoundary.isEmpty {
+            return validBoundary
+        }
         let addressCoordinates = campaign?.addresses
             .compactMap(\.coordinate)
             .filter(CLLocationCoordinate2DIsValid) ?? []
@@ -1807,113 +1839,46 @@ private struct CampaignAreaPreview: View {
     }
 
     var body: some View {
-        GeometryReader { geometry in
-            let points = projectedPoints(in: geometry.size)
-            ZStack {
-                previewBackground
-                previewGrid
-                if points.count >= 3 {
-                    territoryShape(points: points)
-                        .fill(Color.accent.opacity(colorScheme == .dark ? 0.24 : 0.18))
-                    territoryShape(points: points)
-                        .stroke(Color.accent.opacity(0.9), lineWidth: 2)
-                }
-                ForEach(Array(points.enumerated()), id: \.offset) { _, point in
-                    Circle()
-                        .fill(Color.white)
-                        .frame(width: 5, height: 5)
-                        .overlay(Circle().stroke(Color.accent, lineWidth: 1.5))
-                        .position(point)
-                }
+        ZStack {
+            TerritoryPreviewMapView(
+                center: center,
+                polygon: previewPolygon,
+                useDarkStyle: colorScheme == .dark,
+                height: 260,
+                showsCenterMarker: false
+            )
 
-                VStack {
-                    Spacer()
-                    HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(campaign?.name ?? "Campaign Area")
-                                .font(.caption.weight(.semibold))
-                                .foregroundColor(.white)
-                                .lineLimit(1)
-                            Text(previewSubtitle)
-                                .font(.caption2)
-                                .foregroundColor(.white.opacity(0.82))
-                        }
-                        Spacer()
+            VStack {
+                Spacer()
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(campaign?.name ?? "Campaign Area")
+                            .font(.caption.weight(.semibold))
+                            .foregroundColor(.white)
+                            .lineLimit(1)
+                        Text(previewSubtitle)
+                            .font(.caption2)
+                            .foregroundColor(.white.opacity(0.82))
                     }
-                    .padding(12)
-                    .background(
-                        LinearGradient(
-                            colors: [.black.opacity(0), .black.opacity(0.64)],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                    )
+                    Spacer()
                 }
+                .padding(12)
+                .background(
+                    LinearGradient(
+                        colors: [.black.opacity(0), .black.opacity(0.68)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
             }
         }
         .background(Color.bgSecondary)
-    }
-
-    private var previewBackground: some View {
-        LinearGradient(
-            colors: colorScheme == .dark
-                ? [Color(red: 0.09, green: 0.10, blue: 0.11), Color(red: 0.05, green: 0.06, blue: 0.07)]
-                : [Color(red: 0.81, green: 0.85, blue: 0.82), Color(red: 0.66, green: 0.74, blue: 0.73)],
-            startPoint: .topLeading,
-            endPoint: .bottomTrailing
-        )
-    }
-
-    private var previewGrid: some View {
-        Canvas { context, size in
-            var path = Path()
-            let spacing: CGFloat = 34
-            for x in stride(from: -size.height, through: size.width + size.height, by: spacing) {
-                path.move(to: CGPoint(x: x, y: 0))
-                path.addLine(to: CGPoint(x: x + size.height, y: size.height))
-            }
-            for y in stride(from: spacing, through: size.height, by: spacing) {
-                path.move(to: CGPoint(x: 0, y: y))
-                path.addLine(to: CGPoint(x: size.width, y: y - size.width))
-            }
-            context.stroke(path, with: .color(.white.opacity(colorScheme == .dark ? 0.08 : 0.18)), lineWidth: 1)
-        }
     }
 
     private var previewSubtitle: String {
         let count = campaign?.addresses.count ?? 0
         guard count > 0 else { return "Map bundle ready preview" }
         return "\(count) address\(count == 1 ? "" : "es")"
-    }
-
-    private func territoryShape(points: [CGPoint]) -> Path {
-        Path { path in
-            guard let first = points.first else { return }
-            path.move(to: first)
-            points.dropFirst().forEach { path.addLine(to: $0) }
-            path.closeSubpath()
-        }
-    }
-
-    private func projectedPoints(in size: CGSize) -> [CGPoint] {
-        guard size.width > 1, size.height > 1, !coordinates.isEmpty else { return [] }
-        let lats = coordinates.map(\.latitude)
-        let lons = coordinates.map(\.longitude)
-        guard let minLat = lats.min(), let maxLat = lats.max(),
-              let minLon = lons.min(), let maxLon = lons.max() else { return [] }
-
-        let latSpan = max(maxLat - minLat, 0.0001)
-        let lonSpan = max(maxLon - minLon, 0.0001)
-        let padding: CGFloat = 34
-        let drawableWidth = max(1, size.width - padding * 2)
-        let drawableHeight = max(1, size.height - padding * 2)
-
-        let source = coordinates.count >= 3 ? convexHull(coordinates) : coordinates
-        return source.map { coordinate in
-            let x = padding + CGFloat((coordinate.longitude - minLon) / lonSpan) * drawableWidth
-            let y = padding + CGFloat((maxLat - coordinate.latitude) / latSpan) * drawableHeight
-            return CGPoint(x: x, y: y)
-        }
     }
 
     private func convexHull(_ coordinates: [CLLocationCoordinate2D]) -> [CLLocationCoordinate2D] {
@@ -1960,6 +1925,15 @@ private struct CampaignAreaPreview: View {
         lower.removeLast()
         upper.removeLast()
         return lower + upper
+    }
+
+    private var previewPolygon: [CLLocationCoordinate2D]? {
+        let validBoundary = territoryBoundary.filter(CLLocationCoordinate2DIsValid)
+        if validBoundary.count >= 3 {
+            return validBoundary
+        }
+        guard coordinates.count >= 3 else { return nil }
+        return convexHull(coordinates)
     }
 }
 

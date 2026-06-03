@@ -41,6 +41,19 @@ struct CachedCampaignMapBundleMetadata: Sendable {
         return expiresAtDate > Date()
     }
 
+    var renderVersion: String? {
+        guard let countsJSON,
+              let data = countsJSON.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        return object["render_version"] as? String
+    }
+
+    var hasCurrentRenderVersion: Bool {
+        renderVersion == CanonicalCampaignMapBundleCounts.currentRenderVersion
+    }
+
     var requiresClientFallback: Bool {
         linksStatus?
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -57,7 +70,7 @@ struct CachedCampaignMapBundleMetadata: Sendable {
     }
 
     var hasUsableFreshCanonicalBundle: Bool {
-        isFresh && canonicalLinksAreReady && !requiresClientFallback
+        isFresh && hasCurrentRenderVersion && canonicalLinksAreReady && !requiresClientFallback
     }
 
     var cachedLinkCount: Int? {

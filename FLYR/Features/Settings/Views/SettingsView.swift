@@ -34,6 +34,9 @@ struct SettingsView: View {
                     // Integrations Section
                     integrationsSection
 
+                    // Challenges
+                    challengesSection
+
                     // Calendar
                     calendarSection
                     
@@ -216,6 +219,23 @@ struct SettingsView: View {
             Image(systemName: "link.circle.fill")
                 .foregroundColor(.info)
             Text("CRM Integrations")
+        }
+    }
+
+    // MARK: - Challenges Section
+
+    private var challengesSection: some View {
+        Section {
+            NavigationLink(destination: ChallengesHomeView()) {
+                HStack {
+                    Image(systemName: "flag.fill")
+                        .foregroundColor(.info)
+                    Text("Challenges")
+                        .foregroundColor(.text)
+                }
+            }
+        } header: {
+            Text("Challenges")
         }
     }
 

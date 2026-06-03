@@ -432,6 +432,60 @@ type RouteHandlerConfig<Route extends AppRouteHandlerRoutes = AppRouteHandlerRou
   type __Unused = __Check
 }
 
+// Validate ../../app/api/integrations/monday/boards/route.ts
+{
+  type __IsExpected<Specific extends RouteHandlerConfig<"/api/integrations/monday/boards">> = Specific
+  const handler = {} as typeof import("../../app/api/integrations/monday/boards/route.js")
+  type __Check = __IsExpected<typeof handler>
+  // @ts-ignore
+  type __Unused = __Check
+}
+
+// Validate ../../app/api/integrations/monday/disconnect/route.ts
+{
+  type __IsExpected<Specific extends RouteHandlerConfig<"/api/integrations/monday/disconnect">> = Specific
+  const handler = {} as typeof import("../../app/api/integrations/monday/disconnect/route.js")
+  type __Check = __IsExpected<typeof handler>
+  // @ts-ignore
+  type __Unused = __Check
+}
+
+// Validate ../../app/api/integrations/monday/oauth/callback/route.ts
+{
+  type __IsExpected<Specific extends RouteHandlerConfig<"/api/integrations/monday/oauth/callback">> = Specific
+  const handler = {} as typeof import("../../app/api/integrations/monday/oauth/callback/route.js")
+  type __Check = __IsExpected<typeof handler>
+  // @ts-ignore
+  type __Unused = __Check
+}
+
+// Validate ../../app/api/integrations/monday/oauth/start/route.ts
+{
+  type __IsExpected<Specific extends RouteHandlerConfig<"/api/integrations/monday/oauth/start">> = Specific
+  const handler = {} as typeof import("../../app/api/integrations/monday/oauth/start/route.js")
+  type __Check = __IsExpected<typeof handler>
+  // @ts-ignore
+  type __Unused = __Check
+}
+
+// Validate ../../app/api/integrations/monday/select-board/route.ts
+{
+  type __IsExpected<Specific extends RouteHandlerConfig<"/api/integrations/monday/select-board">> = Specific
+  const handler = {} as typeof import("../../app/api/integrations/monday/select-board/route.js")
+  type __Check = __IsExpected<typeof handler>
+  // @ts-ignore
+  type __Unused = __Check
+}
+
+// Validate ../../app/api/integrations/monday/status/route.ts
+{
+  type __IsExpected<Specific extends RouteHandlerConfig<"/api/integrations/monday/status">> = Specific
+  const handler = {} as typeof import("../../app/api/integrations/monday/status/route.js")
+  type __Check = __IsExpected<typeof handler>
+  // @ts-ignore
+  type __Unused = __Check
+}
+
 // Validate ../../app/api/invites/accept/route.ts
 {
   type __IsExpected<Specific extends RouteHandlerConfig<"/api/invites/accept">> = Specific

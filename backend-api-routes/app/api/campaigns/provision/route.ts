@@ -3,6 +3,12 @@ import { createHash } from 'node:crypto';
 import { createAdminClient } from '@/lib/supabase/server';
 import type { LambdaSnapshotResponse } from '@/lib/services/TileLambdaService';
 import type { StandardCampaignAddress } from '@/lib/services/AddressAdapter';
+import { addressLabelQuality } from '@/lib/services/AddressLabelQuality';
+import {
+  canonicalBedrockAddressExternalId,
+  normalizedAddressDisplayIdentity,
+  normalizedAddressPart,
+} from '@/lib/services/AddressDisplayIdentity';
 import { BedrockProvisionService, type BedrockLinkGeometry } from '@/lib/services/BedrockProvisionService';
 import { DiamondMunicipalService } from '@/lib/services/DiamondMunicipalService';
 import { resolveCampaignRegion } from '@/lib/geo/regionResolver';
@@ -304,7 +310,7 @@ function deduplicateAddresses(addresses: StandardCampaignAddress[]): StandardCam
 }
 
 function normalizeAddressFragment(value: string | null | undefined): string {
-  return typeof value === 'string' ? value.trim().toLowerCase() : '';
+  return normalizedAddressPart(value) ?? '';
 }
 
 function normalizeSource(value: string | null | undefined): string {
@@ -313,7 +319,7 @@ function normalizeSource(value: string | null | undefined): string {
 }
 
 function normalizeExternalAddressId(value: string | null | undefined): string {
-  return typeof value === 'string' ? value.trim() : '';
+  return canonicalBedrockAddressExternalId(value);
 }
 
 function normalizedFeatureString(value: unknown): string | null {
@@ -370,18 +376,7 @@ function buildAddressSignature(address: {
   locality?: string | null;
   postal_code?: string | null;
 }): string {
-  const unit = normalizeAddressFragment(address.unit);
-  const houseNumber = normalizeAddressFragment(address.house_number);
-  const streetName = normalizeAddressFragment(address.street_name);
-  const locality = normalizeAddressFragment(address.locality);
-  const postalCode = normalizeAddressFragment(address.postal_code);
-
-  if (houseNumber || streetName || locality) {
-    return `${unit}|${houseNumber}|${streetName}|${locality}|${postalCode}`;
-  }
-
-  const formatted = normalizeAddressFragment(address.formatted);
-  return `${formatted}|${postalCode}`;
+  return normalizedAddressDisplayIdentity(address) ?? '';
 }
 
 function hasAddressSignature(address: {
@@ -534,6 +529,18 @@ function snapshotHasStaticBuildingPmtiles(
   return [
     snapshot.s3_keys.buildings,
     stringTileMetric(metrics, 'pmtiles_key'),
+  ].some((key) => typeof key === 'string' && key.toLowerCase().endsWith('.pmtiles'));
+}
+
+function snapshotHasStaticParcelPmtiles(
+  snapshot: LambdaSnapshotResponse | null | undefined
+): boolean {
+  if (!snapshot) return false;
+
+  const metrics = snapshot.metadata?.tile_metrics;
+  return [
+    snapshot.s3_keys.parcels,
+    stringTileMetric(metrics, 'parcels_pmtiles_key'),
   ].some((key) => typeof key === 'string' && key.toLowerCase().endsWith('.pmtiles'));
 }
 
@@ -747,7 +754,7 @@ async function prepareProvisionParcels(params: {
     };
   }
 
-  if (!isParcelRegionSupported(params.regionCode)) {
+  if (!params.snapshotOnly && !isParcelRegionSupported(params.regionCode)) {
     return {
       count: 0,
       status: 'skipped',
@@ -1853,43 +1860,6 @@ function addressesForInitialHydration(
   return addresses.length <= staticGeometryAddressHydrationLimit() ? addresses : [];
 }
 
-function isNumericOnlyAddressLabel(value: string | null | undefined): boolean {
-  return typeof value === 'string' && /^[\d\s#./-]+$/.test(value.trim());
-}
-
-function addressLabelQuality(addresses: StandardCampaignAddress[]) {
-  if (addresses.length === 0) {
-    return { usable: 0, numericOnly: 0, usableRatio: 0, acceptable: false };
-  }
-
-  let usable = 0;
-  let numericOnly = 0;
-
-  for (const address of addresses) {
-    const streetName = address.street_name?.trim();
-    const formatted = address.formatted?.trim();
-    const hasNamedStreet = Boolean(streetName && !isNumericOnlyAddressLabel(streetName));
-    const hasReadableFormatted = Boolean(formatted && !isNumericOnlyAddressLabel(formatted));
-    if (hasNamedStreet || hasReadableFormatted) {
-      usable += 1;
-    }
-    if (
-      isNumericOnlyAddressLabel(streetName) ||
-      (formatted && isNumericOnlyAddressLabel(formatted))
-    ) {
-      numericOnly += 1;
-    }
-  }
-
-  const usableRatio = usable / addresses.length;
-  return {
-    usable,
-    numericOnly,
-    usableRatio,
-    acceptable: usableRatio >= 0.6,
-  };
-}
-
 async function resolveDiamondThenBedrock(options: {
   campaignId: string;
   polygon: GeoJSON.Polygon;
@@ -1923,7 +1893,11 @@ async function resolveDiamondThenBedrock(options: {
           addresses: diamondResult.addresses.length,
           usable: quality.usable,
           numericOnly: quality.numericOnly,
+          houseNumberUsable: quality.houseNumberUsable,
+          streetOnlyOrdinal: quality.streetOnlyOrdinal,
           usableRatio: Number(quality.usableRatio.toFixed(3)),
+          houseNumberUsableRatio: Number(quality.houseNumberUsableRatio.toFixed(3)),
+          streetOnlyOrdinalRatio: Number(quality.streetOnlyOrdinalRatio.toFixed(3)),
         });
       } else {
         console.log('[Provision] DIAMOND municipal S3 polygon scan complete:', {
@@ -2439,6 +2413,7 @@ export async function POST(request: NextRequest) {
                 ? finalAddressCount
                 : 0;
           const hasPreparedLinkGeometryParcels = (bedrockLinkGeometry?.parcels?.length ?? 0) > 0;
+          const hasSnapshotParcelPmtiles = snapshotHasStaticParcelPmtiles(snapshot);
 
           const [
             addressInsertResult,
@@ -2463,7 +2438,7 @@ export async function POST(request: NextRequest) {
             })),
             timings.measure('snapshot_metadata_ms', () => upsertSnapshotMetadata(supabase, campaignId!, snapshot)),
             timings.measure('parcel_enrichment_ms', () => {
-              if (hasPreparedLinkGeometryParcels || isParcelRegionSupported(regionCode)) {
+              if (hasPreparedLinkGeometryParcels || isParcelRegionSupported(regionCode) || hasSnapshotParcelPmtiles) {
                 return prepareProvisionParcels({
                   supabase,
                   campaignId: campaignId!,

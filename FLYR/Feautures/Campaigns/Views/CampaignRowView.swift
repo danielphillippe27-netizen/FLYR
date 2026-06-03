@@ -6,6 +6,7 @@ struct CampaignRowView: View {
     /// When set (e.g. duplicate names), show this instead of campaign.name in the title.
     var displayName: String?
     var buildingProgressPercent: Int?
+    var isAssigned = false
     var onPlayTapped: (() -> Void)?
     var isSelectionMode = false
     var isSelected = false
@@ -36,6 +37,17 @@ struct CampaignRowView: View {
                     .foregroundColor(.primary)
                     .lineLimit(1)
                     .truncationMode(.tail)
+
+                if isAssigned {
+                    Label("Assigned to you", systemImage: "person.crop.circle.badge.checkmark")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Color.red)
+                        .lineLimit(1)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .background(Color.red.opacity(0.14), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                        .accessibilityLabel("Assigned to you")
+                }
 
                 if let buildingProgressPercent {
                     HStack(spacing: 6) {

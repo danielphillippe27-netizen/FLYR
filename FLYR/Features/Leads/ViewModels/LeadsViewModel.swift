@@ -1,11 +1,28 @@
 import SwiftUI
 import Combine
+
+enum LeadInboxFilter: String, CaseIterable, Identifiable {
+    case all
+    case campaigns
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .all: return "All"
+        case .campaigns: return "Campaigns"
+        }
+    }
+}
+
 @MainActor
 final class LeadsViewModel: ObservableObject {
     @Published var leads: [FieldLead] = []
     @Published var isLoading = false
     @Published var errorMessage: String?
     @Published var searchText = ""
+    @Published var selectedFilter: LeadInboxFilter = .all
+    @Published var selectedCampaignId: UUID?
     @Published var selectedLead: FieldLead?
     
     private let fieldLeadsService = FieldLeadsService.shared
@@ -23,13 +40,40 @@ final class LeadsViewModel: ObservableObject {
     }
     
     var filteredLeads: [FieldLead] {
-        if searchText.isEmpty { return leads }
-        let q = searchText.lowercased()
-        return leads.filter {
+        let scoped = leads.filter { lead in
+            switch selectedFilter {
+            case .all:
+                return true
+            case .campaigns:
+                if let selectedCampaignId {
+                    return lead.campaignId == selectedCampaignId
+                }
+                return lead.campaignId != nil
+            }
+        }
+
+        let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !q.isEmpty else { return scoped }
+
+        return scoped.filter {
             $0.address.lowercased().contains(q) ||
             ($0.name?.lowercased().contains(q) ?? false) ||
-            ($0.phone?.lowercased().contains(q) ?? false)
+            ($0.phone?.lowercased().contains(q) ?? false) ||
+            ($0.email?.lowercased().contains(q) ?? false) ||
+            ($0.notes?.lowercased().contains(q) ?? false)
         }
+    }
+
+    func selectFilter(_ filter: LeadInboxFilter) {
+        selectedFilter = filter
+        if filter != .campaigns {
+            selectedCampaignId = nil
+        }
+    }
+
+    func selectCampaign(_ campaignId: UUID?) {
+        selectedFilter = .campaigns
+        selectedCampaignId = campaignId
     }
     
     func loadLeads() async {

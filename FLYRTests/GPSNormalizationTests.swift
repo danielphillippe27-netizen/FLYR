@@ -71,6 +71,104 @@ struct GeospatialUtilitiesTests {
     }
 }
 
+struct SessionParcelAutoCompleteTargetTests {
+
+    @Test func containsPointInsidePolygonRing() {
+        let target = makeTarget(
+            id: "building-1",
+            rings: [
+                [
+                    CLLocationCoordinate2D(latitude: 43.6500, longitude: -79.3800),
+                    CLLocationCoordinate2D(latitude: 43.6500, longitude: -79.3790),
+                    CLLocationCoordinate2D(latitude: 43.6510, longitude: -79.3790),
+                    CLLocationCoordinate2D(latitude: 43.6510, longitude: -79.3800),
+                    CLLocationCoordinate2D(latitude: 43.6500, longitude: -79.3800)
+                ]
+            ]
+        )
+
+        #expect(target != nil)
+        #expect(target?.contains(CLLocationCoordinate2D(latitude: 43.6505, longitude: -79.3795)) == true)
+        #expect(target?.contains(CLLocationCoordinate2D(latitude: 43.6520, longitude: -79.3795)) == false)
+    }
+
+    @Test func extractsRingsFromMultiPolygonGeometry() throws {
+        let data = """
+        {
+          "type": "MultiPolygon",
+          "coordinates": [
+            [[[-79.3800,43.6500],[-79.3790,43.6500],[-79.3790,43.6510],[-79.3800,43.6510],[-79.3800,43.6500]]],
+            [[[-79.3780,43.6500],[-79.3770,43.6500],[-79.3770,43.6510],[-79.3780,43.6510],[-79.3780,43.6500]]]
+          ]
+        }
+        """.data(using: .utf8)!
+
+        let geometry = try JSONDecoder().decode(MapFeatureGeoJSONGeometry.self, from: data)
+        let rings = SessionParcelAutoCompleteTarget.rings(from: geometry)
+
+        #expect(rings.count == 2)
+        #expect(rings.allSatisfy { $0.count == 5 })
+    }
+
+    @MainActor
+    @Test func parcelSelectorReturnsSingleContainingTarget() {
+        let manager = SessionManager.shared
+        defer { manager.configureParcelAutoCompleteTargets([]) }
+
+        let target = makeTarget(
+            id: "building-1",
+            rings: [
+                [
+                    CLLocationCoordinate2D(latitude: 43.6500, longitude: -79.3800),
+                    CLLocationCoordinate2D(latitude: 43.6500, longitude: -79.3790),
+                    CLLocationCoordinate2D(latitude: 43.6510, longitude: -79.3790),
+                    CLLocationCoordinate2D(latitude: 43.6510, longitude: -79.3800),
+                    CLLocationCoordinate2D(latitude: 43.6500, longitude: -79.3800)
+                ]
+            ]
+        )
+
+        manager.configureParcelAutoCompleteTargets([target].compactMap { $0 })
+
+        let selected = manager.parcelAutoCompleteTarget(
+            containing: CLLocationCoordinate2D(latitude: 43.6505, longitude: -79.3795)
+        )
+        #expect(selected?.targetId == "building-1")
+    }
+
+    @MainActor
+    @Test func parcelSelectorSkipsOverlappingDifferentTargets() {
+        let manager = SessionManager.shared
+        defer { manager.configureParcelAutoCompleteTargets([]) }
+
+        let ring = [
+            CLLocationCoordinate2D(latitude: 43.6500, longitude: -79.3800),
+            CLLocationCoordinate2D(latitude: 43.6500, longitude: -79.3790),
+            CLLocationCoordinate2D(latitude: 43.6510, longitude: -79.3790),
+            CLLocationCoordinate2D(latitude: 43.6510, longitude: -79.3800),
+            CLLocationCoordinate2D(latitude: 43.6500, longitude: -79.3800)
+        ]
+        manager.configureParcelAutoCompleteTargets([
+            makeTarget(id: "building-1", rings: [ring]),
+            makeTarget(id: "building-2", rings: [ring])
+        ].compactMap { $0 })
+
+        let selected = manager.parcelAutoCompleteTarget(
+            containing: CLLocationCoordinate2D(latitude: 43.6505, longitude: -79.3795)
+        )
+        #expect(selected?.targetId == nil)
+    }
+
+    private func makeTarget(id: String, rings: [[CLLocationCoordinate2D]]) -> SessionParcelAutoCompleteTarget? {
+        SessionParcelAutoCompleteTarget(
+            targetId: id,
+            buildingId: id,
+            addressIds: [UUID(uuidString: "22222222-2222-2222-2222-222222222222")!],
+            rings: rings
+        )
+    }
+}
+
 struct LocationAcceptanceFilterTests {
 
     @Test func rejectsPoorAccuracy() {

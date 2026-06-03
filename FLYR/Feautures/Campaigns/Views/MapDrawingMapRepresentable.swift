@@ -18,6 +18,10 @@ struct MapDrawingMapRepresentable: UIViewRepresentable {
     var useSatellite: Bool = false
     /// When false, map taps/polygon vertex drags are ignored so the user can freely navigate.
     var isDrawingEnabled: Bool = true
+    /// Optional locked outline shown while splitting an oversized territory.
+    var lockedBasePolygon: [CLLocationCoordinate2D] = []
+    /// Optional split-line points shown while splitting an oversized territory.
+    var splitLineVertices: [CLLocationCoordinate2D] = []
     /// Optional one-shot camera target for search/navigation controls.
     var cameraFocusCoordinate: CLLocationCoordinate2D?
     var cameraFocusID: Int = 0
@@ -85,7 +89,7 @@ struct MapDrawingMapRepresentable: UIViewRepresentable {
             width: max(320, screenBounds.width),
             height: max(480, screenBounds.height)
         )
-        let mapView = MapView(frame: initialFrame)
+        let mapView = DisplayLinkRecoveringMapView(frame: initialFrame)
         mapView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         mapView.ornaments.options.scaleBar.visibility = .hidden
         mapView.ornaments.options.logo.margins = CGPoint(x: 8, y: 8)
@@ -109,6 +113,24 @@ struct MapDrawingMapRepresentable: UIViewRepresentable {
         vertexManager.circleStrokeColor = StyleColor(.white)
         vertexManager.circleStrokeWidth = 1.5
         context.coordinator.vertexAnnotationManager = vertexManager
+
+        let basePolygonManager = mapView.annotations.makePolygonAnnotationManager()
+        basePolygonManager.fillColor = StyleColor(red.withAlphaComponent(0.18))
+        basePolygonManager.fillOpacity = 1.0
+        basePolygonManager.fillOutlineColor = StyleColor(red)
+        context.coordinator.basePolygonAnnotationManager = basePolygonManager
+
+        let splitLineManager = mapView.annotations.makePolylineAnnotationManager()
+        splitLineManager.lineColor = StyleColor(.white)
+        splitLineManager.lineWidth = 4
+        context.coordinator.splitLineAnnotationManager = splitLineManager
+
+        let splitPointManager = mapView.annotations.makeCircleAnnotationManager()
+        splitPointManager.circleRadius = 7
+        splitPointManager.circleColor = StyleColor(red)
+        splitPointManager.circleStrokeColor = StyleColor(.white)
+        splitPointManager.circleStrokeWidth = 2
+        context.coordinator.splitPointAnnotationManager = splitPointManager
 
         // Red stick-man marker for starting address (feet anchored at the point).
         let startingMarkerManager = mapView.annotations.makePointAnnotationManager()
@@ -138,6 +160,8 @@ struct MapDrawingMapRepresentable: UIViewRepresentable {
         context.coordinator.useSatellite = useSatellite
         context.coordinator.useDarkStyle = useDarkStyle
         context.coordinator.isDrawingEnabled = isDrawingEnabled
+        context.coordinator.lockedBasePolygon = lockedBasePolygon
+        context.coordinator.splitLineVertices = splitLineVertices
         context.coordinator.cameraFocusCoordinate = cameraFocusCoordinate
         context.coordinator.cameraFocusID = cameraFocusID
         context.coordinator.bindStyleLoadedObserver(to: mapView)
@@ -156,16 +180,22 @@ struct MapDrawingMapRepresentable: UIViewRepresentable {
         context.coordinator.useSatellite = useSatellite
         context.coordinator.useDarkStyle = useDarkStyle
         context.coordinator.isDrawingEnabled = isDrawingEnabled
+        context.coordinator.lockedBasePolygon = lockedBasePolygon
+        context.coordinator.splitLineVertices = splitLineVertices
         context.coordinator.cameraFocusCoordinate = cameraFocusCoordinate
         context.coordinator.cameraFocusID = cameraFocusID
         context.coordinator.applyStyleIfNeeded(on: mapView)
         context.coordinator.updatePolygonAnnotation(polygonVertices)
         context.coordinator.updateVertexAnnotations(polygonVertices)
+        context.coordinator.updateBasePolygonAnnotation(lockedBasePolygon)
+        context.coordinator.updateSplitLineAnnotations(splitLineVertices)
         context.coordinator.updateStartingAddressMarker(at: startingAddressCoordinate)
         context.coordinator.applyCameraFocusIfNeeded(on: mapView)
         // Only set camera when no vertices yet (initial load). Once user starts drawing, don't recenter or zoom.
-        if polygonVertices.isEmpty {
+        if polygonVertices.isEmpty && lockedBasePolygon.isEmpty {
             context.coordinator.applyPreferredCamera(on: mapView)
+        } else if !lockedBasePolygon.isEmpty {
+            context.coordinator.setCameraToVisiblePolygonIfNeeded(lockedBasePolygon, on: mapView)
         }
     }
 
@@ -177,6 +207,9 @@ struct MapDrawingMapRepresentable: UIViewRepresentable {
         weak var mapView: MapView?
         var polygonAnnotationManager: PolygonAnnotationManager?
         var vertexAnnotationManager: CircleAnnotationManager?
+        var basePolygonAnnotationManager: PolygonAnnotationManager?
+        var splitLineAnnotationManager: PolylineAnnotationManager?
+        var splitPointAnnotationManager: CircleAnnotationManager?
         var startingAddressMarkerManager: PointAnnotationManager?
         var onTap: ((CLLocationCoordinate2D) -> Void)?
         var onMoveVertex: ((Int, CLLocationCoordinate2D) -> Void)?
@@ -184,6 +217,8 @@ struct MapDrawingMapRepresentable: UIViewRepresentable {
         var startingAddressCoordinate: CLLocationCoordinate2D?
         var userLocationCoordinate: CLLocationCoordinate2D?
         var polygonVertices: [CLLocationCoordinate2D] = []
+        var lockedBasePolygon: [CLLocationCoordinate2D] = []
+        var splitLineVertices: [CLLocationCoordinate2D] = []
         private var lastCameraCenter: CLLocationCoordinate2D?
         private var lastPolygonCameraSignature: String?
         private var draggingVertexIndex: Int?
@@ -287,6 +322,37 @@ struct MapDrawingMapRepresentable: UIViewRepresentable {
             vertexAnnotationManager?.annotations = annotations
         }
 
+        func updateBasePolygonAnnotation(_ vertices: [CLLocationCoordinate2D]) {
+            guard vertices.count >= 3 else {
+                basePolygonAnnotationManager?.annotations = []
+                return
+            }
+            var ring = vertices.map { LocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
+            if ring.first != ring.last, let first = ring.first {
+                ring.append(first)
+            }
+            let polygon = Polygon([ring])
+            var annotation = PolygonAnnotation(polygon: polygon)
+            let red = UIColor(red: 239/255, green: 68/255, blue: 68/255, alpha: 1)
+            annotation.fillColor = StyleColor(red.withAlphaComponent(0.18))
+            annotation.fillOpacity = 1.0
+            annotation.fillOutlineColor = StyleColor(red)
+            basePolygonAnnotationManager?.annotations = [annotation]
+        }
+
+        func updateSplitLineAnnotations(_ vertices: [CLLocationCoordinate2D]) {
+            splitPointAnnotationManager?.annotations = vertices.map { coord in
+                CircleAnnotation(centerCoordinate: LocationCoordinate2D(latitude: coord.latitude, longitude: coord.longitude))
+            }
+
+            guard vertices.count >= 2 else {
+                splitLineAnnotationManager?.annotations = []
+                return
+            }
+            let line = LineString(vertices.map { LocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) })
+            splitLineAnnotationManager?.annotations = [PolylineAnnotation(lineString: line)]
+        }
+
         /// Index of vertex near the given point (in map view coordinates), or nil.
         private func vertexIndexNear(point: CGPoint, in mapView: MapView) -> Int? {
             guard let map = mapView.mapboxMap else { return nil }
@@ -379,6 +445,10 @@ struct MapDrawingMapRepresentable: UIViewRepresentable {
             lastCameraCenter = center
             lastPolygonCameraSignature = signature
             mapView.mapboxMap.setCamera(to: CameraOptions(center: center, zoom: 15, bearing: 0, pitch: 0))
+        }
+
+        func setCameraToVisiblePolygonIfNeeded(_ vertices: [CLLocationCoordinate2D], on mapView: MapView) {
+            setCameraToPolygonVertices(vertices, on: mapView)
         }
 
         @objc func handleTap(_ sender: UITapGestureRecognizer) {

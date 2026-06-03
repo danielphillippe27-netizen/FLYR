@@ -20,7 +20,12 @@ struct ActivityFeedItem: Identifiable {
     let title: String
     let subtitle: String
     let timestamp: Date
+    let dueDate: Date?
     let kind: ActivityFeedKind
+    let contactId: UUID?
+    let activityId: UUID?
+    let address: String?
+    let notes: String?
     let sessionId: UUID?
     let sessionDurationSeconds: TimeInterval?
 }
@@ -78,7 +83,12 @@ final class ActivityFeedService {
                     title: displayName(for: row.contact),
                     subtitle: appointmentSubtitle(for: row),
                     timestamp: row.timestamp,
+                    dueDate: row.timestamp,
                     kind: .appointment,
+                    contactId: row.contact.id,
+                    activityId: row.id,
+                    address: row.contact.address,
+                    notes: row.note,
                     sessionId: nil,
                     sessionDurationSeconds: nil
                 )
@@ -94,7 +104,12 @@ final class ActivityFeedService {
                         title: displayName(for: row),
                         subtitle: subtitle,
                         timestamp: row.updatedAt ?? row.createdAt,
+                        dueDate: row.reminderDate,
                         kind: .appointment,
+                        contactId: row.id,
+                        activityId: nil,
+                        address: row.address,
+                        notes: row.notes,
                         sessionId: nil,
                         sessionDurationSeconds: nil
                     )
@@ -123,7 +138,12 @@ final class ActivityFeedService {
                         title: displayName(for: row),
                         subtitle: subtitle,
                         timestamp: dueDate,
+                        dueDate: dueDate,
                         kind: .followUp,
+                        contactId: row.id,
+                        activityId: nil,
+                        address: row.address,
+                        notes: row.notes,
                         sessionId: nil,
                         sessionDurationSeconds: nil
                     )
@@ -156,7 +176,12 @@ final class ActivityFeedService {
                     title: title,
                     subtitle: subtitle,
                     timestamp: row.start_time,
+                    dueDate: nil,
                     kind: .session,
+                    contactId: nil,
+                    activityId: nil,
+                    address: nil,
+                    notes: nil,
                     sessionId: row.id,
                     sessionDurationSeconds: durationSeconds
                 )
@@ -188,7 +213,12 @@ final class ActivityFeedService {
                     title: "Session",
                     subtitle: "Missing session id",
                     timestamp: row.start_time,
+                    dueDate: nil,
                     kind: .session,
+                    contactId: nil,
+                    activityId: nil,
+                    address: nil,
+                    notes: nil,
                     sessionId: nil,
                     sessionDurationSeconds: max(60, row.durationSeconds)
                 )
@@ -209,7 +239,12 @@ final class ActivityFeedService {
                 title: title,
                 subtitle: subtitle,
                 timestamp: row.start_time,
+                dueDate: nil,
                 kind: .session,
+                contactId: nil,
+                activityId: nil,
+                address: nil,
+                notes: nil,
                 sessionId: sessionId,
                 sessionDurationSeconds: durationSeconds
             )
@@ -243,6 +278,55 @@ final class ActivityFeedService {
         }
     }
 
+    func saveEditedItem(
+        _ item: ActivityFeedItem,
+        title: String,
+        address: String,
+        dueDate: Date,
+        notes: String?
+    ) async throws {
+        guard let contactId = item.contactId else {
+            throw NSError(domain: "ActivityFeedService", code: -1, userInfo: [NSLocalizedDescriptionKey: "Missing contact for this item"])
+        }
+
+        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedAddress = address.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedNotes = notes?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+
+        try await updateContactSummary(
+            contactId: contactId,
+            title: trimmedTitle,
+            address: trimmedAddress,
+            reminderDate: item.kind == .followUp ? dueDate : nil,
+            notes: normalizedNotes
+        )
+
+        guard item.kind == .appointment else { return }
+
+        let appointmentNote = makeAppointmentNote(
+            title: trimmedTitle.nilIfEmpty ?? "Appointment",
+            start: dueDate,
+            end: Calendar.current.date(byAdding: .hour, value: 1, to: dueDate) ?? dueDate,
+            address: trimmedAddress,
+            notes: normalizedNotes
+        )
+
+        if let activityId = item.activityId {
+            try await updateAppointmentActivity(
+                activityId: activityId,
+                timestamp: dueDate,
+                note: appointmentNote
+            )
+        } else {
+            _ = try await ContactsService.shared.performRemoteLogActivity(
+                contactID: contactId,
+                type: .meeting,
+                note: appointmentNote,
+                timestamp: dueDate
+            )
+        }
+    }
+
     private func fetchContactRows(
         userId: UUID,
         workspaceId: UUID?,
@@ -258,7 +342,7 @@ final class ActivityFeedService {
         do {
             var query = client
                 .from("contacts")
-                .select("id,user_id,full_name,address,status,reminder_date,updated_at,created_at")
+                .select("id,user_id,full_name,address,status,notes,reminder_date,updated_at,created_at")
             if includeMembers, let workspaceId {
                 query = query.eq("workspace_id", value: workspaceId.uuidString)
             } else {
@@ -300,6 +384,7 @@ final class ActivityFeedService {
                 fullName: $0.name,
                 address: $0.address,
                 status: $0.status,
+                notes: nil,
                 reminderDate: nil,
                 updatedAt: $0.updatedAt,
                 createdAt: $0.createdAt
@@ -455,6 +540,65 @@ final class ActivityFeedService {
         return "\(address) • Appointment"
     }
 
+    private func updateContactSummary(
+        contactId: UUID,
+        title: String,
+        address: String,
+        reminderDate: Date?,
+        notes: String?
+    ) async throws {
+        var updateData: [String: AnyCodable] = [
+            "full_name": AnyCodable(title),
+            "address": AnyCodable(address),
+            "notes": AnyCodable(notes as Any),
+            "updated_at": AnyCodable(Date())
+        ]
+        if let reminderDate {
+            updateData["reminder_date"] = AnyCodable(reminderDate)
+        }
+
+        try await client
+            .from("contacts")
+            .update(updateData)
+            .eq("id", value: contactId)
+            .execute()
+    }
+
+    private func updateAppointmentActivity(
+        activityId: UUID,
+        timestamp: Date,
+        note: String
+    ) async throws {
+        try await client
+            .from("contact_activities")
+            .update([
+                "timestamp": AnyCodable(timestamp),
+                "note": AnyCodable(note)
+            ])
+            .eq("id", value: activityId)
+            .execute()
+    }
+
+    private func makeAppointmentNote(
+        title: String,
+        start: Date,
+        end: Date,
+        address: String,
+        notes: String?
+    ) -> String {
+        var segments = [
+            "Appointment",
+            title,
+            "Start: \(activityNoteDateFormatter.string(from: start))",
+            "End: \(activityNoteDateFormatter.string(from: end))",
+            "Address: \(address)"
+        ]
+        if let notes, !notes.isEmpty {
+            segments.append(notes)
+        }
+        return segments.joined(separator: " | ")
+    }
+
     private func parseAppointmentNote(_ note: String?) -> (subject: String?, start: String?, address: String?) {
         guard let note, !note.isEmpty else {
             return (nil, nil, nil)
@@ -491,6 +635,17 @@ final class ActivityFeedService {
 
         return (subject, start, address)
     }
+
+    private var activityNoteDateFormatter: DateFormatter {
+        Self._activityNoteDateFormatter
+    }
+
+    private static let _activityNoteDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = .autoupdatingCurrent
+        formatter.setLocalizedDateFormatFromTemplate("MMM d, yyyy h:mm a")
+        return formatter
+    }()
 }
 
 private struct ContactFeedRow: Decodable {
@@ -499,6 +654,7 @@ private struct ContactFeedRow: Decodable {
     let fullName: String?
     let address: String
     let status: String
+    let notes: String?
     let reminderDate: Date?
     let updatedAt: Date?
     let createdAt: Date
@@ -509,6 +665,7 @@ private struct ContactFeedRow: Decodable {
         case fullName = "full_name"
         case address
         case status
+        case notes
         case reminderDate = "reminder_date"
         case updatedAt = "updated_at"
         case createdAt = "created_at"
@@ -520,6 +677,7 @@ private struct ContactFeedRow: Decodable {
         fullName: String?,
         address: String,
         status: String,
+        notes: String?,
         reminderDate: Date?,
         updatedAt: Date?,
         createdAt: Date
@@ -529,6 +687,7 @@ private struct ContactFeedRow: Decodable {
         self.fullName = fullName
         self.address = address
         self.status = status
+        self.notes = notes
         self.reminderDate = reminderDate
         self.updatedAt = updatedAt
         self.createdAt = createdAt
@@ -541,6 +700,7 @@ private struct ContactFeedRow: Decodable {
             fullName: contact.fullName,
             address: contact.address,
             status: contact.status.rawValue,
+            notes: contact.notes,
             reminderDate: contact.reminderDate,
             updatedAt: contact.updatedAt,
             createdAt: contact.createdAt
@@ -620,5 +780,11 @@ private struct AppointmentContactRow: Decodable {
         self.address = contact.address
         self.userId = contact.userId
         self.workspaceId = nil
+    }
+}
+
+private extension String {
+    var nilIfEmpty: String? {
+        isEmpty ? nil : self
     }
 }

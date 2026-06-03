@@ -51,6 +51,7 @@ final class LocalStorage {
     private let hasCompletedOnboardingKey = "flyr_has_completed_onboarding"
     private let isInPreviewModeKey = "flyr_is_in_preview_mode"
     private let hasSeenMapInfoSheetKey = "flyr_has_seen_map_info_sheet"
+    private let hasSeenBackgroundLocationUpgradePromptKey = "flyr_has_seen_background_location_upgrade_prompt"
     private let beaconTokensKey = "flyr_session_beacon_tokens"
     private let beaconRecipientsKey = "flyr_beacon_recipients"
     private let beaconMessageKey = "flyr_beacon_message"
@@ -96,6 +97,11 @@ final class LocalStorage {
         set { UserDefaults.standard.set(newValue, forKey: hasSeenMapInfoSheetKey) }
     }
 
+    var hasSeenBackgroundLocationUpgradePrompt: Bool {
+        get { UserDefaults.standard.bool(forKey: hasSeenBackgroundLocationUpgradePromptKey) }
+        set { UserDefaults.standard.set(newValue, forKey: hasSeenBackgroundLocationUpgradePromptKey) }
+    }
+
     // MARK: - Clean Slate
 
     func reset() {
@@ -103,6 +109,7 @@ final class LocalStorage {
         hasCompletedOnboarding = false
         isInPreviewMode = false
         hasSeenMapInfoSheet = false
+        hasSeenBackgroundLocationUpgradePrompt = false
         UserDefaults.standard.removeObject(forKey: liveSessionCodesKey)
         clearMapSelection()
     }

@@ -86,7 +86,7 @@ final class HomesService {
             try await updateQuickStartBoundary(campaignId: campaignId, center: center, radiusMeters: radiusMeters)
         }
 
-        let provision = try await CampaignsAPI.shared.provisionCampaign(campaignId: campaignId)
+        let provision = try await CampaignsAPI.shared.provisionCampaign(campaignId: campaignId, waitForLinker: true)
         let finalProvisionStatus: CampaignProvisionStatus?
         if provision?.provisionStatus == .ready {
             finalProvisionStatus = .ready

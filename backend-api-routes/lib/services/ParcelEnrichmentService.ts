@@ -913,26 +913,6 @@ export class ParcelEnrichmentService {
     options: { allowGoldFallback?: boolean } = {}
   ): Promise<ParcelPreparationResult> {
     const regionCode = (campaign.region || '').trim().toUpperCase();
-    const regionMetadata = getRegionMetadata(regionCode);
-    if (!regionMetadata) {
-      return {
-        status: 'skipped',
-        sourceId: null,
-        parcelCount: 0,
-        parcels: [],
-        error: regionCode
-          ? `Parcel enrichment could not resolve a parcel dataset region for campaign region ${regionCode}.`
-          : 'Parcel enrichment could not resolve a campaign region.',
-        debug: {
-          ...(debugOverride ?? {}),
-          skipped_reason: regionCode
-            ? `No region metadata found for campaign region ${regionCode}.`
-            : 'Campaign region missing.',
-          completed_at: new Date().toISOString(),
-        },
-      };
-    }
-
     const bbox = getCampaignBbox(campaign);
     const campaignPolygon = campaign.territory_boundary;
     if (!bbox) {
@@ -980,6 +960,26 @@ export class ParcelEnrichmentService {
         debug: {
           ...debug,
           skipped_reason: 'Snapshot parcel PMTiles unavailable or empty; gold NDJSON fallback disabled.',
+          completed_at: new Date().toISOString(),
+        },
+      };
+    }
+
+    const regionMetadata = getRegionMetadata(regionCode);
+    if (!regionMetadata) {
+      return {
+        status: 'skipped',
+        sourceId: null,
+        parcelCount: 0,
+        parcels: [],
+        error: regionCode
+          ? `Parcel enrichment could not resolve a parcel dataset region for campaign region ${regionCode}.`
+          : 'Parcel enrichment could not resolve a campaign region.',
+        debug: {
+          ...debug,
+          skipped_reason: regionCode
+            ? `No region metadata found for campaign region ${regionCode}.`
+            : 'Campaign region missing.',
           completed_at: new Date().toISOString(),
         },
       };

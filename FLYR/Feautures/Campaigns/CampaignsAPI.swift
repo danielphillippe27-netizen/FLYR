@@ -84,6 +84,22 @@ final class CampaignsAPI {
     private static let campaignAddressPageSize = 1_000
     private let client = SupabaseManager.shared.client
 
+    static func campaignHomeLimitMessage(from error: Error) -> String? {
+        let nsError = error as NSError
+        guard nsError.domain == "CampaignsAPI",
+              let code = nsError.userInfo["code"] as? String,
+              code == "campaign_home_limit_exceeded" || code == "campaign_too_large_for_app" else {
+            return nil
+        }
+        return nsError.localizedDescription
+    }
+
+    static func campaignHomeLimitCode(from error: Error) -> String? {
+        let nsError = error as NSError
+        guard nsError.domain == "CampaignsAPI" else { return nil }
+        return nsError.userInfo["code"] as? String
+    }
+
     private struct WorkspaceMemberRow: Decodable {
         let userId: UUID
 
@@ -824,7 +840,12 @@ final class CampaignsAPI {
             coverageScore: state.coverageScore,
             dataQuality: state.dataQuality,
             standardModeRecommended: state.standardModeRecommended,
-            dataQualityReason: state.dataQualityReason
+            dataQualityReason: state.dataQualityReason,
+            code: nil,
+            homeCount: nil,
+            maxCampaignHomes: nil,
+            maxAppHomes: nil,
+            suggestedCampaigns: nil
         )
     }
 
@@ -1031,16 +1052,31 @@ final class CampaignsAPI {
             print("🌐 [API DEBUG] Provision raw response (\(http.statusCode)): <empty>")
         }
         guard (200...299).contains(http.statusCode) else {
-            if http.statusCode == 422,
-               let provisionErr = try? JSONDecoder().decode(CampaignProvisionResponse.self, from: data) {
+            if let provisionErr = try? JSONDecoder().decode(CampaignProvisionResponse.self, from: data) {
                 let msg = provisionErr.error
                     ?? provisionErr.message
                     ?? "Provisioning did not meet readiness requirements (e.g. addresses or map roads)."
-                trace.end(status: "server_422", fields: [
+                trace.end(status: "server_error", fields: [
                     "http": http.statusCode,
                     "error": msg
                 ])
-                throw NSError(domain: "CampaignsAPI", code: 422, userInfo: [NSLocalizedDescriptionKey: msg])
+                var userInfo: [String: Any] = [NSLocalizedDescriptionKey: msg]
+                if let code = provisionErr.code {
+                    userInfo["code"] = code
+                }
+                if let homeCount = provisionErr.homeCount {
+                    userInfo["home_count"] = homeCount
+                }
+                if let maxCampaignHomes = provisionErr.maxCampaignHomes {
+                    userInfo["max_campaign_homes"] = maxCampaignHomes
+                }
+                if let maxAppHomes = provisionErr.maxAppHomes {
+                    userInfo["max_app_homes"] = maxAppHomes
+                }
+                if let suggestedCampaigns = provisionErr.suggestedCampaigns {
+                    userInfo["suggested_campaigns"] = suggestedCampaigns
+                }
+                throw NSError(domain: "CampaignsAPI", code: http.statusCode, userInfo: userInfo)
             }
             let bodyStr = String(data: data, encoding: .utf8) ?? ""
             let userMessage = Self.extractMessageFromErrorBody(data)
@@ -1049,7 +1085,7 @@ final class CampaignsAPI {
                 "http": http.statusCode,
                 "error": String(displayMessage.prefix(160))
             ])
-            throw NSError(domain: "CampaignsAPI", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: "Provision failed: \(displayMessage.prefix(300))"])
+            throw NSError(domain: "CampaignsAPI", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: String(displayMessage.prefix(300))])
         }
         if let provisionResponse = try? JSONDecoder().decode(CampaignProvisionResponse.self, from: data) {
             if provisionResponse.accepted == true || provisionResponse.provisionStatus == .pending {
@@ -1303,6 +1339,11 @@ struct CampaignProvisionTimings: Codable, Equatable {
     var dataQuality: CampaignDataQuality?
     var standardModeRecommended: Bool?
     var dataQualityReason: String?
+    var code: String?
+    var homeCount: Int?
+    var maxCampaignHomes: Int?
+    var maxAppHomes: Int?
+    var suggestedCampaigns: Int?
 
     enum CodingKeys: String, CodingKey {
         case success
@@ -1334,6 +1375,11 @@ struct CampaignProvisionTimings: Codable, Equatable {
         case dataQuality = "data_quality"
         case standardModeRecommended = "standard_mode_recommended"
         case dataQualityReason = "reason"
+        case code
+        case homeCount = "home_count"
+        case maxCampaignHomes = "max_campaign_homes"
+        case maxAppHomes = "max_app_homes"
+        case suggestedCampaigns = "suggested_campaigns"
     }
 }
 
@@ -1381,6 +1427,97 @@ struct CampaignProvisionState: Codable {
         case provisionTimings = "provision_timings"
         case provisionError = "provision_error"
         case provisionMessage = "provision_message"
+    }
+}
+
+// MARK: - Campaign Assignments API
+
+struct CampaignAssignmentSummary: Decodable, Identifiable, Equatable {
+    let id: UUID
+    let campaignId: UUID
+    let workspaceId: UUID
+    let assignedToUserId: UUID
+    let assignedByUserId: UUID
+    let mode: String
+    let goalHomes: Int?
+    let zoneIndex: Int?
+    let status: String
+    let dueAt: String?
+    let notes: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case campaignId = "campaign_id"
+        case workspaceId = "workspace_id"
+        case assignedToUserId = "assigned_to_user_id"
+        case assignedByUserId = "assigned_by_user_id"
+        case mode
+        case goalHomes = "goal_homes"
+        case zoneIndex = "zone_index"
+        case status
+        case dueAt = "due_at"
+        case notes
+    }
+
+    var isActive: Bool {
+        !["completed", "complete", "cancelled", "canceled", "archived", "declined"]
+            .contains(status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+    }
+}
+
+struct CampaignAssignmentsResponse: Decodable {
+    let assignments: [CampaignAssignmentSummary]
+    let role: String
+}
+
+@MainActor
+final class CampaignAssignmentsAPI {
+    static let shared = CampaignAssignmentsAPI()
+
+    private init() {}
+
+    private var baseURL: String {
+        (Bundle.main.object(forInfoDictionaryKey: "FLYR_PRO_API_URL") as? String)?
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/")) ?? "https://flyrpro.app"
+    }
+
+    private var requestBaseURL: String {
+        guard let components = URLComponents(string: baseURL), components.host == "flyrpro.app" else {
+            return baseURL
+        }
+        return "https://www.flyrpro.app"
+    }
+
+    func fetchAssignments(workspaceId: UUID) async throws -> CampaignAssignmentsResponse {
+        var components = URLComponents(string: "\(requestBaseURL)/api/campaign-assignments")!
+        components.queryItems = [URLQueryItem(name: "workspaceId", value: workspaceId.uuidString)]
+        guard let url = components.url else {
+            throw NSError(domain: "CampaignAssignmentsAPI", code: 400, userInfo: [
+                NSLocalizedDescriptionKey: "Invalid campaign assignments URL."
+            ])
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+
+        let session = try await SupabaseManager.shared.client.auth.session
+        request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw NSError(domain: "CampaignAssignmentsAPI", code: -1, userInfo: [
+                NSLocalizedDescriptionKey: "No HTTP response for campaign assignments."
+            ])
+        }
+        guard (200...299).contains(http.statusCode) else {
+            let message = (try? JSONDecoder().decode(APIErrorResponse.self, from: data).error) ?? "Campaign assignments failed."
+            throw NSError(domain: "CampaignAssignmentsAPI", code: http.statusCode, userInfo: [
+                NSLocalizedDescriptionKey: message
+            ])
+        }
+
+        return try JSONDecoder().decode(CampaignAssignmentsResponse.self, from: data)
     }
 }
 

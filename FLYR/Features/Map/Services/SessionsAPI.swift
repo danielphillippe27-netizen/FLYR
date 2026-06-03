@@ -137,6 +137,29 @@ final class SessionsAPI {
         return sessions
     }
 
+    /// Fetch sessions that intersect a calendar range.
+    func fetchUserSessions(userId: UUID, workspaceId: UUID?, start: Date, end: Date, limit: Int = 1000) async throws -> [SessionRecord] {
+        var query = client
+            .from("session_analytics")
+            .select()
+            .lt("start_time", value: OfflineDateCodec.string(from: end))
+            .or("end_time.gte.\(OfflineDateCodec.string(from: start)),end_time.is.null")
+
+        if let workspaceId {
+            query = query.eq("workspace_id", value: workspaceId.uuidString)
+        } else {
+            query = query.eq("user_id", value: userId.uuidString)
+        }
+
+        let response = try await query
+            .order("start_time", ascending: true)
+            .limit(limit)
+            .execute()
+
+        let decoder = JSONDecoder.supabaseDates
+        return try decoder.decode([SessionRecord].self, from: response.data)
+    }
+
     /// Fetch sessions for a campaign.
     /// When a workspace is provided, fetch workspace-visible campaign activity.
     /// Otherwise fall back to the current user's activity.

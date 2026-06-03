@@ -47,7 +47,7 @@ struct SessionMapboxViewRepresentable: UIViewRepresentable {
     private let userLocationLayerId = "session-user-location-layer"
     
     func makeUIView(context: Context) -> MapView {
-        let mapView = MapView(frame: CGRect(x: 0, y: 0, width: 320, height: 260))
+        let mapView = DisplayLinkRecoveringMapView(frame: CGRect(x: 0, y: 0, width: 320, height: 260))
         mapView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         let scale = mapView.window?.screen.scale ?? UIScreen.main.scale
         if scale.isFinite, scale > 0 {

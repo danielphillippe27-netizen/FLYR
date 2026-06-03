@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { createCipheriv, randomBytes } from "crypto";
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY!;
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY ?? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 const CRM_ENCRYPTION_KEY = process.env.CRM_ENCRYPTION_KEY!; // 32 bytes hex or base64
 const CRM_ENCRYPTION_KEY_VERSION = parseInt(process.env.CRM_ENCRYPTION_KEY_VERSION ?? "1", 10);

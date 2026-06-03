@@ -1,5 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
+import { geoJSONPolygonToMultiPolygonEWKT } from "@/app/api/campaigns/_utils/manual-building-geometry";
 
 const SUPABASE_URL = process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY ?? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
@@ -100,15 +101,6 @@ async function resolveBuildingRow(
   return data as { id: string; gers_id: string | null; source: string | null };
 }
 
-function isValidPolygonGeometry(geometry: unknown): boolean {
-  if (!geometry || typeof geometry !== "object") return false;
-  const candidate = geometry as { type?: unknown; coordinates?: unknown };
-  if (candidate.type !== "Polygon" && candidate.type !== "MultiPolygon") {
-    return false;
-  }
-  return Array.isArray(candidate.coordinates);
-}
-
 export async function PATCH(request: Request, context: RouteContext): Promise<Response> {
   try {
     const token = getAuthToken(request);
@@ -122,7 +114,8 @@ export async function PATCH(request: Request, context: RouteContext): Promise<Re
     }
 
     const geometry = (body as { geometry?: unknown }).geometry;
-    if (!isValidPolygonGeometry(geometry)) {
+    const geometryEWKT = geoJSONPolygonToMultiPolygonEWKT(geometry);
+    if (!geometryEWKT) {
       return NextResponse.json(
         { error: "geometry must be a GeoJSON Polygon or MultiPolygon" },
         { status: 400 }
@@ -152,7 +145,7 @@ export async function PATCH(request: Request, context: RouteContext): Promise<Re
 
     const { error: updateError } = await supabase
       .from("buildings")
-      .update({ geom: JSON.stringify(geometry) })
+      .update({ geom: geometryEWKT })
       .eq("campaign_id", campaignId)
       .eq("id", row.id);
 

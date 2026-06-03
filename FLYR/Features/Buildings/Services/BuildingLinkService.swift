@@ -71,11 +71,39 @@ private actor MapBundleFetchDeduper {
 }
 
 struct CanonicalCampaignMapBundleCounts: Codable, Sendable {
+    static let currentRenderVersion = "2026-06-01-strict-pmtiles-building-scope-v1"
+
     let addresses: Int
     let buildings: Int
     let parcels: Int
     let roads: Int
     let links: Int?
+    let renderVersion: String?
+
+    init(
+        addresses: Int,
+        buildings: Int,
+        parcels: Int,
+        roads: Int,
+        links: Int?,
+        renderVersion: String? = nil
+    ) {
+        self.addresses = addresses
+        self.buildings = buildings
+        self.parcels = parcels
+        self.roads = roads
+        self.links = links
+        self.renderVersion = renderVersion
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case addresses
+        case buildings
+        case parcels
+        case roads
+        case links
+        case renderVersion = "render_version"
+    }
 }
 
 struct CanonicalCampaignMapLayerFetchedAt: Codable, Sendable {

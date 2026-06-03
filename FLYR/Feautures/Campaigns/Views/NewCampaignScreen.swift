@@ -8,8 +8,13 @@ private enum CampaignCreationStage {
     case details
 }
 
+private struct PendingCampaignProvision {
+    let polygon: [CLLocationCoordinate2D]
+    let regionCode: String?
+}
+
 struct NewCampaignScreen: View {
-    @ObservedObject var store: CampaignV2Store
+    private let store: CampaignV2Store
     private let resumedCampaignId: UUID?
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var uiState: AppUIState
@@ -50,6 +55,8 @@ struct NewCampaignScreen: View {
     @State private var hasRegisteredCreationPresentation = false
     @State private var campaignCreationTask: Task<Void, Never>?
     @State private var provisioningTask: Task<Void, Never>?
+    @State private var pendingProvision: PendingCampaignProvision?
+    @State private var campaignHomeLimitAlertMessage: String?
 
     init(store: CampaignV2Store, resumedCampaignId: UUID? = nil) {
         self.store = store
@@ -276,6 +283,23 @@ struct NewCampaignScreen: View {
         }
         .sheet(isPresented: $showPaywall) {
             PaywallView()
+        }
+        .alert(
+            "Campaign size limit",
+            isPresented: Binding(
+                get: { campaignHomeLimitAlertMessage != nil },
+                set: { isPresented in
+                    if !isPresented {
+                        campaignHomeLimitAlertMessage = nil
+                    }
+                }
+            )
+        ) {
+            Button("OK") {
+                campaignHomeLimitAlertMessage = nil
+            }
+        } message: {
+            Text(campaignHomeLimitAlertMessage ?? "")
         }
         .overlay {
             if shouldShowCampaignCreatingOverlay {
@@ -652,6 +676,9 @@ struct NewCampaignScreen: View {
         cancelProvisionError = nil
         provisionStatusText = "Creating campaign"
         provisionProgressPercent = 0
+        // Give SwiftUI a turn to render the lightweight details screen before setup resumes.
+        await Task.yield()
+        guard !Task.isCancelled else { return }
         let planTrace = PerfTrace.begin("campaign_create", "plan_gate", fields: [
             "points": polygon.count
         ])
@@ -722,8 +749,8 @@ struct NewCampaignScreen: View {
             created.type = campaignType
             createdCampaign = created
             createHook.error = nil
-            startBackgroundProvision(campaign: created, polygon: polygon, regionCode: provisionRegionCode)
-            trace.end(status: "created_background_provision_started", fields: [
+            pendingProvision = PendingCampaignProvision(polygon: polygon, regionCode: provisionRegionCode)
+            trace.end(status: "created_pending_details", fields: [
                 "campaign": created.id.uuidString
             ])
         } else {
@@ -770,6 +797,14 @@ struct NewCampaignScreen: View {
             )
             detailsSaved = true
             createHook.error = nil
+            if let pendingProvision {
+                self.pendingProvision = nil
+                startBackgroundProvision(
+                    campaign: campaign,
+                    polygon: pendingProvision.polygon,
+                    regionCode: pendingProvision.regionCode
+                )
+            }
             await provisionMonitor.refreshLatest()
             await reconcileTrackedProvisionState()
 
@@ -830,7 +865,11 @@ struct NewCampaignScreen: View {
     }
 
     @MainActor
-    private func startBackgroundProvision(campaign: CampaignV2, polygon: [CLLocationCoordinate2D], regionCode: String?) {
+    private func startBackgroundProvision(
+        campaign: CampaignV2,
+        polygon: [CLLocationCoordinate2D],
+        regionCode: String?
+    ) {
         provisioningTask?.cancel()
         isProvisioningCampaign = true
         provisionComplete = false
@@ -844,8 +883,40 @@ struct NewCampaignScreen: View {
             statusText: CampaignProvisionMonitor.runningStatusText,
             progressPercent: provisionProgressPercent
         )
-        provisioningTask = Task {
+        let task = Task {
             await provisionCampaignInBackground(campaign: campaign, polygon: polygon, regionCode: regionCode)
+        }
+        provisioningTask = task
+    }
+
+    @MainActor
+    private func handleCampaignHomeLimitFailure(
+        campaign: CampaignV2,
+        polygon: [CLLocationCoordinate2D],
+        regionCode: String?,
+        code: String?,
+        message: String
+    ) {
+        provisionFailed = true
+        provisionComplete = false
+        isProvisioningCampaign = false
+        campaignMapDataReady = false
+        showCampaignReadinessOverlay = false
+        pendingProvision = nil
+        createdCampaign = nil
+        detailsSaved = false
+        detailsSaving = false
+        provisionStatusText = ""
+        provisionProgressPercent = 0
+        createHook.error = nil
+        campaignHomeLimitAlertMessage = message
+        store.remove(id: campaign.id)
+        CampaignProvisionMonitor.shared.dismiss(campaignId: campaign.id)
+        withAnimation(.easeInOut(duration: 0.2)) {
+            creationStage = .territory
+        }
+        Task {
+            try? await CampaignsAPI.shared.deleteCampaign(campaignId: campaign.id)
         }
     }
 
@@ -1001,7 +1072,8 @@ struct NewCampaignScreen: View {
             ])
             let provisionResponse = try await CampaignsAPI.shared.provisionCampaign(
                 campaignId: campaign.id,
-                waitUntilReady: false
+                waitForLinker: true,
+                waitUntilReady: true
             )
             provisionTrace.end(status: "accepted_or_complete", fields: [
                 "accepted": provisionResponse?.accepted ?? false,
@@ -1130,7 +1202,18 @@ struct NewCampaignScreen: View {
             }
         } catch {
             guard !Task.isCancelled else { return }
-            if isDiamondGeometryReadinessError(error) {
+            if let message = CampaignsAPI.campaignHomeLimitMessage(from: error) {
+                handleCampaignHomeLimitFailure(
+                    campaign: campaign,
+                    polygon: polygon,
+                    regionCode: regionCode,
+                    code: CampaignsAPI.campaignHomeLimitCode(from: error),
+                    message: message
+                )
+                trace.end(status: "home_limit", fields: [
+                    "error": message
+                ])
+            } else if isDiamondGeometryReadinessError(error) {
                 print("💎 [CAMPAIGN DEBUG] Diamond/Bedrock geometry not ready yet; warming in the background")
                 MapFeaturesService.shared.beginDiamondManifestPrewarm(
                     campaignId: campaign.id.uuidString,

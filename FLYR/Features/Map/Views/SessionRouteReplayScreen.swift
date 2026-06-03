@@ -41,7 +41,7 @@ private struct SessionRouteReplayMapboxViewRepresentable: UIViewRepresentable {
     private let routeLayerId = "session-replay-route-layer"
 
     func makeUIView(context: Context) -> MapView {
-        let mapView = MapView(frame: .zero)
+        let mapView = DisplayLinkRecoveringMapView(frame: .zero)
         mapView.ornaments.options.scaleBar.visibility = .hidden
         mapView.ornaments.options.compass.visibility = .adaptive
         if let map = mapView.mapboxMap {

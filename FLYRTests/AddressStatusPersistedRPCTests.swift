@@ -10,10 +10,17 @@ final class AddressStatusPersistedRPCTests: XCTestCase {
 
     func testRecordedVisitEventTypeMapsToCanonicalSessionEventTypes() {
         XCTAssertEqual(SessionEventType.recordedVisitEventType(for: .delivered), .flyerLeft)
+        XCTAssertEqual(SessionEventType.recordedVisitEventType(for: .noAnswer), .conversation)
         XCTAssertEqual(SessionEventType.recordedVisitEventType(for: .talked), .conversation)
         XCTAssertEqual(SessionEventType.recordedVisitEventType(for: .appointment), .conversation)
         XCTAssertNil(SessionEventType.recordedVisitEventType(for: .none))
         XCTAssertNil(SessionEventType.recordedVisitEventType(for: .untouched))
+    }
+
+    func testNoAnswerIsAttemptedMapStatus() {
+        XCTAssertEqual(AddressStatus.noAnswer.displayName, "Attempted")
+        XCTAssertEqual(AddressStatus.noAnswer.mapLayerStatus, "no_answer")
+        XCTAssertEqual(AddressStatus.noAnswer.persistedRPCValue, "no_answer")
     }
 
     func testAddressStatusRowDecodesCampaignAddressId() throws {

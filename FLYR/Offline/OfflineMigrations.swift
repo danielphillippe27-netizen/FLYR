@@ -227,6 +227,100 @@ enum OfflineMigrations {
             try db.create(index: "idx_cached_address_capture_campaign_address", on: "cached_address_capture_metadata", columns: ["campaign_id", "address_id"], ifNotExists: true)
         }
 
+        migrator.registerMigration("calendar_events_v1") { db in
+            try db.create(table: "cached_calendar_events", ifNotExists: true) { t in
+                t.column("id", .text).primaryKey()
+                t.column("user_id", .text)
+                t.column("workspace_id", .text)
+                t.column("title", .text).notNull()
+                t.column("start_at", .text).notNull()
+                t.column("end_at", .text).notNull()
+                t.column("is_all_day", .integer).notNull().defaults(to: 0)
+                t.column("notes", .text)
+                t.column("location", .text)
+                t.column("color_key", .text).notNull().defaults(to: "red")
+                t.column("payload_json", .text)
+                t.column("created_at", .text).notNull()
+                t.column("updated_at", .text).notNull()
+                t.column("deleted_at", .text)
+                t.column("dirty", .integer).notNull().defaults(to: 0)
+                t.column("synced_at", .text)
+            }
+
+            try db.create(index: "idx_cached_calendar_events_user_range", on: "cached_calendar_events", columns: ["user_id", "start_at", "end_at"], ifNotExists: true)
+            try db.create(index: "idx_cached_calendar_events_workspace_range", on: "cached_calendar_events", columns: ["workspace_id", "start_at", "end_at"], ifNotExists: true)
+            try db.create(index: "idx_cached_calendar_events_dirty", on: "cached_calendar_events", columns: ["dirty", "updated_at"], ifNotExists: true)
+        }
+
+        migrator.registerMigration("calendar_events_type_contact_v2") { db in
+            let existingColumns = Set(try db.columns(in: "cached_calendar_events").map(\.name))
+
+            if !existingColumns.contains("event_type") {
+                try db.alter(table: "cached_calendar_events") { t in
+                    t.add(column: "event_type", .text).notNull().defaults(to: "appointment")
+                }
+            }
+            if !existingColumns.contains("contact_id") {
+                try db.alter(table: "cached_calendar_events") { t in
+                    t.add(column: "contact_id", .text)
+                }
+            }
+            if !existingColumns.contains("contact_name") {
+                try db.alter(table: "cached_calendar_events") { t in
+                    t.add(column: "contact_name", .text)
+                }
+            }
+            if !existingColumns.contains("contact_address") {
+                try db.alter(table: "cached_calendar_events") { t in
+                    t.add(column: "contact_address", .text)
+                }
+            }
+            try db.create(index: "idx_cached_calendar_events_contact_id", on: "cached_calendar_events", columns: ["contact_id"], ifNotExists: true)
+        }
+
+        migrator.registerMigration("calendar_events_source_link_v3") { db in
+            let existingColumns = Set(try db.columns(in: "cached_calendar_events").map(\.name))
+
+            if !existingColumns.contains("source_kind") {
+                try db.alter(table: "cached_calendar_events") { t in
+                    t.add(column: "source_kind", .text)
+                }
+            }
+            if !existingColumns.contains("source_id") {
+                try db.alter(table: "cached_calendar_events") { t in
+                    t.add(column: "source_id", .text)
+                }
+            }
+            try db.create(index: "idx_cached_calendar_events_source", on: "cached_calendar_events", columns: ["source_kind", "source_id", "event_type"], ifNotExists: true)
+        }
+
+        migrator.registerMigration("calendar_events_campaign_recurrence_v4") { db in
+            let existingColumns = Set(try db.columns(in: "cached_calendar_events").map(\.name))
+
+            if !existingColumns.contains("campaign_id") {
+                try db.alter(table: "cached_calendar_events") { t in
+                    t.add(column: "campaign_id", .text)
+                }
+            }
+            if !existingColumns.contains("campaign_name") {
+                try db.alter(table: "cached_calendar_events") { t in
+                    t.add(column: "campaign_name", .text)
+                }
+            }
+            if !existingColumns.contains("recurrence_rule") {
+                try db.alter(table: "cached_calendar_events") { t in
+                    t.add(column: "recurrence_rule", .text).notNull().defaults(to: "none")
+                }
+            }
+            if !existingColumns.contains("recurrence_until") {
+                try db.alter(table: "cached_calendar_events") { t in
+                    t.add(column: "recurrence_until", .text)
+                }
+            }
+            try db.create(index: "idx_cached_calendar_events_campaign_id", on: "cached_calendar_events", columns: ["campaign_id"], ifNotExists: true)
+            try db.create(index: "idx_cached_calendar_events_recurrence", on: "cached_calendar_events", columns: ["recurrence_rule", "recurrence_until"], ifNotExists: true)
+        }
+
         migrator.registerMigration("phase1_outbox_durability_v2") { db in
             try db.alter(table: "sync_outbox") { t in
                 t.add(column: "client_mutation_id", .text)

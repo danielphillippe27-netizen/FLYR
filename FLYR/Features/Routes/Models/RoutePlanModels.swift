@@ -34,6 +34,7 @@ struct RouteAssignmentProgress: Codable, Equatable, Sendable {
 struct RouteAssignmentSummary: Identifiable, Codable, Equatable, Sendable {
     let id: UUID
     let routePlanId: UUID
+    let campaignId: UUID?
     let name: String
     let status: String
     let totalStops: Int
@@ -70,6 +71,7 @@ struct RouteAssignmentSummary: Identifiable, Codable, Equatable, Sendable {
 
         self.id = assignmentId
         self.routePlanId = routePlanId
+        self.campaignId = RouteJSON.uuid(from: RouteJSON.value(in: json, keys: ["campaign_id", "campaignId"]))
         self.name = RouteJSON.string(from: RouteJSON.value(in: json, keys: ["name"])) ?? "Route Plan"
         self.status = RouteJSON.string(from: RouteJSON.value(in: json, keys: ["status"])) ?? "assigned"
         self.totalStops = RouteJSON.int(from: RouteJSON.value(in: json, keys: ["total_stops", "totalStops"])) ?? 0
@@ -98,6 +100,8 @@ struct RouteAssignmentSummary: Identifiable, Codable, Equatable, Sendable {
         let rawPlanName = RouteJSON.string(from: RouteJSON.value(in: plan, keys: ["name"]))
         self.id = assignmentId
         self.routePlanId = routePlanId
+        self.campaignId = RouteJSON.uuid(from: RouteJSON.value(in: json, keys: ["campaign_id", "campaignId"]))
+            ?? RouteJSON.uuid(from: RouteJSON.value(in: plan, keys: ["campaign_id", "campaignId"]))
         self.name = Self.displayName(fromRoutePlanName: rawPlanName)
         self.status = RouteJSON.string(from: RouteJSON.value(in: json, keys: ["status"])) ?? "assigned"
         self.totalStops = RouteJSON.int(from: RouteJSON.value(in: plan, keys: ["total_stops", "totalStops"])) ?? 0

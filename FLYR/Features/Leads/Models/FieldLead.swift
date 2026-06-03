@@ -52,6 +52,7 @@ struct FieldLead: Codable, Identifiable, Equatable, Hashable {
     var sessionId: UUID?
     var externalCrmId: String?
     var lastSyncedAt: Date?
+    var reminderDate: Date?
     var syncStatus: FieldLeadSyncStatus?
     var createdAt: Date
     var updatedAt: Date
@@ -70,6 +71,7 @@ struct FieldLead: Codable, Identifiable, Equatable, Hashable {
         case sessionId = "session_id"
         case externalCrmId = "external_crm_id"
         case lastSyncedAt = "last_synced_at"
+        case reminderDate = "reminder_date"
         case syncStatus = "sync_status"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
@@ -89,6 +91,7 @@ struct FieldLead: Codable, Identifiable, Equatable, Hashable {
         sessionId: UUID? = nil,
         externalCrmId: String? = nil,
         lastSyncedAt: Date? = nil,
+        reminderDate: Date? = nil,
         syncStatus: FieldLeadSyncStatus? = nil,
         createdAt: Date = Date(),
         updatedAt: Date = Date()
@@ -106,6 +109,7 @@ struct FieldLead: Codable, Identifiable, Equatable, Hashable {
         self.sessionId = sessionId
         self.externalCrmId = externalCrmId
         self.lastSyncedAt = lastSyncedAt
+        self.reminderDate = reminderDate
         self.syncStatus = syncStatus
         self.createdAt = createdAt
         self.updatedAt = updatedAt

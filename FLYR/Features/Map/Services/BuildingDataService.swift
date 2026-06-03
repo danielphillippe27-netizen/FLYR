@@ -539,6 +539,7 @@ class BuildingDataService: ObservableObject {
             gersId: gersId,
             campaignId: campaignId,
             addressId: addressId,
+            preferredAddressId: preferredAddressId,
             buildingIdentifiers: buildingIdentifiers,
             linkedAddressIds: linkedAddressIds
         ),
@@ -654,6 +655,33 @@ class BuildingDataService: ObservableObject {
         let priorityIds = Set([preferredAddressId, requestedAddressId].compactMap { $0 })
         var orderedKeys: [String] = []
         var keyedAddresses: [String: CampaignAddressResponse] = [:]
+
+        for address in addresses {
+            let key = normalizedAddressIdentity(for: address)
+            if keyedAddresses[key] == nil {
+                orderedKeys.append(key)
+                keyedAddresses[key] = address
+                continue
+            }
+
+            if priorityIds.contains(address.id) {
+                keyedAddresses[key] = address
+            }
+        }
+
+        return orderedKeys.compactMap { keyedAddresses[$0] }
+    }
+
+    static func deduplicatedResolvedAddressesForDisplay(
+        _ addresses: [ResolvedAddress],
+        preferredAddressId: UUID? = nil,
+        requestedAddressId: UUID? = nil
+    ) -> [ResolvedAddress] {
+        guard addresses.count > 1 else { return addresses }
+
+        let priorityIds = Set([preferredAddressId, requestedAddressId].compactMap { $0 })
+        var orderedKeys: [String] = []
+        var keyedAddresses: [String: ResolvedAddress] = [:]
 
         for address in addresses {
             let key = normalizedAddressIdentity(for: address)
@@ -788,6 +816,23 @@ class BuildingDataService: ObservableObject {
         .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    private static func normalizedStreetName(for address: ResolvedAddress) -> String {
+        let explicitStreet = address.streetName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !explicitStreet.isEmpty {
+            return explicitStreet
+        }
+
+        let street = address.street.trimmingCharacters(in: .whitespacesAndNewlines)
+        let source = !street.isEmpty ? street : address.formatted.trimmingCharacters(in: .whitespacesAndNewlines)
+        let streetOnly = source.split(separator: ",", maxSplits: 1, omittingEmptySubsequences: true).first.map(String.init) ?? source
+        return streetOnly.replacingOccurrences(
+            of: #"^\s*\d+[A-Za-z\-]*\s+"#,
+            with: "",
+            options: .regularExpression
+        )
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     private static func normalizedAddressIdentity(for address: CampaignAddressResponse) -> String {
         let house = normalizedHouseNumberIdentity(for: address)
         let street = normalizedStreetName(for: address)
@@ -800,6 +845,23 @@ class BuildingDataService: ObservableObject {
         }
 
         let formatted = (address.formatted ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let streetOnly = formatted.split(separator: ",", maxSplits: 1, omittingEmptySubsequences: true).first.map(String.init) ?? formatted
+        let fallback = normalizedStreetIdentityPart(streetOnly)
+        return fallback.isEmpty ? address.id.uuidString.lowercased() : fallback
+    }
+
+    private static func normalizedAddressIdentity(for address: ResolvedAddress) -> String {
+        let house = normalizedHouseNumberIdentity(for: address)
+        let street = normalizedStreetName(for: address)
+        let primary = [house, normalizedStreetIdentityPart(street)]
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+
+        if !primary.isEmpty {
+            return primary
+        }
+
+        let formatted = address.formatted.trimmingCharacters(in: .whitespacesAndNewlines)
         let streetOnly = formatted.split(separator: ",", maxSplits: 1, omittingEmptySubsequences: true).first.map(String.init) ?? formatted
         let fallback = normalizedStreetIdentityPart(streetOnly)
         return fallback.isEmpty ? address.id.uuidString.lowercased() : fallback
@@ -827,6 +889,19 @@ class BuildingDataService: ObservableObject {
 
         let formatted = (address.formatted ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let streetOnly = formatted.split(separator: ",", maxSplits: 1, omittingEmptySubsequences: true).first.map(String.init) ?? formatted
+        let house = streetOnly.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true).first.map(String.init) ?? ""
+        return normalizedAddressPart(house)
+    }
+
+    private static func normalizedHouseNumberIdentity(for address: ResolvedAddress) -> String {
+        let explicitHouse = address.houseNumber.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !explicitHouse.isEmpty {
+            return normalizedAddressPart(explicitHouse)
+        }
+
+        let street = address.street.trimmingCharacters(in: .whitespacesAndNewlines)
+        let source = !street.isEmpty ? street : address.formatted.trimmingCharacters(in: .whitespacesAndNewlines)
+        let streetOnly = source.split(separator: ",", maxSplits: 1, omittingEmptySubsequences: true).first.map(String.init) ?? source
         let house = streetOnly.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true).first.map(String.init) ?? ""
         return normalizedAddressPart(house)
     }
@@ -1013,6 +1088,7 @@ class BuildingDataService: ObservableObject {
         gersId: String,
         campaignId: UUID,
         addressId: UUID?,
+        preferredAddressId: UUID? = nil,
         buildingIdentifiers: [String] = [],
         linkedAddressIds: [UUID] = []
     ) async -> LocalAddressResolution? {
@@ -1085,6 +1161,11 @@ class BuildingDataService: ObservableObject {
             }
             resolvedAddresses.append(resolved)
         }
+        resolvedAddresses = Self.deduplicatedResolvedAddressesForDisplay(
+            resolvedAddresses,
+            preferredAddressId: preferredAddressId,
+            requestedAddressId: addressId
+        )
         resolvedAddresses.sort { lhs, rhs in
             lhs.displayStreet.localizedStandardCompare(rhs.displayStreet) == .orderedAscending
         }
@@ -1108,6 +1189,7 @@ class BuildingDataService: ObservableObject {
             gersId: gersId,
             campaignId: campaignId,
             addressId: addressId,
+            preferredAddressId: preferredAddressId,
             buildingIdentifiers: buildingIdentifiers,
             linkedAddressIds: linkedAddressIds
         ) else {

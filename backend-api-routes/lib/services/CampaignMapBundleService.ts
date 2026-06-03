@@ -3,6 +3,11 @@ import { createHash } from 'crypto';
 import { fetchScopedPmtilesBuildingFeatures } from '@/app/api/campaigns/_utils/scoped-pmtiles-buildings';
 import { filterLinkableBuildingFootprints } from '@/lib/geo/buildingFootprintFilter';
 import { resolvePmtilesKey, type CampaignSnapshotRow } from '@/lib/diamond/geometry';
+import {
+  isStreetOnlyOrdinalAddressLabel,
+  isUsableHouseNumberAddressLabel,
+  normalizedAddressDisplayIdentity,
+} from '@/lib/services/AddressDisplayIdentity';
 import { resolveCampaignParcels } from '@/lib/services/CampaignParcelFeatureService';
 
 type GeoJSONFeature = {
@@ -48,6 +53,8 @@ export type CampaignMapBundleLink = {
   id?: string;
   building_id: string;
   address_id: string;
+  canonical_address_id?: string;
+  alias_address_ids?: string[];
   match_type: string;
   link_source?: string | null;
   confidence: number;
@@ -124,6 +131,9 @@ export type CanonicalCampaignMapBundleResponse = {
     parcels: number;
     roads: number;
     links: number;
+    raw_addresses?: number;
+    display_addresses?: number;
+    duplicate_address_aliases?: number;
   };
   layer_fetched_at: Record<string, string | null>;
   built_at: string;
@@ -134,7 +144,7 @@ export type CanonicalCampaignMapBundleResponse = {
 const EMPTY_FEATURE_COLLECTION: FeatureCollection = { type: 'FeatureCollection', features: [] };
 const ADDRESS_TTL_MS = 15 * 60 * 1000;
 const STATIC_GEOMETRY_TTL_MS = 24 * 60 * 60 * 1000;
-const MAP_BUNDLE_CACHE_VERSION = 'canonical-map-bundle-v5';
+const MAP_BUNDLE_CACHE_VERSION = 'canonical-map-bundle-v8';
 const PARCEL_RESOLUTION_VERSION = 'pmtiles-v2';
 const STRICT_NEAREST_LINK_MAX_DISTANCE_METERS = 15;
 const STRICT_PROXIMITY_LINK_MAX_DISTANCE_METERS = 25;
@@ -245,6 +255,9 @@ export function isStrictCampaignMapBundleLink(link: CampaignMapBundleLink): bool
   if (matchType === 'manual' || linkSource === 'manual' || linkSource === 'client_auto') return true;
   if (matchType === 'semantic_verified') return confidence >= 0.9;
   if (matchType === 'containment_verified' || matchType === 'point_on_surface') return confidence >= 0.85;
+  if (matchType === 'containment_suspect') {
+    return confidence >= 0.7 && distanceMeters <= 1;
+  }
   if (matchType === 'parcel_verified' || matchType === 'parcel_bridge') return confidence >= 0.9;
   if (matchType === 'proximity_verified') {
     return confidence >= STRICT_PROXIMITY_LINK_MIN_CONFIDENCE &&
@@ -343,7 +356,352 @@ function dedupeStrings(values: string[]): string[] {
   });
 }
 
-function applyLinksToFeatureCollections(
+type CanonicalAddressEntry = {
+  canonicalAddressId: string;
+  aliasAddressIds: string[];
+  displayIdentity: string;
+};
+
+type CanonicalAddressBundle = {
+  addresses: FeatureCollection;
+  byAddressId: Map<string, CanonicalAddressEntry>;
+  counts: {
+    raw_addresses: number;
+    display_addresses: number;
+    duplicate_address_aliases: number;
+  };
+};
+
+export function normalizedCampaignMapAddressIdentity(feature: GeoJSONFeature): string | null {
+  const props = feature.properties ?? {};
+  return normalizedAddressDisplayIdentity(props);
+}
+
+function addressFeatureId(feature: GeoJSONFeature): string | null {
+  return featureIdentity(feature, ['id', 'address_id', 'campaign_address_id']);
+}
+
+function addressCanonicalRank(feature: GeoJSONFeature): number {
+  const props = feature.properties ?? {};
+  const source = normalizedString(props.source)?.toLowerCase() ?? '';
+  const manualScore =
+    source === 'manual' || source === 'user' || source === 'client_manual' || source === 'client'
+      ? 100
+      : 0;
+  const structuredScore = [
+    normalizedString(props.house_number),
+    normalizedString(props.street_name),
+    normalizedString(props.unit),
+    normalizedString(props.locality ?? props.city),
+    normalizedString(props.postal_code ?? props.zip),
+  ].filter(Boolean).length;
+  return manualScore + structuredScore;
+}
+
+function sanitizeAddressLabelProperties(properties: Record<string, unknown>): Record<string, unknown> {
+  const rawHouseNumber = normalizedString(properties.house_number);
+  const rawHouseNumberLabel = normalizedString(properties.house_number_label);
+  const rawStreetName = normalizedString(properties.street_name);
+  const rawFormatted = normalizedString(properties.formatted);
+  const hasUsableHouseNumber = isUsableHouseNumberAddressLabel(rawHouseNumber);
+  const shouldDropStreetOnlyOrdinal =
+    !hasUsableHouseNumber &&
+    isStreetOnlyOrdinalAddressLabel(rawStreetName) &&
+    (!rawFormatted || isStreetOnlyOrdinalAddressLabel(rawFormatted));
+
+  if (
+    hasUsableHouseNumber &&
+    !isStreetOnlyOrdinalAddressLabel(rawHouseNumberLabel) &&
+    !shouldDropStreetOnlyOrdinal &&
+    !isStreetOnlyOrdinalAddressLabel(rawFormatted)
+  ) {
+    return properties;
+  }
+
+  const sanitized = { ...properties };
+  if (rawHouseNumber && !hasUsableHouseNumber) {
+    sanitized.house_number = null;
+  }
+  if (rawHouseNumberLabel && !isUsableHouseNumberAddressLabel(rawHouseNumberLabel)) {
+    sanitized.house_number_label = null;
+  }
+  if (shouldDropStreetOnlyOrdinal) {
+    sanitized.street_name = null;
+  }
+  if (rawFormatted && isStreetOnlyOrdinalAddressLabel(rawFormatted)) {
+    sanitized.formatted = null;
+  }
+  return sanitized;
+}
+
+function sanitizedCampaignMapAddressFeature(feature: GeoJSONFeature): GeoJSONFeature {
+  const properties = feature.properties;
+  if (!properties) return feature;
+  const sanitized = sanitizeAddressLabelProperties(properties);
+  return sanitized === properties ? feature : { ...feature, properties: sanitized };
+}
+
+function preferredCanonicalAddress(existing: GeoJSONFeature, candidate: GeoJSONFeature): GeoJSONFeature {
+  const existingRank = addressCanonicalRank(existing);
+  const candidateRank = addressCanonicalRank(candidate);
+  if (candidateRank !== existingRank) {
+    return candidateRank > existingRank ? candidate : existing;
+  }
+
+  const existingId = addressFeatureId(existing) ?? '';
+  const candidateId = addressFeatureId(candidate) ?? '';
+  return candidateId.localeCompare(existingId) < 0 ? candidate : existing;
+}
+
+export function canonicalizeCampaignMapBundleAddresses(addresses: FeatureCollection): CanonicalAddressBundle {
+  const groups = new Map<string, GeoJSONFeature[]>();
+  const order: string[] = [];
+
+  for (const rawFeature of addresses.features) {
+    const feature = sanitizedCampaignMapAddressFeature(rawFeature);
+    const id = addressFeatureId(feature);
+    const identity = normalizedCampaignMapAddressIdentity(feature) ?? (id ? `id:${id}` : null);
+    if (!identity) {
+      order.push(`feature:${order.length}`);
+      groups.set(order[order.length - 1], [feature]);
+      continue;
+    }
+    if (!groups.has(identity)) {
+      groups.set(identity, []);
+      order.push(identity);
+    }
+    groups.get(identity)!.push(feature);
+  }
+
+  const byAddressId = new Map<string, CanonicalAddressEntry>();
+  const features = order.flatMap((identity) => {
+    const group = groups.get(identity) ?? [];
+    if (group.length === 0) return [];
+
+    const canonical = group.reduce(preferredCanonicalAddress);
+    const canonicalAddressId = addressFeatureId(canonical);
+    if (!canonicalAddressId) return [canonical];
+
+    const aliasAddressIds = dedupeStrings(
+      group
+        .map(addressFeatureId)
+        .filter((id): id is string => Boolean(id))
+    ).sort((a, b) => a.localeCompare(b));
+    const canonicalAliases = aliasAddressIds.includes(canonicalAddressId)
+      ? [canonicalAddressId, ...aliasAddressIds.filter((id) => id !== canonicalAddressId)]
+      : [canonicalAddressId, ...aliasAddressIds];
+    const entry: CanonicalAddressEntry = {
+      canonicalAddressId,
+      aliasAddressIds: canonicalAliases,
+      displayIdentity: identity,
+    };
+    for (const aliasId of canonicalAliases) {
+      byAddressId.set(aliasId.toLowerCase(), entry);
+    }
+
+    const properties = {
+      ...(canonical.properties ?? {}),
+      id: canonicalAddressId,
+      canonical_address_id: canonicalAddressId,
+      alias_address_ids: canonicalAliases,
+      duplicate_alias_count: Math.max(canonicalAliases.length - 1, 0),
+    };
+
+    return [{
+      ...canonical,
+      id: canonicalAddressId,
+      properties,
+    }];
+  });
+
+  return {
+    addresses: {
+      type: addresses.type,
+      features,
+    },
+    byAddressId,
+    counts: {
+      raw_addresses: addresses.features.length,
+      display_addresses: features.length,
+      duplicate_address_aliases: Math.max(addresses.features.length - features.length, 0),
+    },
+  };
+}
+
+export function canonicalizeCampaignMapBundleLinksForDisplay(
+  links: CampaignMapBundleLink[],
+  addresses: CanonicalAddressBundle
+): CampaignMapBundleLink[] {
+  if (links.length <= 1 && addresses.byAddressId.size === 0) return links;
+
+  const orderedKeys: string[] = [];
+  const bestByBuildingDisplayAddress = new Map<string, CampaignMapBundleLink>();
+  const aliasesByKey = new Map<string, Set<string>>();
+  const buildingByKey = new Map<string, string>();
+  const originalBuildingClassByKey = new Map<string, string | null>();
+
+  for (const link of links) {
+    const buildingId = link.building_id.trim();
+    const addressId = link.address_id.trim();
+    if (!buildingId || !addressId) continue;
+
+    const canonical = addresses.byAddressId.get(addressId.toLowerCase());
+    const canonicalAddressId = canonical?.canonicalAddressId ?? addressId;
+    const key = `${buildingId.toLowerCase()}|${canonical?.displayIdentity ?? canonicalAddressId.toLowerCase()}`;
+    if (!bestByBuildingDisplayAddress.has(key)) orderedKeys.push(key);
+
+    const existing = bestByBuildingDisplayAddress.get(key);
+    const nextLink = {
+      ...link,
+      address_id: canonicalAddressId,
+      canonical_address_id: canonicalAddressId,
+    };
+    if (!existing || linkRank(nextLink) > linkRank(existing)) {
+      bestByBuildingDisplayAddress.set(key, nextLink);
+    }
+
+    const aliases = aliasesByKey.get(key) ?? new Set<string>();
+    for (const aliasId of canonical?.aliasAddressIds ?? [addressId]) {
+      aliases.add(aliasId);
+    }
+    aliases.add(addressId);
+    aliasesByKey.set(key, aliases);
+    buildingByKey.set(key, buildingId.toLowerCase());
+    const buildingClass = normalizedString(link.building_class)?.toLowerCase() ?? null;
+    if (buildingClass === 'townhouse' || !originalBuildingClassByKey.has(key)) {
+      originalBuildingClassByKey.set(key, buildingClass);
+    }
+  }
+
+  const linksByBuildingId = new Map<string, string[]>();
+  for (const key of orderedKeys) {
+    const buildingId = buildingByKey.get(key);
+    if (!buildingId) continue;
+    linksByBuildingId.set(buildingId, [...(linksByBuildingId.get(buildingId) ?? []), key]);
+  }
+
+  return orderedKeys.flatMap((key) => {
+    const link = bestByBuildingDisplayAddress.get(key);
+    if (!link) return [];
+    const buildingId = buildingByKey.get(key) ?? link.building_id.toLowerCase();
+    const displayUnitCount = Math.max(linksByBuildingId.get(buildingId)?.length ?? 1, 1);
+    const originalBuildingClass = originalBuildingClassByKey.get(key) ?? null;
+    return [{
+      ...link,
+      alias_address_ids: Array.from(aliasesByKey.get(key) ?? [link.address_id]).sort((a, b) => a.localeCompare(b)),
+      is_multi_unit: displayUnitCount > 1,
+      unit_count: displayUnitCount,
+      building_class: displayUnitCount > 1
+        ? (originalBuildingClass === 'townhouse' ? 'townhouse' : originalBuildingClass ?? 'multi_unit')
+        : null,
+    }];
+  });
+}
+
+function parcelFeatureId(feature: GeoJSONFeature): string | null {
+  const props = feature.properties ?? {};
+  return normalizedString(feature.id) ??
+    normalizedString(props.id) ??
+    normalizedString(props.campaign_parcel_id) ??
+    normalizedString(props.parcel_id) ??
+    normalizedString(props.external_id);
+}
+
+function parcelAddressIds(feature: GeoJSONFeature): string[] {
+  const props = feature.properties ?? {};
+  const values = [
+    normalizedString(props.address_id),
+    ...(Array.isArray(props.address_ids) ? props.address_ids.map(normalizedString) : []),
+    ...(Array.isArray(props.linked_address_ids) ? props.linked_address_ids.map(normalizedString) : []),
+  ];
+  return dedupeStrings(values.filter((value): value is string => Boolean(value)));
+}
+
+export function canonicalizeCampaignMapBundleParcels(
+  parcels: FeatureCollection,
+  addresses: CanonicalAddressBundle
+): FeatureCollection {
+  if (parcels.features.length === 0 || addresses.byAddressId.size === 0) return parcels;
+
+  return {
+    type: parcels.type,
+    features: parcels.features.map((feature) => {
+      const props = feature.properties ?? {};
+      const canonicalAddressIds = dedupeStrings(
+        parcelAddressIds(feature).map((addressId) =>
+          addresses.byAddressId.get(addressId.toLowerCase())?.canonicalAddressId ?? addressId
+        )
+      );
+      if (canonicalAddressIds.length === 0) return feature;
+
+      return {
+        ...feature,
+        properties: {
+          ...props,
+          address_id: canonicalAddressIds[0],
+          address_ids: canonicalAddressIds,
+          linked_address_ids: canonicalAddressIds,
+          address_count: canonicalAddressIds.length,
+          parcel_address_count: canonicalAddressIds.length,
+          is_linked: true,
+        },
+      };
+    }),
+  };
+}
+
+export function applyParcelLinksToAddresses(
+  addresses: FeatureCollection,
+  parcels: FeatureCollection
+): FeatureCollection {
+  if (addresses.features.length === 0 || parcels.features.length === 0) return addresses;
+
+  const metadataByAddressId = new Map<string, Record<string, unknown>>();
+  for (const parcel of parcels.features) {
+    const props = parcel.properties ?? {};
+    const campaignParcelId = parcelFeatureId(parcel);
+    const parcelId = normalizedString(props.parcel_id) ?? normalizedString(props.external_id) ?? campaignParcelId;
+    for (const addressId of parcelAddressIds(parcel)) {
+      metadataByAddressId.set(addressId.toLowerCase(), {
+        parcel_id: parcelId,
+        campaign_parcel_id: campaignParcelId,
+        has_parcel_link: true,
+        parcel_confidence: props.parcel_confidence,
+        parcel_match_type: props.parcel_match_type,
+        parcel_link_source: props.parcel_link_source,
+      });
+    }
+  }
+
+  if (metadataByAddressId.size === 0) return addresses;
+
+  return {
+    type: addresses.type,
+    features: addresses.features.map((feature) => {
+      const props = feature.properties ?? {};
+      const candidates = dedupeStrings([
+        normalizedString(feature.id),
+        normalizedString(props.id),
+        normalizedString(props.address_id),
+        ...(Array.isArray(props.alias_address_ids) ? props.alias_address_ids.map(normalizedString) : []),
+      ].filter((value): value is string => Boolean(value)));
+      const metadata = candidates.flatMap((candidate) => {
+        const match = metadataByAddressId.get(candidate.toLowerCase());
+        return match ? [match] : [];
+      })[0];
+      if (!metadata) return feature;
+      return {
+        ...feature,
+        properties: {
+          ...props,
+          ...metadata,
+        },
+      };
+    }),
+  };
+}
+
+export function applyLinksToFeatureCollections(
   buildings: FeatureCollection,
   addresses: FeatureCollection,
   links: CampaignMapBundleLink[]
@@ -375,7 +733,8 @@ function applyLinksToFeatureCollections(
         const unitCount = numericValue(link.unit_count, 0);
         return unitCount > max ? unitCount : max;
       }, 0);
-      const isTownhouse = rawFeatureLinks.some((link) => normalizedString(link.building_class)?.toLowerCase() === 'townhouse');
+      const isTownhouse = featureLinks.length > 1 &&
+        rawFeatureLinks.some((link) => normalizedString(link.building_class)?.toLowerCase() === 'townhouse');
       const properties = { ...(feature.properties ?? {}) };
       properties.address_ids = featureLinks;
       properties.is_linked = featureLinks.length > 0;
@@ -386,11 +745,9 @@ function applyLinksToFeatureCollections(
         delete properties.address_id;
       }
       properties.address_count = featureLinks.length;
-      properties.units_count = Math.max(
-        numericValue(properties.units_count, 1),
-        featureLinks.length,
-        splitterUnitsCount || 0
-      );
+      properties.units_count = featureLinks.length > 0
+        ? Math.max(featureLinks.length, splitterUnitsCount || 0, 1)
+        : Math.max(numericValue(properties.units_count, 1), 1);
       if (featureLinks.length > 0) {
         properties.feature_type = 'linked_building';
         properties.feature_status = 'linked';
@@ -731,7 +1088,7 @@ function displayModeHint(buildings: FeatureCollection, addresses: FeatureCollect
   return 'buildings';
 }
 
-function linksStatusForStoredLinks(
+export function linksStatusForStoredLinks(
   links: CampaignMapBundleLink[],
   linkSourceVersion: string | null
 ): Exclude<LinksStatus, 'fresh' | 'client_fallback_required'> {
@@ -743,7 +1100,10 @@ function linksStatusForStoredLinks(
   });
   if (autoLinks.length === 0) return 'ok';
   if (!linkSourceVersion) return 'stale_reused';
-  return autoLinks.every((link) => normalizedString(link.source_version) === linkSourceVersion)
+  return autoLinks.every((link) => {
+    const sourceVersion = normalizedString(link.source_version);
+    return !sourceVersion || sourceVersion === linkSourceVersion;
+  })
     ? 'ok'
     : 'stale_reused';
 }
@@ -770,6 +1130,9 @@ function responseFromRow(row: CurrentBundleRow): CanonicalCampaignMapBundleRespo
       parcels: numericValue(row.counts?.parcels, asFeatureCollection(row.parcels_geojson).features.length),
       roads: numericValue(row.counts?.roads, asFeatureCollection(row.roads_geojson).features.length),
       links: numericValue(row.counts?.links, Array.isArray(row.links) ? row.links.length : 0),
+      raw_addresses: numericValue(row.counts?.raw_addresses, asFeatureCollection(row.addresses_geojson).features.length),
+      display_addresses: numericValue(row.counts?.display_addresses, asFeatureCollection(row.addresses_geojson).features.length),
+      duplicate_address_aliases: numericValue(row.counts?.duplicate_address_aliases, 0),
     },
     layer_fetched_at: row.layer_fetched_at ?? {},
     built_at: row.built_at,
@@ -990,9 +1353,19 @@ export class CampaignMapBundleService {
       };
     }
 
-    const { linksStatus, links } = linkBundle;
-    const parcels = parcelBundle.collection;
-    const linkedFeatures = applyLinksToFeatureCollections(buildings, addresses, links);
+    const canonicalAddressBundle = canonicalizeCampaignMapBundleAddresses(addresses);
+    const links = canonicalizeCampaignMapBundleLinksForDisplay(linkBundle.links, canonicalAddressBundle);
+    const linksStatus = linkBundle.linksStatus === 'client_fallback_required'
+      ? linkBundle.linksStatus
+      : links.length === 0
+        ? linkBundle.linksStatus
+        : linksStatusForStoredLinks(links, effectiveLinkSourceVersion);
+    const parcels = canonicalizeCampaignMapBundleParcels(parcelBundle.collection, canonicalAddressBundle);
+    const linkedFeaturesWithoutParcels = applyLinksToFeatureCollections(buildings, canonicalAddressBundle.addresses, links);
+    const linkedFeatures = {
+      buildings: linkedFeaturesWithoutParcels.buildings,
+      addresses: applyParcelLinksToAddresses(linkedFeaturesWithoutParcels.addresses, parcels),
+    };
     const [addressOrphans, buildingOrphans] = await Promise.all([
       this.measure('address_orphans', () => this.fetchAddressOrphans(campaignId)),
       Promise.resolve(collectBuildingOrphans(campaignId, linkedFeatures.buildings, links)),
@@ -1010,13 +1383,14 @@ export class CampaignMapBundleService {
       parseTime(layerFetchedAt.parcels)! + STATIC_GEOMETRY_TTL_MS
     )).toISOString();
     const counts = {
-      addresses: addresses.features.length,
+      addresses: canonicalAddressBundle.addresses.features.length,
       buildings: buildings.features.length,
       parcels: parcels.features.length,
       roads: roads.features.length,
       links: links.length,
       address_orphans: addressOrphans.length,
       building_orphans: buildingOrphans.length,
+      ...canonicalAddressBundle.counts,
     };
     const persistedCounts = {
       ...counts,
@@ -1025,7 +1399,7 @@ export class CampaignMapBundleService {
       parcel_resolution_version: PARCEL_RESOLUTION_VERSION,
       parcel_source_checked_at: nowIso,
     };
-    const hint = displayModeHint(buildings, addresses, links);
+    const hint = displayModeHint(buildings, canonicalAddressBundle.addresses, links);
 
     const { data, error } = await this.measure('persist', async () => await this.supabase.rpc('rpc_upsert_campaign_map_bundle', {
       p_campaign_id: campaignId,
