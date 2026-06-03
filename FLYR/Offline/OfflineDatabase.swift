@@ -51,14 +51,24 @@ final class OfflineDatabase {
     let dbQueue: DatabaseQueue
 
     private init() {
+        let initializedQueue: DatabaseQueue
         do {
             let rootURL = try Self.makeStorageDirectory()
             let databaseURL = rootURL.appendingPathComponent("flyr-offline.sqlite")
-            dbQueue = try DatabaseQueue(path: databaseURL.path)
-            try OfflineMigrations.migrator().migrate(dbQueue)
+            let queue = try DatabaseQueue(path: databaseURL.path)
+            try OfflineMigrations.migrator().migrate(queue)
+            initializedQueue = queue
         } catch {
-            fatalError("Failed to initialize offline database: \(error)")
+            print("⚠️ [OfflineDatabase] Persistent store failed (\(error)). Falling back to in-memory — offline data will not persist across sessions.")
+            do {
+                let queue = try DatabaseQueue()
+                try OfflineMigrations.migrator().migrate(queue)
+                initializedQueue = queue
+            } catch let memoryError {
+                preconditionFailure("[OfflineDatabase] In-memory fallback also failed: \(memoryError)")
+            }
         }
+        dbQueue = initializedQueue
     }
 
     private static func makeStorageDirectory() throws -> URL {

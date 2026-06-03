@@ -113,11 +113,19 @@ final class ContactsViewModel: ObservableObject {
     // MARK: - Grouped Contacts
     
     var contactsByCampaign: [UUID: [Contact]] {
-        Dictionary(grouping: contacts.filter { $0.campaignId != nil }) { $0.campaignId! }
+        var result: [UUID: [Contact]] = [:]
+        for contact in contacts {
+            if let id = contact.campaignId { result[id, default: []].append(contact) }
+        }
+        return result
     }
     
     var contactsByFarm: [UUID: [Contact]] {
-        Dictionary(grouping: contacts.filter { $0.farmId != nil }) { $0.farmId! }
+        var result: [UUID: [Contact]] = [:]
+        for contact in contacts {
+            if let id = contact.farmId { result[id, default: []].append(contact) }
+        }
+        return result
     }
     
     // MARK: - Smart Lists

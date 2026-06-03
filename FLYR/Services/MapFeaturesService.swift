@@ -2199,7 +2199,18 @@ final class MapFeaturesService: ObservableObject {
             return try JSONDecoder().decode(GeoJSONCoordinatesNode.self, from: data)
         } catch {
             print("⚠️ [MapFeatures] Failed to build coordinates: \(error)")
-            return try! JSONDecoder().decode(GeoJSONCoordinatesNode.self, from: "[]".data(using: .utf8)!)
+            let emptyData = Data("[]".utf8)
+            if let fallback = try? JSONDecoder().decode(GeoJSONCoordinatesNode.self, from: emptyData) {
+                return fallback
+            }
+            // [] cannot be decoded — return a safe zero-coordinate node if available,
+            // otherwise this is a programmer error.
+            print("⚠️ [MapFeatures] Fallback decoding of [] also failed. Returning empty node.")
+            let zeroData = Data("0".utf8)
+            if let zeroNode = try? JSONDecoder().decode(GeoJSONCoordinatesNode.self, from: zeroData) {
+                return zeroNode
+            }
+            preconditionFailure("[MapFeatures] GeoJSONCoordinatesNode cannot decode [] or 0")
         }
     }
 }
