@@ -80,9 +80,22 @@
 		AA7395B8BD595392DE025A5C /* Assets.xcassets */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = folder.assetcatalog; name = Assets.xcassets; path = FLYR/Assets.xcassets; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		8D6A5E932EA7000100FA72B1 /* Exceptions for "FLYR" folder in "FLYR" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 30A4A57D2EA6CD9800FA72B1 /* FLYR */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		30A4A5802EA6CD9800FA72B1 /* FLYR */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				8D6A5E932EA7000100FA72B1 /* Exceptions for "FLYR" folder in "FLYR" target */,
+			);
 			path = FLYR;
 			sourceTree = "<group>";
 		};
