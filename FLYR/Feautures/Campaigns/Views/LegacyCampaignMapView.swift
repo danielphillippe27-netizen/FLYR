@@ -456,8 +456,8 @@ struct LegacyCampaignMapView: UIViewRepresentable {
       
       // Create polygon from vertices (close it by adding first point at end)
       var coords = polygonVertices
-      if coords.first != coords.last {
-        coords.append(coords.first!)
+      if let first = coords.first, coords.first != coords.last {
+        coords.append(first)
       }
       
       // Convert to Mapbox Polygon
@@ -506,8 +506,8 @@ struct LegacyCampaignMapView: UIViewRepresentable {
       
       // Close polygon if not already closed
       var finalVertices = polygonVertices
-      if finalVertices.first != finalVertices.last {
-        finalVertices.append(finalVertices.first!)
+      if let first = finalVertices.first, finalVertices.first != finalVertices.last {
+        finalVertices.append(first)
       }
       
       // Call completion handler

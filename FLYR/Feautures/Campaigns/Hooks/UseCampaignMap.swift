@@ -348,7 +348,13 @@ final class UseCampaignMap: ObservableObject {
     isLoading = true
     defer { isLoading = false }
 
-    let geoJSONString = polygonToGeoJSON(polygon: polygon)
+    let geoJSONString: String
+    do {
+      geoJSONString = try polygonToGeoJSON(polygon: polygon)
+    } catch {
+      print("⚠️ [POLYGON] Failed to serialize polygon: \(error)")
+      return
+    }
     print("🗺️ [POLYGON] Provision flow: update territory → provision (backend) → refetch from Supabase")
 
     do {
@@ -386,7 +392,7 @@ final class UseCampaignMap: ObservableObject {
   /// Convert polygon coordinates to GeoJSON Polygon string
   /// - Parameter polygon: Array of coordinates
   /// - Returns: GeoJSON Polygon string
-  private func polygonToGeoJSON(polygon: [CLLocationCoordinate2D]) -> String {
+  private func polygonToGeoJSON(polygon: [CLLocationCoordinate2D]) throws -> String {
     // Ensure polygon is closed (first point == last point)
     var coords = polygon
     if coords.first != coords.last {
@@ -406,7 +412,8 @@ final class UseCampaignMap: ObservableObject {
     // Convert to JSON string
     guard let jsonData = try? JSONSerialization.data(withJSONObject: geoJSON, options: []),
           let jsonString = String(data: jsonData, encoding: .utf8) else {
-      fatalError("Failed to convert polygon to GeoJSON string")
+      throw NSError(domain: "UseCampaignMap", code: -1,
+        userInfo: [NSLocalizedDescriptionKey: "Failed to serialize polygon to GeoJSON"])
     }
     
     return jsonString

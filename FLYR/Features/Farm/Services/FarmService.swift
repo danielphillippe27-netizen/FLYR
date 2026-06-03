@@ -228,7 +228,12 @@ actor FarmService {
         var polygonGeoJSON: String? = nil
         if let polygon = polygon, !polygon.isEmpty {
             let coordinates = polygon.map { [$0.longitude, $0.latitude] }
-            let closedCoords = coordinates.first == coordinates.last ? coordinates : coordinates + [coordinates.first!]
+            let closedCoords: [[Double]]
+            if let firstCoord = coordinates.first, firstCoord != coordinates.last {
+                closedCoords = coordinates + [firstCoord]
+            } else {
+                closedCoords = coordinates
+            }
             let geoJSON: [String: Any] = [
                 "type": "Polygon",
                 "coordinates": [closedCoords]

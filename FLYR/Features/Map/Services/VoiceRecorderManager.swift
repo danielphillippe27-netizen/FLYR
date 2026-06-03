@@ -40,7 +40,12 @@ final class VoiceRecorderManager: NSObject, ObservableObject {
         guard !isRecording else { return true }
         let session = AVAudioSession.sharedInstance()
         do {
-            try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetoothHFP])
+            #if !targetEnvironment(simulator)
+            let options: AVAudioSession.CategoryOptions = [.defaultToSpeaker, .allowBluetoothHFP]
+            #else
+            let options: AVAudioSession.CategoryOptions = [.defaultToSpeaker]
+            #endif
+            try session.setCategory(.playAndRecord, mode: .default, options: options)
             try session.setActive(true)
         } catch {
             print("⚠️ [VoiceRecorder] Session setup failed: \(error)")

@@ -165,7 +165,7 @@ final class AuthManager: ObservableObject {
 
     /// Presents Sign in with Apple, exchanges ID token for Supabase session, persists to Keychain.
     func signInWithApple() async throws {
-        let rawNonce = randomNonceString()
+        let rawNonce = try randomNonceString()
         let hashedNonce = sha256(rawNonce)
 
         guard let windowScene = UIApplication.shared.connectedScenes
@@ -425,12 +425,12 @@ final class AuthManager: ObservableObject {
         isUsingPasswordRecoverySession = false
     }
 
-    private func randomNonceString(length: Int = 32) -> String {
+    private func randomNonceString(length: Int = 32) throws -> String {
         precondition(length > 0)
         var randomBytes = [UInt8](repeating: 0, count: length)
         let errorCode = SecRandomCopyBytes(kSecRandomDefault, randomBytes.count, &randomBytes)
         if errorCode != errSecSuccess {
-            fatalError("Unable to generate nonce. SecRandomCopyBytes failed with OSStatus \(errorCode)")
+            throw AuthError.nonceGenerationFailed
         }
         let charset: [Character] = Array("0123456789ABCDEFGHIJKLMNOPQRSTUVXYZabcdefghijklmnopqrstuvwxyz-._")
         return String(randomBytes.map { charset[Int($0) % charset.count] })
@@ -616,6 +616,7 @@ enum AuthError: LocalizedError {
     case appleSignInCancelled
     case appleSignInNotConfigured
     case invalidAppleAudience
+    case nonceGenerationFailed
     case noIdToken
     case emailConfirmationRequired
     case invalidPasswordRecoveryEmail
@@ -647,6 +648,8 @@ enum AuthError: LocalizedError {
             return "Sign in with Apple is not enabled. Add the capability in Xcode: Signing & Capabilities → + Capability → Sign in with Apple."
         case .invalidAppleAudience:
             return "Apple Sign-In is misconfigured: ID token audience does not match. In Supabase Apple provider, set the iOS Bundle ID to com.danielphillippe.FLYR."
+        case .nonceGenerationFailed:
+            return "Could not securely start Apple Sign-In. Try again."
         case .noIdToken:
             return "Could not get ID token."
         }

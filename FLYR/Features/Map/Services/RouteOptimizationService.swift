@@ -139,11 +139,12 @@ class RouteOptimizationService {
         var unvisited = Set(1..<n)
         
         while !unvisited.isEmpty {
-            let current = tour.last!
+            guard let current = tour.last else { break }
             let currentPoint = points[current]
             
             // Find nearest unvisited point
-            var nearestIdx = unvisited.first!
+            guard let firstNearestIdx = unvisited.first else { break }
+            var nearestIdx = firstNearestIdx
             var nearestDist = distance(currentPoint, points[nearestIdx])
             
             for idx in unvisited {
