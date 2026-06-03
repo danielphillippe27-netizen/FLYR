@@ -6946,12 +6946,12 @@ struct CampaignMapView: View {
 
     private func refreshParcelAutoCompleteTargetsForCurrentSession() {
         guard sessionManager.sessionId != nil else {
-            sessionManager.configureParcelAutoCompleteTargets([])
+            clearParcelAutoCompleteTargets()
             return
         }
         let targets = deduplicatedSessionTargets(sessionTargets(for: sessionManager.sessionMode))
         guard !targets.isEmpty else {
-            sessionManager.configureParcelAutoCompleteTargets([])
+            clearParcelAutoCompleteTargets()
             return
         }
         let mappings = sessionTargetMappings(for: targets)
@@ -6967,12 +6967,41 @@ struct CampaignMapView: View {
         addressIdsByTargetId: [String: [UUID]],
         buildingIdsByTargetId: [String: String]
     ) {
-        guard sessionManager.sessionId != nil,
-              sessionManager.sessionMode == .doorKnocking else {
-            sessionManager.configureParcelAutoCompleteTargets([])
+        guard sessionManager.sessionId != nil else {
+            clearParcelAutoCompleteTargets()
             return
         }
 
+        switch sessionManager.sessionMode {
+        case .doorKnocking:
+            let parcelTargets = linkedParcelTargets(
+                targets: targets,
+                addressIdsByTargetId: addressIdsByTargetId,
+                buildingIdsByTargetId: buildingIdsByTargetId
+            )
+            sessionManager.configureParcelAutoCompleteTargets(parcelTargets)
+            flyerModeManager.configureParcelAutoCompleteTargets([])
+        case .flyer:
+            let parcelTargets = linkedParcelTargets(
+                targets: targets,
+                addressIdsByTargetId: addressIdsByTargetId,
+                buildingIdsByTargetId: buildingIdsByTargetId
+            )
+            sessionManager.configureParcelAutoCompleteTargets([])
+            flyerModeManager.configureParcelAutoCompleteTargets(parcelTargets)
+        }
+    }
+
+    private func clearParcelAutoCompleteTargets() {
+        sessionManager.configureParcelAutoCompleteTargets([])
+        flyerModeManager.configureParcelAutoCompleteTargets([])
+    }
+
+    private func linkedParcelTargets(
+        targets: [ResolvedCampaignTarget],
+        addressIdsByTargetId: [String: [UUID]],
+        buildingIdsByTargetId: [String: String]
+    ) -> [SessionParcelAutoCompleteTarget] {
         var targetIdsByAddressId: [UUID: Set<String>] = [:]
         for target in targets {
             let targetAddressIds = deduplicatedAddressIds(addressIdsByTargetId[target.id] ?? [])
@@ -6982,7 +7011,7 @@ struct CampaignMapView: View {
             }
         }
 
-        let parcelTargets = visibleParcelFeatures.compactMap { parcel -> SessionParcelAutoCompleteTarget? in
+        return visibleParcelFeatures.compactMap { parcel -> SessionParcelAutoCompleteTarget? in
             let parcelAddressIds = linkedAddressIds(forParcel: parcel)
             guard !parcelAddressIds.isEmpty else { return nil }
 
@@ -7003,8 +7032,6 @@ struct CampaignMapView: View {
                 rings: SessionParcelAutoCompleteTarget.rings(from: parcel.geometry)
             )
         }
-
-        sessionManager.configureParcelAutoCompleteTargets(parcelTargets)
     }
 
     private func linkedAddressIds(forParcel parcel: ParcelFeature) -> [UUID] {

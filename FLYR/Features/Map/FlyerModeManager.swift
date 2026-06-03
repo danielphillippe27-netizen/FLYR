@@ -28,6 +28,7 @@ final class FlyerModeManager: ObservableObject {
     private var dwellTimerCancellable: AnyCancellable?
     private var dwellTracker: [UUID: Date] = [:]
     private var completedAddressIds = Set<UUID>()
+    private var parcelAutoCompleteTargets: [SessionParcelAutoCompleteTarget] = []
 
     func load(campaignId _: UUID, featuresService: MapFeaturesService) async {
         addresses = []
@@ -90,6 +91,11 @@ final class FlyerModeManager: ObservableObject {
         currentAddress = nil
         dwellTracker = [:]
         completedAddressIds = []
+        parcelAutoCompleteTargets = []
+    }
+
+    func configureParcelAutoCompleteTargets(_ targets: [SessionParcelAutoCompleteTarget]) {
+        parcelAutoCompleteTargets = targets
     }
 
     private func addressesFromFlyerTargets(_ targets: [ResolvedCampaignTarget]) -> [FlyerAddress] {
@@ -142,16 +148,24 @@ final class FlyerModeManager: ObservableObject {
             return
         }
 
-        currentAddress = nearestAddress(to: location, within: candidateAddresses)
+        let parcelMatchedAddress = parcelAutoCompleteAddress(
+            containing: location.coordinate,
+            among: candidateAddresses
+        )
+        currentAddress = parcelMatchedAddress ?? nearestAddress(to: location, within: candidateAddresses)
 
-        // Keep dwell state only for addresses still within proximity.
+        // Keep dwell state only for addresses still within proximity or the current linked parcel.
+        let parcelMatchedAddressId = parcelMatchedAddress?.id
         dwellTracker = dwellTracker.filter { addressId, _ in
+            if addressId == parcelMatchedAddressId {
+                return true
+            }
             guard let address = candidateAddresses.first(where: { $0.id == addressId }) else { return false }
             let addrLocation = CLLocation(latitude: address.coordinate.latitude, longitude: address.coordinate.longitude)
             return location.distance(from: addrLocation) <= threshold
         }
 
-        let matchedAddress = renderedAddress.flatMap { rendered -> FlyerAddress? in
+        let matchedAddress = parcelMatchedAddress ?? renderedAddress.flatMap { rendered -> FlyerAddress? in
             guard !completedAddressIds.contains(rendered.id) else { return nil }
             return rendered
         } ?? candidateAddresses.first(where: { addr in
@@ -197,6 +211,42 @@ final class FlyerModeManager: ObservableObject {
         addresses.removeAll { $0.id == addressId }
         dwellTracker[addressId] = nil
         currentAddress = nearestAddress(to: location)
+    }
+
+    func parcelAutoCompleteAddress(
+        containing coordinate: CLLocationCoordinate2D,
+        among candidates: [FlyerAddress]
+    ) -> FlyerAddress? {
+        guard !parcelAutoCompleteTargets.isEmpty,
+              CLLocationCoordinate2DIsValid(coordinate) else {
+            return nil
+        }
+
+        var candidatesById: [UUID: FlyerAddress] = [:]
+        for candidate in candidates where !completedAddressIds.contains(candidate.id) {
+            candidatesById[candidate.id] = candidate
+        }
+        var matchedAddresses: [UUID: FlyerAddress] = [:]
+
+        for target in parcelAutoCompleteTargets where target.contains(coordinate) {
+            let activeAddressIds = target.addressIds.filter { addressId in
+                !completedAddressIds.contains(addressId) && candidatesById[addressId] != nil
+            }
+            guard activeAddressIds.count == 1,
+                  let address = candidatesById[activeAddressIds[0]] else {
+                continue
+            }
+            matchedAddresses[address.id] = address
+        }
+
+        guard matchedAddresses.count == 1 else {
+            if matchedAddresses.count > 1 {
+                print("⏭️ [FlyerModeManager] Skipping parcel auto-complete: multiple linked flyer targets contain GPS point")
+            }
+            return nil
+        }
+
+        return matchedAddresses.values.first
     }
 
     private func adaptiveThresholdMeters(for location: CLLocation) -> Double {

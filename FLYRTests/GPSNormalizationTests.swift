@@ -169,6 +169,81 @@ struct SessionParcelAutoCompleteTargetTests {
     }
 }
 
+struct FlyerModeParcelAutoCompleteTests {
+
+    @MainActor
+    @Test func parcelSelectorReturnsSingleLinkedFlyerAddress() {
+        let manager = FlyerModeManager()
+        let addressId = UUID(uuidString: "33333333-3333-3333-3333-333333333333")!
+        let address = FlyerAddress(
+            id: addressId,
+            formatted: "1 Test Street",
+            coordinate: CLLocationCoordinate2D(latitude: 43.6505, longitude: -79.3795)
+        )
+        manager.configureParcelAutoCompleteTargets([
+            makeTarget(id: addressId.uuidString, addressIds: [addressId], rings: [squareRing])
+        ].compactMap { $0 })
+
+        let selected = manager.parcelAutoCompleteAddress(
+            containing: CLLocationCoordinate2D(latitude: 43.6505, longitude: -79.3795),
+            among: [address]
+        )
+
+        #expect(selected?.id == addressId)
+    }
+
+    @MainActor
+    @Test func parcelSelectorSkipsOverlappingFlyerAddresses() {
+        let manager = FlyerModeManager()
+        let firstId = UUID(uuidString: "33333333-3333-3333-3333-333333333333")!
+        let secondId = UUID(uuidString: "44444444-4444-4444-4444-444444444444")!
+        let first = FlyerAddress(
+            id: firstId,
+            formatted: "1 Test Street",
+            coordinate: CLLocationCoordinate2D(latitude: 43.6505, longitude: -79.3795)
+        )
+        let second = FlyerAddress(
+            id: secondId,
+            formatted: "3 Test Street",
+            coordinate: CLLocationCoordinate2D(latitude: 43.6506, longitude: -79.3796)
+        )
+        manager.configureParcelAutoCompleteTargets([
+            makeTarget(id: firstId.uuidString, addressIds: [firstId], rings: [squareRing]),
+            makeTarget(id: secondId.uuidString, addressIds: [secondId], rings: [squareRing])
+        ].compactMap { $0 })
+
+        let selected = manager.parcelAutoCompleteAddress(
+            containing: CLLocationCoordinate2D(latitude: 43.6505, longitude: -79.3795),
+            among: [first, second]
+        )
+
+        #expect(selected?.id == nil)
+    }
+
+    private var squareRing: [CLLocationCoordinate2D] {
+        [
+            CLLocationCoordinate2D(latitude: 43.6500, longitude: -79.3800),
+            CLLocationCoordinate2D(latitude: 43.6500, longitude: -79.3790),
+            CLLocationCoordinate2D(latitude: 43.6510, longitude: -79.3790),
+            CLLocationCoordinate2D(latitude: 43.6510, longitude: -79.3800),
+            CLLocationCoordinate2D(latitude: 43.6500, longitude: -79.3800)
+        ]
+    }
+
+    private func makeTarget(
+        id: String,
+        addressIds: [UUID],
+        rings: [[CLLocationCoordinate2D]]
+    ) -> SessionParcelAutoCompleteTarget? {
+        SessionParcelAutoCompleteTarget(
+            targetId: id,
+            buildingId: nil,
+            addressIds: addressIds,
+            rings: rings
+        )
+    }
+}
+
 struct LocationAcceptanceFilterTests {
 
     @Test func rejectsPoorAccuracy() {
