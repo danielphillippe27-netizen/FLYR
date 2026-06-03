@@ -5,15 +5,20 @@ final class SupabaseManager {
     static let shared = SupabaseManager()
 
     let client: SupabaseClient
+    let supabaseURLString: String
+    let anonKey: String
 
     private init() {
-        let supabaseURLString = (Bundle.main.object(forInfoDictionaryKey: "SUPABASE_URL") as? String)?
+        let urlString = (Bundle.main.object(forInfoDictionaryKey: "SUPABASE_URL") as? String)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let supabaseKey = (Bundle.main.object(forInfoDictionaryKey: "SUPABASE_ANON_KEY") as? String)?
+        let key = (Bundle.main.object(forInfoDictionaryKey: "SUPABASE_ANON_KEY") as? String)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
+        self.supabaseURLString = urlString
+        self.anonKey = key
+
         let supabaseURL: URL
-        if let parsedURL = URL(string: supabaseURLString), !supabaseURLString.isEmpty, !supabaseKey.isEmpty {
+        if let parsedURL = URL(string: supabaseURLString), !supabaseURLString.isEmpty, !anonKey.isEmpty {
             supabaseURL = parsedURL
         } else {
             #if DEBUG
@@ -24,7 +29,7 @@ final class SupabaseManager {
 
         client = SupabaseClient(
             supabaseURL: supabaseURL,
-            supabaseKey: supabaseKey,
+            supabaseKey: anonKey,
             options: .init(
                 auth: .init(
                     emitLocalSessionAsInitialSession: true

@@ -359,8 +359,8 @@ final class BuildingsAPI {
             
             do {
                 // Call Edge Function - use URLSession with authenticated request
-                let supabaseURLString = Bundle.main.object(forInfoDictionaryKey: "SUPABASE_URL") as! String
-                let supabaseKey = Bundle.main.object(forInfoDictionaryKey: "SUPABASE_ANON_KEY") as! String
+                let supabaseURLString = SupabaseManager.shared.supabaseURLString
+                let supabaseKey = SupabaseManager.shared.anonKey
                 let url = URL(string: "\(supabaseURLString)/functions/v1/tiledecode_buildings")!
                 
                 print("🔗 [BUILDINGS] Calling MVT decode endpoint: \(url.absoluteString)")

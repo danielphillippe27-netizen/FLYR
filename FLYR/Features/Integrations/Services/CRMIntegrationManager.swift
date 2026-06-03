@@ -27,8 +27,8 @@ actor CRMIntegrationManager {
         name: String,
         body: [String: Any]
     ) async throws -> Data {
-        let supabaseURLString = Bundle.main.object(forInfoDictionaryKey: "SUPABASE_URL") as! String
-        let supabaseKey = Bundle.main.object(forInfoDictionaryKey: "SUPABASE_ANON_KEY") as! String
+        let supabaseURLString = SupabaseManager.shared.supabaseURLString
+        let supabaseKey = SupabaseManager.shared.anonKey
         let url = URL(string: "\(supabaseURLString)/functions/v1/\(name)")!
 
         var request = URLRequest(url: url)
