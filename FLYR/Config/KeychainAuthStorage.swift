@@ -83,6 +83,23 @@ enum KeychainAuthStorage {
         deleteSession()
         deleteAppUser()
         deleteIdentityTokens()
+        deleteWebhookURL()
+    }
+
+    // MARK: - Webhook URL
+
+    private static let webhookURLKey = "leads_webhook_url"
+
+    static func saveWebhookURL(_ url: String) {
+        save(string: url, key: webhookURLKey)
+    }
+
+    static func loadWebhookURL() -> String? {
+        loadString(key: webhookURLKey)
+    }
+
+    static func deleteWebhookURL() {
+        delete(key: webhookURLKey)
     }
 
     // MARK: - Helpers

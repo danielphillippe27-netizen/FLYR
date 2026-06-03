@@ -32,7 +32,7 @@ struct SyncSettingsView: View {
     @State private var showShareSheet = false
     @State private var exportFileURL: URL?
     
-    @State private var webhookURL: String = ""
+    @State private var webhookURL: String = KeychainAuthStorage.loadWebhookURL() ?? ""
     @State private var isTestingWebhook = false
     @State private var testingProvider: IntegrationProvider?
     @State private var successMessage: String?
@@ -428,7 +428,7 @@ struct SyncSettingsView: View {
                 .autocapitalization(.none)
                 .keyboardType(.URL)
                 .onChange(of: webhookURL) { _, v in
-                    UserDefaults.standard.set(v, forKey: "flyr_leads_webhook_url")
+                    KeychainAuthStorage.saveWebhookURL(v)
                 }
             Button("Test Webhook") {
                 Task { await testWebhook() }
