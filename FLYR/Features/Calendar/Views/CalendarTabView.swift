@@ -434,6 +434,14 @@ struct CalendarTabView: View {
                 now: nowTicker.now,
                 calendar: calendar,
                 calendarRed: calendarRed,
+                onSelectDay: { date in
+                    guard !calendar.isDate(date, inSameDayAs: selectedDate) else { return }
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) {
+                        selectedDate = date
+                        visibleDate = date
+                    }
+                    Task { await refreshVisibleLayouts() }
+                },
                 onSwipeDay: { delta in
                     guard dayMode == .singleDay,
                           let nextDate = calendar.date(byAdding: .day, value: delta, to: selectedDate) else {
@@ -971,6 +979,7 @@ private struct DayTimelineView: View {
     let now: Date
     let calendar: Calendar
     let calendarRed: Color
+    let onSelectDay: (Date) -> Void
     let onSwipeDay: (Int) -> Void
     let onLongPressSlot: (Date) -> Void
     let onItemTap: (CalendarItem) -> Void
@@ -1055,18 +1064,27 @@ private struct DayTimelineView: View {
     private var weekStrip: some View {
         HStack(spacing: 0) {
             ForEach(weekDates, id: \.self) { day in
-                VStack(spacing: 4) {
-                    Text(singleWeekdayFormatter.string(from: day))
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(weekdayTextColor(day))
-                    Text("\(calendar.component(.day, from: day))")
-                        .font(.system(size: 20, weight: .regular))
-                        .foregroundColor(calendar.isDate(day, inSameDayAs: selectedDate) ? .white : dateTextColor(day))
-                        .frame(width: 36, height: 36)
-                        .background(calendar.isDate(day, inSameDayAs: selectedDate) ? calendarRed : Color.clear)
-                        .clipShape(Circle())
+                Button {
+                    onSelectDay(day)
+                } label: {
+                    VStack(spacing: 4) {
+                        Text(singleWeekdayFormatter.string(from: day))
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(weekdayTextColor(day))
+                        Text("\(calendar.component(.day, from: day))")
+                            .font(.system(size: 20, weight: .regular))
+                            .foregroundColor(calendar.isDate(day, inSameDayAs: selectedDate) ? .white : dateTextColor(day))
+                            .frame(width: 36, height: 36)
+                            .background(calendar.isDate(day, inSameDayAs: selectedDate) ? calendarRed : Color.clear)
+                            .clipShape(Circle())
+                    }
+                    .frame(maxWidth: .infinity)
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
                 .frame(maxWidth: .infinity)
+                .accessibilityLabel(weekStripAccessibilityLabel(for: day))
+                .accessibilityAddTraits(calendar.isDate(day, inSameDayAs: selectedDate) ? .isSelected : [])
             }
         }
         .padding(.horizontal, 18)
@@ -1144,6 +1162,12 @@ private struct DayTimelineView: View {
         let leading = (weekday - calendar.firstWeekday + 7) % 7
         let start = calendar.date(byAdding: .day, value: -leading, to: startOfDay) ?? startOfDay
         return (0..<7).compactMap { calendar.date(byAdding: .day, value: $0, to: start) }
+    }
+
+    private func weekStripAccessibilityLabel(for day: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .full
+        return formatter.string(from: day)
     }
 
     private func hourLabelView(_ hour: Int) -> Text {
