@@ -264,7 +264,9 @@ actor LeadSyncManager {
                 
                 // Debug: print what's being sent
                 if let bodyString = String(data: request.httpBody!, encoding: .utf8) {
+                    #if DEBUG
                     print("📤 [LeadSyncManager] crm_sync request body: \(bodyString)")
+                    #endif
                 }
                 
                 let (data, response) = try await URLSession.shared.data(for: request)
