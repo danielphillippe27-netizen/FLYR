@@ -33,7 +33,9 @@ final class FUBPushLeadAPI {
         let normalizedEmail: String? = {
             guard let email = cleanedEmail, !email.isEmpty else { return nil }
             guard Self.isLikelyValidEmail(email) else {
+                #if DEBUG
                 print("⚠️ [FUBPushLeadAPI] Ignoring invalid email for FUB push: \(email)")
+                #endif
                 return nil
             }
             return email
@@ -96,7 +98,9 @@ final class FUBPushLeadAPI {
         request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
         request.httpBody = try JSONEncoder().encode(body)
         if let payload = String(data: request.httpBody ?? Data(), encoding: .utf8) {
+            #if DEBUG
             print("📤 [FUBPushLeadAPI] push-lead payload: \(payload)")
+            #endif
         }
 
         let (data, response) = try await URLSession.shared.data(for: request)

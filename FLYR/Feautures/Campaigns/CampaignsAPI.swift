@@ -265,7 +265,9 @@ final class CampaignsAPI {
         
         // 1. Get current user ID
         let userId = try await shim.currentUserId()
+        #if DEBUG
         print("🌐 [API DEBUG] User ID: \(userId)")
+        #endif
         
         // 2. Insert campaign row into campaigns table
         let sanitizedRegion = Self.sanitizeRegionForStorage(payload.seedQuery)
