@@ -76,6 +76,18 @@ assert.equal(
 
 assert.equal(
   shouldRefreshBundleForCacheVersion('canonical-map-bundle-v8'),
+  true,
+  'refreshes v8 bundles so numeric-only formatted labels are repaired'
+);
+
+assert.equal(
+  shouldRefreshBundleForCacheVersion('canonical-map-bundle-v9'),
+  true,
+  'refreshes v9 bundles so delete scopes invalidate the full map bundle'
+);
+
+assert.equal(
+  shouldRefreshBundleForCacheVersion('canonical-map-bundle-v10'),
   false,
   'keeps bundles written by the current bundle cache version'
 );
@@ -373,6 +385,32 @@ const ordinalOnlyAddressBundle = canonicalizeCampaignMapBundleAddresses({
         source: 'diamond',
       },
     },
+    {
+      type: 'Feature',
+      id: 'numeric-formatted-with-street',
+      geometry: { type: 'Point', coordinates: [151.18, -33.94] },
+      properties: {
+        id: 'numeric-formatted-with-street',
+        formatted: '8',
+        house_number: '8',
+        house_number_label: '8',
+        street_name: 'Sulman Pl',
+        locality: 'Sydney',
+        source: 'bedrock_au',
+      },
+    },
+    {
+      type: 'Feature',
+      id: 'numeric-formatted-without-street',
+      geometry: { type: 'Point', coordinates: [151.19, -33.94] },
+      properties: {
+        id: 'numeric-formatted-without-street',
+        formatted: '9',
+        house_number: '9',
+        house_number_label: '9',
+        source: 'bedrock_au',
+      },
+    },
   ],
 });
 
@@ -399,8 +437,22 @@ assert.deepEqual(
       house_number_label: '11089',
       street_name: '51st St',
     },
+    {
+      id: 'numeric-formatted-with-street',
+      formatted: '8 Sulman Pl Sydney',
+      house_number: '8',
+      house_number_label: '8',
+      street_name: 'Sulman Pl',
+    },
+    {
+      id: 'numeric-formatted-without-street',
+      formatted: null,
+      house_number: '9',
+      house_number_label: '9',
+      street_name: undefined,
+    },
   ],
-  'drops ordinal-only house labels while keeping real house numbers on ordinal streets'
+  'drops ordinal-only and numeric-only labels while repairing numeric formatted labels with street names'
 );
 
 const duplicateDisplayLinks = canonicalizeCampaignMapBundleLinksForDisplay(

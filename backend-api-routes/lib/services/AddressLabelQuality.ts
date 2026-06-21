@@ -1,5 +1,6 @@
 import type { StandardCampaignAddress } from '@/lib/services/AddressAdapter';
 import {
+  isNumericOnlyAddressLabel,
   isStreetOnlyOrdinalAddressLabel,
   isUsableHouseNumberAddressLabel,
 } from '@/lib/services/AddressDisplayIdentity';
@@ -14,10 +15,6 @@ export type AddressLabelQuality = {
   streetOnlyOrdinalRatio: number;
   acceptable: boolean;
 };
-
-export function isNumericOnlyAddressLabel(value: string | null | undefined): boolean {
-  return typeof value === 'string' && /^[\d\s#./-]+$/.test(value.trim());
-}
 
 function hasHouseNumber(value: string | null | undefined): boolean {
   return isUsableHouseNumberAddressLabel(value);
@@ -45,8 +42,16 @@ export function addressLabelQuality(addresses: StandardCampaignAddress[]): Addre
   for (const address of addresses) {
     const streetName = address.street_name?.trim();
     const formatted = address.formatted?.trim();
-    const hasNamedStreet = Boolean(streetName && !isNumericOnlyAddressLabel(streetName));
-    const hasReadableFormatted = Boolean(formatted && !isNumericOnlyAddressLabel(formatted));
+    const hasNamedStreet = Boolean(
+      streetName &&
+      !isNumericOnlyAddressLabel(streetName) &&
+      !isUsableHouseNumberAddressLabel(streetName)
+    );
+    const hasReadableFormatted = Boolean(
+      formatted &&
+      !isNumericOnlyAddressLabel(formatted) &&
+      !isUsableHouseNumberAddressLabel(formatted)
+    );
     const hasUsableHouseNumber = Boolean(
       hasHouseNumber(address.house_number) ||
         hasHouseNumber(formatted)

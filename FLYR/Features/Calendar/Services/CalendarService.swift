@@ -19,8 +19,27 @@ actor FlyrCalendarService {
     private let eventRepository = CalendarEventRepository.shared
     private let contactRepository = ContactRepository.shared
     private let outboxRepository = OutboxRepository.shared
+    private let appleCalendarDefaultsKey = "flyr.calendar.appleCalendarPullEnabled"
 
     private init() {}
+
+    func isAppleCalendarPullEnabled() -> Bool {
+        UserDefaults.standard.bool(forKey: appleCalendarDefaultsKey)
+    }
+
+    func setAppleCalendarPullEnabled(_ isEnabled: Bool) {
+        UserDefaults.standard.set(isEnabled, forKey: appleCalendarDefaultsKey)
+    }
+
+    func appleCalendarAccessState() async -> AppleCalendarAccessState {
+        await AppleCalendarService.shared.currentAccessState()
+    }
+
+    func requestAppleCalendarPull() async -> AppleCalendarAccessState {
+        let state = await AppleCalendarService.shared.requestFullAccess()
+        setAppleCalendarPullEnabled(state == .fullAccess)
+        return state
+    }
 
     func fetchCalendarItems(start: Date, end: Date) async -> [CalendarItem] {
         guard let userId = await MainActor.run(body: { AuthManager.shared.user?.id }) else {
@@ -31,14 +50,16 @@ actor FlyrCalendarService {
         async let standaloneEvents = fetchStandaloneEvents(userId: userId, workspaceId: workspaceId, start: start, end: end)
         async let contacts = fetchContacts(userId: userId, workspaceId: workspaceId)
         async let sessions = fetchSessionItems(userId: userId, workspaceId: workspaceId, start: start, end: end)
+        async let appleCalendarItems = fetchAppleCalendarItemsIfEnabled(start: start, end: end)
 
         let resolvedEvents = await standaloneEvents
         let resolvedContacts = await contacts
         let sessionItems = await sessions
+        let externalItems = await appleCalendarItems
         let contactItems = await makeContactItems(from: resolvedContacts, start: start, end: end)
         let standaloneItems = expandStandaloneEvents(resolvedEvents, start: start, end: end)
         let fallbackItems = contactItems.filter { !isLegacyContactItem($0, duplicatedBy: resolvedEvents) }
-        return (standaloneItems + fallbackItems + sessionItems)
+        return (standaloneItems + fallbackItems + sessionItems + externalItems)
             .sorted { lhs, rhs in
                 if lhs.startAt == rhs.startAt { return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending }
                 return lhs.startAt < rhs.startAt
@@ -195,6 +216,16 @@ actor FlyrCalendarService {
         }
     }
 
+    private func fetchAppleCalendarItemsIfEnabled(start: Date, end: Date) async -> [CalendarItem] {
+        guard isAppleCalendarPullEnabled() else { return [] }
+        let state = await AppleCalendarService.shared.currentAccessState()
+        guard state == .fullAccess else {
+            setAppleCalendarPullEnabled(false)
+            return []
+        }
+        return await AppleCalendarService.shared.fetchItems(start: start, end: end)
+    }
+
     private func fetchContacts(userId: UUID, workspaceId: UUID?) async -> [Contact] {
         do {
             return try await ContactsService.shared.fetchContacts(userID: userId, workspaceId: workspaceId)
@@ -228,7 +259,7 @@ actor FlyrCalendarService {
 
     private func makeContactItems(from contacts: [Contact], start: Date, end: Date) async -> [CalendarItem] {
         let reminders = contacts.compactMap { contact -> CalendarItem? in
-            guard let reminderDate = contact.reminderDate else { return nil }
+            guard let reminderDate = contact.followUpAt ?? contact.reminderDate else { return nil }
             let itemEnd = Calendar.current.date(byAdding: .minute, value: 30, to: reminderDate) ?? reminderDate
             guard itemEnd > start && reminderDate < end else { return nil }
             return CalendarItem(
@@ -371,6 +402,8 @@ actor FlyrCalendarService {
             case .standalone:
                 return false
             case .session:
+                return false
+            case .appleCalendar:
                 return false
             }
         }

@@ -104,7 +104,14 @@ final class AppRouteState: ObservableObject {
             resolved = await recoverOnboardingRouteForExistingWorkspace(resolved, state: state)
             route = applyAccessOverride(resolved)
             #if DEBUG
-            print("🔍 [AppRouteState] getRedirect → \(redirect.redirect) → route: \(route)")
+            print(
+                "🔍 [AppRouteState] getRedirect → \(redirect.redirect) → route: \(route) " +
+                "dashboardMode=\(state?.dashboardMode ?? "nil") " +
+                "salespersonId=\(state?.salespersonId ?? "nil") " +
+                "canUseSalespersonDashboard=\(state?.canUseSalespersonDashboard == true) " +
+                "effectiveDashboardMode=\(WorkspaceContext.shared.dashboardMode ?? "nil") " +
+                "effectiveCanUseSalespersonDashboard=\(WorkspaceContext.shared.canUseSalespersonDashboard)"
+            )
             #endif
         } catch let error as AccessAPIError {
             if case .unauthorized = error {

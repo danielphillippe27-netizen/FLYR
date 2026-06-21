@@ -14,6 +14,7 @@ struct BottomActionBar: View {
     @Binding var statsExpanded: Bool
     @Binding var isExpanded: Bool
     @Binding var satelliteMapEnabled: Bool
+    var hideParcels: Binding<Bool>? = nil
     var menuVariant: MenuVariant = .campaign
     @Environment(\.colorScheme) private var colorScheme
     @StateObject private var beaconService = SessionSafetyBeaconService.shared
@@ -159,6 +160,19 @@ struct BottomActionBar: View {
 
                         Divider()
                             .overlay(dividerColor)
+
+                        if let hideParcels {
+                            toggleRow(
+                                title: "Hide Parcels",
+                                subtitle: "Hide lot outlines so homes and roads stay easier to read.",
+                                systemImage: "square.dashed",
+                                tint: defaultIconTint,
+                                isOn: hideParcels
+                            )
+
+                            Divider()
+                                .overlay(dividerColor)
+                        }
                     }
 
                     gpsRow

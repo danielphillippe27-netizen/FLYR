@@ -884,11 +884,20 @@ final class CampaignRepository {
                 gersId: nil,
                 buildingGersId: input.buildingId,
                 houseNumber: input.houseNumber,
+                houseNumberLabel: input.houseNumber,
                 streetName: input.streetName,
                 postalCode: input.postalCode,
                 locality: input.locality,
                 formatted: formatted,
-                source: "manual"
+                source: "manual",
+                parcelId: input.parcelId,
+                campaignParcelId: input.campaignParcelId,
+                hasBuildingLink: input.buildingId != nil,
+                hasParcelLink: input.hasParcelLink,
+                labelVisibilityMode: input.buildingId == nil ? "address_mode_only" : "all_modes",
+                labelAnchorLon: input.coordinate.longitude,
+                labelAnchorLat: input.coordinate.latitude,
+                labelPriority: 95
             )
         )
 
@@ -1418,11 +1427,23 @@ final class CampaignRepository {
                         gersId: addressFeature.properties.gersId,
                         buildingGersId: fallbackId,
                         houseNumber: addressFeature.properties.houseNumber,
+                        houseNumberLabel: addressFeature.properties.houseNumberLabel,
                         streetName: addressFeature.properties.streetName,
                         postalCode: addressFeature.properties.postalCode,
                         locality: addressFeature.properties.locality,
                         formatted: addressFeature.properties.formatted,
-                        source: addressFeature.properties.source
+                        source: addressFeature.properties.source,
+                        parcelId: addressFeature.properties.parcelId,
+                        campaignParcelId: addressFeature.properties.campaignParcelId,
+                        hasBuildingLink: true,
+                        hasParcelLink: addressFeature.properties.hasParcelLink,
+                        labelVisibilityMode: "all_modes",
+                        labelAnchorLon: addressFeature.properties.labelAnchorLon,
+                        labelAnchorLat: addressFeature.properties.labelAnchorLat,
+                        labelGroupKey: addressFeature.properties.labelGroupKey,
+                        labelGroupIndex: addressFeature.properties.labelGroupIndex,
+                        labelGroupCount: addressFeature.properties.labelGroupCount,
+                        labelPriority: addressFeature.properties.labelPriority
                     )
                 )
             } else {

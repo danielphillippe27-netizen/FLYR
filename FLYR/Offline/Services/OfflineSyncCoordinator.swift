@@ -571,7 +571,10 @@ final class OfflineSyncCoordinator: ObservableObject {
                     country: payload.country,
                     buildingId: payload.buildingId,
                     addressProvenance: payload.addressProvenance,
-                    userConfirmed: payload.userConfirmed
+                    userConfirmed: payload.userConfirmed,
+                    parcelId: payload.parcelId,
+                    campaignParcelId: payload.campaignParcelId,
+                    hasParcelLink: payload.hasParcelLink
                 ),
                 addressId: addressId
             )

@@ -34,6 +34,9 @@ struct WorkspaceOnboardingView: View {
             await ensureFreshSession()
             let response = try await AccessAPI.shared.completeOnboarding(request)
             await hydrateWorkspaceContextAfterOnboarding()
+            if response.redirect?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() != "/subscribe" {
+                _ = await OnboardingDemoViewModel.shared.seedStarterCampaign()
+            }
             _ = await entitlementsService.fetchEntitlement()
             await StoreKitManager.shared.refreshLocalProFromCurrentEntitlements()
             await MainActor.run {
@@ -44,6 +47,9 @@ struct WorkspaceOnboardingView: View {
                 await ensureFreshSession()
                 let response = try await AccessAPI.shared.completeOnboarding(request)
                 await hydrateWorkspaceContextAfterOnboarding()
+                if response.redirect?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() != "/subscribe" {
+                    _ = await OnboardingDemoViewModel.shared.seedStarterCampaign()
+                }
                 _ = await entitlementsService.fetchEntitlement()
                 await StoreKitManager.shared.refreshLocalProFromCurrentEntitlements()
                 await MainActor.run {

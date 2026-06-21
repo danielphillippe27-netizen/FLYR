@@ -1155,6 +1155,7 @@ final class CampaignsAPI {
     func waitForProvisionReady(
         campaignId: UUID,
         requireOptimized: Bool = false,
+        returnWhenMapUsable: Bool = false,
         timeoutSeconds: TimeInterval = 90,
         pollIntervalSeconds: TimeInterval = 2,
         onProgress: ((CampaignProvisionState) async -> Void)? = nil
@@ -1182,6 +1183,16 @@ final class CampaignsAPI {
                 "status": state.provisionStatus?.rawValue ?? "nil",
                 "phase": state.provisionPhase?.rawValue ?? "nil"
             ])
+
+            let mapUsable = state.provisionStatus == .ready || state.provisionPhase?.isMapUsable == true
+            if returnWhenMapUsable && !requireOptimized && mapUsable {
+                trace.end(status: "map_usable", fields: [
+                    "polls": pollCount,
+                    "status": state.provisionStatus?.rawValue ?? "nil",
+                    "phase": state.provisionPhase?.rawValue ?? "nil"
+                ])
+                return state
+            }
 
             if state.provisionStatus == .ready && (!requireOptimized || state.provisionPhase?.isLinkComplete == true) {
                 trace.end(status: "ready", fields: [
@@ -1213,13 +1224,22 @@ final class CampaignsAPI {
     }
 
     func fetchProvisionState(campaignId: UUID) async throws -> CampaignProvisionState {
-        let res: PostgrestResponse<CampaignProvisionState> = try await client
+        let res: PostgrestResponse<[CampaignProvisionState]> = try await client
             .from("campaigns")
             .select("id,provision_status,provision_source,provision_phase,provisioned_at,addresses_ready_at,map_ready_at,optimized_at,snapshot_bucket,snapshot_prefix,snapshot_buildings_url,snapshot_roads_url,address_source,coverage_score,data_quality,standard_mode_recommended,data_quality_reason,provision_timings,provision_error,provision_message")
             .eq("id", value: campaignId.uuidString)
-            .single()
+            .limit(1)
             .execute()
-        return res.value
+        guard let state = res.value.first else {
+            throw NSError(
+                domain: "CampaignsAPI",
+                code: 404,
+                userInfo: [
+                    NSLocalizedDescriptionKey: "Campaign provisioning state was not found."
+                ]
+            )
+        }
+        return state
     }
 
     /// Row used to gate session start on campaign provisioning only.

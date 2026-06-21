@@ -55,6 +55,8 @@ struct NewCampaignScreen: View {
     @State private var hasRegisteredCreationPresentation = false
     @State private var campaignCreationTask: Task<Void, Never>?
     @State private var provisioningTask: Task<Void, Never>?
+    @State private var mapBundlePrewarmTask: Task<Void, Never>?
+    @State private var mapBundlePrewarmCampaignId: UUID?
     @State private var pendingProvision: PendingCampaignProvision?
     @State private var campaignHomeLimitAlertMessage: String?
 
@@ -749,8 +751,13 @@ struct NewCampaignScreen: View {
             created.type = campaignType
             createdCampaign = created
             createHook.error = nil
-            pendingProvision = PendingCampaignProvision(polygon: polygon, regionCode: provisionRegionCode)
-            trace.end(status: "created_pending_details", fields: [
+            pendingProvision = nil
+            startBackgroundProvision(
+                campaign: created,
+                polygon: polygon,
+                regionCode: provisionRegionCode
+            )
+            trace.end(status: "created_provisioning_in_background", fields: [
                 "campaign": created.id.uuidString
             ])
         } else {
@@ -1279,7 +1286,6 @@ struct NewCampaignScreen: View {
 
     @MainActor
     private func markCampaignReadyToOpen(campaignId: UUID, campaignName: String) async {
-        await prewarmCampaignMapBundleForOpen(campaignId: campaignId)
         campaignMapDataReady = true
         provisionFailed = false
         provisionStatusText = "Campaign is ready."
@@ -1294,6 +1300,23 @@ struct NewCampaignScreen: View {
 
         if detailsSaved {
             await openCreatedCampaign()
+        } else {
+            startCampaignMapBundlePrewarmIfNeeded(campaignId: campaignId)
+        }
+    }
+
+    @MainActor
+    private func startCampaignMapBundlePrewarmIfNeeded(campaignId: UUID) {
+        guard mapBundlePrewarmCampaignId != campaignId || mapBundlePrewarmTask == nil else { return }
+        mapBundlePrewarmTask?.cancel()
+        mapBundlePrewarmCampaignId = campaignId
+        mapBundlePrewarmTask = Task {
+            await prewarmCampaignMapBundleForOpen(campaignId: campaignId)
+            await MainActor.run {
+                if mapBundlePrewarmCampaignId == campaignId {
+                    mapBundlePrewarmTask = nil
+                }
+            }
         }
     }
 

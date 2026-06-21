@@ -3,11 +3,17 @@ import SwiftUI
 /// Uber-style bottom nav: icon above label, active adapts to color scheme, inactive = light gray, no separator.
 struct UberStyleTabBar: View {
     @Environment(\.colorScheme) private var colorScheme
+    enum Mode {
+        case standard
+        case salesperson
+    }
+
     let selectedIndex: Int
     let onSelect: (Int) -> Void
     let onCreate: () -> Void
     let recordHighlight: Bool // Session tab can use filled icon when campaign selected on map
     let accentColor: Color
+    var mode: Mode = .standard
 
     private enum Tab: Int, CaseIterable {
         case home = 0, record = 1, leads = 2, calendar = 3
@@ -32,13 +38,35 @@ struct UberStyleTabBar: View {
         }
     }
 
+    private struct SalespersonTab: Identifiable {
+        let id: Int
+        let title: String
+        let icon: String
+        let selectedIcon: String
+    }
+
+    private let salespersonTabs: [SalespersonTab] = [
+        SalespersonTab(id: 0, title: "Home", icon: "house", selectedIcon: "house.fill"),
+        SalespersonTab(id: 1, title: "Dialler", icon: "phone", selectedIcon: "phone.fill"),
+        SalespersonTab(id: 2, title: "Leads", icon: "person.2", selectedIcon: "person.2.fill"),
+        SalespersonTab(id: 3, title: "Inbox", icon: "tray", selectedIcon: "tray.fill"),
+        SalespersonTab(id: 4, title: "Task", icon: "checklist", selectedIcon: "checklist")
+    ]
+
     var body: some View {
         HStack(spacing: 0) {
-            tabItem(.home)
-            tabItem(.record)
-            UberCreateTabItem(action: onCreate)
-            tabItem(.leads)
-            tabItem(.calendar)
+            switch mode {
+            case .standard:
+                tabItem(.home)
+                tabItem(.record)
+                UberCreateTabItem(action: onCreate)
+                tabItem(.leads)
+                tabItem(.calendar)
+            case .salesperson:
+                ForEach(salespersonTabs) { tab in
+                    salespersonTabItem(tab)
+                }
+            }
         }
         .padding(.top, 10)
         .padding(.bottom, 6)
@@ -53,6 +81,17 @@ struct UberStyleTabBar: View {
             selectedColor: selectedColor
         ) {
             onSelect(tab.rawValue)
+        }
+    }
+
+    private func salespersonTabItem(_ tab: SalespersonTab) -> some View {
+        UberTabItem(
+            title: tab.title,
+            icon: selectedIndex == tab.id ? tab.selectedIcon : tab.icon,
+            isSelected: selectedIndex == tab.id,
+            selectedColor: selectedColor
+        ) {
+            onSelect(tab.id)
         }
     }
 

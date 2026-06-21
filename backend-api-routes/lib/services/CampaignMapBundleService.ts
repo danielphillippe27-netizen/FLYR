@@ -4,6 +4,7 @@ import { fetchScopedPmtilesBuildingFeatures } from '@/app/api/campaigns/_utils/s
 import { filterLinkableBuildingFootprints } from '@/lib/geo/buildingFootprintFilter';
 import { resolvePmtilesKey, type CampaignSnapshotRow } from '@/lib/diamond/geometry';
 import {
+  isNumericOnlyAddressLabel,
   isStreetOnlyOrdinalAddressLabel,
   isUsableHouseNumberAddressLabel,
   normalizedAddressDisplayIdentity,
@@ -144,7 +145,7 @@ export type CanonicalCampaignMapBundleResponse = {
 const EMPTY_FEATURE_COLLECTION: FeatureCollection = { type: 'FeatureCollection', features: [] };
 const ADDRESS_TTL_MS = 15 * 60 * 1000;
 const STATIC_GEOMETRY_TTL_MS = 24 * 60 * 60 * 1000;
-const MAP_BUNDLE_CACHE_VERSION = 'canonical-map-bundle-v8';
+const MAP_BUNDLE_CACHE_VERSION = 'canonical-map-bundle-v10';
 const PARCEL_RESOLUTION_VERSION = 'pmtiles-v2';
 const STRICT_NEAREST_LINK_MAX_DISTANCE_METERS = 15;
 const STRICT_PROXIMITY_LINK_MAX_DISTANCE_METERS = 25;
@@ -402,8 +403,17 @@ function sanitizeAddressLabelProperties(properties: Record<string, unknown>): Re
   const rawHouseNumber = normalizedString(properties.house_number);
   const rawHouseNumberLabel = normalizedString(properties.house_number_label);
   const rawStreetName = normalizedString(properties.street_name);
+  const rawLocality = normalizedString(properties.locality ?? properties.city);
   const rawFormatted = normalizedString(properties.formatted);
   const hasUsableHouseNumber = isUsableHouseNumberAddressLabel(rawHouseNumber);
+  const hasUsableStreetName = Boolean(
+    rawStreetName &&
+    !isNumericOnlyAddressLabel(rawStreetName) &&
+    !isStreetOnlyOrdinalAddressLabel(rawStreetName)
+  );
+  const composedFormatted = hasUsableHouseNumber && hasUsableStreetName
+    ? [rawHouseNumber, rawStreetName, rawLocality].filter(Boolean).join(' ')
+    : null;
   const shouldDropStreetOnlyOrdinal =
     !hasUsableHouseNumber &&
     isStreetOnlyOrdinalAddressLabel(rawStreetName) &&
@@ -411,6 +421,7 @@ function sanitizeAddressLabelProperties(properties: Record<string, unknown>): Re
 
   if (
     hasUsableHouseNumber &&
+    (!rawFormatted || !isNumericOnlyAddressLabel(rawFormatted)) &&
     !isStreetOnlyOrdinalAddressLabel(rawHouseNumberLabel) &&
     !shouldDropStreetOnlyOrdinal &&
     !isStreetOnlyOrdinalAddressLabel(rawFormatted)
@@ -428,8 +439,8 @@ function sanitizeAddressLabelProperties(properties: Record<string, unknown>): Re
   if (shouldDropStreetOnlyOrdinal) {
     sanitized.street_name = null;
   }
-  if (rawFormatted && isStreetOnlyOrdinalAddressLabel(rawFormatted)) {
-    sanitized.formatted = null;
+  if (rawFormatted && (isStreetOnlyOrdinalAddressLabel(rawFormatted) || isNumericOnlyAddressLabel(rawFormatted))) {
+    sanitized.formatted = composedFormatted;
   }
   return sanitized;
 }

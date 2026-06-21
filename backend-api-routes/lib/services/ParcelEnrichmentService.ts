@@ -90,6 +90,8 @@ type ParcelPmtilesResolution = {
   maxzoom: number;
 };
 
+type VectorTileLayerMap = VectorTile['layers'];
+
 type CampaignBuildingRow = {
   id: string;
   gers_id: string;
@@ -426,6 +428,27 @@ function getFeatureExternalId(parcelFeature: GeoJSON.Feature): string | null {
       const normalized = String(candidate).trim();
       if (normalized) return normalized;
     }
+  }
+
+  return null;
+}
+
+function pmtilesParcelLayer(layers: VectorTileLayerMap, preferredLayer?: string | null) {
+  const candidates = [
+    preferredLayer,
+    'parcels',
+    'parcel',
+    'property',
+    'properties',
+    'land_parcels',
+    'cadastre',
+    'cadastral',
+  ];
+
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    const layer = layers[candidate];
+    if (layer) return layer;
   }
 
   return null;
@@ -831,7 +854,7 @@ export class ParcelEnrichmentService {
         touchedTiles += 1;
 
         const vectorTile = new VectorTile(new Pbf(Buffer.from(tile.data)));
-        const layer = vectorTile.layers[parcelTiles.sourceLayer];
+        const layer = pmtilesParcelLayer(vectorTile.layers, parcelTiles.sourceLayer);
         if (!layer) continue;
 
         for (let index = 0; index < layer.length; index += 1) {

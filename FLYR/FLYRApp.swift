@@ -194,6 +194,11 @@ struct FLYRApp: App {
             return
         }
 
+        if url.scheme == "flyr", url.host == "salesperson", url.path == "/leads" {
+            uiState.selectedTabIndex = 2
+            return
+        }
+
         if let token = inviteToken(from: url) {
             routeState.pendingJoinToken = token
             routeState.pendingChallengeToken = nil

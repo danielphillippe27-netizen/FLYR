@@ -164,7 +164,7 @@ enum GoalType: String, Codable, CaseIterable, Identifiable {
     static func goalPickerCases(for mode: SessionMode) -> [GoalType] {
         switch mode {
         case .doorKnocking:
-            return [.knocks, .conversations, .appointments]
+            return [.knocks, .conversations, .appointments, .time]
         case .flyer:
             return [.time]
         }

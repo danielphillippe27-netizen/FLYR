@@ -6,6 +6,7 @@ import { fetchCRMConnections } from '../lib/integrations'
 import { fetchUserIntegrations } from '../lib/integrations'
 import { FIELD_LEAD_STATUS_LABELS } from '../lib/leadDisplay'
 import { downloadCsv } from '../lib/exportLeads'
+import { fetchLeadTexts, sendLeadText, type LeadTextMessage } from '../lib/texting'
 import type { FieldLead } from '../types/leads'
 import type { CRMConnection, UserIntegration } from '../types/leads'
 import SyncSettingsView from './SyncSettingsView'
@@ -36,13 +37,17 @@ function formatRelative(iso: string) {
 export default function LeadDetailPage() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
-  const { user } = useAuth()
+  const { user, getAccessToken } = useAuth()
   const [lead, setLead] = useState<FieldLead | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [connections, setConnections] = useState<CRMConnection[]>([])
   const [integrations, setIntegrations] = useState<UserIntegration[]>([])
   const [showSyncSettings, setShowSyncSettings] = useState(false)
+  const [texts, setTexts] = useState<LeadTextMessage[]>([])
+  const [textBody, setTextBody] = useState('')
+  const [textError, setTextError] = useState<string | null>(null)
+  const [texting, setTexting] = useState(false)
 
   useEffect(() => {
     if (!id) return
@@ -66,6 +71,14 @@ export default function LeadDetailPage() {
       }
     )
   }, [user?.id])
+
+  useEffect(() => {
+    if (!id || !user?.id) return
+    getAccessToken()
+      .then((token) => token ? fetchLeadTexts(id, token) : [])
+      .then(setTexts)
+      .catch((err: unknown) => setTextError(err instanceof Error ? err.message : 'Failed to load texts'))
+  }, [getAccessToken, id, user?.id])
 
   const connectedProvider =
     connections.find((c) => c.status === 'connected')?.provider
@@ -101,6 +114,23 @@ export default function LeadDetailPage() {
     window.open(url, '_blank')
   }
 
+  async function handleSendText() {
+    if (!lead || !textBody.trim()) return
+    setTexting(true)
+    setTextError(null)
+    try {
+      const token = await getAccessToken()
+      if (!token) throw new Error('Sign in again to send texts.')
+      const message = await sendLeadText(lead.id, textBody.trim(), token)
+      setTexts((current) => [...current, message])
+      setTextBody('')
+    } catch (err) {
+      setTextError(err instanceof Error ? err.message : 'Failed to send text')
+    } finally {
+      setTexting(false)
+    }
+  }
+
   if (loading) return <div style={{ padding: 24 }}>Loading...</div>
   if (error || !lead) return <div style={{ padding: 24, color: 'var(--accent)' }}>{error ?? 'Lead not found'}</div>
 
@@ -132,6 +162,46 @@ export default function LeadDetailPage() {
           <p>{lead.qr_code}</p>
         </section>
       )}
+
+      <section style={{ marginBottom: 24 }}>
+        <h2 style={{ fontSize: 16, fontWeight: 600, marginBottom: 12 }}>Texts</h2>
+        <div style={{ border: '1px solid #333', borderRadius: 8, padding: 12, background: 'rgba(255,255,255,0.04)' }}>
+          {lead.phone ? (
+            <>
+              <div style={{ maxHeight: 220, overflow: 'auto', marginBottom: 12 }}>
+                {texts.length === 0 ? (
+                  <p style={{ color: 'var(--muted)', fontSize: 14, margin: 0 }}>No text history yet.</p>
+                ) : texts.map((message) => (
+                  <div key={message.id} style={{ display: 'flex', justifyContent: message.direction === 'outbound' ? 'flex-end' : 'flex-start', marginBottom: 8 }}>
+                    <div style={{ maxWidth: '78%', padding: '8px 10px', borderRadius: 8, background: message.direction === 'outbound' ? 'var(--accent)' : 'rgba(255,255,255,0.1)', color: 'white' }}>
+                      <div style={{ whiteSpace: 'pre-wrap', fontSize: 14 }}>{message.body}</div>
+                      <div style={{ fontSize: 11, opacity: 0.75, marginTop: 4 }}>{message.status}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <textarea
+                value={textBody}
+                onChange={(event) => setTextBody(event.target.value)}
+                placeholder={`Text ${lead.name?.trim() || lead.phone}`}
+                rows={3}
+                style={{ width: '100%', resize: 'vertical', borderRadius: 8, border: '1px solid #333', background: 'var(--bg-secondary)', color: 'var(--text)', padding: 10, fontSize: 14, boxSizing: 'border-box' }}
+              />
+              {textError && <p style={{ color: 'var(--accent)', fontSize: 13 }}>{textError}</p>}
+              <button
+                type="button"
+                onClick={handleSendText}
+                disabled={texting || !textBody.trim()}
+                style={{ marginTop: 8, padding: '10px 14px', background: texting || !textBody.trim() ? '#555' : 'var(--accent)', color: 'white', border: 'none', borderRadius: 8, cursor: texting || !textBody.trim() ? 'not-allowed' : 'pointer', fontSize: 14 }}
+              >
+                {texting ? 'Sending...' : 'Send Text'}
+              </button>
+            </>
+          ) : (
+            <p style={{ color: 'var(--muted)', fontSize: 14, margin: 0 }}>Add a phone number to text this lead.</p>
+          )}
+        </div>
+      </section>
 
       <section style={{ marginBottom: 24 }}>
         {connectedProvider ? (

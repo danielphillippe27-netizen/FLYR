@@ -149,6 +149,7 @@ struct FlyrCalendarEvent: Codable, Identifiable, Equatable, Sendable {
 enum FlyrCalendarEventType: String, CaseIterable, Identifiable, Codable, Sendable {
     case appointment
     case doorKnock = "door_knock"
+    case flyerSchedule = "flyer_schedule"
     case followUp = "follow_up"
     case showing
     case call
@@ -157,10 +158,13 @@ enum FlyrCalendarEventType: String, CaseIterable, Identifiable, Codable, Sendabl
 
     var id: String { rawValue }
 
+    static let manualCreationTypes: [FlyrCalendarEventType] = [.doorKnock, .flyerSchedule]
+
     var title: String {
         switch self {
         case .appointment: return "Appointment"
         case .doorKnock: return "Door Knock"
+        case .flyerSchedule: return "Flyer Schedule"
         case .followUp: return "Follow-Up"
         case .showing: return "Showing"
         case .call: return "Call"
@@ -173,6 +177,7 @@ enum FlyrCalendarEventType: String, CaseIterable, Identifiable, Codable, Sendabl
         switch self {
         case .appointment: return "calendar.badge.clock"
         case .doorKnock: return "figure.walk"
+        case .flyerSchedule: return "paperplane.fill"
         case .followUp: return "arrow.uturn.forward"
         case .showing: return "house"
         case .call: return "phone"
@@ -185,6 +190,7 @@ enum FlyrCalendarEventType: String, CaseIterable, Identifiable, Codable, Sendabl
         switch self {
         case .appointment: return "yellow"
         case .doorKnock: return "green"
+        case .flyerSchedule: return "blue"
         case .followUp: return "yellow"
         case .showing: return "green"
         case .call: return "purple"
@@ -240,6 +246,7 @@ enum CalendarItemKind: String, Sendable {
     case reminder
     case meeting
     case session
+    case appleCalendar = "apple_calendar"
 }
 
 enum CalendarEventSourceKind: String, Sendable {
@@ -317,6 +324,21 @@ struct CalendarItem: Identifiable, Equatable, Sendable {
 }
 
 extension CalendarItem {
+    static func stableExternalSourceId(source: String, externalId: String) -> UUID {
+        let seed = "flyr-calendar-item|\(source)|\(externalId)"
+        let digest = SHA256.hash(data: Data(seed.utf8))
+        var bytes = Array(digest.prefix(16))
+        bytes[6] = (bytes[6] & 0x0f) | 0x50
+        bytes[8] = (bytes[8] & 0x3f) | 0x80
+        return UUID(uuid: (
+            bytes[0], bytes[1], bytes[2], bytes[3],
+            bytes[4], bytes[5],
+            bytes[6], bytes[7],
+            bytes[8], bytes[9],
+            bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]
+        ))
+    }
+
     init(event: FlyrCalendarEvent) {
         self.init(
             id: "event-\(event.id.uuidString)",
@@ -346,6 +368,7 @@ extension CalendarItem {
         let endAt = max(resolvedEnd, session.start_time.addingTimeInterval(60))
         let sessionMode = session.sessionModeValue
         let title = session.end_time == nil ? "\(sessionMode.displayName) Active" : sessionMode.displayName
+        let eventType: FlyrCalendarEventType = sessionMode == .flyer ? .flyerSchedule : .doorKnock
 
         var details: [String] = []
         let doors = session.doorsCount
@@ -368,7 +391,7 @@ extension CalendarItem {
             id: "session-\(sessionId.uuidString)",
             sourceId: sessionId,
             kind: .session,
-            eventType: FlyrCalendarEventType.doorKnock.rawValue,
+            eventType: eventType.rawValue,
             title: title,
             startAt: session.start_time,
             endAt: endAt,

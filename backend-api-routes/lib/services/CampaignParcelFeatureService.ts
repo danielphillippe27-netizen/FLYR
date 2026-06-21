@@ -95,6 +95,8 @@ type AddressFeatureCollection = {
   }>;
 };
 
+type VectorTileLayerMap = VectorTile['layers'];
+
 export type CampaignParcelFeatureCollection = {
   type: 'FeatureCollection';
   features: GeoJSON.Feature[];
@@ -937,6 +939,27 @@ function getFeatureExternalId(feature: GeoJSON.Feature): string | null {
   return null;
 }
 
+function pmtilesParcelLayer(layers: VectorTileLayerMap, preferredLayer?: string | null) {
+  const candidates = [
+    preferredLayer,
+    'parcels',
+    'parcel',
+    'property',
+    'properties',
+    'land_parcels',
+    'cadastre',
+    'cadastral',
+  ];
+
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    const layer = layers[candidate];
+    if (layer) return layer;
+  }
+
+  return null;
+}
+
 function parcelResponseToFeature(parcel: CampaignParcelResponse): GeoJSON.Feature | null {
   try {
     const geometry = JSON.parse(parcel.geom) as GeoJSON.Geometry;
@@ -1207,7 +1230,7 @@ async function fetchScopedPmtilesParcels(
       if (!tile) continue;
 
       const vectorTile = new VectorTile(new Pbf(Buffer.from(tile.data)));
-      const layer = vectorTile.layers[parcelTiles.sourceLayer];
+      const layer = pmtilesParcelLayer(vectorTile.layers, parcelTiles.sourceLayer);
       if (!layer) continue;
 
       for (let index = 0; index < layer.length; index += 1) {

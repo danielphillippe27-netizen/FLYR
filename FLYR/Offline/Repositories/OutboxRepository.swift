@@ -266,6 +266,9 @@ struct ManualAddressCreateOutboxPayload: Codable, Sendable {
     let buildingId: String?
     let addressProvenance: String?
     let userConfirmed: Bool
+    let parcelId: String?
+    let campaignParcelId: String?
+    let hasParcelLink: Bool?
     let latitude: Double
     let longitude: Double
 }

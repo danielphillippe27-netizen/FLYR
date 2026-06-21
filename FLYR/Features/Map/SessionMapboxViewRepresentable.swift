@@ -42,7 +42,6 @@ struct SessionMapboxViewRepresentable: UIViewRepresentable {
 
     private let sessionLineSourceId = "session-line-source"
     private let sessionLineLayerId = "session-line-layer"
-    private let headingConeSourceId = "session-heading-cone-source"
     private let userLocationSourceId = "session-user-location-source"
     private let userLocationLayerId = "session-user-location-layer"
     
@@ -86,7 +85,6 @@ struct SessionMapboxViewRepresentable: UIViewRepresentable {
         Coordinator(
             sessionLineSourceId: sessionLineSourceId,
             sessionLineLayerId: sessionLineLayerId,
-            headingConeSourceId: headingConeSourceId,
             userLocationSourceId: userLocationSourceId,
             userLocationLayerId: userLocationLayerId
         )
@@ -96,7 +94,6 @@ struct SessionMapboxViewRepresentable: UIViewRepresentable {
     class Coordinator {
         let sessionLineSourceId: String
         let sessionLineLayerId: String
-        let headingConeSourceId: String
         let userLocationSourceId: String
         let userLocationLayerId: String
         weak var mapView: MapView?
@@ -108,13 +105,11 @@ struct SessionMapboxViewRepresentable: UIViewRepresentable {
         init(
             sessionLineSourceId: String,
             sessionLineLayerId: String,
-            headingConeSourceId: String,
             userLocationSourceId: String,
             userLocationLayerId: String
         ) {
             self.sessionLineSourceId = sessionLineSourceId
             self.sessionLineLayerId = sessionLineLayerId
-            self.headingConeSourceId = headingConeSourceId
             self.userLocationSourceId = userLocationSourceId
             self.userLocationLayerId = userLocationLayerId
         }
@@ -157,33 +152,6 @@ struct SessionMapboxViewRepresentable: UIViewRepresentable {
                 print("✅ [SessionMap] Added hidden session path source")
             } catch {
                 print("❌ [SessionMap] Failed to add session path source: \(error)")
-            }
-
-            do {
-                var source = GeoJSONSource(id: headingConeSourceId)
-                source.data = .featureCollection(FeatureCollection(features: []))
-                try map.addSource(source)
-
-                for band in UserHeadingConeBand.allCases {
-                    var layer = FillLayer(
-                        id: Self.headingLayerId(for: band),
-                        source: headingConeSourceId
-                    )
-                    layer.filter = Exp(.eq) {
-                        Exp(.get) { "band" }
-                        band.rawValue
-                    }
-                    layer.fillColor = .constant(UserHeadingIndicatorRenderer.styleColor(for: band))
-                    layer.fillOpacity = .expression(
-                        Exp(.coalesce) {
-                            Exp(.get) { "opacity" }
-                            1.0
-                        }
-                    )
-                    try map.addLayer(layer)
-                }
-            } catch {
-                print("❌ [SessionMap] Failed to add heading cone layer: \(error)")
             }
 
             // User location: puck (outer glow + inner circle) then arrow that rotates with heading
@@ -259,9 +227,6 @@ struct SessionMapboxViewRepresentable: UIViewRepresentable {
             let emptyCollection = FeatureCollection(features: [])
             guard let loc = location else {
                 map.updateGeoJSONSource(withId: userLocationSourceId, geoJSON: .featureCollection(emptyCollection))
-                if map.sourceExists(withId: headingConeSourceId) {
-                    map.updateGeoJSONSource(withId: headingConeSourceId, geoJSON: .featureCollection(emptyCollection))
-                }
                 return
             }
             guard map.sourceExists(withId: userLocationSourceId) else { return }
@@ -275,14 +240,6 @@ struct SessionMapboxViewRepresentable: UIViewRepresentable {
                 "headingOpacity": .number(headingState.heading != nil ? 1.0 : 0.0)
             ]
             map.updateGeoJSONSource(withId: userLocationSourceId, geoJSON: .feature(feature))
-
-            if map.sourceExists(withId: headingConeSourceId) {
-                let collection = UserHeadingIndicatorRenderer.featureCollection(
-                    center: loc.coordinate,
-                    presentationState: headingState
-                )
-                map.updateGeoJSONSource(withId: headingConeSourceId, geoJSON: .featureCollection(collection))
-            }
         }
 
         func updateCamera(location: CLLocation?, headingState: MapHeadingPresentationState) {
@@ -340,9 +297,6 @@ struct SessionMapboxViewRepresentable: UIViewRepresentable {
             QuantizedCoordinate(coordinate: coordinate)
         }
 
-        private static func headingLayerId(for band: UserHeadingConeBand) -> String {
-            "session-user-heading-\(band.rawValue)"
-        }
     }
 }
 

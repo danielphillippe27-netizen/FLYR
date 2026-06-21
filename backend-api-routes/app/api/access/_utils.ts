@@ -39,6 +39,12 @@ export type AccessStatePayload = {
   industry: string | null;
   workspace_id: string | null;
   workspaceId: string | null;
+  accessLevel: string | null;
+  dashboardMode: string | null;
+  salespersonId: string | null;
+  salesperson: { id: string } | null;
+  isSalesperson: boolean;
+  canUseSalespersonDashboard: boolean;
   has_access: boolean;
   hasAccess: boolean;
   reason: string | null;
@@ -75,6 +81,33 @@ function workspaceHasAccess(workspace: WorkspaceRow | null): boolean {
   }
 
   return true;
+}
+
+function envList(name: string): string[] {
+  return (process.env[name] ?? "")
+    .split(/\\n|[\n,]/)
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
+function normalizedEmail(email: string | null | undefined): string | null {
+  return email?.trim().toLowerCase() || null;
+}
+
+function canUseSalespersonDashboard(context: AccessContext): boolean {
+  if (!context.workspace?.id || !context.hasAccess) return false;
+
+  const allowedWorkspaceIds = new Set(envList("DIALER_ENABLED_WORKSPACE_IDS"));
+  const allowedEmails = new Set(
+    envList("DIALER_ENABLED_EMAILS").map((value) => value.toLowerCase())
+  );
+
+  if (allowedWorkspaceIds.size === 0 && allowedEmails.size === 0) {
+    return false;
+  }
+
+  const email = normalizedEmail(context.user.email);
+  return allowedWorkspaceIds.has(context.workspace.id) || (email ? allowedEmails.has(email) : false);
 }
 
 async function resolvePrimaryWorkspace(userId: string): Promise<{ workspace: WorkspaceRow | null; role: string | null }> {
@@ -141,6 +174,9 @@ export async function resolveAccessContext(request: NextRequest): Promise<Access
 }
 
 export function toAccessStatePayload(context: AccessContext): AccessStatePayload {
+  const salespersonDashboardEnabled = canUseSalespersonDashboard(context);
+  const salespersonId = salespersonDashboardEnabled ? context.user.id : null;
+
   return {
     user_id: context.user.id,
     userId: context.user.id,
@@ -150,6 +186,12 @@ export function toAccessStatePayload(context: AccessContext): AccessStatePayload
     industry: context.workspace?.industry ?? null,
     workspace_id: context.workspace?.id ?? null,
     workspaceId: context.workspace?.id ?? null,
+    accessLevel: salespersonDashboardEnabled ? "salesperson" : context.role,
+    dashboardMode: salespersonDashboardEnabled ? "salesperson" : null,
+    salespersonId,
+    salesperson: salespersonId ? { id: salespersonId } : null,
+    isSalesperson: salespersonDashboardEnabled,
+    canUseSalespersonDashboard: salespersonDashboardEnabled,
     has_access: context.hasAccess,
     hasAccess: context.hasAccess,
     reason: context.reason,

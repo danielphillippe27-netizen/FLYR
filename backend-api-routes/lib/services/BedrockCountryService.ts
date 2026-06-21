@@ -96,6 +96,7 @@ type BedrockScanResult = {
   queryEngine: 'duckdb_parquet' | 'pmtiles_vector';
   touchedTiles: number;
   partitioning?: string;
+  pmtilesKey?: string;
   tilePadding?: number;
   timings: {
     manifestMs: number;
@@ -109,6 +110,23 @@ type BedrockScanResult = {
     duckdb_query_ms?: number;
     manifest_cache_hit?: boolean;
   };
+};
+
+type ParcelPmtilesIndexEntry = {
+  state?: unknown;
+  region?: unknown;
+  key?: unknown;
+  source_key?: unknown;
+  url?: unknown;
+  bounds?: unknown;
+  minzoom?: unknown;
+  maxzoom?: unknown;
+};
+
+type ResolvedParcelPmtiles = {
+  key: string;
+  bounds?: Bounds;
+  partitioning?: string;
 };
 
 type ManifestReadResult = {
@@ -299,6 +317,10 @@ function prefix(config: BedrockCountryConfig) {
   return (env(config, 'PREFIX') || `bedrock/${config.country}/current`).replace(/^\/+|\/+$/g, '');
 }
 
+function rootPrefixFromLayerPrefix(rawPrefix: string) {
+  return rawPrefix.replace(/\/(?:addresses|buildings|parcels)$/i, '');
+}
+
 function layerKey(config: BedrockCountryConfig, layer: 'addresses' | 'buildings' | 'parcels', filename: string) {
   const layerPrefix =
     layer === 'addresses'
@@ -307,7 +329,15 @@ function layerKey(config: BedrockCountryConfig, layer: 'addresses' | 'buildings'
         ? env(config, 'BUILDING_PREFIX') || config.buildingPrefix
         : env(config, 'PARCEL_PREFIX');
 
-  const base = (layerPrefix || `${prefix(config)}/${layer}`).replace(/^\/+|\/+$/g, '');
+  const configuredPrefix = (layerPrefix || '').replace(/^\/+|\/+$/g, '');
+  const defaultPrefix = prefix(config);
+  const defaultPrefixLayer = defaultPrefix.split('/').pop()?.toLowerCase();
+  const base = (
+    configuredPrefix ||
+    (defaultPrefixLayer === layer
+      ? defaultPrefix
+      : `${rootPrefixFromLayerPrefix(defaultPrefix)}/${layer}`)
+  ).replace(/^\/+|\/+$/g, '');
   return `${base}/${filename}`;
 }
 
@@ -345,6 +375,70 @@ function usaParcelPmtilesKey(config: BedrockCountryConfig, regionCode?: string |
   const state = regionCode?.trim().toUpperCase();
   if (!state || !USA_PARCEL_REGIONS.has(state)) return null;
   return `${prefix(config)}/parcels/pmtiles_by_state/state=${state}/parcels.pmtiles`;
+}
+
+function boundsFromUnknown(value: unknown): Bounds | null {
+  if (!Array.isArray(value) || value.length < 4) return null;
+  const bounds = value.slice(0, 4).map(Number);
+  return bounds.every(Number.isFinite) ? bounds as Bounds : null;
+}
+
+function s3KeyFromUriOrKey(value: unknown): string | null {
+  const raw = text(value);
+  if (!raw) return null;
+  if (!raw.startsWith('s3://')) return raw.replace(/^\/+/, '');
+  const withoutScheme = raw.slice('s3://'.length);
+  const firstSlash = withoutScheme.indexOf('/');
+  return firstSlash >= 0 ? withoutScheme.slice(firstSlash + 1) : null;
+}
+
+async function resolveIndexedParcelPmtilesKey(
+  config: BedrockCountryConfig,
+  bbox: Bounds,
+  regionCode?: string | null
+): Promise<ResolvedParcelPmtiles | null> {
+  try {
+    const indexKey = layerKey(config, 'parcels', 'pmtiles-index.json');
+    const parsed = JSON.parse(await s3Text(config, indexKey)) as { pmtiles?: ParcelPmtilesIndexEntry[] };
+    const entries = Array.isArray(parsed.pmtiles) ? parsed.pmtiles : [];
+    const normalizedRegion = regionCode?.trim().toUpperCase();
+    const candidates = entries.flatMap((entry) => {
+      const key = s3KeyFromUriOrKey(entry.key) ?? s3KeyFromUriOrKey(entry.source_key) ?? s3KeyFromUriOrKey(entry.url);
+      const bounds = boundsFromUnknown(entry.bounds);
+      if (!key || !bounds || !bboxIntersects(bounds, bbox)) return [];
+      const state = text(entry.state)?.toUpperCase();
+      const region = text(entry.region)?.toUpperCase();
+      const regionMatch = Boolean(normalizedRegion && normalizedRegion !== config.countryCode && (state === normalizedRegion || region === normalizedRegion));
+      const area = Math.max(0, bounds[2] - bounds[0]) * Math.max(0, bounds[3] - bounds[1]);
+      return [{ key, bounds, regionMatch, area }];
+    });
+    const selected = candidates.sort((lhs, rhs) => {
+      if (lhs.regionMatch !== rhs.regionMatch) return lhs.regionMatch ? -1 : 1;
+      return lhs.area - rhs.area;
+    })[0];
+    return selected
+      ? { key: selected.key, bounds: selected.bounds, partitioning: 'pmtiles_vector_index' }
+      : null;
+  } catch (error) {
+    console.warn('[BedrockCountryService] Parcel PMTiles index lookup failed; trying default parcel key', {
+      country: config.country,
+      message: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+}
+
+async function resolveParcelPmtiles(
+  config: BedrockCountryConfig,
+  bbox: Bounds,
+  regionCode?: string | null
+): Promise<ResolvedParcelPmtiles | null> {
+  if (config.country !== 'usa') {
+    const indexed = await resolveIndexedParcelPmtilesKey(config, bbox, regionCode);
+    if (indexed) return indexed;
+  }
+  const directKey = usaParcelPmtilesKey(config, regionCode);
+  return directKey ? { key: directKey, partitioning: config.country === 'usa' ? 'pmtiles_vector_state' : 'pmtiles_vector' } : null;
 }
 
 function usaAddressPmtilesKey(config: BedrockCountryConfig, regionCode?: string | null) {
@@ -716,8 +810,20 @@ function parseProperties(row: BedrockParquetRow) {
   }
 }
 
+function withCaseInsensitivePropertyAliases(input: Record<string, unknown>) {
+  const output: Record<string, unknown> = { ...input };
+  for (const [key, value] of Object.entries(input)) {
+    if (value == null) continue;
+    const lowerKey = key.toLowerCase();
+    if (!(lowerKey in output)) {
+      output[lowerKey] = value;
+    }
+  }
+  return output;
+}
+
 function rowProperties(row: BedrockParquetRow) {
-  return {
+  return withCaseInsensitivePropertyAliases({
     ...parseProperties(row),
     ...Object.fromEntries(
       Object.entries(row).filter(([key, value]) => {
@@ -740,7 +846,7 @@ function rowProperties(row: BedrockParquetRow) {
         );
       })
     ),
-  };
+  });
 }
 
 function parseRowGeometry(row: BedrockParquetRow): GeoJSON.Geometry | null {
@@ -871,81 +977,215 @@ function streetLabel(name: unknown, type: unknown): string | undefined {
 }
 
 function streetLabelFrom(primary: Record<string, unknown>, secondary: Record<string, unknown> = {}): string | undefined {
+  primary = withCaseInsensitivePropertyAliases(primary);
+  secondary = withCaseInsensitivePropertyAliases(secondary);
   const streetName =
     streetText(primary.street_name) ??
+    streetText(primary.streetname) ??
+    streetText(primary.streetName) ??
+    streetText(primary.primary_street_name) ??
+    streetText(primary.primarystreetname) ??
+    streetText(primary.primaryStreetName) ??
     streetText(primary.street) ??
     streetText(primary.road_name) ??
+    streetText(primary.roadname) ??
+    streetText(primary.roadName) ??
     streetText(primary.road) ??
     streetText(primary.str_name) ??
+    streetText(primary.strname) ??
     streetText(primary.street_full) ??
+    streetText(primary.streetfull) ??
     streetText(primary.street_label) ??
+    streetText(primary.streetlabel) ??
     streetText(primary.full_street) ??
+    streetText(primary.fullstreet) ??
     streetText(primary.primary_street) ??
+    streetText(primary.primarystreet) ??
     streetText(primary['addr:street']) ??
+    streetText(primary.thoroughfare) ??
     streetText(primary.name) ??
     streetText(secondary.street_name) ??
+    streetText(secondary.streetname) ??
+    streetText(secondary.streetName) ??
+    streetText(secondary.primary_street_name) ??
+    streetText(secondary.primarystreetname) ??
+    streetText(secondary.primaryStreetName) ??
     streetText(secondary.street) ??
     streetText(secondary.road_name) ??
+    streetText(secondary.roadname) ??
+    streetText(secondary.roadName) ??
     streetText(secondary.road) ??
     streetText(secondary.str_name) ??
+    streetText(secondary.strname) ??
     streetText(secondary.street_full) ??
+    streetText(secondary.streetfull) ??
     streetText(secondary.street_label) ??
+    streetText(secondary.streetlabel) ??
     streetText(secondary.full_street) ??
+    streetText(secondary.fullstreet) ??
     streetText(secondary.primary_street) ??
+    streetText(secondary.primarystreet) ??
     streetText(secondary['addr:street']) ??
+    streetText(secondary.thoroughfare) ??
     streetText(secondary.name);
   const streetType =
     streetText(primary.street_type) ??
+    streetText(primary.street_type_code) ??
+    streetText(primary.streettype) ??
+    streetText(primary.streettypecode) ??
+    streetText(primary.streetType) ??
+    streetText(primary.streetTypeCode) ??
     streetText(primary.road_type) ??
+    streetText(primary.road_type_code) ??
+    streetText(primary.roadtype) ??
+    streetText(primary.roadtypecode) ??
+    streetText(primary.roadType) ??
+    streetText(primary.roadTypeCode) ??
     streetText(primary.str_type) ??
+    streetText(primary.strtype) ??
     streetText(primary.street_suffix) ??
+    streetText(primary.street_suffix_code) ??
+    streetText(primary.streetsuffix) ??
+    streetText(primary.streetsuffixcode) ??
+    streetText(primary.streetSuffix) ??
+    streetText(primary.streetSuffixCode) ??
     streetText(primary.suffix) ??
     streetText(secondary.street_type) ??
+    streetText(secondary.street_type_code) ??
+    streetText(secondary.streettype) ??
+    streetText(secondary.streettypecode) ??
+    streetText(secondary.streetType) ??
+    streetText(secondary.streetTypeCode) ??
     streetText(secondary.road_type) ??
+    streetText(secondary.road_type_code) ??
+    streetText(secondary.roadtype) ??
+    streetText(secondary.roadtypecode) ??
+    streetText(secondary.roadType) ??
+    streetText(secondary.roadTypeCode) ??
     streetText(secondary.str_type) ??
+    streetText(secondary.strtype) ??
     streetText(secondary.street_suffix) ??
+    streetText(secondary.street_suffix_code) ??
+    streetText(secondary.streetsuffix) ??
+    streetText(secondary.streetsuffixcode) ??
+    streetText(secondary.streetSuffix) ??
+    streetText(secondary.streetSuffixCode) ??
     streetText(secondary.suffix);
   return streetLabel(streetName, streetType);
 }
 
 function houseNumberFrom(primary: Record<string, unknown>, secondary: Record<string, unknown> = {}): string | undefined {
+  primary = withCaseInsensitivePropertyAliases(primary);
+  secondary = withCaseInsensitivePropertyAliases(secondary);
   const candidate = firstText(
     primary.house_number,
     primary.house_number_label,
-    primary.street_number,
-    primary.number_first,
-    primary.address_number,
-    primary.street_no,
-    primary.civic_number,
     primary.housenumber,
+    primary.housenumberlabel,
+    primary.houseNumber,
+    primary.houseNumberLabel,
+    primary.street_number,
+    primary.streetnumber,
+    primary.streetNumber,
+    primary.number_first,
+    primary.numberfirst,
+    primary.numberFirst,
+    primary.address_number,
+    primary.addressnumber,
+    primary.addressNumber,
+    primary.street_no,
+    primary.streetno,
+    primary.streetNo,
+    primary.house_no,
+    primary.houseno,
+    primary.houseNo,
+    primary.address_no,
+    primary.addressno,
+    primary.addressNo,
+    primary.civic_number,
+    primary.civicnumber,
+    primary.civicNumber,
+    primary.number,
     primary['addr:housenumber'],
     secondary.house_number,
     secondary.house_number_label,
-    secondary.street_number,
-    secondary.number_first,
-    secondary.address_number,
-    secondary.street_no,
-    secondary.civic_number,
     secondary.housenumber,
+    secondary.housenumberlabel,
+    secondary.houseNumber,
+    secondary.houseNumberLabel,
+    secondary.street_number,
+    secondary.streetnumber,
+    secondary.streetNumber,
+    secondary.number_first,
+    secondary.numberfirst,
+    secondary.numberFirst,
+    secondary.address_number,
+    secondary.addressnumber,
+    secondary.addressNumber,
+    secondary.street_no,
+    secondary.streetno,
+    secondary.streetNo,
+    secondary.house_no,
+    secondary.houseno,
+    secondary.houseNo,
+    secondary.address_no,
+    secondary.addressno,
+    secondary.addressNo,
+    secondary.civic_number,
+    secondary.civicnumber,
+    secondary.civicNumber,
+    secondary.number,
     secondary['addr:housenumber']
   );
   return isUsableHouseNumberAddressLabel(candidate) ? candidate : undefined;
 }
 
 function explicitAddressText(primary: Record<string, unknown>, secondary: Record<string, unknown> = {}): string | undefined {
+  primary = withCaseInsensitivePropertyAliases(primary);
+  secondary = withCaseInsensitivePropertyAliases(secondary);
   return firstText(
     primary.full_address,
+    primary.fulladdress,
+    primary.fullAddress,
     primary.formatted,
+    primary.formatted_address,
+    primary.formattedaddress,
+    primary.formattedAddress,
     primary.display_address,
+    primary.displayaddress,
+    primary.displayAddress,
     primary.address,
     primary.label,
     primary.full_addr,
+    primary.fulladdr,
+    primary.fullAddr,
+    primary.address_line,
+    primary.addressline,
+    primary.addressLine,
+    primary.address_line_1,
+    primary.addressline1,
+    primary.addressLine1,
     secondary.full_address,
+    secondary.fulladdress,
+    secondary.fullAddress,
     secondary.formatted,
+    secondary.formatted_address,
+    secondary.formattedaddress,
+    secondary.formattedAddress,
     secondary.display_address,
+    secondary.displayaddress,
+    secondary.displayAddress,
     secondary.address,
     secondary.label,
-    secondary.full_addr
+    secondary.full_addr,
+    secondary.fulladdr,
+    secondary.fullAddr,
+    secondary.address_line,
+    secondary.addressline,
+    secondary.addressLine,
+    secondary.address_line_1,
+    secondary.addressline1,
+    secondary.addressLine1
   );
 }
 
@@ -976,39 +1216,52 @@ function chooseFormattedAddress(
 
 function normalizeAddress(config: BedrockCountryConfig, campaignId: string, row: BedrockParquetRow): StandardCampaignAddress | null {
   const columns = coordinateColumns(config);
-  const lon = numericValue(row[columns.longitude]) ?? numericValue(row.longitude) ?? numericValue(row.lon);
-  const lat = numericValue(row[columns.latitude]) ?? numericValue(row.latitude) ?? numericValue(row.lat);
+  const rowValues = withCaseInsensitivePropertyAliases(row);
+  const lon = numericValue(rowValues[columns.longitude]) ?? numericValue(rowValues.longitude) ?? numericValue(rowValues.lon);
+  const lat = numericValue(rowValues[columns.latitude]) ?? numericValue(rowValues.latitude) ?? numericValue(rowValues.lat);
   if (lon == null || lat == null) return null;
 
-  const props = parseProperties(row);
+  const props = withCaseInsensitivePropertyAliases(parseProperties(row));
   const geometry =
-    typeof row.geometry_json === 'string' && row.geometry_json.trim()
-      ? row.geometry_json
-      : typeof row.geometry_geojson === 'string' && row.geometry_geojson.trim()
-        ? row.geometry_geojson
+    typeof rowValues.geometry_json === 'string' && rowValues.geometry_json.trim()
+      ? rowValues.geometry_json
+      : typeof rowValues.geometry_geojson === 'string' && rowValues.geometry_geojson.trim()
+        ? rowValues.geometry_geojson
       : JSON.stringify({ type: 'Point', coordinates: [lon, lat] });
   const addressId = canonicalBedrockAddressExternalId(
-    text(row.address_id) ??
+    text(rowValues.address_id) ??
     text(props.address_id) ??
-    text(row.address_detail_pid) ??
+    text(rowValues.address_detail_pid) ??
+    text(rowValues.addressdetailpid) ??
+    text(rowValues.addressDetailPid) ??
     text(props.address_detail_pid) ??
-    text(row.source_id) ??
+    text(props.addressdetailpid) ??
+    text(props.addressDetailPid) ??
+    text(rowValues.source_id) ??
     text(props.source_id) ??
-    text(row.uprn) ??
+    text(rowValues.uprn) ??
     text(props.uprn) ??
-    text(row.gers_id)
+    text(rowValues.gers_id)
   );
-  const houseNumber = houseNumberFrom(row, props);
-  const streetName = streetLabelFrom(row, props);
-  const unit = text(row.unit) ?? text(props.unit) ?? text(props.unit_number) ?? text(props.suite);
+  const houseNumber = houseNumberFrom(rowValues, props);
+  const streetName = streetLabelFrom(rowValues, props);
+  const unit = text(rowValues.unit) ?? text(props.unit) ?? text(props.unit_number) ?? text(props.suite);
   const locality =
-    text(row.locality) ??
+    text(rowValues.locality) ??
     text(props.locality) ??
-    text(row.locality_name) ??
+    text(rowValues.locality_name) ??
     text(props.locality_name) ??
-    text(row.city);
+    text(rowValues.localityname) ??
+    text(props.localityname) ??
+    text(rowValues.localityName) ??
+    text(props.localityName) ??
+    text(rowValues.suburb) ??
+    text(props.suburb) ??
+    text(rowValues.town) ??
+    text(props.town) ??
+    text(rowValues.city);
   const formatted = chooseFormattedAddress(
-    explicitAddressText(row, props),
+    explicitAddressText(rowValues, props),
     houseNumber,
     streetName,
     locality,
@@ -1022,8 +1275,16 @@ function normalizeAddress(config: BedrockCountryConfig, campaignId: string, row:
     street_name: streetName,
     unit,
     locality,
-    region: (text(row.region) ?? text(props.region) ?? text(row.state) ?? config.countryCode).toUpperCase(),
-    postal_code: text(row.postal_code) ?? text(props.postal_code) ?? text(row.postcode) ?? text(props.postcode),
+    region: (text(rowValues.region) ?? text(props.region) ?? text(rowValues.state) ?? text(props.state) ?? config.countryCode).toUpperCase(),
+    postal_code:
+      text(rowValues.postal_code) ??
+      text(props.postal_code) ??
+      text(rowValues.postalcode) ??
+      text(props.postalcode) ??
+      text(rowValues.postalCode) ??
+      text(props.postalCode) ??
+      text(rowValues.postcode) ??
+      text(props.postcode),
     coordinate: { lat, lon },
     lat,
     lon,
@@ -1032,6 +1293,11 @@ function normalizeAddress(config: BedrockCountryConfig, campaignId: string, row:
     gers_id: addressId ? `${config.provisionSource}:${addressId}` : null,
   };
 }
+
+export const __bedrockCountryServiceTestHooks = {
+  normalizeAddress,
+  normalizePmtilesAddress,
+};
 
 function normalizeBuildingFeature(row: BedrockParquetRow): BedrockScopedBuildingFeature | null {
   const geometry = parseRowGeometry(row);
@@ -1123,6 +1389,8 @@ function normalizePmtilesAddress(
   const addressId = canonicalBedrockAddressExternalId(
     text(props.address_id) ??
     text(props.address_detail_pid) ??
+    text(props.addressdetailpid) ??
+    text(props.addressDetailPid) ??
     text(props.source_id) ??
     text(props.uprn) ??
     text(props.gers_id)
@@ -1130,7 +1398,14 @@ function normalizePmtilesAddress(
   const houseNumber = houseNumberFrom(props);
   const streetName = streetLabelFrom(props);
   const unit = text(props.unit) ?? text(props.unit_number) ?? text(props.suite);
-  const locality = text(props.locality) ?? text(props.locality_name) ?? text(props.city);
+  const locality =
+    text(props.locality) ??
+    text(props.locality_name) ??
+    text(props.localityname) ??
+    text(props.localityName) ??
+    text(props.suburb) ??
+    text(props.town) ??
+    text(props.city);
   const formatted = chooseFormattedAddress(
     explicitAddressText(props),
     houseNumber,
@@ -1147,7 +1422,11 @@ function normalizePmtilesAddress(
     unit,
     locality,
     region: (text(props.region) ?? text(props.state) ?? config.countryCode).toUpperCase(),
-    postal_code: text(props.postal_code) ?? text(props.postcode),
+    postal_code:
+      text(props.postal_code) ??
+      text(props.postalcode) ??
+      text(props.postalCode) ??
+      text(props.postcode),
     coordinate: { lat, lon },
     lat,
     lon,
@@ -1252,8 +1531,9 @@ async function loadParcelsFromPmtiles(options: {
   regionCode?: string | null;
 }): Promise<{ features: BedrockScopedParcelFeature[]; metric: BedrockScanResult } | null> {
   const startedAt = Date.now();
-  const pmtilesKey = usaParcelPmtilesKey(options.config, options.regionCode);
-  if (!pmtilesKey) return null;
+  const resolvedPmtiles = await resolveParcelPmtiles(options.config, options.bbox, options.regionCode);
+  if (!resolvedPmtiles) return null;
+  const pmtilesKey = resolvedPmtiles.key;
 
   const queryStartedAt = Date.now();
   const archive = new PMTiles(await pmtilesArchiveUrl(options.config, pmtilesKey));
@@ -1335,7 +1615,8 @@ async function loadParcelsFromPmtiles(options: {
       seconds: Number((totalMs / 1000).toFixed(2)),
       queryEngine: 'pmtiles_vector',
       touchedTiles,
-      partitioning: 'pmtiles_vector_state',
+      partitioning: resolvedPmtiles.partitioning,
+      pmtilesKey,
       timings: {
         manifestMs: 0,
         partitionMs: 0,
@@ -1439,6 +1720,50 @@ export class BedrockCountryService {
 
     const addressScanPromise = (async () => {
       const { manifest, manifestMs, cacheHit } = await readManifest(this.config);
+      if (this.config.country === 'australia') {
+        const pmtilesStartedAt = Date.now();
+        const pmtilesResult = await loadAddressesFromPmtiles({
+          config: this.config,
+          campaignId: options.campaignId,
+          polygon: options.polygon,
+          bbox,
+          addressLimit: options.addressLimit,
+          regionCode: options.regionCode,
+        });
+        if (pmtilesResult && pmtilesResult.addresses.length > 0) {
+          const totalMs = Date.now() - startedAt;
+          const metric: BedrockScanResult = {
+            hits: pmtilesResult.addresses.length,
+            scanned: pmtilesResult.scanned,
+            bboxCandidates: pmtilesResult.bboxCandidates,
+            seconds: Number((totalMs / 1000).toFixed(2)),
+            queryEngine: 'pmtiles_vector',
+            touchedTiles: pmtilesResult.touchedTiles,
+            partitioning: 'pmtiles_vector',
+            timings: {
+              manifestMs,
+              partitionMs: 0,
+              queryMs: Date.now() - pmtilesStartedAt,
+              filterMs: 0,
+              totalMs,
+              manifest_cache_hit: cacheHit,
+            },
+          };
+          console.log(`[BedrockCountryService] ${this.config.country} address PMTiles scan complete`, {
+            campaignId: options.campaignId,
+            hits: metric.hits,
+            scanned: metric.scanned,
+            touchedTiles: metric.touchedTiles,
+            timings: metric.timings,
+          });
+          return { addresses: pmtilesResult.addresses, metric, manifest };
+        }
+        console.warn(`[BedrockCountryService] ${this.config.country} PMTiles address scan returned no matches; falling back to DuckDB Parquet`, {
+          campaignId: options.campaignId,
+          scanned: pmtilesResult?.scanned ?? 0,
+          touchedTiles: pmtilesResult?.touchedTiles ?? 0,
+        });
+      }
       const partitionStartedAt = Date.now();
       const { paths, partitioning, tilePadding } = parquetPathsForTiles(this.config, manifest, bbox, options.regionCode);
       const partitionMs = Date.now() - partitionStartedAt;
@@ -1598,6 +1923,35 @@ export class BedrockCountryService {
 
     const parcelScanPromise = (async () => {
       try {
+        if (this.config.country === 'australia') {
+          const indexed = await resolveParcelPmtiles(this.config, bbox, options.regionCode);
+          console.log(`[BedrockCountryService] ${this.config.country} parcel PMTiles indexed; deferring extraction`, {
+            campaignId: options.campaignId,
+            pmtilesKey: indexed?.key ?? null,
+          });
+          return {
+            parcelFeatures: [] as BedrockScopedParcelFeature[],
+            parcelMetric: indexed
+              ? {
+                  hits: 0,
+                  scanned: 0,
+                  bboxCandidates: 0,
+                  seconds: 0,
+                  queryEngine: 'pmtiles_vector' as const,
+                  touchedTiles: 0,
+                  partitioning: indexed.partitioning,
+                  pmtilesKey: indexed.key,
+                  timings: {
+                    manifestMs: 0,
+                    partitionMs: 0,
+                    queryMs: 0,
+                    filterMs: 0,
+                    totalMs: 0,
+                  },
+                }
+              : undefined,
+          };
+        }
         const parcelResult = await loadParcelsFromPmtiles({
           config: this.config,
           polygon: options.polygon,
@@ -1680,7 +2034,7 @@ export class BedrockCountryService {
     const snapshotBuildingKey = buildingPmtilesKey ?? layerKey(this.config, 'buildings', 'buildings.pmtiles');
     const addressPmtilesKey = usaAddressPmtilesKey(this.config, regionCode);
     const snapshotAddressKey = addressPmtilesKey ?? layerKey(this.config, 'addresses', 'addresses.pmtiles');
-    const parcelPmtilesKey = usaParcelPmtilesKey(this.config, regionCode);
+    const parcelPmtilesKey = parcelScanMetric?.pmtilesKey ?? usaParcelPmtilesKey(this.config, regionCode);
     const geojsonExtension = this.config.geojsonExtension ?? null;
     const metadataKey = `${prefix(this.config)}/${this.config.metadataFilename ?? `bedrock-${this.config.country}.json`}`;
     const tileMetrics = {

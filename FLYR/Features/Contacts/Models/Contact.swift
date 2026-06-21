@@ -8,6 +8,32 @@ enum ContactStatus: String, Codable, CaseIterable {
     case warm = "warm"
     case cold = "cold"
     case new = "new"
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let rawValue = try container.decode(String.self)
+        self = Self.normalized(rawValue)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+
+    static func normalized(_ rawValue: String) -> ContactStatus {
+        switch rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "hot", "interested", "appointment", "hot_lead":
+            return .hot
+        case "warm", "qr_scanned", "follow_up", "future_seller":
+            return .warm
+        case "cold", "no_answer", "not_interested", "do_not_knock", "dnc", "do_not_call":
+            return .cold
+        case "new", "not_home":
+            return .new
+        default:
+            return .new
+        }
+    }
     
     var displayName: String {
         switch self {
@@ -45,6 +71,8 @@ struct Contact: Codable, Identifiable, Equatable {
     var lastContacted: Date?
     var notes: String?
     var reminderDate: Date?
+    var followUpAt: Date?
+    var appointmentAt: Date?
     var createdAt: Date
     var updatedAt: Date
     
@@ -63,6 +91,8 @@ struct Contact: Codable, Identifiable, Equatable {
         case lastContacted = "last_contacted"
         case notes
         case reminderDate = "reminder_date"
+        case followUpAt = "follow_up_at"
+        case appointmentAt = "appointment_at"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
     }
@@ -82,6 +112,8 @@ struct Contact: Codable, Identifiable, Equatable {
         lastContacted: Date? = nil,
         notes: String? = nil,
         reminderDate: Date? = nil,
+        followUpAt: Date? = nil,
+        appointmentAt: Date? = nil,
         createdAt: Date = Date(),
         updatedAt: Date = Date()
     ) {
@@ -99,6 +131,8 @@ struct Contact: Codable, Identifiable, Equatable {
         self.lastContacted = lastContacted
         self.notes = notes
         self.reminderDate = reminderDate
+        self.followUpAt = followUpAt
+        self.appointmentAt = appointmentAt
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }

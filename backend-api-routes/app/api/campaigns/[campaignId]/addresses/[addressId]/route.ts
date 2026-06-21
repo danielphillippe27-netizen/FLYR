@@ -1,5 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
+import { invalidateCampaignMapBundle } from "@/lib/services/CampaignMapBundleInvalidation";
 
 const SUPABASE_URL = process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY ?? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
@@ -105,6 +106,8 @@ export async function DELETE(request: Request, context: RouteContext): Promise<R
       console.error("[campaign-address] delete error:", deleteError);
       return NextResponse.json({ error: "Failed to delete address" }, { status: 500 });
     }
+
+    await invalidateCampaignMapBundle(supabase, campaignId);
 
     return NextResponse.json({ deleted: true, address_id: addressId });
   } catch (error) {

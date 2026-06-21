@@ -6,11 +6,13 @@ import Supabase
 
 private enum HomeRoute: Hashable {
     case campaigns
+    case campaign(UUID)
     case activity
     case appointments
     case followUp
     case stats
     case leaderboard
+    case routes
     case support
 }
 
@@ -24,7 +26,10 @@ struct HomeView: View {
     @State private var selectedRoute: HomeRoute?
     @StateObject private var auth = AuthManager.shared
     @StateObject private var profileImageLoader = HomeProfileImageLoader()
+    @StateObject private var onboardingDemo = OnboardingDemoViewModel.shared
+    @StateObject private var campaignStore = CampaignV2Store.shared
     @State private var dailyContent = DailyContentService.shared
+    @State private var showingNewCampaign = false
 
     /// PNG from asset catalog: white logo for dark mode, black logo for light mode.
     private var headerLogoName: String {
@@ -74,6 +79,8 @@ struct HomeView: View {
                     switch route {
                     case .campaigns:
                         CampaignsView()
+                    case .campaign(let campaignID):
+                        NewCampaignDetailView(campaignID: campaignID, store: campaignStore)
                     case .activity:
                         ActivityView(
                             initialFilter: .activity,
@@ -96,6 +103,8 @@ struct HomeView: View {
                         YouStatsView()
                     case .leaderboard:
                         LeaderboardTabView()
+                    case .routes:
+                        RoutesListView()
                     case .support:
                         SupportChatView()
                             .transition(.asymmetric(
@@ -105,11 +114,24 @@ struct HomeView: View {
                     }
                 }
         }
+        .fullScreenCover(isPresented: $showingNewCampaign) {
+            NavigationStack {
+                NewCampaignScreen(store: campaignStore)
+                    .toolbar {
+                        ToolbarItem(placement: .topBarLeading) {
+                            Button("Cancel") {
+                                showingNewCampaign = false
+                            }
+                        }
+                    }
+            }
+        }
         .onAppear {
             selectedRoute = nil
         }
         .task(id: auth.user?.id) {
             await profileImageLoader.load(for: auth.user?.id)
+            await onboardingDemo.load()
         }
     }
 
@@ -152,7 +174,22 @@ struct HomeView: View {
                 )
                 .padding(.top, 44)
                 .padding(.horizontal, 24)
-                .padding(.bottom, 28)
+                .padding(.bottom, onboardingDemo.shouldShowPanel ? 16 : 28)
+
+                if onboardingDemo.shouldShowPanel, let state = onboardingDemo.state {
+                    OnboardingDemoPanel(
+                        state: state,
+                        items: onboardingDemo.checklistItems,
+                        completedIDs: onboardingDemo.completedItemIDs,
+                        isSeeding: onboardingDemo.isSeeding,
+                        onDismiss: {
+                            Task { await onboardingDemo.dismiss() }
+                        },
+                        onTapItem: handleDemoChecklistTap
+                    )
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 24)
+                }
 
                 VStack(spacing: 0) {
                     LazyVGrid(
@@ -192,6 +229,55 @@ struct HomeView: View {
         .task(id: "dailyContent") {
             await dailyContent.fetch()
         }
+    }
+
+    private func handleDemoChecklistTap(_ item: OnboardingDemoChecklistItem) {
+        HapticManager.light()
+        Task {
+            await onboardingDemo.markComplete(item.id)
+            await MainActor.run {
+                route(for: item.action)
+            }
+        }
+    }
+
+    @MainActor
+    private func route(for action: OnboardingDemoAction) {
+        switch action {
+        case .openStarterCampaign:
+            if let campaignId = onboardingDemo.state?.seededCampaignId {
+                selectedRoute = .campaign(campaignId)
+            } else {
+                selectedRoute = .campaigns
+            }
+        case .openCampaigns:
+            selectedRoute = .campaigns
+        case .openRecord:
+            uiState.selectedTabIndex = 1
+        case .openLeads:
+            uiState.selectedTabIndex = 2
+        case .openLeaderboard:
+            selectedRoute = .leaderboard
+        case .openRoutes:
+            selectedRoute = .routes
+        case .createStarterCampaign:
+            Task {
+                if let campaignId = await onboardingDemo.seedStarterCampaign() {
+                    await onboardingDemo.markComplete(itemIdForCreateStarter)
+                    await MainActor.run {
+                        selectedRoute = .campaign(campaignId)
+                    }
+                }
+            }
+        case .createRealCampaign:
+            showingNewCampaign = true
+        case .none:
+            break
+        }
+    }
+
+    private var itemIdForCreateStarter: String {
+        "create_starter_campaign"
     }
 }
 

@@ -1777,6 +1777,44 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         _ = await applyLocalCompletionState(targetId, haptic: haptic)
     }
 
+    func markDemoCompletionFast(
+        targetId: String,
+        addressIds: [UUID],
+        buildingId: String?,
+        coordinate: CLLocationCoordinate2D?,
+        status: AddressStatus
+    ) {
+        guard isDemoSession, sessionId != nil else { return }
+        let targetKey = normalizeVisitKey(targetId)
+        guard !confirmedVisitedTargets.contains(targetKey) else { return }
+
+        pendingVisitedTargets.remove(targetKey)
+        confirmedVisitedTargets.insert(targetKey)
+        addressIds.forEach { addressId in
+            let key = normalizeAddressKey(addressId)
+            pendingVisitedAddressIds.remove(key)
+            confirmedVisitedAddressIds.insert(key)
+            trackedVisitedAddressIds.insert(key)
+            storeShareCardDoorPin(addressId: addressId, coordinate: coordinate)
+        }
+        if let buildingKey = normalizeBuildingKey(buildingId) {
+            pendingVisitedBuildingIds.remove(buildingKey)
+            confirmedVisitedBuildingIds.insert(buildingKey)
+        }
+        storeShareCardDoorPin(targetId: targetId, coordinate: coordinate)
+        serverCompletedCount = nil
+        addressesMarkedDelivered = anonymousDoorHitCount + trackedVisitedAddressIds.count
+        if status.countsAsSessionConversation, let addressId = addressIds.first {
+            conversationAddressIds.insert(addressId)
+            conversationsHad = conversationAddressIds.count
+        }
+        if status.countsAsSessionAppointment, let addressId = addressIds.first {
+            appointmentAddressIds.insert(addressId)
+            appointmentsSet = appointmentAddressIds.count
+        }
+        refreshCompletedBuildingSnapshot()
+    }
+
     func markUndoLocallyAfterPersistedOutcome(_ targetId: String) async {
         _ = await applyLocalUndoState(targetId)
     }
@@ -3451,6 +3489,21 @@ extension SessionManager {
     var goalProgressText: String {
         guard goalAmount > 0 else { return goalType.displayName }
         return "Goal \(goalCurrentValue)/\(goalAmount) \(goalType.progressMetricLabel)"
+    }
+
+    var goalMetricProgressText: String {
+        guard goalAmount > 0 else {
+            return "\(goalCurrentValue) \(goalType.progressMetricLabel)"
+        }
+        return "\(goalCurrentValue)/\(goalAmount) \(goalType.progressMetricLabel)"
+    }
+
+    var doorCoverageProgressText: String {
+        "\(completedCount)/\(targetCount) doors"
+    }
+
+    var showsDoorCoverageBesideGoal: Bool {
+        sessionMode == .doorKnocking && goalType != .knocks
     }
 
     /// Goal progress (0.0 to 1.0) for the active session goal.

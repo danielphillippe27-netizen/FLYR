@@ -5,6 +5,7 @@ struct MainTabView: View {
     @EnvironmentObject var uiState: AppUIState
     @Environment(\.scenePhase) private var scenePhase
     @ObservedObject private var sessionManager = SessionManager.shared
+    @StateObject private var workspaceContext = WorkspaceContext.shared
     @StateObject private var storeV2 = CampaignV2Store.shared
     @StateObject private var provisionMonitor = CampaignProvisionMonitor.shared
     @State private var showingNewCampaign = false
@@ -14,6 +15,14 @@ struct MainTabView: View {
 
     private enum Tab: Int {
         case home = 0, record = 1, leads = 2, calendar = 3, settings = 4
+    }
+
+    private enum SalespersonTab: Int {
+        case home = 0, dialler = 1, leads = 2, inbox = 3, task = 4
+    }
+
+    private var isSalespersonMode: Bool {
+        workspaceContext.isSalespersonDashboardEnabled
     }
 
     private var recordHighlight: Bool {
@@ -69,22 +78,39 @@ struct MainTabView: View {
     var body: some View {
         VStack(spacing: 0) {
             Group {
-                switch uiState.selectedTabIndex {
-                case Tab.home.rawValue:
-                    // HomeView owns NavigationStack(path:) + destinations; an outer stack causes path type mismatch crashes.
-                    HomeView()
-                case Tab.record.rawValue:
-                    NavigationStack { RecordHomeView() }
-                case Tab.leads.rawValue:
-                    // ContactsHubView owns NavigationStack + lead destination.
-                    ContactsHubView()
-                case Tab.calendar.rawValue:
-                    NavigationStack { CalendarTabView() }
-                case Tab.settings.rawValue:
-                    // SettingsView owns NavigationStack around its form.
-                    SettingsView()
-                default:
-                    HomeView()
+                if isSalespersonMode {
+                    switch uiState.selectedTabIndex {
+                    case SalespersonTab.home.rawValue:
+                        SalespersonHomeView()
+                    case SalespersonTab.dialler.rawValue:
+                        SalespersonDiallerView()
+                    case SalespersonTab.leads.rawValue:
+                        SalespersonLeadsView()
+                    case SalespersonTab.inbox.rawValue:
+                        SalespersonInboxView()
+                    case SalespersonTab.task.rawValue:
+                        SalespersonTasksView()
+                    default:
+                        SalespersonHomeView()
+                    }
+                } else {
+                    switch uiState.selectedTabIndex {
+                    case Tab.home.rawValue:
+                        // HomeView owns NavigationStack(path:) + destinations; an outer stack causes path type mismatch crashes.
+                        HomeView()
+                    case Tab.record.rawValue:
+                        NavigationStack { RecordHomeView() }
+                    case Tab.leads.rawValue:
+                        // ContactsHubView owns NavigationStack + lead destination.
+                        ContactsHubView()
+                    case Tab.calendar.rawValue:
+                        NavigationStack { CalendarTabView() }
+                    case Tab.settings.rawValue:
+                        // SettingsView owns NavigationStack around its form.
+                        SettingsView()
+                    default:
+                        HomeView()
+                    }
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -101,7 +127,8 @@ struct MainTabView: View {
                         showingNewCampaign = true
                     },
                     recordHighlight: recordHighlight,
-                    accentColor: campaignContext.accentColor
+                    accentColor: campaignContext.accentColor,
+                    mode: isSalespersonMode ? .salesperson : .standard
                 )
             }
         }
@@ -122,6 +149,10 @@ struct MainTabView: View {
         }
         .onAppear {
             CampaignNotificationRouter.shared.configure(uiState: uiState)
+            normalizeSelectedTabForCurrentMode()
+            if isSalespersonMode {
+                Task { await SalespersonVoiceCallService.shared.refreshRegistrationIfNeeded() }
+            }
             let inSession = sessionManager.isActive || sessionManager.sessionId != nil
             if inSession, !sessionManager.sessionRestoredThisLaunch {
                 uiState.showTabBar = false
@@ -133,6 +164,12 @@ struct MainTabView: View {
             await sessionManager.restoreActiveSessionIfNeeded()
             await provisionMonitor.refreshLatest()
             syncTrackedCampaignCreationPresentation()
+        }
+        .onChange(of: isSalespersonMode) { _, _ in
+            normalizeSelectedTabForCurrentMode()
+            if isSalespersonMode {
+                Task { await SalespersonVoiceCallService.shared.refreshRegistrationIfNeeded(force: true) }
+            }
         }
         .fullScreenCover(isPresented: $showingNewCampaign) {
             NavigationStack {
@@ -182,6 +219,9 @@ struct MainTabView: View {
                     syncTrackedCampaignCreationPresentation()
                     CampaignNotificationRouter.shared.applyPendingRouteIfPossible()
                     await PushRegistrationService.shared.uploadPendingTokenIfPossible()
+                    if isSalespersonMode {
+                        await SalespersonVoiceCallService.shared.refreshRegistrationIfNeeded()
+                    }
                 }
             case .inactive, .background:
                 Task { await sessionManager.appDidEnterBackground() }
@@ -265,6 +305,13 @@ struct MainTabView: View {
                 sessionManager.pendingSessionSummarySessionId = nil
                 uiState.clearMapSelection()
             }
+        }
+    }
+
+    private func normalizeSelectedTabForCurrentMode() {
+        let maxIndex = isSalespersonMode ? SalespersonTab.task.rawValue : Tab.calendar.rawValue
+        if uiState.selectedTabIndex > maxIndex {
+            uiState.selectedTabIndex = 0
         }
     }
 }

@@ -9,14 +9,12 @@ import CoreLocation
 enum MapStatusColor {
     static let untouchedLight = UIColor(hex: "#cfd8e3")!  // Light blue-grey (unvisited on light maps)
     static let untouchedDark = UIColor(hex: "#475569")!   // Dark Slate (unvisited on dark maps)
-    static let townhomeBaseLight = UIColor(hex: "#ffffff")!
-    static let townhomeBaseDark = UIColor(hex: "#000000")!
     static var useLightMapBuildingDefault = false
     static var untouched: UIColor {
         useLightMapBuildingDefault ? untouchedLight : untouchedDark
     }
     static var townhomeBase: UIColor {
-        useLightMapBuildingDefault ? townhomeBaseLight : townhomeBaseDark
+        untouched
     }
     static let flyerUntouched = UIColor(hex: "#ef4444")!  // Red (flyer unvisited)
     static let touched = UIColor(hex: "#22c55e")!         // Green (visited)
@@ -33,8 +31,14 @@ enum MapStatusColor {
     static let roadPrimary = UIColor(hex: "#64748b")!     // Slate
     static let roadSecondary = UIColor(hex: "#94a3b8")!   // Light Slate
     static let addressMarker = UIColor(hex: "#8b5cf6")!   // Purple
-    static let selectedHome = UIColor(hex: "#94a3b8")!    // Light Slate
-    static let selectedHomeGlow = UIColor(hex: "#cbd5e1")!
+    static let selectedHomeLightMap = UIColor(hex: "#475569")! // Dark Slate
+    static let selectedHomeDarkMap = UIColor(hex: "#94a3b8")!  // Light Slate
+    static var selectedHome: UIColor {
+        useLightMapBuildingDefault ? selectedHomeLightMap : selectedHomeDarkMap
+    }
+    static var selectedHomeGlow: UIColor {
+        useLightMapBuildingDefault ? UIColor(hex: "#334155")! : UIColor(hex: "#cbd5e1")!
+    }
 }
 
 // MARK: - Map Layer Manager
@@ -50,6 +54,7 @@ final class MapLayerManager {
     static let buildingsLayerId = "buildings-extrusion"
     static let buildingsLeadGlowLayerId = "buildings-lead-glow"
     static let buildingsSelectedGlowLayerId = "buildings-selected-glow"
+    static let promotedBuildingIdProperty = "promoted_building_id"
     static let townhomeOverlaySourceId = "townhome-status-source"
     static let townhomeOverlayLayerId = "townhome-status-extrusion"
     static let townhomeOutlineLayerId = "townhome-status-outlines"
@@ -186,6 +191,19 @@ final class MapLayerManager {
         }
     }
 
+    private static var isSelectedHighlightVisibleExpression: Exp {
+        Exp(.all) {
+            Self.isSelectedExpression
+            Exp(.neq) {
+                Exp(.coalesce) {
+                    Exp(.featureState) { "suppress_selected_highlight" }
+                    false
+                }
+                true
+            }
+        }
+    }
+
     private static var layerStatusExpression: Exp {
         Exp(.coalesce) {
             Exp(.featureState) { "status" }
@@ -269,10 +287,7 @@ final class MapLayerManager {
 
     static var buildingFillColorExpression: Exp {
         Exp(.switchCase) {
-            Self.hasTownhomeOverlayExpression
-            MapStatusColor.townhomeBase
-
-            Self.isSelectedUnvisitedExpression
+            Self.isSelectedHighlightVisibleExpression
             MapStatusColor.selectedHome
 
             Exp(.gt) {
@@ -357,6 +372,9 @@ final class MapLayerManager {
                 MapStatusColor.teammateTouched
                 MapStatusColor.touched
             }
+
+            Self.hasTownhomeOverlayExpression
+            MapStatusColor.townhomeBase
 
             MapStatusColor.untouched
         }
@@ -965,10 +983,12 @@ final class MapLayerManager {
     private var desiredDiamondBuildingVisibility = true
     private var desiredDiamondAddressVisibility = true
     private var desiredDiamondAddressNumberVisibility: Bool?
+    private var desiredDiamondParcelVisibility: Bool?
     private var desiredAddressModeZoomVisibility = false
     private var lastAppliedDiamondBuildingVisibility: Bool?
     private var lastAppliedDiamondAddressVisibility: Bool?
     private var lastAppliedDiamondAddressNumberVisibility: Bool?
+    private var lastAppliedDiamondParcelVisibility: Bool?
     private var diamondTerritoryBoundary: GeoJSONObject?
     private var diamondTerritoryBoundarySignature = "none"
     private var buildingFeatureStateCache: [String: [String: Any]] = [:]
@@ -1053,6 +1073,7 @@ final class MapLayerManager {
         lastAppliedDiamondBuildingVisibility = nil
         lastAppliedDiamondAddressVisibility = nil
         lastAppliedDiamondAddressNumberVisibility = nil
+        lastAppliedDiamondParcelVisibility = nil
     }
     
     // MARK: - Buildings Layer (Fill Extrusion)
@@ -1065,8 +1086,10 @@ final class MapLayerManager {
         var source = GeoJSONSource(id: Self.buildingsSourceId)
         source.data = .featureCollection(FeatureCollection(features: []))
         
-        // Enable promoteId for setFeatureState (real-time updates)
-        source.promoteId2 = .constant("gers_id")
+        // Enable promoteId for setFeatureState (real-time updates). Campaign
+        // bundles can identify footprints by public id, row id, or GERS id; the
+        // source update normalizes those aliases into this property.
+        source.promoteId2 = .constant(Self.promotedBuildingIdProperty)
         
         do {
             try mapView.mapboxMap.addSource(source)
@@ -1130,7 +1153,7 @@ final class MapLayerManager {
             }
         )
         selectedGlowLayer.lineBlur = .constant(4.0)
-        // Selection is shown by recoloring the full extrusion; keep outline layers silent.
+        // Selection is shown by recoloring the extrusion; keep footprint outlines silent.
         selectedGlowLayer.lineOpacity = .constant(0.0)
         selectedGlowLayer.lineOpacityTransition = StyleTransition(duration: 0.2, delay: 0)
         selectedGlowLayer.minZoom = Self.buildingLayerMinZoom
@@ -2091,6 +2114,7 @@ final class MapLayerManager {
             lastAppliedDiamondBuildingVisibility = nil
             lastAppliedDiamondAddressVisibility = nil
             lastAppliedDiamondAddressNumberVisibility = nil
+            lastAppliedDiamondParcelVisibility = nil
             if hadDiamondGeometry {
                 print("🧪 [MAP_DEBUG] renderer_clear renderer=pmtiles_vector reason=manifest_nil")
             }
@@ -2149,6 +2173,7 @@ final class MapLayerManager {
                 self.lastAppliedDiamondBuildingVisibility = nil
                 self.lastAppliedDiamondAddressVisibility = nil
                 self.lastAppliedDiamondAddressNumberVisibility = nil
+                self.lastAppliedDiamondParcelVisibility = nil
                 self.applyDiamondGeometryVisibilityIfNeeded()
                 self.updateDiamondAddressModeZoomVisibility(isAddressMode: self.desiredAddressModeZoomVisibility)
                 self.replayCachedFeatureStates(reason: "diamond_install")
@@ -2162,6 +2187,7 @@ final class MapLayerManager {
                 self.lastAppliedDiamondBuildingVisibility = nil
                 self.lastAppliedDiamondAddressVisibility = nil
                 self.lastAppliedDiamondAddressNumberVisibility = nil
+                self.lastAppliedDiamondParcelVisibility = nil
                 do {
                     try self.diamondGeometryProvider.removeGeometry(from: mapView)
                 } catch {
@@ -2174,17 +2200,19 @@ final class MapLayerManager {
         }
     }
 
-    func setDiamondGeometryVisibility(_ isVisible: Bool, addressNumbers: Bool? = nil) {
+    func setDiamondGeometryVisibility(_ isVisible: Bool, addressNumbers: Bool? = nil, parcels: Bool? = nil) {
         desiredDiamondBuildingVisibility = isVisible
         desiredDiamondAddressVisibility = isVisible
         desiredDiamondAddressNumberVisibility = addressNumbers
+        desiredDiamondParcelVisibility = parcels ?? isVisible
         applyDiamondGeometryVisibilityIfNeeded()
     }
 
-    func setDiamondGeometryVisibility(buildings: Bool, addresses: Bool, addressNumbers: Bool? = nil) {
+    func setDiamondGeometryVisibility(buildings: Bool, addresses: Bool, addressNumbers: Bool? = nil, parcels: Bool? = nil) {
         desiredDiamondBuildingVisibility = buildings
         desiredDiamondAddressVisibility = addresses
         desiredDiamondAddressNumberVisibility = addressNumbers
+        desiredDiamondParcelVisibility = parcels
         applyDiamondGeometryVisibilityIfNeeded()
     }
 
@@ -2206,9 +2234,11 @@ final class MapLayerManager {
         guard layerIds.contains(where: existingLayerIds.contains) else { return }
         guard lastAppliedDiamondBuildingVisibility != desiredDiamondBuildingVisibility ||
               lastAppliedDiamondAddressVisibility != desiredDiamondAddressVisibility ||
-              lastAppliedDiamondAddressNumberVisibility != desiredDiamondAddressNumberVisibility else { return }
+              lastAppliedDiamondAddressNumberVisibility != desiredDiamondAddressNumberVisibility ||
+              lastAppliedDiamondParcelVisibility != desiredDiamondParcelVisibility else { return }
 
         let shouldShowAddressNumbers = desiredDiamondAddressNumberVisibility ?? desiredDiamondAddressVisibility
+        let shouldShowParcels = desiredDiamondParcelVisibility ?? (desiredDiamondBuildingVisibility || desiredDiamondAddressVisibility)
 
         for layerId in layerIds where existingLayerIds.contains(layerId) {
             let isAddressCircleLayer = layerId == VectorTileDiamondGeometryProvider.addressCircleLayerId ||
@@ -2219,7 +2249,7 @@ final class MapLayerManager {
                 layerId == VectorTileDiamondGeometryProvider.parcelLineLayerId
             let shouldShow: Bool
             if isParcelLayer {
-                shouldShow = desiredDiamondBuildingVisibility || desiredDiamondAddressVisibility
+                shouldShow = shouldShowParcels
             } else if isAddressCircleLayer {
                 shouldShow = desiredDiamondAddressVisibility
             } else if isAddressNumberLayer {
@@ -2265,6 +2295,7 @@ final class MapLayerManager {
         lastAppliedDiamondBuildingVisibility = desiredDiamondBuildingVisibility
         lastAppliedDiamondAddressVisibility = desiredDiamondAddressVisibility
         lastAppliedDiamondAddressNumberVisibility = desiredDiamondAddressNumberVisibility
+        lastAppliedDiamondParcelVisibility = desiredDiamondParcelVisibility
     }
     
     /// Update buildings source with new GeoJSON data (polygon-only or empty to avoid FillBucket LineString errors).
@@ -2289,7 +2320,7 @@ final class MapLayerManager {
                 f.geometry.type == "Polygon" || f.geometry.type == "MultiPolygon"
             }
             let filtered = BuildingFeatureCollection(type: "FeatureCollection", features: polygonOnly)
-            let filteredData = try JSONEncoder().encode(filtered)
+            let filteredData = try Self.normalizedBuildingSourceGeoJSONData(filtered)
             let signature = Self.sourceSignature(for: filteredData)
             guard lastBuildingsSourceSignature != signature else { return }
             let geoJSON = try JSONDecoder().decode(GeoJSONObject.self, from: filteredData)
@@ -2306,6 +2337,53 @@ final class MapLayerManager {
             print("❌ [MapLayer] Error updating buildings: \(error)")
             print("🧪 [MAP_DEBUG] geojson_building_source_failed ms=\(Int(Date().timeIntervalSince(debugStartedAt) * 1000)) error=\(error.localizedDescription)")
         }
+    }
+
+    static func normalizedBuildingSourceGeoJSONData(_ collection: BuildingFeatureCollection) throws -> Data {
+        let encoded = try JSONEncoder().encode(collection)
+        guard var object = try JSONSerialization.jsonObject(with: encoded) as? [String: Any],
+              let features = object["features"] as? [[String: Any]] else {
+            return encoded
+        }
+
+        object["features"] = features.map { feature in
+            var normalizedFeature = feature
+            var properties = (feature["properties"] as? [String: Any]) ?? [:]
+
+            if let promotedId = promotedBuildingIdentifier(feature: feature, properties: properties) {
+                properties[Self.promotedBuildingIdProperty] = promotedId
+            }
+
+            normalizedFeature["properties"] = properties
+            return normalizedFeature
+        }
+
+        return try stableJSONData(withJSONObject: object)
+    }
+
+    private static func promotedBuildingIdentifier(feature: [String: Any], properties: [String: Any]) -> String? {
+        let candidates: [Any?] = [
+            properties["public_building_id"],
+            properties["canonical_building_id"],
+            properties["building_id"],
+            properties["gers_id"],
+            properties["id"],
+            feature["id"]
+        ]
+
+        for candidate in candidates {
+            if let normalized = normalizedStringValue(candidate) {
+                return normalized
+            }
+            if let int = candidate as? Int {
+                return String(int)
+            }
+            if let number = candidate as? NSNumber {
+                return number.stringValue
+            }
+        }
+
+        return nil
     }
     
     private static func encodedEmptyBuildings() -> Data {
@@ -2865,7 +2943,7 @@ final class MapLayerManager {
         guard let mapView = mapView else { return }
         guard let map = mapView.mapboxMap else { return }
         let addressMinZoom = isAddressMode ? Self.addressModeMinimumZoom : Self.addressMarkersLayerMinZoom
-        let addressLabelMinZoom = Self.addressNumbersLayerMinZoom
+        let addressLabelMinZoom = isAddressMode ? Self.addressModeMinimumZoom : Self.addressNumbersLayerMinZoom
         let parcelMinZoom = isAddressMode ? Self.addressModeMinimumZoom : Self.parcelsOverviewMinZoom
         let parcelMaxZoom = isAddressMode ? Self.addressModeMaximumZoom : Self.parcelsOverviewMaxZoom
 
@@ -2887,7 +2965,9 @@ final class MapLayerManager {
         if map.layerExists(withId: Self.addressNumbersLayerId) {
             try? map.updateLayer(withId: Self.addressNumbersLayerId, type: SymbolLayer.self) {
                 $0.minZoom = addressLabelMinZoom
-                $0.textOpacity = .expression(Self.addressNumbersZoomOpacityExpression)
+                $0.textOpacity = isAddressMode
+                    ? .constant(1.0)
+                    : .expression(Self.addressNumbersZoomOpacityExpression)
                 $0.filter = Self.addressNumberLabelFilter(isAddressMode: isAddressMode)
             }
         }
@@ -2943,7 +3023,9 @@ final class MapLayerManager {
         let addressMinZoom = isAddressMode
             ? Self.addressModeMinimumZoom
             : VectorTileDiamondGeometryProvider.addressLayerMinZoom
-        let addressLabelMinZoom = VectorTileDiamondGeometryProvider.addressNumberLayerMinZoom
+        let addressLabelMinZoom = isAddressMode
+            ? Self.addressModeMinimumZoom
+            : VectorTileDiamondGeometryProvider.addressNumberLayerMinZoom
         let parcelMinZoom = isAddressMode
             ? Self.addressModeMinimumZoom
             : VectorTileDiamondGeometryProvider.parcelOverviewMinZoom
@@ -2972,24 +3054,26 @@ final class MapLayerManager {
         if map.layerExists(withId: VectorTileDiamondGeometryProvider.addressNumberLayerId) {
             try? map.updateLayer(withId: VectorTileDiamondGeometryProvider.addressNumberLayerId, type: SymbolLayer.self) {
                 $0.minZoom = addressLabelMinZoom
-                $0.textOpacity = .expression(
-                    VectorTileDiamondGeometryProvider.linkedAddressNumberOpacityExpression(
-                        linkedExpression: VectorTileDiamondGeometryProvider.linkedAddressNumberExpression,
-                        isAddressMode: isAddressMode
+                $0.textOpacity = isAddressMode
+                    ? .constant(1.0)
+                    : .expression(
+                        VectorTileDiamondGeometryProvider.linkedAddressNumberOpacityExpression(
+                            linkedExpression: VectorTileDiamondGeometryProvider.linkedAddressNumberExpression
+                        )
                     )
-                )
             }
         }
 
         if map.layerExists(withId: VectorTileDiamondGeometryProvider.buildingAddressNumberLayerId) {
             try? map.updateLayer(withId: VectorTileDiamondGeometryProvider.buildingAddressNumberLayerId, type: SymbolLayer.self) {
                 $0.minZoom = addressLabelMinZoom
-                $0.textOpacity = .expression(
-                    VectorTileDiamondGeometryProvider.linkedAddressNumberOpacityExpression(
-                        linkedExpression: VectorTileDiamondGeometryProvider.linkedBuildingNumberExpression,
-                        isAddressMode: isAddressMode
+                $0.textOpacity = isAddressMode
+                    ? .constant(1.0)
+                    : .expression(
+                        VectorTileDiamondGeometryProvider.linkedAddressNumberOpacityExpression(
+                            linkedExpression: VectorTileDiamondGeometryProvider.linkedBuildingNumberExpression
+                        )
                     )
-                )
             }
         }
 
@@ -3322,10 +3406,20 @@ final class MapLayerManager {
             let linkedBuilding = requireCurrentBuildingLink
                 ? explicitlyLinkedBuilding
                 : explicitlyLinkedBuilding ?? linkedBuildingByIdentifier ?? containingBuilding
-            let backendLabelMode = feature.properties.labelVisibilityMode?
+            let rawBackendLabelMode = feature.properties.labelVisibilityMode?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
                 .lowercased()
-            let effectiveLabelMode = backendLabelMode ?? (linkedBuilding != nil ? "all_modes" : "hidden")
+            let backendLabelMode: String? = {
+                guard let rawBackendLabelMode, !rawBackendLabelMode.isEmpty else { return nil }
+                switch rawBackendLabelMode {
+                case "all_modes", "address_mode_only":
+                    return rawBackendLabelMode
+                default:
+                    return requireHouseNumberLabel ? "address_mode_only" : rawBackendLabelMode
+                }
+            }()
+            let effectiveLabelMode = backendLabelMode
+                ?? (linkedBuilding != nil ? "all_modes" : (requireHouseNumberLabel ? "address_mode_only" : "hidden"))
             let backendAllowsLabel = effectiveLabelMode == "all_modes" || effectiveLabelMode == "address_mode_only"
             guard !requireHouseNumberLabel || backendAllowsLabel else { return nil }
             guard !requireCurrentBuildingLink || linkedBuilding != nil || (requireHouseNumberLabel && effectiveLabelMode == "address_mode_only") else { return nil }
@@ -4002,6 +4096,7 @@ final class MapLayerManager {
         state["scans_total"] = scansTotal
         state["qr_scanned"] = scansTotal > 0
         state["visit_owner"] = visitOwner ?? ""
+        state["suppress_selected_highlight"] = Self.shouldSuppressSelectedHighlight(status: status, scansTotal: scansTotal)
         if let isLinked {
             state["is_linked"] = isLinked
         }
@@ -4011,6 +4106,7 @@ final class MapLayerManager {
            existing["scans_total"] as? Int == scansTotal,
            existing["qr_scanned"] as? Bool == (scansTotal > 0),
            existing["visit_owner"] as? String == (visitOwner ?? ""),
+           existing["suppress_selected_highlight"] as? Bool == Self.shouldSuppressSelectedHighlight(status: status, scansTotal: scansTotal),
            isLinked.map({ (existing["is_linked"] as? Bool) == $0 }) ?? true {
             return
         }
@@ -4031,6 +4127,15 @@ final class MapLayerManager {
         buildingFeatureStateCache[featureId] = state
         guard let mapView else { return }
         applyBuildingFeatureState(featureId: featureId, state: state, mapView: mapView, logSuccess: false)
+    }
+
+    private static func shouldSuppressSelectedHighlight(status: String, scansTotal: Int) -> Bool {
+        if scansTotal > 0 {
+            return true
+        }
+
+        let normalizedStatus = status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return !["", "none", "not_visited", "unvisited", "untouched"].contains(normalizedStatus)
     }
 
     /// Update an address circle's feature state (for 3D address pillars). Use addressId (UUID string) as featureId.
@@ -4310,6 +4415,9 @@ final class MapLayerManager {
         for featureId in featureIds {
             var state = buildingFeatureStateCache[featureId] ?? [:]
             state["selected"] = isSelected
+            if isSelected {
+                state["suppress_selected_highlight"] = false
+            }
             buildingFeatureStateCache[featureId] = state
             applyBuildingFeatureState(featureId: featureId, state: state, mapView: mapView, logSuccess: false)
         }
@@ -5753,7 +5861,11 @@ final class MapLayerManager {
         if normalizedStringProperty(properties["house_number"]) == nil,
            let houseNumber = firstNonEmptyProperty(
             in: properties,
-            keys: ["house_number_label", "houseNumber", "street_number", "street_no", "address_number", "number", "addr:housenumber"]
+            keys: [
+                "house_number_label", "houseNumber", "street_number", "street_no",
+                "address_number", "number_first", "NUMBER_FIRST", "number",
+                "addr:housenumber"
+            ]
            ) {
             properties["house_number"] = houseNumber
         }
@@ -5761,9 +5873,21 @@ final class MapLayerManager {
         if normalizedStringProperty(properties["street_name"]) == nil,
            let streetName = firstNonEmptyProperty(
             in: properties,
-            keys: ["streetName", "primary_street_name", "street", "road_name", "road", "addr:street"]
+            keys: [
+                "streetName", "primary_street_name", "street", "road_name", "road",
+                "STREET_NAME", "addr:street"
+            ]
            ) {
-            properties["street_name"] = streetName
+            let streetType = firstNonEmptyProperty(
+                in: properties,
+                keys: ["street_type", "street_type_code", "STREET_TYPE", "STREET_TYPE_CODE"]
+            )
+            if let streetType,
+               !streetName.uppercased().hasSuffix(" \(streetType.uppercased())") {
+                properties["street_name"] = "\(streetName) \(streetType)"
+            } else {
+                properties["street_name"] = streetName
+            }
         }
 
         if normalizedStringProperty(properties["formatted"]) == nil,
@@ -6049,12 +6173,31 @@ final class MapLayerManager {
     private func flyerAddressLabel(from properties: [String: Any]) -> String {
         let rawHouse = firstNonEmptyProperty(
             in: properties,
-            keys: ["house_number_label", "house_number", "houseNumber", "street_number", "street_no", "address_number", "number", "addr:housenumber"]
+            keys: [
+                "house_number_label", "house_number", "houseNumber", "street_number",
+                "street_no", "address_number", "number_first", "NUMBER_FIRST", "number",
+                "addr:housenumber"
+            ]
         )
         let rawStreet = firstNonEmptyProperty(
             in: properties,
-            keys: ["street_name", "streetName", "primary_street_name", "street", "road_name", "road", "addr:street"]
+            keys: [
+                "street_name", "streetName", "primary_street_name", "street", "road_name",
+                "road", "STREET_NAME", "addr:street"
+            ]
         )
+        let rawStreetType = firstNonEmptyProperty(
+            in: properties,
+            keys: ["street_type", "street_type_code", "STREET_TYPE", "STREET_TYPE_CODE"]
+        )
+        let rawStreetWithType: String? = {
+            guard let rawStreet else { return nil }
+            guard let rawStreetType,
+                  !rawStreet.uppercased().hasSuffix(" \(rawStreetType.uppercased())") else {
+                return rawStreet
+            }
+            return "\(rawStreet) \(rawStreetType)"
+        }()
         let house = rawHouse.flatMap { Self.isStreetOnlyOrdinalAddressLabel($0) ? nil : $0 }
         let formattedOrdinalOnly = ["formatted", "address_text", "full_address", "label"]
             .compactMap { normalizedStringProperty(properties[$0]) }
@@ -6062,7 +6205,7 @@ final class MapLayerManager {
             .map(Self.isStreetOnlyOrdinalAddressLabel) ?? false
         let street = (house == nil && formattedOrdinalOnly && Self.isStreetOnlyOrdinalAddressLabel(rawStreet))
             ? nil
-            : rawStreet
+            : rawStreetWithType
         let combined = "\(house ?? "") \(street ?? "")".trimmingCharacters(in: .whitespacesAndNewlines)
 
         for key in ["formatted", "address_text", "full_address", "label"] {

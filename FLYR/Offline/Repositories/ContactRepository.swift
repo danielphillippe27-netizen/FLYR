@@ -173,6 +173,8 @@ final class ContactRepository {
             lastContacted: contact.lastContacted,
             notes: contact.notes,
             reminderDate: contact.reminderDate,
+            followUpAt: contact.followUpAt,
+            appointmentAt: contact.appointmentAt,
             createdAt: contact.createdAt,
             updatedAt: Date()
         )
@@ -473,7 +475,7 @@ final class ContactRepository {
             gersId: record.gersId,
             addressId: UUID(uuidString: record.addressId ?? ""),
             tags: record.tags,
-            status: ContactStatus(rawValue: record.status) ?? .new,
+            status: ContactStatus.normalized(record.status),
             lastContacted: OfflineDateCodec.date(from: record.lastContacted),
             notes: record.notes,
             reminderDate: OfflineDateCodec.date(from: record.reminderDate),

@@ -107,6 +107,7 @@ struct StandardCampaignGoogleMapView: UIViewRepresentable {
     let onReady: (() -> Void)?
     let onMarkerTap: (MapLayerManager.AddressTapResult) -> Void
     let onMapTap: (CLLocationCoordinate2D) -> Void
+    let onTripleTap: () -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator(parent: self)
@@ -132,6 +133,11 @@ struct StandardCampaignGoogleMapView: UIViewRepresentable {
         mapView.settings.tiltGestures = false
         mapView.settings.myLocationButton = false
         mapView.settings.indoorPicker = false
+
+        let tripleTapGesture = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleTripleTap(_:)))
+        tripleTapGesture.numberOfTapsRequired = 3
+        tripleTapGesture.cancelsTouchesInView = false
+        mapView.addGestureRecognizer(tripleTapGesture)
 
         DispatchQueue.main.async {
             context.coordinator.syncMarkers(on: mapView)
@@ -290,6 +296,11 @@ struct StandardCampaignGoogleMapView: UIViewRepresentable {
 
         func mapView(_ mapView: GMSMapView, didTapAt coordinate: CLLocationCoordinate2D) {
             parent.onMapTap(coordinate)
+        }
+
+        @objc func handleTripleTap(_ gesture: UITapGestureRecognizer) {
+            guard gesture.state == .ended else { return }
+            parent.onTripleTap()
         }
 
         func mapView(_ mapView: GMSMapView, didTap marker: GMSMarker) -> Bool {
