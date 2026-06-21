@@ -31,6 +31,7 @@ final class SalespersonVoiceCallService: NSObject, ObservableObject {
     @Published private(set) var callStartedAt: Date?
     @Published private(set) var callConnectedAt: Date?
     @Published private(set) var isMuted = false
+    @Published private(set) var hasIncomingCall = false
     @Published private(set) var audioRouteOptions: [SalespersonAudioRouteOption] = []
     @Published private(set) var selectedAudioRouteId: String = "iphone"
 
@@ -92,22 +93,33 @@ final class SalespersonVoiceCallService: NSObject, ObservableObject {
 
         do {
             let tokenResponse = try await fetchVoiceToken()
+            let registrationDeviceToken = voipDeviceToken
             guard force ||
-                    lastRegisteredDeviceToken != voipDeviceToken ||
+                    lastRegisteredDeviceToken != registrationDeviceToken ||
                     lastRegisteredIdentity != tokenResponse.identity ||
                     lastRegisteredToken != tokenResponse.token ||
                     !telnyxClient.isRegistered else {
                 return
             }
 
-            try await connect(tokenResponse: tokenResponse)
-            lastRegisteredDeviceToken = voipDeviceToken
+            try await connect(tokenResponse: tokenResponse, pushDeviceToken: registrationDeviceToken)
+            lastRegisteredDeviceToken = registrationDeviceToken
             lastRegisteredIdentity = tokenResponse.identity
             lastRegisteredToken = tokenResponse.token
             isRegisteredForIncomingCalls = true
             registrationError = tokenResponse.voipPushConfigured
                 ? nil
                 : "Telnyx iOS push credential is not confirmed. Outbound calls work, but background incoming calls require Telnyx APNs setup."
+            #if DEBUG
+            print("✅ Telnyx voice registered identity=\(tokenResponse.identity) pushToken=\(registrationDeviceToken == nil ? "missing" : "set")")
+            #endif
+
+            if registrationDeviceToken != voipDeviceToken {
+                #if DEBUG
+                print("🔁 Telnyx VoIP token changed during registration; refreshing voice registration.")
+                #endif
+                Task { await refreshRegistrationIfNeeded(force: true) }
+            }
         } catch {
             isRegisteredForIncomingCalls = false
             registrationError = error.localizedDescription
@@ -120,6 +132,24 @@ final class SalespersonVoiceCallService: NSObject, ObservableObject {
     func endActiveCall() {
         guard let uuid = activeCalls.keys.first else { return }
         requestEndCall(uuid: uuid)
+    }
+
+    func answerActiveCall() {
+        guard hasIncomingCall, let uuid = activeCalls.keys.first else { return }
+        let action = CXAnswerCallAction(call: uuid)
+        callController.request(CXTransaction(action: action)) { [weak self] error in
+            let errorMessage = error?.localizedDescription
+            Task { @MainActor [weak self] in
+                if let errorMessage {
+                    self?.registrationError = errorMessage
+                    #if DEBUG
+                    print("❌ Answer call request failed: \(errorMessage)")
+                    #endif
+                } else {
+                    self?.hasIncomingCall = false
+                }
+            }
+        }
     }
 
     func clearRegistrationError() {
@@ -146,6 +176,7 @@ final class SalespersonVoiceCallService: NSObject, ObservableObject {
             ?? ""
 
         registrationError = nil
+        hasIncomingCall = false
         try await connect(tokenResponse: tokenResponse, forceReconnect: activeCalls.isEmpty)
 
         let uuid = UUID(uuidString: callRequestId) ?? UUID()
@@ -399,7 +430,11 @@ final class SalespersonVoiceCallService: NSObject, ObservableObject {
         }
     }
 
-    private func connect(tokenResponse: VoiceTokenResponse, forceReconnect: Bool = false) async throws {
+    private func connect(
+        tokenResponse: VoiceTokenResponse,
+        pushDeviceToken: Data? = nil,
+        forceReconnect: Bool = false
+    ) async throws {
         if !forceReconnect, telnyxClient.isRegistered, currentTelnyxSessionId != nil, !isConnectingClient {
             return
         }
@@ -412,7 +447,7 @@ final class SalespersonVoiceCallService: NSObject, ObservableObject {
 
         isConnectingClient = true
         currentTelnyxSessionId = nil
-        let txConfig = makeTxConfig(tokenResponse: tokenResponse)
+        let txConfig = makeTxConfig(tokenResponse: tokenResponse, pushDeviceToken: pushDeviceToken ?? voipDeviceToken)
         do {
             if telnyxClient.isRegistered || telnyxClient.isConnected() {
                 isResettingClientConnection = true
@@ -420,6 +455,9 @@ final class SalespersonVoiceCallService: NSObject, ObservableObject {
                 try? await Task.sleep(nanoseconds: 250_000_000)
                 isResettingClientConnection = false
             }
+            #if DEBUG
+            print("🔌 Telnyx voice connecting identity=\(tokenResponse.identity) pushToken=\((pushDeviceToken ?? voipDeviceToken) == nil ? "missing" : "set")")
+            #endif
             try telnyxClient.connect(txConfig: txConfig)
             try await waitForClientReady()
             try await waitForSessionReady()
@@ -475,10 +513,31 @@ final class SalespersonVoiceCallService: NSObject, ObservableObject {
         continuations.forEach { $0.resume(throwing: error) }
     }
 
-    private func makeTxConfig(tokenResponse: VoiceTokenResponse) -> TxConfig {
-        TxConfig(
+    private func makeTxConfig(tokenResponse: VoiceTokenResponse, pushDeviceToken: Data? = nil) -> TxConfig {
+        if let sipUsername = tokenResponse.telnyxSipUsername?.trimmingCharacters(in: .whitespacesAndNewlines),
+           let sipPassword = tokenResponse.telnyxSipPassword?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !sipUsername.isEmpty,
+           !sipPassword.isEmpty {
+            return TxConfig(
+                sipUser: sipUsername,
+                password: sipPassword,
+                pushDeviceToken: pushDeviceToken?.telnyxHexString,
+                pushEnvironment: telnyxPushEnvironment,
+                enableMissedCallNotifications: true,
+                logLevel: .none,
+                reconnectClient: true,
+                debug: false,
+                forceRelayCandidate: false,
+                enableQualityMetrics: false,
+                sendWebRTCStatsViaSocket: false,
+                reconnectTimeOut: 60,
+                useTrickleIce: true
+            )
+        }
+
+        return TxConfig(
             token: tokenResponse.token,
-            pushDeviceToken: voipDeviceToken?.telnyxHexString,
+            pushDeviceToken: pushDeviceToken?.telnyxHexString,
             pushEnvironment: telnyxPushEnvironment,
             enableMissedCallNotifications: true,
             logLevel: .none,
@@ -573,10 +632,19 @@ final class SalespersonVoiceCallService: NSObject, ObservableObject {
     }
 
     private func reportIncomingCall(call: Call) {
-        guard let uuid = call.callInfo?.callId else { return }
+        guard let uuid = call.callInfo?.callId else {
+            #if DEBUG
+            print("📞 Telnyx incoming call missing callId.")
+            #endif
+            return
+        }
         let from = incomingLabel(for: call)
+        #if DEBUG
+        print("📞 Telnyx incoming call uuid=\(uuid) from=\(from)")
+        #endif
         activeCalls[uuid] = call
         activeCallLabel = from
+        hasIncomingCall = true
         callPhase = .connecting
         callStartedAt = Date()
         callConnectedAt = nil
@@ -594,9 +662,14 @@ final class SalespersonVoiceCallService: NSObject, ObservableObject {
         provider.reportNewIncomingCall(with: uuid, update: update) { error in
             Task { @MainActor in
                 if let error {
+                    #if DEBUG
+                    print("❌ CallKit report incoming failed uuid=\(uuid): \(error.localizedDescription)")
+                    #endif
                     self.registrationError = error.localizedDescription
-                    self.activeCalls.removeValue(forKey: uuid)
-                    self.callPhase = self.activeCalls.isEmpty ? .idle : self.callPhase
+                } else {
+                    #if DEBUG
+                    print("✅ CallKit report incoming succeeded uuid=\(uuid)")
+                    #endif
                 }
                 self.completePendingPushIfNeeded()
             }
@@ -643,6 +716,7 @@ final class SalespersonVoiceCallService: NSObject, ObservableObject {
         activeCalls.removeValue(forKey: uuid)
         if activeCalls.isEmpty {
             activeCallLabel = nil
+            hasIncomingCall = false
             callPhase = .idle
             callStartedAt = nil
             callConnectedAt = nil
@@ -694,7 +768,7 @@ extension SalespersonVoiceCallService: PKPushRegistryDelegate {
                     return
                 }
                 try telnyxClient.processVoIPNotification(
-                    txConfig: makeTxConfig(tokenResponse: tokenResponse),
+                    txConfig: makeTxConfig(tokenResponse: tokenResponse, pushDeviceToken: voipDeviceToken),
                     serverConfiguration: TxServerConfiguration(pushMetaData: metadata),
                     pushMetaData: metadata
                 )
@@ -738,9 +812,16 @@ extension SalespersonVoiceCallService: PKPushRegistryDelegate {
 }
 
 extension SalespersonVoiceCallService: TxClientDelegate {
-    func onSocketConnected() {}
+    func onSocketConnected() {
+        #if DEBUG
+        print("🔌 Telnyx socket connected")
+        #endif
+    }
 
     func onSocketDisconnected() {
+        #if DEBUG
+        print("🔌 Telnyx socket disconnected reset=\(isResettingClientConnection)")
+        #endif
         if isResettingClientConnection {
             isRegisteredForIncomingCalls = false
             currentTelnyxSessionId = nil
@@ -755,12 +836,18 @@ extension SalespersonVoiceCallService: TxClientDelegate {
     }
 
     func onClientError(error: Error) {
+        #if DEBUG
+        print("❌ Telnyx client error: \(error.localizedDescription)")
+        #endif
         registrationError = error.localizedDescription
         rejectClientReady(error: error)
         rejectSessionReady(error: error)
     }
 
     func onClientReady() {
+        #if DEBUG
+        print("✅ Telnyx client ready")
+        #endif
         isRegisteredForIncomingCalls = true
         resolveClientReady()
     }
@@ -774,10 +861,16 @@ extension SalespersonVoiceCallService: TxClientDelegate {
     }
 
     func onSessionUpdated(sessionId: String) {
+        #if DEBUG
+        print("✅ Telnyx session updated id=\(sessionId)")
+        #endif
         resolveSessionReady(sessionId: sessionId)
     }
 
     func onCallStateUpdated(callState: CallState, callId: UUID) {
+        #if DEBUG
+        print("📞 Telnyx call state id=\(callId) state=\(callState)")
+        #endif
         switch callState {
         case .NEW, .CONNECTING, .RINGING:
             if callStartedAt == nil {
@@ -792,6 +885,7 @@ extension SalespersonVoiceCallService: TxClientDelegate {
                 callConnectedAt = Date()
             }
             callPhase = .connected
+            hasIncomingCall = false
             if let call = activeCalls[callId] {
                 isMuted = call.isMuted
             }
@@ -806,10 +900,16 @@ extension SalespersonVoiceCallService: TxClientDelegate {
     }
 
     func onIncomingCall(call: Call) {
+        #if DEBUG
+        print("📞 Telnyx delegate onIncomingCall")
+        #endif
         reportIncomingCall(call: call)
     }
 
     func onRemoteCallEnded(callId: UUID, reason: CallTerminationReason?) {
+        #if DEBUG
+        print("📞 Telnyx remote ended id=\(callId) sip=\(String(describing: reason?.sipCode))")
+        #endif
         let endedReason: CXCallEndedReason
         switch reason?.sipCode {
         case 486, 600:
@@ -826,9 +926,13 @@ extension SalespersonVoiceCallService: TxClientDelegate {
     }
 
     func onPushCall(call: Call) {
+        #if DEBUG
+        print("📲 Telnyx delegate onPushCall id=\(String(describing: call.callInfo?.callId))")
+        #endif
         if let uuid = call.callInfo?.callId {
             activeCalls[uuid] = call
             activeCallLabel = incomingLabel(for: call)
+            hasIncomingCall = true
             callPhase = .connecting
             if callStartedAt == nil {
                 callStartedAt = Date()
@@ -846,6 +950,7 @@ extension SalespersonVoiceCallService: CXProviderDelegate {
         }
         activeCalls.removeAll()
         activeCallLabel = nil
+        hasIncomingCall = false
         callPhase = .idle
         callStartedAt = nil
         callConnectedAt = nil
@@ -871,6 +976,7 @@ extension SalespersonVoiceCallService: CXProviderDelegate {
             do {
                 try await prepareMicrophoneForCall()
                 telnyxClient.answerFromCallkit(answerAction: action)
+                hasIncomingCall = false
                 if callStartedAt == nil {
                     callStartedAt = Date()
                 }
@@ -886,17 +992,20 @@ extension SalespersonVoiceCallService: CXProviderDelegate {
         if activeCalls[action.callUUID] != nil || telnyxClient.isConnected() {
             telnyxClient.endCallFromCallkit(endAction: action, callId: action.callUUID)
             clearCall(uuid: action.callUUID)
+            hasIncomingCall = false
             completePendingPushIfNeeded()
             return
         }
 
         action.fulfill()
         clearCall(uuid: action.callUUID)
+        hasIncomingCall = false
         completePendingPushIfNeeded()
     }
 
     func provider(_ provider: CXProvider, perform action: CXStartCallAction) {
         activeCallLabel = action.handle.value
+        hasIncomingCall = false
         callStartedAt = Date()
         callConnectedAt = nil
         callPhase = .connecting
@@ -946,6 +1055,8 @@ private struct VoiceTokenResponse: Decodable {
     private let rawVoipPushConfigured: Bool?
     let telnyxTelephonyCredentialId: String?
     let requiresTelnyxVoiceSdk: Bool?
+    let telnyxSipUsername: String?
+    let telnyxSipPassword: String?
     let fromNumber: String?
 
     var voipPushConfigured: Bool {
@@ -962,6 +1073,8 @@ private struct VoiceTokenResponse: Decodable {
         case rawVoipPushConfigured = "voipPushConfigured"
         case telnyxTelephonyCredentialId
         case requiresTelnyxVoiceSdk
+        case telnyxSipUsername
+        case telnyxSipPassword
         case fromNumber
     }
 }

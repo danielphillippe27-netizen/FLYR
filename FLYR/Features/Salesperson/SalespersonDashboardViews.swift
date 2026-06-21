@@ -4277,6 +4277,7 @@ private struct SalespersonDTMFKeypad: View {
     @State private var sentDigits = ""
     @State private var errorMessage: String?
 
+    private let keypadSpacing: CGFloat = 18
     private let rows: [[Key]] = [
         [Key("1", ""), Key("2", "ABC"), Key("3", "DEF")],
         [Key("4", "GHI"), Key("5", "JKL"), Key("6", "MNO")],
@@ -4289,7 +4290,9 @@ private struct SalespersonDTMFKeypad: View {
     }
 
     var body: some View {
-        VStack(spacing: 22) {
+        GeometryReader { proxy in
+            let keySize = min((proxy.size.width - (keypadSpacing * 2)) / 3, 78)
+            VStack(spacing: 18) {
             HStack {
                 Label("Keypad", systemImage: "circle.grid.3x3.fill")
                     .font(.headline)
@@ -4301,22 +4304,25 @@ private struct SalespersonDTMFKeypad: View {
             }
 
             Text(sentDigits.isEmpty ? "Digits sent will appear here" : sentDigits)
-                .font(.system(.title2, design: .monospaced).weight(.semibold))
+                .font(.system(size: 22, weight: .semibold, design: .monospaced))
                 .foregroundStyle(sentDigits.isEmpty ? .secondary : .primary)
                 .lineLimit(1)
-                .minimumScaleFactor(0.75)
+                .minimumScaleFactor(0.55)
                 .frame(maxWidth: .infinity, minHeight: 42, alignment: .center)
+                .padding(.horizontal, 12)
+                .background(Color.primary.opacity(0.08))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
 
-            VStack(spacing: 16) {
+            VStack(spacing: keypadSpacing) {
                 ForEach(rows, id: \.self) { row in
-                    HStack(spacing: 24) {
+                    HStack(spacing: keypadSpacing) {
                         ForEach(row) { key in
                             Button {
                                 send(key.digit)
                             } label: {
                                 VStack(spacing: 1) {
                                     Text(key.digit)
-                                        .font(.system(size: 34, weight: .regular, design: .rounded))
+                                        .font(.system(size: 32, weight: .regular, design: .rounded))
                                         .lineLimit(1)
                                     Text(key.subtitle)
                                         .font(.system(size: 10, weight: .bold))
@@ -4325,7 +4331,7 @@ private struct SalespersonDTMFKeypad: View {
                                         .frame(height: 12)
                                 }
                                 .foregroundStyle(.primary)
-                                .frame(width: 72, height: 72)
+                                .frame(width: keySize, height: keySize)
                                 .background(Color.primary.opacity(0.10))
                                 .clipShape(Circle())
                                 .contentShape(Circle())
@@ -4338,6 +4344,7 @@ private struct SalespersonDTMFKeypad: View {
                     }
                 }
             }
+            .frame(maxWidth: .infinity)
 
             if let errorMessage {
                 Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
@@ -4349,6 +4356,8 @@ private struct SalespersonDTMFKeypad: View {
                     .font(.caption.weight(.medium))
                     .foregroundStyle(.secondary)
             }
+        }
+        .dynamicTypeSize(.medium ... .xLarge)
         }
     }
 
@@ -4955,6 +4964,21 @@ struct SalespersonDiallerView: View {
                 }
 
                 Spacer(minLength: 8)
+
+                if voice.hasIncomingCall {
+                    Button {
+                        voice.answerActiveCall()
+                    } label: {
+                        Image(systemName: "phone.fill")
+                            .font(.caption.weight(.bold))
+                            .frame(width: 30, height: 30)
+                            .foregroundStyle(.white)
+                            .background(Color.green)
+                            .clipShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Answer")
+                }
 
                 Button {
                     isKeypadPresented = true
