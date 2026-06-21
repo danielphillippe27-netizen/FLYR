@@ -3915,6 +3915,8 @@ struct SalespersonHomeView: View {
     @State private var isCallingVoicemail = false
     @State private var voicemailStatusMessage: String?
     @State private var voicemailErrorMessage: String?
+    @State private var settingsDialNumber = ""
+    @State private var isCallingSettingsNumber = false
 
     var body: some View {
         NavigationStack {
@@ -3969,8 +3971,13 @@ struct SalespersonHomeView: View {
                     statusMessage: voicemailStatusMessage,
                     errorMessage: voicemailErrorMessage,
                     registrationError: voice.registrationError,
+                    dialNumber: $settingsDialNumber,
+                    isCallingNumber: isCallingSettingsNumber,
                     onCallVoicemail: {
                         Task { await callVoicemail() }
+                    },
+                    onCallNumber: {
+                        Task { await callSettingsNumber() }
                     },
                     onOpenTelnyx: {
                         if let url = URL(string: "https://portal.telnyx.com/") {
@@ -4128,6 +4135,35 @@ struct SalespersonHomeView: View {
         }
     }
 
+    private func callSettingsNumber() async {
+        guard !isCallingSettingsNumber else { return }
+        let trimmed = settingsDialNumber.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            voicemailStatusMessage = nil
+            voicemailErrorMessage = "Enter a phone number to call."
+            return
+        }
+
+        isCallingSettingsNumber = true
+        voicemailStatusMessage = nil
+        voicemailErrorMessage = nil
+        defer { isCallingSettingsNumber = false }
+
+        do {
+            SalespersonVoiceCallService.shared.endActiveCall()
+            SalespersonVoiceCallService.shared.clearRegistrationError()
+            try await voice.startOutboundCall(
+                label: trimmed,
+                callRequestId: UUID().uuidString,
+                destinationNumber: trimmed,
+                fromNumber: nil
+            )
+            voicemailStatusMessage = "Calling \(trimmed)."
+        } catch {
+            voicemailErrorMessage = error.localizedDescription
+        }
+    }
+
     private func load() async {
         await home.load()
     }
@@ -4170,7 +4206,10 @@ private struct SalespersonVoicemailSettingsSheet: View {
     let statusMessage: String?
     let errorMessage: String?
     let registrationError: String?
+    @Binding var dialNumber: String
+    let isCallingNumber: Bool
     let onCallVoicemail: () -> Void
+    let onCallNumber: () -> Void
     let onOpenTelnyx: () -> Void
 
     var body: some View {
@@ -4196,6 +4235,35 @@ private struct SalespersonVoicemailSettingsSheet: View {
                                     .frame(maxWidth: .infinity, minHeight: 46)
                             }
                             .buttonStyle(.bordered)
+                        }
+                    }
+                    .padding()
+                    .background(Color.bgSecondary)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+
+                    VStack(alignment: .leading, spacing: 12) {
+                        Label("Call a number", systemImage: "phone.arrow.up.right.fill")
+                            .font(.title3.weight(.bold))
+
+                        HStack(spacing: 10) {
+                            TextField("+1 555 555 5555", text: $dialNumber)
+                                .keyboardType(.phonePad)
+                                .textContentType(.telephoneNumber)
+                                .font(.system(.title3, design: .rounded).weight(.semibold))
+                                .padding(.horizontal, 12)
+                                .frame(minHeight: 48)
+                                .background(Color.primary.opacity(0.08))
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+
+                            Button(action: onCallNumber) {
+                                Label(isCallingNumber ? "Calling..." : "Call", systemImage: "phone.fill")
+                                    .labelStyle(.iconOnly)
+                                    .font(.headline)
+                                    .frame(width: 48, height: 48)
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(isCallingNumber || dialNumber.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                            .accessibilityLabel(isCallingNumber ? "Calling" : "Call number")
                         }
                     }
                     .padding()
