@@ -4276,11 +4276,11 @@ private struct SalespersonDTMFKeypad: View {
     @State private var sentDigits = ""
     @State private var errorMessage: String?
 
-    private let rows = [
-        ["1", "2", "3"],
-        ["4", "5", "6"],
-        ["7", "8", "9"],
-        ["*", "0", "#"],
+    private let rows: [[Key]] = [
+        [Key("1", ""), Key("2", "ABC"), Key("3", "DEF")],
+        [Key("4", "GHI"), Key("5", "JKL"), Key("6", "MNO")],
+        [Key("7", "PQRS"), Key("8", "TUV"), Key("9", "WXYZ")],
+        [Key("*", ""), Key("0", "+"), Key("#", "")],
     ]
 
     private var canSendDigits: Bool {
@@ -4288,48 +4288,51 @@ private struct SalespersonDTMFKeypad: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(spacing: 22) {
             HStack {
                 Label("Keypad", systemImage: "circle.grid.3x3.fill")
                     .font(.headline)
                 Spacer()
-                Text(canSendDigits ? "Connected" : "Connecting")
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(canSendDigits ? .green : .orange)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background((canSendDigits ? Color.green : Color.orange).opacity(0.12))
-                    .clipShape(Capsule())
+                Circle()
+                    .fill(canSendDigits ? Color.green : Color.orange)
+                    .frame(width: 10, height: 10)
+                    .accessibilityLabel(canSendDigits ? "Connected" : "Connecting")
             }
 
             Text(sentDigits.isEmpty ? "Digits sent will appear here" : sentDigits)
-                .font(.system(.title3, design: .monospaced).weight(.semibold))
+                .font(.system(.title2, design: .monospaced).weight(.semibold))
                 .foregroundStyle(sentDigits.isEmpty ? .secondary : .primary)
                 .lineLimit(1)
                 .minimumScaleFactor(0.75)
-                .frame(maxWidth: .infinity, minHeight: 44, alignment: .center)
-                .background(Color.primary.opacity(0.06))
-                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .frame(maxWidth: .infinity, minHeight: 42, alignment: .center)
 
-            VStack(spacing: 10) {
+            VStack(spacing: 16) {
                 ForEach(rows, id: \.self) { row in
-                    HStack(spacing: 10) {
-                        ForEach(row, id: \.self) { digit in
+                    HStack(spacing: 24) {
+                        ForEach(row) { key in
                             Button {
-                                send(digit)
+                                send(key.digit)
                             } label: {
-                                Text(digit)
-                                    .font(.title2.weight(.bold))
-                                    .frame(maxWidth: .infinity)
-                                    .aspectRatio(1, contentMode: .fit)
-                                    .foregroundStyle(.primary)
-                                    .background(Color.primary.opacity(0.08))
-                                    .clipShape(Circle())
+                                VStack(spacing: 1) {
+                                    Text(key.digit)
+                                        .font(.system(size: 34, weight: .regular, design: .rounded))
+                                        .lineLimit(1)
+                                    Text(key.subtitle)
+                                        .font(.system(size: 10, weight: .bold))
+                                        .tracking(1.2)
+                                        .foregroundStyle(.secondary)
+                                        .frame(height: 12)
+                                }
+                                .foregroundStyle(.primary)
+                                .frame(width: 72, height: 72)
+                                .background(Color.primary.opacity(0.10))
+                                .clipShape(Circle())
+                                .contentShape(Circle())
                             }
                             .buttonStyle(.plain)
                             .disabled(!canSendDigits)
-                            .opacity(canSendDigits ? 1 : 0.45)
-                            .accessibilityLabel("Send \(digit)")
+                            .opacity(canSendDigits ? 1 : 0.35)
+                            .accessibilityLabel("Send \(key.digit)")
                         }
                     }
                 }
@@ -4345,6 +4348,17 @@ private struct SalespersonDTMFKeypad: View {
                     .font(.caption.weight(.medium))
                     .foregroundStyle(.secondary)
             }
+        }
+    }
+
+    private struct Key: Identifiable, Hashable {
+        let digit: String
+        let subtitle: String
+        var id: String { digit }
+
+        init(_ digit: String, _ subtitle: String) {
+            self.digit = digit
+            self.subtitle = subtitle
         }
     }
 
@@ -4923,20 +4937,10 @@ struct SalespersonDiallerView: View {
                 : voice.callStartedAt
 
             HStack(spacing: 10) {
-                HStack(spacing: 6) {
-                    Circle()
-                        .fill(tint)
-                        .frame(width: 8, height: 8)
-
-                    Text(label(for: phase))
-                        .font(.caption.weight(.bold))
-                        .foregroundStyle(tint)
-                        .lineLimit(1)
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(tint.opacity(0.12))
-                .clipShape(Capsule())
+                Circle()
+                    .fill(tint)
+                    .frame(width: 10, height: 10)
+                    .accessibilityLabel(label(for: phase))
 
                 Text(formatCallElapsed(from: startedAt, now: context.date))
                     .font(.system(.subheadline, design: .monospaced).weight(.semibold))
