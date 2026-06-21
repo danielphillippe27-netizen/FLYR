@@ -904,7 +904,11 @@ private actor SalespersonMobileAPI {
         let normalizedMessage = message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return status == 404 ||
             status == 501 ||
-            (status == 500 && normalizedMessage == "internal server error")
+            (status == 500 && normalizedMessage == "internal server error") ||
+            normalizedMessage.contains("dialler queue item") ||
+            normalizedMessage.contains("dialer queue item") ||
+            normalizedMessage.contains("dialer lead storage") ||
+            normalizedMessage.contains("dialler lead storage")
     }
 
     private func isMissingMessagingSenderError(_ error: Error) -> Bool {
