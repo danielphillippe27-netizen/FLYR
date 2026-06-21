@@ -2,7 +2,10 @@ import { NextResponse, type NextRequest } from "next/server";
 import { resolveAccessContext } from "../access/_utils";
 
 export async function resolveDialerWorkspace(request: NextRequest) {
-  const context = await resolveAccessContext(request);
+  const requestedWorkspaceId = request.nextUrl.searchParams.get("workspaceId")?.trim();
+  const context = await resolveAccessContext(request, {
+    workspaceId: requestedWorkspaceId,
+  });
   if (!context) {
     return {
       response: NextResponse.json({ error: "Unauthorized" }, { status: 401 }),
@@ -20,7 +23,6 @@ export async function resolveDialerWorkspace(request: NextRequest) {
     };
   }
 
-  const requestedWorkspaceId = request.nextUrl.searchParams.get("workspaceId")?.trim();
   if (requestedWorkspaceId && requestedWorkspaceId !== context.workspace.id) {
     return {
       response: NextResponse.json(

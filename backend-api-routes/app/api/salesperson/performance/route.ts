@@ -86,7 +86,12 @@ async function profileForUser(userId: string): Promise<ProfileRow | null> {
 
 export async function GET(request: NextRequest) {
   try {
-    const context = await resolveAccessContext(request);
+    const requestedWorkspaceId = cleanText(
+      request.nextUrl.searchParams.get("workspaceId")
+    );
+    const context = await resolveAccessContext(request, {
+      workspaceId: requestedWorkspaceId,
+    });
     if (!context) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
@@ -98,9 +103,6 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const requestedWorkspaceId = cleanText(
-      request.nextUrl.searchParams.get("workspaceId")
-    );
     if (requestedWorkspaceId && requestedWorkspaceId !== context.workspace.id) {
       return NextResponse.json(
         { error: "Salesperson workspace is not available." },

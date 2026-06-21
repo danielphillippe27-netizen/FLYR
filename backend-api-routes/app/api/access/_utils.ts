@@ -22,6 +22,10 @@ type WorkspaceRow = {
   created_at?: string | null;
 };
 
+type ResolveAccessContextOptions = {
+  workspaceId?: string | null;
+};
+
 export type AccessContext = {
   user: RequestUser;
   workspace: WorkspaceRow | null;
@@ -158,11 +162,56 @@ async function resolvePrimaryWorkspace(userId: string): Promise<{ workspace: Wor
   };
 }
 
-export async function resolveAccessContext(request: NextRequest): Promise<AccessContext | null> {
+async function resolveRequestedWorkspace(
+  userId: string,
+  workspaceId: string
+): Promise<{ workspace: WorkspaceRow | null; role: string | null }> {
+  const admin = adminClient();
+
+  const { data: workspace } = await admin
+    .from("workspaces")
+    .select("id,name,industry,owner_id,subscription_status,trial_ends_at,created_at")
+    .eq("id", workspaceId)
+    .maybeSingle();
+
+  const requestedWorkspace = (workspace as WorkspaceRow | null) ?? null;
+  if (!requestedWorkspace?.id) {
+    return { workspace: null, role: null };
+  }
+
+  if (requestedWorkspace.owner_id === userId) {
+    return { workspace: requestedWorkspace, role: "owner" };
+  }
+
+  const { data: membership } = await admin
+    .from("workspace_members")
+    .select("workspace_id,role,created_at")
+    .eq("workspace_id", workspaceId)
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  const requestedMembership = membership as WorkspaceMembership | null;
+  if (!requestedMembership?.workspace_id) {
+    return { workspace: null, role: null };
+  }
+
+  return {
+    workspace: requestedWorkspace,
+    role: requestedMembership.role ?? "member",
+  };
+}
+
+export async function resolveAccessContext(
+  request: NextRequest,
+  options?: ResolveAccessContextOptions
+): Promise<AccessContext | null> {
   const user = await resolveUserFromRequest(request);
   if (!user) return null;
 
-  const { workspace, role } = await resolvePrimaryWorkspace(user.id);
+  const requestedWorkspaceId = options?.workspaceId?.trim();
+  const { workspace, role } = requestedWorkspaceId
+    ? await resolveRequestedWorkspace(user.id, requestedWorkspaceId)
+    : await resolvePrimaryWorkspace(user.id);
   const hasAccess = workspaceHasAccess(workspace);
   return {
     user,

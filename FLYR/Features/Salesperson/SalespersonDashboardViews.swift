@@ -731,10 +731,29 @@ private actor SalespersonMobileAPI {
     }()
 
     private func workspaceId() async throws -> UUID {
-        guard let workspaceId = await MainActor.run(body: { WorkspaceContext.shared.workspaceId }) else {
+        if let workspaceId = await MainActor.run(body: { WorkspaceContext.shared.workspaceId }) {
+            return workspaceId
+        }
+
+        await refreshWorkspaceContext()
+
+        guard let refreshedWorkspaceId = await MainActor.run(body: { WorkspaceContext.shared.workspaceId }) else {
             throw SalespersonAPIError.missingWorkspace
         }
-        return workspaceId
+        return refreshedWorkspaceId
+    }
+
+    private func refreshWorkspaceContext() async {
+        do {
+            let state = try await AccessAPI.shared.getState()
+            await MainActor.run {
+                WorkspaceContext.shared.update(from: state)
+            }
+        } catch {
+            #if DEBUG
+            print("⚠️ [SalespersonMobileAPI] workspace refresh failed: \(error.localizedDescription)")
+            #endif
+        }
     }
 
     private func currentUserContext() async throws -> (userId: UUID, workspaceId: UUID?) {
@@ -830,9 +849,51 @@ private actor SalespersonMobileAPI {
         guard (200...299).contains(http.statusCode) else {
             let message = (try? decoder.decode([String: String].self, from: data)["error"])
                 ?? HTTPURLResponse.localizedString(forStatusCode: http.statusCode)
+            if http.statusCode == 403,
+               message.localizedCaseInsensitiveContains("workspace"),
+               let retryRequest = await requestByRefreshingWorkspaceId(request) {
+                let (retryData, retryResponse) = try await URLSession.shared.data(for: retryRequest)
+                guard let retryHTTP = retryResponse as? HTTPURLResponse else {
+                    throw SalespersonAPIError.status(0, "No response from server.")
+                }
+                guard (200...299).contains(retryHTTP.statusCode) else {
+                    let retryMessage = (try? decoder.decode([String: String].self, from: retryData)["error"])
+                        ?? HTTPURLResponse.localizedString(forStatusCode: retryHTTP.statusCode)
+                    throw SalespersonAPIError.status(retryHTTP.statusCode, retryMessage)
+                }
+                return retryData
+            }
             throw SalespersonAPIError.status(http.statusCode, message)
         }
         return data
+    }
+
+    private func requestByRefreshingWorkspaceId(_ request: URLRequest) async -> URLRequest? {
+        guard request.httpMethod == nil || request.httpMethod == "GET",
+              let url = request.url,
+              var components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              components.queryItems?.contains(where: { $0.name == "workspaceId" }) == true else {
+            return nil
+        }
+
+        await refreshWorkspaceContext()
+
+        guard let workspaceId = await MainActor.run(body: { WorkspaceContext.shared.workspaceId }) else {
+            return nil
+        }
+
+        components.queryItems = components.queryItems?.map { item in
+            item.name == "workspaceId"
+                ? URLQueryItem(name: item.name, value: workspaceId.uuidString)
+                : item
+        }
+        guard let retryURL = components.url, retryURL != url else {
+            return nil
+        }
+
+        var retry = request
+        retry.url = retryURL
+        return retry
     }
 
     private func isDiallerBackendUnavailable(_ error: Error) -> Bool {
