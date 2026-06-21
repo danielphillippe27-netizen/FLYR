@@ -4143,6 +4143,7 @@ struct SalespersonHomeView: View {
 
 private struct SalespersonVoicemailSettingsSheet: View {
     @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var voice = SalespersonVoiceCallService.shared
     let isCallingVoicemail: Bool
     let statusMessage: String?
     let errorMessage: String?
@@ -4179,6 +4180,13 @@ private struct SalespersonVoicemailSettingsSheet: View {
                     .background(Color.bgSecondary)
                     .clipShape(RoundedRectangle(cornerRadius: 8))
 
+                    if shouldShowKeypad {
+                        SalespersonDTMFKeypad()
+                            .padding()
+                            .background(Color.bgSecondary)
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                    }
+
                     VStack(alignment: .leading, spacing: 10) {
                         voicemailRow("Access code", value: "*98")
                         voicemailRow("Greeting", value: "Managed in voicemail call")
@@ -4210,6 +4218,15 @@ private struct SalespersonVoicemailSettingsSheet: View {
         }
     }
 
+    private var shouldShowKeypad: Bool {
+        switch voice.callPhase {
+        case .connecting, .connected:
+            return voice.activeCallLabel?.localizedCaseInsensitiveContains("voicemail") == true
+        case .idle, .ended:
+            return false
+        }
+    }
+
     private func voicemailRow(_ title: String, value: String) -> some View {
         HStack(alignment: .firstTextBaseline) {
             Text(title)
@@ -4233,6 +4250,95 @@ private struct SalespersonVoicemailSettingsSheet: View {
     }
 }
 
+private struct SalespersonDTMFKeypad: View {
+    @ObservedObject private var voice = SalespersonVoiceCallService.shared
+    @State private var sentDigits = ""
+    @State private var errorMessage: String?
+
+    private let rows = [
+        ["1", "2", "3"],
+        ["4", "5", "6"],
+        ["7", "8", "9"],
+        ["*", "0", "#"],
+    ]
+
+    private var canSendDigits: Bool {
+        voice.callPhase == .connected
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Label("Keypad", systemImage: "circle.grid.3x3.fill")
+                    .font(.headline)
+                Spacer()
+                Text(canSendDigits ? "Connected" : "Connecting")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(canSendDigits ? .green : .orange)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background((canSendDigits ? Color.green : Color.orange).opacity(0.12))
+                    .clipShape(Capsule())
+            }
+
+            Text(sentDigits.isEmpty ? "Digits sent will appear here" : sentDigits)
+                .font(.system(.title3, design: .monospaced).weight(.semibold))
+                .foregroundStyle(sentDigits.isEmpty ? .secondary : .primary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+                .frame(maxWidth: .infinity, minHeight: 44, alignment: .center)
+                .background(Color.primary.opacity(0.06))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+
+            VStack(spacing: 10) {
+                ForEach(rows, id: \.self) { row in
+                    HStack(spacing: 10) {
+                        ForEach(row, id: \.self) { digit in
+                            Button {
+                                send(digit)
+                            } label: {
+                                Text(digit)
+                                    .font(.title2.weight(.bold))
+                                    .frame(maxWidth: .infinity)
+                                    .aspectRatio(1, contentMode: .fit)
+                                    .foregroundStyle(.primary)
+                                    .background(Color.primary.opacity(0.08))
+                                    .clipShape(Circle())
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(!canSendDigits)
+                            .opacity(canSendDigits ? 1 : 0.45)
+                            .accessibilityLabel("Send \(digit)")
+                        }
+                    }
+                }
+            }
+
+            if let errorMessage {
+                Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.orange)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else if !canSendDigits {
+                Label("Wait until the call connects before entering your PIN.", systemImage: "clock.fill")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func send(_ digit: String) {
+        do {
+            try voice.sendDTMF(digit)
+            sentDigits += digit
+            errorMessage = nil
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+}
+
 struct SalespersonDiallerView: View {
     @StateObject private var viewModel = SalespersonDiallerViewModel()
     @ObservedObject private var voice = SalespersonVoiceCallService.shared
@@ -4243,6 +4349,7 @@ struct SalespersonDiallerView: View {
     @State private var isFollowUpSheetPresented = false
     @State private var isListSheetPresented = false
     @State private var isAudioRouteDialogPresented = false
+    @State private var isKeypadPresented = false
 
     private var isBusy: Bool {
         viewModel.isPlacingCall ||
@@ -4386,6 +4493,20 @@ struct SalespersonDiallerView: View {
                 }
                 .sheet(isPresented: $isRecordingsSheetPresented) {
                     SalespersonDiallerRecordingsSheet(viewModel: viewModel)
+                }
+                .sheet(isPresented: $isKeypadPresented) {
+                    NavigationStack {
+                        SalespersonDTMFKeypad()
+                            .padding()
+                            .navigationTitle("Keypad")
+                            .navigationBarTitleDisplayMode(.inline)
+                            .toolbar {
+                                ToolbarItem(placement: .topBarTrailing) {
+                                    Button("Done") { isKeypadPresented = false }
+                                }
+                            }
+                    }
+                    .presentationDetents([.medium, .large])
                 }
                 .confirmationDialog("Audio", isPresented: $isAudioRouteDialogPresented, titleVisibility: .visible) {
                     ForEach(voice.audioRouteOptions) { option in
@@ -4798,6 +4919,19 @@ struct SalespersonDiallerView: View {
                 }
 
                 Spacer(minLength: 8)
+
+                Button {
+                    isKeypadPresented = true
+                } label: {
+                    Label("Keypad", systemImage: "circle.grid.3x3.fill")
+                        .font(.caption.weight(.bold))
+                        .labelStyle(.iconOnly)
+                        .frame(width: 30, height: 30)
+                        .background(Color.primary.opacity(0.08))
+                        .clipShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Keypad")
 
                 Button {
                     voice.refreshAudioRoutes()

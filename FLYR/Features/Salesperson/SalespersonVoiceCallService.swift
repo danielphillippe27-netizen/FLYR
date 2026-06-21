@@ -174,6 +174,23 @@ final class SalespersonVoiceCallService: NSObject, ObservableObject {
         }
     }
 
+    func sendDTMF(_ digit: String) throws {
+        let value = digit.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        let allowedDigits = Set("0123456789*#ABCD")
+        guard value.count == 1,
+              let character = value.first,
+              allowedDigits.contains(character) else {
+            throw VoiceCallError.status(400, "Use one keypad digit at a time.")
+        }
+        guard let call = activeCalls.values.first else {
+            throw VoiceCallError.status(400, "Start a call before using the keypad.")
+        }
+        guard callPhase == .connected else {
+            throw VoiceCallError.status(400, "Wait for the call to connect before entering digits.")
+        }
+        call.dtmf(dtmf: value)
+    }
+
     func refreshAudioRoutes() {
         let session = AVAudioSession.sharedInstance()
         var options: [SalespersonAudioRouteOption] = [
@@ -813,6 +830,17 @@ extension SalespersonVoiceCallService: CXProviderDelegate {
             call.unmuteAudio()
         }
         isMuted = action.isMuted
+        action.fulfill()
+    }
+
+    func provider(_ provider: CXProvider, perform action: CXPlayDTMFCallAction) {
+        guard let call = activeCalls[action.callUUID] else {
+            action.fail()
+            return
+        }
+        for digit in action.digits {
+            call.dtmf(dtmf: String(digit))
+        }
         action.fulfill()
     }
 }
