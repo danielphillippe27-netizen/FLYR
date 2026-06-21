@@ -45,8 +45,11 @@ final class SalespersonVoiceCallService: NSObject, ObservableObject {
     private var lastRegisteredToken: String?
     private var isRegistering = false
     private var isConnectingClient = false
+    private var isResettingClientConnection = false
+    private var currentTelnyxSessionId: String?
     private var activeCalls: [UUID: Call] = [:]
     private var pendingClientReadyContinuations: [CheckedContinuation<Void, Error>] = []
+    private var pendingSessionReadyContinuations: [CheckedContinuation<Void, Error>] = []
     private var pendingPushCompletion: (() -> Void)?
 
     private override init() {
@@ -132,6 +135,7 @@ final class SalespersonVoiceCallService: NSObject, ObservableObject {
             throw VoiceCallError.status(400, "A destination phone number is required for Telnyx iOS calling.")
         }
 
+        registrationError = nil
         try await connect(tokenResponse: tokenResponse)
 
         let uuid = UUID(uuidString: callRequestId) ?? UUID()
@@ -362,24 +366,32 @@ final class SalespersonVoiceCallService: NSObject, ObservableObject {
     }
 
     private func connect(tokenResponse: VoiceTokenResponse) async throws {
-        if telnyxClient.isRegistered, !isConnectingClient {
+        if telnyxClient.isRegistered, currentTelnyxSessionId != nil, !isConnectingClient {
             return
         }
 
         if isConnectingClient {
             try await waitForClientReady()
+            try await waitForSessionReady()
             return
         }
 
         isConnectingClient = true
+        currentTelnyxSessionId = nil
         let txConfig = makeTxConfig(tokenResponse: tokenResponse)
         do {
+            if telnyxClient.isRegistered {
+                isResettingClientConnection = true
+                telnyxClient.disconnect()
+                isResettingClientConnection = false
+            }
             try telnyxClient.connect(txConfig: txConfig)
             try await waitForClientReady()
+            try await waitForSessionReady()
         } catch {
             isConnectingClient = false
-            pendingClientReadyContinuations.forEach { $0.resume(throwing: error) }
-            pendingClientReadyContinuations.removeAll()
+            rejectClientReady(error: error)
+            rejectSessionReady(error: error)
             throw error
         }
     }
@@ -387,6 +399,16 @@ final class SalespersonVoiceCallService: NSObject, ObservableObject {
     private func waitForClientReady() async throws {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             pendingClientReadyContinuations.append(continuation)
+        }
+    }
+
+    private func waitForSessionReady() async throws {
+        if currentTelnyxSessionId != nil {
+            return
+        }
+
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            pendingSessionReadyContinuations.append(continuation)
         }
     }
 
@@ -401,6 +423,20 @@ final class SalespersonVoiceCallService: NSObject, ObservableObject {
         isConnectingClient = false
         let continuations = pendingClientReadyContinuations
         pendingClientReadyContinuations.removeAll()
+        continuations.forEach { $0.resume(throwing: error) }
+    }
+
+    private func resolveSessionReady(sessionId: String) {
+        currentTelnyxSessionId = sessionId
+        let continuations = pendingSessionReadyContinuations
+        pendingSessionReadyContinuations.removeAll()
+        continuations.forEach { $0.resume() }
+    }
+
+    private func rejectSessionReady(error: Error) {
+        currentTelnyxSessionId = nil
+        let continuations = pendingSessionReadyContinuations
+        pendingSessionReadyContinuations.removeAll()
         continuations.forEach { $0.resume(throwing: error) }
     }
 
@@ -670,12 +706,22 @@ extension SalespersonVoiceCallService: TxClientDelegate {
     func onSocketConnected() {}
 
     func onSocketDisconnected() {
+        if isResettingClientConnection {
+            isRegisteredForIncomingCalls = false
+            currentTelnyxSessionId = nil
+            return
+        }
+
+        let error = VoiceCallError.status(503, "Telnyx voice session disconnected. Try calling again.")
         isRegisteredForIncomingCalls = false
+        rejectClientReady(error: error)
+        rejectSessionReady(error: error)
     }
 
     func onClientError(error: Error) {
         registrationError = error.localizedDescription
         rejectClientReady(error: error)
+        rejectSessionReady(error: error)
     }
 
     func onClientReady() {
@@ -691,7 +737,9 @@ extension SalespersonVoiceCallService: TxClientDelegate {
         }
     }
 
-    func onSessionUpdated(sessionId: String) {}
+    func onSessionUpdated(sessionId: String) {
+        resolveSessionReady(sessionId: sessionId)
+    }
 
     func onCallStateUpdated(callState: CallState, callId: UUID) {
         switch callState {
