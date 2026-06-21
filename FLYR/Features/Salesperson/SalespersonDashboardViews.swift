@@ -4115,6 +4115,7 @@ struct SalespersonHomeView: View {
 
         do {
             SalespersonVoiceCallService.shared.endActiveCall()
+            SalespersonVoiceCallService.shared.clearRegistrationError()
             try await voice.startOutboundCall(
                 label: "Voicemail",
                 callRequestId: UUID().uuidString,

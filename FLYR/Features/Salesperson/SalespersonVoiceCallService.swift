@@ -122,6 +122,10 @@ final class SalespersonVoiceCallService: NSObject, ObservableObject {
         requestEndCall(uuid: uuid)
     }
 
+    func clearRegistrationError() {
+        registrationError = nil
+    }
+
     func startOutboundCall(
         label: String,
         callRequestId: String,
@@ -142,7 +146,7 @@ final class SalespersonVoiceCallService: NSObject, ObservableObject {
             ?? ""
 
         registrationError = nil
-        try await connect(tokenResponse: tokenResponse)
+        try await connect(tokenResponse: tokenResponse, forceReconnect: activeCalls.isEmpty)
 
         let uuid = UUID(uuidString: callRequestId) ?? UUID()
         let handle = CXHandle(type: .generic, value: label)
@@ -395,8 +399,8 @@ final class SalespersonVoiceCallService: NSObject, ObservableObject {
         }
     }
 
-    private func connect(tokenResponse: VoiceTokenResponse) async throws {
-        if telnyxClient.isRegistered, currentTelnyxSessionId != nil, !isConnectingClient {
+    private func connect(tokenResponse: VoiceTokenResponse, forceReconnect: Bool = false) async throws {
+        if !forceReconnect, telnyxClient.isRegistered, currentTelnyxSessionId != nil, !isConnectingClient {
             return
         }
 
@@ -410,9 +414,10 @@ final class SalespersonVoiceCallService: NSObject, ObservableObject {
         currentTelnyxSessionId = nil
         let txConfig = makeTxConfig(tokenResponse: tokenResponse)
         do {
-            if telnyxClient.isRegistered {
+            if telnyxClient.isRegistered || telnyxClient.isConnected() {
                 isResettingClientConnection = true
                 telnyxClient.disconnect()
+                try? await Task.sleep(nanoseconds: 250_000_000)
                 isResettingClientConnection = false
             }
             try telnyxClient.connect(txConfig: txConfig)
@@ -739,6 +744,7 @@ extension SalespersonVoiceCallService: TxClientDelegate {
         if isResettingClientConnection {
             isRegisteredForIncomingCalls = false
             currentTelnyxSessionId = nil
+            isResettingClientConnection = false
             return
         }
 
