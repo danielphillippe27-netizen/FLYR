@@ -1597,6 +1597,8 @@ private final class SalespersonDiallerViewModel: ObservableObject {
 
     private let gabeTestPhone = "905-260-6688"
     private let gabeTestLeadId = UUID(uuidString: "90526066-8800-4000-9000-000000000001")!
+    private let santanaTestPhone = "289-261-9598"
+    private let santanaTestLeadId = UUID(uuidString: "28926195-9800-4000-9000-000000000002")!
     private var emailAutosaveTask: Task<Void, Never>?
 
     deinit {
@@ -1749,10 +1751,18 @@ private final class SalespersonDiallerViewModel: ObservableObject {
     }
 
     func openGabeTestLead() async {
+        await openTestLead(name: "Gabe Phillippe", phone: gabeTestPhone, id: gabeTestLeadId)
+    }
+
+    func openSantanaTestLead() async {
+        await openTestLead(name: "Santana Phillippe", phone: santanaTestPhone, id: santanaTestLeadId)
+    }
+
+    private func openTestLead(name: String, phone: String, id: UUID) async {
         guard !isOpeningTestLead else { return }
-        if let existingLead = leads.first(where: { $0.phone.normalizedPhoneDigits == gabeTestPhone.normalizedPhoneDigits }) {
+        if let existingLead = leads.first(where: { $0.phone.normalizedPhoneDigits == phone.normalizedPhoneDigits }) {
             select(existingLead)
-            statusMessage = "Opened Gabe Phillippe."
+            statusMessage = "Opened \(name)."
             return
         }
 
@@ -1764,8 +1774,8 @@ private final class SalespersonDiallerViewModel: ObservableObject {
         do {
             let response = try await SalespersonMobileAPI.shared.importDiallerLeads([
                 SalespersonDiallerImportLead(
-                    name: "Gabe Phillippe",
-                    phone: gabeTestPhone,
+                    name: name,
+                    phone: phone,
                     company: nil,
                     email: nil
                 )
@@ -1773,18 +1783,18 @@ private final class SalespersonDiallerViewModel: ObservableObject {
             if let importedLead = response.leads?.first {
                 replaceOrAppendLead(importedLead)
                 select(importedLead)
-                statusMessage = response.warning ?? "Opened Gabe Phillippe."
+                statusMessage = response.warning ?? "Opened \(name)."
                 return
             }
-            let fallbackLead = makeGabeTestLead()
+            let fallbackLead = makeTestLead(name: name, phone: phone, id: id)
             replaceOrAppendLead(fallbackLead)
             select(fallbackLead)
-            statusMessage = response.warning ?? "Opened Gabe Phillippe for testing."
+            statusMessage = response.warning ?? "Opened \(name) for testing."
         } catch {
-            let fallbackLead = makeGabeTestLead()
+            let fallbackLead = makeTestLead(name: name, phone: phone, id: id)
             replaceOrAppendLead(fallbackLead)
             select(fallbackLead)
-            statusMessage = "Opened Gabe Phillippe for testing."
+            statusMessage = "Opened \(name) for testing."
         }
     }
 
@@ -2193,11 +2203,11 @@ private final class SalespersonDiallerViewModel: ObservableObject {
         }
     }
 
-    private func makeGabeTestLead() -> SalespersonDiallerLead {
+    private func makeTestLead(name: String, phone: String, id: UUID) -> SalespersonDiallerLead {
         SalespersonDiallerLead(
-            id: gabeTestLeadId,
-            name: "Gabe Phillippe",
-            phone: gabeTestPhone,
+            id: id,
+            name: name,
+            phone: phone,
             company: nil,
             email: nil,
             website: nil,
@@ -4445,13 +4455,23 @@ struct SalespersonDiallerView: View {
                 }
 	            .toolbar {
                     ToolbarItem(placement: .topBarLeading) {
-                        Button {
-                            Task { await viewModel.openGabeTestLead() }
+                        Menu {
+                            Button {
+                                Task { await viewModel.openGabeTestLead() }
+                            } label: {
+                                Label("Gabe Phillippe", systemImage: "person.fill")
+                            }
+
+                            Button {
+                                Task { await viewModel.openSantanaTestLead() }
+                            } label: {
+                                Label("Santana Phillippe", systemImage: "person.fill")
+                            }
                         } label: {
-                            Label("Gabe", systemImage: "phone.fill")
+                            Label("Test", systemImage: "phone.fill")
                         }
                         .disabled(viewModel.isOpeningTestLead)
-                        .accessibilityLabel("Open Gabe Phillippe")
+                        .accessibilityLabel("Open test lead")
                     }
 
 	                    ToolbarItemGroup(placement: .topBarTrailing) {
