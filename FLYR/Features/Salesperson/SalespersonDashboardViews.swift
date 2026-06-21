@@ -4961,13 +4961,11 @@ struct SalespersonDiallerView: View {
                     voice.refreshAudioRoutes()
                     isAudioRouteDialogPresented = true
                 } label: {
-                    Label("Audio", systemImage: selectedAudioRouteIcon)
+                    Image(systemName: selectedAudioRouteIcon)
                         .font(.caption.weight(.bold))
-                        .labelStyle(.titleAndIcon)
-                        .padding(.horizontal, 10)
-                        .frame(minHeight: 30)
+                        .frame(width: 30, height: 30)
                         .background(Color.primary.opacity(0.08))
-                        .clipShape(Capsule())
+                        .clipShape(Circle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Audio route")
