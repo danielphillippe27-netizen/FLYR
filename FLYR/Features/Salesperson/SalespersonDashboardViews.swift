@@ -1414,19 +1414,26 @@ private actor SalespersonMobileAPI {
         )
     }
 
-    func sendDemoText(leadId: UUID, body messageBody: String) async throws -> String? {
+    func sendDemoText(lead: SalespersonDiallerLead, body messageBody: String) async throws -> String? {
         let workspaceId = try await workspaceId()
         struct Payload: Encodable {
             let workspaceId: String
             let body: String
+            let phone: String
+            let name: String?
         }
         struct Response: Decodable {
             let warning: String?
         }
-        let payload = Payload(workspaceId: workspaceId.uuidString, body: messageBody)
+        let payload = Payload(
+            workspaceId: workspaceId.uuidString,
+            body: messageBody,
+            phone: lead.phone,
+            name: lead.displayBusinessName
+        )
         let body = try encoder.encode(payload)
         let request = try await request(
-            path: "api/dialer/leads/\(leadId.uuidString)/sms",
+            path: "api/dialer/leads/\(lead.id.uuidString)/sms",
             method: "POST",
             body: body
         )
@@ -1936,7 +1943,7 @@ private final class SalespersonDiallerViewModel: ObservableObject {
         statusMessage = nil
         defer { isSendingTextDrop = false }
         do {
-            _ = try await SalespersonMobileAPI.shared.sendDemoText(leadId: selectedLead.id, body: body)
+            _ = try await SalespersonMobileAPI.shared.sendDemoText(lead: selectedLead, body: body)
             let nextNotes = [
                 notes.trimmingCharacters(in: .whitespacesAndNewlines),
                 "Text drop sent: \(body)"
@@ -1967,7 +1974,7 @@ private final class SalespersonDiallerViewModel: ObservableObject {
         defer { isSendingCallbackText = false }
 
         do {
-            let warning = try await SalespersonMobileAPI.shared.sendDemoText(leadId: selectedLead.id, body: body)
+            let warning = try await SalespersonMobileAPI.shared.sendDemoText(lead: selectedLead, body: body)
             statusMessage = warning ?? "Text sent."
         } catch {
             errorMessage = error.localizedDescription
@@ -2027,7 +2034,7 @@ private final class SalespersonDiallerViewModel: ObservableObject {
             guard let body = message.textBody?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty else {
                 throw SalespersonAPIError.status(400, "Demo text is not ready yet.")
             }
-            let warning = try await SalespersonMobileAPI.shared.sendDemoText(leadId: selectedLead.id, body: body)
+            let warning = try await SalespersonMobileAPI.shared.sendDemoText(lead: selectedLead, body: body)
             statusMessage = warning ?? (message.tracked == true ? "Tracked demo text sent." : "Demo text sent.")
         } catch {
             errorMessage = error.localizedDescription

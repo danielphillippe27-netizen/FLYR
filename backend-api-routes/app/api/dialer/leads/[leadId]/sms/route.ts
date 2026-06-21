@@ -22,13 +22,42 @@ function cleanBody(value: unknown): string | null {
   return trimmed ? trimmed : null;
 }
 
-async function resolveLead(request: NextRequest, leadId: string) {
+function outboundMessageFromTelnyx(params: {
+  workspaceId: string;
+  contactId: string | null;
+  from: string;
+  to: string;
+  body: string;
+  sent: Awaited<ReturnType<typeof sendTelnyxSms>>;
+  now: string;
+}) {
+  return {
+    id: params.sent?.id ?? null,
+    workspace_id: params.workspaceId,
+    contact_id: params.contactId,
+    direction: "outbound",
+    from_number_e164: params.from,
+    to_number_e164: params.to,
+    body: params.body,
+    message_type: params.sent?.type ?? "SMS",
+    status: params.sent?.to?.[0]?.status ?? "queued",
+    media: params.sent?.media ?? [],
+    error: params.sent?.errors?.length ? params.sent.errors : null,
+    sent_at: params.sent?.sent_at ?? params.now,
+    received_at: null,
+    completed_at: null,
+    created_at: params.now,
+    updated_at: params.now,
+  };
+}
+
+async function resolveLead(request: NextRequest, leadId: string, options?: { allowMissing?: boolean }) {
   const { response, context } = await resolveDialerWorkspace(request);
   if (response) return { response, context: null, contact: null };
 
   const admin = createAdminClient();
   const contact = await getContactForWorkspace(admin, leadId, context!.workspace!.id);
-  if (!contact) {
+  if (!contact && !options?.allowMissing) {
     return {
       response: NextResponse.json({ error: "Dialer lead was not found." }, { status: 404 }),
       context: null,
@@ -70,9 +99,6 @@ export async function GET(request: NextRequest, routeContext: RouteContext) {
 export async function POST(request: NextRequest, routeContext: RouteContext) {
   try {
     const { leadId } = await routeContext.params;
-    const resolved = await resolveLead(request, leadId);
-    if (resolved.response) return resolved.response;
-
     const payload = await request.json().catch(() => ({}));
     const body = cleanBody(payload.body ?? payload.text ?? payload.message);
     if (!body) {
@@ -82,7 +108,11 @@ export async function POST(request: NextRequest, routeContext: RouteContext) {
       return NextResponse.json({ error: "Message body is too long." }, { status: 400 });
     }
 
-    const to = normalizePhone(resolved.contact!.phone);
+    const resolved = await resolveLead(request, leadId, { allowMissing: true });
+    if (resolved.response) return resolved.response;
+
+    const fallbackPhone = typeof payload.phone === "string" ? payload.phone : null;
+    const to = normalizePhone(resolved.contact?.phone ?? fallbackPhone);
     if (!to) {
       return NextResponse.json(
         { error: "Dialer lead needs a valid phone number before texting." },
@@ -95,6 +125,22 @@ export async function POST(request: NextRequest, routeContext: RouteContext) {
     const from = normalizePhone(sent?.from?.phone_number) ?? normalizePhone(telnyxSmsFromNumber())!;
     const providerMessageId = sent?.id ?? null;
     const status = sent?.to?.[0]?.status ?? "queued";
+    const optimisticMessage = outboundMessageFromTelnyx({
+      workspaceId: resolved.context!.workspace!.id,
+      contactId: resolved.contact?.id ?? null,
+      from,
+      to,
+      body,
+      sent,
+      now,
+    });
+
+    if (!resolved.contact) {
+      return NextResponse.json({
+        message: publicMessage(optimisticMessage),
+        warning: sent?.errors?.length ? "Text queued with Telnyx warnings." : null,
+      });
+    }
 
     const admin = createAdminClient();
     const { data, error } = await admin
@@ -102,7 +148,7 @@ export async function POST(request: NextRequest, routeContext: RouteContext) {
       .upsert(
         {
           workspace_id: resolved.context!.workspace!.id,
-          contact_id: resolved.contact!.id,
+          contact_id: resolved.contact.id,
           sender_user_id: resolved.context!.user.id,
           provider: "telnyx",
           provider_message_id: providerMessageId,
@@ -122,12 +168,18 @@ export async function POST(request: NextRequest, routeContext: RouteContext) {
       .select("*")
       .single();
 
-    if (error) throw error;
+    if (error) {
+      console.warn("[dialer/leads/sms] message storage failed", error.message);
+      return NextResponse.json({
+        message: publicMessage(optimisticMessage),
+        warning: "Text sent, but message history is unavailable.",
+      });
+    }
 
     await admin
       .from("contact_activities")
       .insert({
-        contact_id: resolved.contact!.id,
+        contact_id: resolved.contact.id,
         type: "text",
         note: body,
         timestamp: now,
