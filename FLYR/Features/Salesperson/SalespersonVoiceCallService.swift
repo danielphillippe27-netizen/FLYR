@@ -130,10 +130,16 @@ final class SalespersonVoiceCallService: NSObject, ObservableObject {
     ) async throws {
         try await prepareMicrophoneForCall()
         let tokenResponse = try await fetchVoiceToken()
-        let destination = destinationNumber?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard !destination.isEmpty else {
+        let rawDestination = destinationNumber?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !rawDestination.isEmpty else {
             throw VoiceCallError.status(400, "A destination phone number is required for Telnyx iOS calling.")
         }
+        guard let destination = Self.normalizedTelnyxDialString(rawDestination) else {
+            throw VoiceCallError.status(400, "Enter a valid phone number before calling.")
+        }
+        let callerNumber = Self.normalizedTelnyxDialString(fromNumber)
+            ?? Self.normalizedTelnyxDialString(tokenResponse.fromNumber)
+            ?? ""
 
         registrationError = nil
         try await connect(tokenResponse: tokenResponse)
@@ -154,16 +160,40 @@ final class SalespersonVoiceCallService: NSObject, ObservableObject {
 
         let call = try telnyxClient.newCall(
             callerName: "FLYR",
-            callerNumber: fromNumber ?? tokenResponse.fromNumber ?? "",
+            callerNumber: callerNumber,
             destinationNumber: destination,
             callId: uuid,
-            clientState: makeTelnyxClientState(callRequestId: callRequestId, to: destination, from: fromNumber ?? tokenResponse.fromNumber),
+            clientState: makeTelnyxClientState(callRequestId: callRequestId, to: destination, from: callerNumber.isEmpty ? nil : callerNumber),
             customHeaders: [
                 "X-Call-Request-Id": callRequestId
             ],
             debug: false
         )
         activeCalls[uuid] = call
+    }
+
+    private static func normalizedTelnyxDialString(_ value: String?) -> String? {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty else {
+            return nil
+        }
+
+        if trimmed.hasPrefix("*") || trimmed.hasPrefix("#") {
+            return trimmed
+        }
+
+        let digits = trimmed.filter(\.isNumber)
+        guard digits.count >= 8 else { return nil }
+
+        if trimmed.hasPrefix("+") {
+            return "+\(digits)"
+        }
+
+        if digits.count == 10 {
+            return "+1\(digits)"
+        }
+
+        return "+\(digits)"
     }
 
     func setMuted(_ muted: Bool) {
