@@ -116,7 +116,10 @@ actor StatsService {
     }
 
     private func fetchLiveLeadCount(userID: UUID) async throws -> Int {
+        // Filter to field-captured leads only. Salesperson-imported (scraped) contacts are
+        // stored with lead_kind = 'scraped' and must not appear in doorknocker stats.
         let cachedContacts = await ContactRepository.shared.fetchContacts(userId: userID)
+            .filter { $0.leadKind == nil || $0.leadKind == "field" }
         var leadKeys = Set(cachedContacts.map { leadKey(id: $0.id, address: $0.address) })
 
         do {
@@ -124,6 +127,7 @@ actor StatsService {
                 .from("contacts")
                 .select("id,status")
                 .eq("user_id", value: userID)
+                .eq("lead_kind", value: "field")
                 .execute()
                 .value
             leadKeys.formUnion(remoteContacts.map { leadKey(id: $0.id, address: nil) })

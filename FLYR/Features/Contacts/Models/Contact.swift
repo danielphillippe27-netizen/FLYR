@@ -40,6 +40,9 @@ struct Contact: Codable, Identifiable, Equatable {
     var farmId: UUID?
     var gersId: String?
     var addressId: UUID?
+    /// Discriminates field-captured doorknocker leads ("field") from salesperson-imported
+    /// cold-call targets ("scraped"). Nil on pre-migration cached records — treat as "field".
+    var leadKind: String?
     var tags: String?
     var status: ContactStatus
     var lastContacted: Date?
@@ -47,7 +50,7 @@ struct Contact: Codable, Identifiable, Equatable {
     var reminderDate: Date?
     var createdAt: Date
     var updatedAt: Date
-    
+
     enum CodingKeys: String, CodingKey {
         case id
         case fullName = "full_name"
@@ -58,6 +61,7 @@ struct Contact: Codable, Identifiable, Equatable {
         case farmId = "farm_id"
         case gersId = "gers_id"
         case addressId = "address_id"
+        case leadKind = "lead_kind"
         case tags
         case status
         case lastContacted = "last_contacted"
@@ -66,7 +70,7 @@ struct Contact: Codable, Identifiable, Equatable {
         case createdAt = "created_at"
         case updatedAt = "updated_at"
     }
-    
+
     init(
         id: UUID = UUID(),
         fullName: String,
@@ -77,6 +81,7 @@ struct Contact: Codable, Identifiable, Equatable {
         farmId: UUID? = nil,
         gersId: String? = nil,
         addressId: UUID? = nil,
+        leadKind: String? = nil,
         tags: String? = nil,
         status: ContactStatus = .new,
         lastContacted: Date? = nil,
@@ -94,6 +99,7 @@ struct Contact: Codable, Identifiable, Equatable {
         self.farmId = farmId
         self.gersId = gersId
         self.addressId = addressId
+        self.leadKind = leadKind
         self.tags = tags
         self.status = status
         self.lastContacted = lastContacted
