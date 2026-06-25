@@ -711,6 +711,32 @@ final class CampaignRepository {
         }
     }
 
+    func updateCachedCampaignStatus(campaignId: UUID, status: CampaignStatus) async {
+        let id = campaignId.uuidString
+        let updatedAt = OfflineDateCodec.string(from: Date())
+        try? await dbQueue.write { db in
+            guard let existing = try CachedCampaignRecord.fetchOne(db, key: id) else { return }
+            let record = CachedCampaignRecord(
+                id: existing.id,
+                name: existing.name,
+                mode: status.rawValue,
+                boundaryGeoJSON: existing.boundaryGeoJSON,
+                payloadJSON: Self.campaignPayloadJSON(existing.payloadJSON, updatingStatus: status),
+                downloadedAt: existing.downloadedAt,
+                updatedAt: updatedAt
+            )
+            try record.save(db)
+        }
+    }
+
+    func removeCachedCampaign(campaignId: UUID) async {
+        try? await dbQueue.write { db in
+            try CachedCampaignRecord
+                .filter(Column("id") == campaignId.uuidString)
+                .deleteAll(db)
+        }
+    }
+
     func getCachedCampaigns() async -> [CampaignV2] {
         (try? await dbQueue.read { db in
             let campaignRecords = try CachedCampaignRecord
@@ -734,6 +760,95 @@ final class CampaignRepository {
                 return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
             }
         }) ?? []
+    }
+
+    func getRecentlyUpdatedCampaignIds(since cutoff: Date) async -> [UUID] {
+        let cutoffString = OfflineDateCodec.string(from: cutoff)
+        return (try? await dbQueue.read { db in
+            try CachedCampaignRecord
+                .filter(Column("updated_at") >= cutoffString)
+                .order(Column("updated_at").desc)
+                .fetchAll(db)
+                .compactMap { UUID(uuidString: $0.id) }
+        }) ?? []
+    }
+
+    func offlineCampaignEvictionCandidates(excluding excludedCampaignIds: Set<UUID>) async -> [UUID] {
+        let excludedIds = Set(excludedCampaignIds.map(\.uuidString))
+        return (try? await dbQueue.read { db in
+            try CachedCampaignRecord
+                .order(Column("updated_at").asc)
+                .fetchAll(db)
+                .compactMap { record in
+                    guard !excludedIds.contains(record.id) else { return nil }
+                    return UUID(uuidString: record.id)
+                }
+        }) ?? []
+    }
+
+    func estimatedOfflineStorageBytes() async -> Int64 {
+        let rootURL = OfflineDatabase.shared.storageDirectory
+        var total: Int64 = 0
+        guard let enumerator = FileManager.default.enumerator(
+            at: rootURL,
+            includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return 0
+        }
+
+        for case let url as URL in enumerator {
+            guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
+                  values.isRegularFile == true else {
+                continue
+            }
+            total += Int64(values.fileSize ?? 0)
+        }
+        return total
+    }
+
+    func evictOfflineAssets(campaignId: UUID) async {
+        let campaignIdString = campaignId.uuidString
+        try? await dbQueue.write { db in
+            let campaignScopedTables = [
+                "cached_buildings",
+                "cached_addresses",
+                "cached_parcels",
+                "cached_campaign_map_bundles",
+                "cached_building_address_links",
+                "cached_client_link_batches",
+                "cached_address_orphans",
+                "cached_address_statuses",
+                "cached_roads",
+                "cached_address_capture_metadata",
+                "local_fallback_buildings",
+                "cached_contacts"
+            ]
+            for table in campaignScopedTables {
+                try db.execute(sql: "DELETE FROM \(table) WHERE campaign_id = ?", arguments: [campaignIdString])
+            }
+
+            try db.execute(
+                sql: """
+                DELETE FROM cached_contact_activities
+                WHERE contact_id NOT IN (SELECT id FROM cached_contacts)
+                """
+            )
+            try db.execute(sql: "DELETE FROM campaign_downloads WHERE campaign_id = ?", arguments: [campaignIdString])
+
+            if let existing = try CachedCampaignRecord.fetchOne(db, key: campaignIdString) {
+                let record = CachedCampaignRecord(
+                    id: existing.id,
+                    name: existing.name,
+                    mode: existing.mode,
+                    boundaryGeoJSON: existing.boundaryGeoJSON,
+                    payloadJSON: existing.payloadJSON,
+                    downloadedAt: nil,
+                    updatedAt: OfflineDateCodec.string(from: Date())
+                )
+                try record.save(db)
+            }
+        }
     }
 
     func getCampaignBoundaryCoordinates(campaignId: String) async -> [CLLocationCoordinate2D]? {
@@ -2868,6 +2983,23 @@ final class CampaignRepository {
         guard JSONSerialization.isValidJSONObject(payload),
               let payloadData = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]) else {
             return encoded
+        }
+        return String(data: payloadData, encoding: .utf8)
+    }
+
+    private static func campaignPayloadJSON(_ payloadJSON: String?, updatingStatus status: CampaignStatus) -> String? {
+        guard
+            let data = payloadJSON?.data(using: .utf8),
+            var payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            return payloadJSON
+        }
+
+        payload["status"] = status.rawValue
+
+        guard JSONSerialization.isValidJSONObject(payload),
+              let payloadData = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]) else {
+            return payloadJSON
         }
         return String(data: payloadData, encoding: .utf8)
     }

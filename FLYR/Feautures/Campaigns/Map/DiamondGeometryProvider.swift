@@ -997,6 +997,9 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
         selectedOverridesStatus: Bool = false
     ) -> Exp {
         return Exp(.switchCase) {
+            isTeammateOwnedExpression()
+            MapStatusColor.teammateTouched
+
             selectedOverridesStatus ? isSelectedHighlightVisibleExpression() : isSelectedUnvisitedStatusExpression()
             MapStatusColor.selectedHome
 
@@ -1065,6 +1068,21 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
                 }
                 true
             }
+        }
+    }
+
+    private func visitOwnerExpression() -> Exp {
+        Exp(.coalesce) {
+            Exp(.featureState) { "visit_owner" }
+            Exp(.get) { "visit_owner" }
+            ""
+        }
+    }
+
+    private func isTeammateOwnedExpression() -> Exp {
+        Exp(.eq) {
+            visitOwnerExpression()
+            "teammate"
         }
     }
 

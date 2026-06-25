@@ -668,6 +668,13 @@ struct NewCampaignScreen: View {
         let effectivePolygon = polygonFromSheet ?? drawnPolygon
         print("🚀 [CAMPAIGN DEBUG] Starting campaign creation workflow")
 
+        guard NetworkMonitor.shared.isOnline else {
+            createHook.error = "Campaign creation needs a connection. Reconnect to create and provision the area."
+            creationStage = .territory
+            trace.end(status: "offline_blocked")
+            return
+        }
+
         guard let polygon = effectivePolygon, polygon.count >= 3 else {
             createHook.error = "Draw a polygon on the map"
             trace.end(status: "missing_polygon")

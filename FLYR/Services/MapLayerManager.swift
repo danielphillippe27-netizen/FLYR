@@ -204,6 +204,21 @@ final class MapLayerManager {
         }
     }
 
+    private static var visitOwnerExpression: Exp {
+        Exp(.coalesce) {
+            Exp(.featureState) { "visit_owner" }
+            Exp(.get) { "visit_owner" }
+            ""
+        }
+    }
+
+    private static var isTeammateOwnedExpression: Exp {
+        Exp(.eq) {
+            Self.visitOwnerExpression
+            "teammate"
+        }
+    }
+
     private static var layerStatusExpression: Exp {
         Exp(.coalesce) {
             Exp(.featureState) { "status" }
@@ -287,6 +302,9 @@ final class MapLayerManager {
 
     static var buildingFillColorExpression: Exp {
         Exp(.switchCase) {
+            Self.isTeammateOwnedExpression
+            MapStatusColor.teammateTouched
+
             Self.isSelectedHighlightVisibleExpression
             MapStatusColor.selectedHome
 
@@ -412,6 +430,12 @@ final class MapLayerManager {
 
     private static var townhomeSegmentColorExpression: Exp {
         Exp(.switchCase) {
+            Exp(.eq) {
+                Exp(.get) { "visit_owner" }
+                "teammate"
+            }
+            MapStatusColor.teammateTouched
+
             Self.isSelectedUnvisitedSegmentExpression
             MapStatusColor.selectedHome
 
@@ -845,6 +869,9 @@ final class MapLayerManager {
 
     private static var parcelLinkedAddressColorExpression: Exp {
         Exp(.switchCase) {
+            Self.isTeammateOwnedExpression
+            MapStatusColor.teammateTouched
+
             Self.isSelectedUnvisitedExpression
             MapStatusColor.selectedHome
 
@@ -1456,6 +1483,9 @@ final class MapLayerManager {
         var layer = FillExtrusionLayer(id: Self.addressesLayerId, source: Self.addressesSourceId)
         layer.fillExtrusionColor = .expression(
             Exp(.switchCase) {
+                Self.isTeammateOwnedExpression
+                MapStatusColor.teammateTouched
+
                 Exp(.gt) {
                     Exp(.coalesce) {
                         Exp(.featureState) { "scans_total" }

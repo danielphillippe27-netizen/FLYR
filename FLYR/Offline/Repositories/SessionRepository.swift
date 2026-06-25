@@ -25,6 +25,26 @@ struct LocalSessionEvent: Sendable {
     let syncedAt: Date?
 }
 
+struct OfflineSessionStateSnapshot: Codable, Sendable {
+    let completedBuildings: [String]
+    let pendingVisitedTargets: [String]
+    let confirmedVisitedTargets: [String]
+    let pendingVisitedAddressIds: [String]
+    let confirmedVisitedAddressIds: [String]
+    let pendingVisitedBuildingIds: [String]
+    let confirmedVisitedBuildingIds: [String]
+    let failedVisitedTargets: [String: String]
+    let trackedVisitedAddressIds: [String]
+    let anonymousDoorHitCount: Int
+    let addressesMarkedDelivered: Int
+    let conversationAddressIds: [String]
+    let appointmentAddressIds: [String]
+    let currentWaypointIndex: Int
+    let completedWaypointIds: [String]
+    let activeSecondsAccumulator: Double
+    let elapsedTime: Double
+}
+
 struct LocalSessionSnapshot: Sendable {
     let id: UUID
     let remoteId: UUID?
@@ -40,6 +60,15 @@ struct LocalSessionSnapshot: Sendable {
     let createdOffline: Bool
     let updatedAt: Date?
     let syncedAt: Date?
+    let completedCount: Int
+    let flyersDelivered: Int
+    let doorsHit: Int
+    let conversations: Int
+    let leadsCreated: Int
+    let appointmentsCount: Int
+    let activeSeconds: Int
+    let isPaused: Bool
+    let state: OfflineSessionStateSnapshot?
     let points: [LocalSessionPoint]
     let events: [LocalSessionEvent]
 }
@@ -61,6 +90,15 @@ private struct LocalSessionRecord: Codable, FetchableRecord, PersistableRecord {
     let createdOffline: Int
     let updatedAt: String?
     let syncedAt: String?
+    let completedCount: Int?
+    let flyersDelivered: Int?
+    let doorsHit: Int?
+    let conversations: Int?
+    let leadsCreated: Int?
+    let appointmentsCount: Int?
+    let activeSeconds: Int?
+    let isPaused: Int?
+    let stateJSON: String?
 
     enum Columns: String, ColumnExpression {
         case id
@@ -77,6 +115,15 @@ private struct LocalSessionRecord: Codable, FetchableRecord, PersistableRecord {
         case createdOffline = "created_offline"
         case updatedAt = "updated_at"
         case syncedAt = "synced_at"
+        case completedCount = "completed_count"
+        case flyersDelivered = "flyers_delivered"
+        case doorsHit = "doors_hit"
+        case conversations
+        case leadsCreated = "leads_created"
+        case appointmentsCount = "appointments_count"
+        case activeSeconds = "active_seconds"
+        case isPaused = "is_paused"
+        case stateJSON = "state_json"
     }
 
     enum CodingKeys: String, CodingKey {
@@ -94,6 +141,15 @@ private struct LocalSessionRecord: Codable, FetchableRecord, PersistableRecord {
         case createdOffline = "created_offline"
         case updatedAt = "updated_at"
         case syncedAt = "synced_at"
+        case completedCount = "completed_count"
+        case flyersDelivered = "flyers_delivered"
+        case doorsHit = "doors_hit"
+        case conversations
+        case leadsCreated = "leads_created"
+        case appointmentsCount = "appointments_count"
+        case activeSeconds = "active_seconds"
+        case isPaused = "is_paused"
+        case stateJSON = "state_json"
     }
 }
 
@@ -210,7 +266,16 @@ final class SessionRepository {
             payloadJSON: OfflineJSONCodec.encode(payload),
             createdOffline: createdOffline ? 1 : 0,
             updatedAt: OfflineDateCodec.string(from: startedAt),
-            syncedAt: nil
+            syncedAt: nil,
+            completedCount: 0,
+            flyersDelivered: 0,
+            doorsHit: 0,
+            conversations: 0,
+            leadsCreated: 0,
+            appointmentsCount: 0,
+            activeSeconds: 0,
+            isPaused: 0,
+            stateJSON: nil
         )
 
         try? await dbQueue.write { db in
@@ -264,6 +329,15 @@ final class SessionRepository {
         distanceMeters: Double,
         pathGeoJSON: String?,
         pathGeoJSONNormalized: String?,
+        completedCount: Int? = nil,
+        flyersDelivered: Int? = nil,
+        doorsHit: Int? = nil,
+        conversations: Int? = nil,
+        leadsCreated: Int? = nil,
+        appointmentsCount: Int? = nil,
+        activeSeconds: Int? = nil,
+        isPaused: Bool? = nil,
+        state: OfflineSessionStateSnapshot? = nil,
         status: String = "active",
         syncedAt: Date? = nil
     ) async {
@@ -275,6 +349,15 @@ final class SessionRepository {
                 SET distance_meters = ?,
                     path_geojson = ?,
                     path_geojson_normalized = ?,
+                    completed_count = COALESCE(?, completed_count),
+                    flyers_delivered = COALESCE(?, flyers_delivered),
+                    doors_hit = COALESCE(?, doors_hit),
+                    conversations = COALESCE(?, conversations),
+                    leads_created = COALESCE(?, leads_created),
+                    appointments_count = COALESCE(?, appointments_count),
+                    active_seconds = COALESCE(?, active_seconds),
+                    is_paused = COALESCE(?, is_paused),
+                    state_json = COALESCE(?, state_json),
                     status = ?,
                     updated_at = ?,
                     synced_at = COALESCE(?, synced_at)
@@ -284,6 +367,15 @@ final class SessionRepository {
                     distanceMeters,
                     pathGeoJSON,
                     pathGeoJSONNormalized,
+                    completedCount,
+                    flyersDelivered,
+                    doorsHit,
+                    conversations,
+                    leadsCreated,
+                    appointmentsCount,
+                    activeSeconds,
+                    isPaused.map { $0 ? 1 : 0 },
+                    OfflineJSONCodec.encode(state),
                     status,
                     OfflineDateCodec.string(from: now),
                     syncedAt.map(OfflineDateCodec.string(from:)),
@@ -298,7 +390,15 @@ final class SessionRepository {
         endedAt: Date,
         distanceMeters: Double,
         pathGeoJSON: String?,
-        pathGeoJSONNormalized: String?
+        pathGeoJSONNormalized: String?,
+        completedCount: Int? = nil,
+        flyersDelivered: Int? = nil,
+        doorsHit: Int? = nil,
+        conversations: Int? = nil,
+        leadsCreated: Int? = nil,
+        appointmentsCount: Int? = nil,
+        activeSeconds: Int? = nil,
+        state: OfflineSessionStateSnapshot? = nil
     ) async {
         try? await dbQueue.write { db in
             try db.execute(
@@ -309,6 +409,15 @@ final class SessionRepository {
                     distance_meters = ?,
                     path_geojson = ?,
                     path_geojson_normalized = ?,
+                    completed_count = COALESCE(?, completed_count),
+                    flyers_delivered = COALESCE(?, flyers_delivered),
+                    doors_hit = COALESCE(?, doors_hit),
+                    conversations = COALESCE(?, conversations),
+                    leads_created = COALESCE(?, leads_created),
+                    appointments_count = COALESCE(?, appointments_count),
+                    active_seconds = COALESCE(?, active_seconds),
+                    is_paused = 0,
+                    state_json = COALESCE(?, state_json),
                     updated_at = ?
                 WHERE id = ?
                 """,
@@ -317,6 +426,14 @@ final class SessionRepository {
                     distanceMeters,
                     pathGeoJSON,
                     pathGeoJSONNormalized,
+                    completedCount,
+                    flyersDelivered,
+                    doorsHit,
+                    conversations,
+                    leadsCreated,
+                    appointmentsCount,
+                    activeSeconds,
+                    OfflineJSONCodec.encode(state),
                     OfflineDateCodec.string(from: endedAt),
                     id.uuidString
                 ]
@@ -489,6 +606,15 @@ final class SessionRepository {
             createdOffline: record.createdOffline == 1,
             updatedAt: OfflineDateCodec.date(from: record.updatedAt),
             syncedAt: OfflineDateCodec.date(from: record.syncedAt),
+            completedCount: record.completedCount ?? 0,
+            flyersDelivered: record.flyersDelivered ?? 0,
+            doorsHit: record.doorsHit ?? 0,
+            conversations: record.conversations ?? 0,
+            leadsCreated: record.leadsCreated ?? 0,
+            appointmentsCount: record.appointmentsCount ?? 0,
+            activeSeconds: record.activeSeconds ?? 0,
+            isPaused: (record.isPaused ?? 0) == 1,
+            state: OfflineJSONCodec.decode(OfflineSessionStateSnapshot.self, from: record.stateJSON),
             points: pointRecords.compactMap(makePoint),
             events: eventRecords.compactMap(makeEvent)
         )
@@ -543,8 +669,8 @@ final class SessionRepository {
         let payload = OfflineJSONCodec.decode(OfflineSessionPayload.self, from: record.payloadJSON)
         let endedAt = OfflineDateCodec.date(from: record.endedAt)
         let updatedAt = OfflineDateCodec.date(from: record.updatedAt)
-        let activeSeconds = Int((endedAt ?? updatedAt ?? Date()).timeIntervalSince(startedAt).rounded())
-        let completedCount = localCompletedCount(sessionId: sessionId.uuidString, db: db)
+        let activeSeconds = record.activeSeconds ?? Int((endedAt ?? updatedAt ?? Date()).timeIntervalSince(startedAt).rounded())
+        let completedCount = record.completedCount ?? localCompletedCount(sessionId: sessionId.uuidString, db: db)
         let goalType = payload?.goalType ?? GoalType.knocks.rawValue
         let goalAmount = payload?.goalAmount
         let mode = record.mode ?? payload?.sessionMode
@@ -559,7 +685,7 @@ final class SessionRepository {
             end_time: endedAt,
             doors_hit: nil,
             distance_meters: record.distanceMeters,
-            conversations: nil,
+            conversations: record.conversations,
             session_mode: mode,
             goal_type: goalType,
             goal_amount: goalAmount,
@@ -574,16 +700,16 @@ final class SessionRepository {
             route_assignment_id: payload?.routeAssignmentId.flatMap(UUID.init(uuidString:)),
             target_building_ids: targetBuildings,
             completed_count: completedCount,
-            flyers_delivered: completedCount,
+            flyers_delivered: record.flyersDelivered ?? completedCount,
             is_paused: record.status == "paused",
             auto_complete_enabled: payload?.autoCompleteEnabled,
             notes: notes,
             doors_per_hour: nil,
             conversations_per_hour: nil,
             completions_per_km: nil,
-            appointments_count: nil,
+            appointments_count: record.appointmentsCount,
             appointments_per_conversation: nil,
-            leads_created: nil,
+            leads_created: record.leadsCreated,
             conversations_per_door: nil,
             leads_per_conversation: nil
         )

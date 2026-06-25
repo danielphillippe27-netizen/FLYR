@@ -27,6 +27,14 @@ actor CRMIntegrationManager {
         name: String,
         body: [String: Any]
     ) async throws -> Data {
+        guard await MainActor.run(body: { NetworkMonitor.shared.isOnline }) else {
+            throw NSError(
+                domain: "CRMIntegrationManager",
+                code: NSURLErrorNotConnectedToInternet,
+                userInfo: [NSLocalizedDescriptionKey: "CRM actions require internet. Reconnect and try again."]
+            )
+        }
+
         let supabaseURLString = Bundle.main.object(forInfoDictionaryKey: "SUPABASE_URL") as! String
         let supabaseKey = Bundle.main.object(forInfoDictionaryKey: "SUPABASE_ANON_KEY") as! String
         let url = URL(string: "\(supabaseURLString)/functions/v1/\(name)")!
@@ -67,6 +75,14 @@ actor CRMIntegrationManager {
         body: [String: Any]? = nil,
         errorMessage: @escaping (_ statusCode: Int, _ data: Data) -> String
     ) async throws -> Data {
+        guard await MainActor.run(body: { NetworkMonitor.shared.isOnline }) else {
+            throw NSError(
+                domain: "CRMIntegrationManager",
+                code: NSURLErrorNotConnectedToInternet,
+                userInfo: [NSLocalizedDescriptionKey: "CRM actions require internet. Reconnect and try again."]
+            )
+        }
+
         let session = try await client.auth.session
         let url = URL(string: "\(requestBaseURL)\(path)")!
 

@@ -380,9 +380,10 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
     private let headingPresentationEngine = MapHeadingPresentationEngine()
     private var lastLiveActivityPeriodicSync: Date?
     private var lastSharedLivePresencePeriodicSync: Date?
+    private var lastTeamLivePresencePeriodicSync: Date?
     private var hasShownLongSessionPrompt = false
     private var hasAutoEndedLongSession = false
-    private var isEndingSession = false
+    @Published private(set) var isEndingSession = false
     private var startInFlightCampaignId: UUID?
     private var endInFlightSessionId: UUID?
     private let longSessionPromptSeconds: TimeInterval = 3 * 60 * 60
@@ -623,6 +624,14 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         }
 
         if sessionId != nil,
+           lastTeamLivePresencePeriodicSync.map({ now.timeIntervalSince($0) >= 30 }) ?? true {
+            lastTeamLivePresencePeriodicSync = now
+            let location = currentLocation
+            let paused = isPaused
+            Task { await publishTeamLivePresence(location: location, isPaused: paused, force: true) }
+        }
+
+        if sessionId != nil,
            sharedLiveCanvassingService.isJoined,
            lastSharedLivePresencePeriodicSync.map({ now.timeIntervalSince($0) >= 30 }) ?? true {
             lastSharedLivePresencePeriodicSync = now
@@ -636,6 +645,21 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
                 )
             }
         }
+    }
+
+    private func publishTeamLivePresence(
+        location: CLLocation?,
+        isPaused: Bool,
+        force: Bool = false
+    ) async {
+        await sharedLiveCanvassingService.publishTeamPresence(
+            campaignId: campaignId,
+            sessionId: sessionId,
+            userId: AuthManager.shared.user?.id,
+            location: location,
+            isPaused: isPaused,
+            force: force
+        )
     }
 
     private func evaluateLongRunningSession() {
@@ -714,7 +738,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         visitOverlayRevision &+= 1
     }
 
-    private func resetVisitState() {
+    private func resetVisitState(cancelInFlight: Bool = true) {
         completedBuildings = []
         pendingVisitedTargets = []
         confirmedVisitedTargets = []
@@ -746,8 +770,10 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         shareCardDoorPinsByTargetId = [:]
         shareCardDoorPinsByAddressId = [:]
         visitOverlayRevision = 0
-        inFlightVisitConfirmationTasks.values.forEach { $0.cancel() }
-        inFlightVisitConfirmationTasks.removeAll()
+        if cancelInFlight {
+            inFlightVisitConfirmationTasks.values.forEach { $0.cancel() }
+            inFlightVisitConfirmationTasks.removeAll()
+        }
     }
 
     private func appendVisitDebugMessage(_ message: String) {
@@ -822,6 +848,28 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         )
     }
 
+    private func makeOfflineSessionStateSnapshot(activeSeconds: Int? = nil) -> OfflineSessionStateSnapshot {
+        OfflineSessionStateSnapshot(
+            completedBuildings: completedBuildings.sorted(),
+            pendingVisitedTargets: pendingVisitedTargets.sorted(),
+            confirmedVisitedTargets: confirmedVisitedTargets.sorted(),
+            pendingVisitedAddressIds: pendingVisitedAddressIds.sorted(),
+            confirmedVisitedAddressIds: confirmedVisitedAddressIds.sorted(),
+            pendingVisitedBuildingIds: pendingVisitedBuildingIds.sorted(),
+            confirmedVisitedBuildingIds: confirmedVisitedBuildingIds.sorted(),
+            failedVisitedTargets: failedVisitedTargets,
+            trackedVisitedAddressIds: trackedVisitedAddressIds.sorted(),
+            anonymousDoorHitCount: anonymousDoorHitCount,
+            addressesMarkedDelivered: addressesMarkedDelivered,
+            conversationAddressIds: conversationAddressIds.map(\.uuidString).sorted(),
+            appointmentAddressIds: appointmentAddressIds.map(\.uuidString).sorted(),
+            currentWaypointIndex: currentWaypointIndex,
+            completedWaypointIds: completedWaypoints.map(\.uuidString).sorted(),
+            activeSecondsAccumulator: activeSeconds.map(Double.init) ?? currentActiveElapsedTime(),
+            elapsedTime: activeSeconds.map(Double.init) ?? elapsedTime
+        )
+    }
+
     @discardableResult
     private func enqueueSessionProgressOutbox(
         sessionId: UUID,
@@ -892,11 +940,21 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
 
     private func persistLocalActiveSessionSnapshot(pathGeoJSONNormalized: String? = nil) async {
         guard let sessionId else { return }
+        let activeSeconds = Int(currentActiveElapsedTime())
         await sessionRepository.updateSessionProgress(
             id: sessionId,
             distanceMeters: distanceMeters,
             pathGeoJSON: coordinatesToGeoJSON(pathCoordinates),
             pathGeoJSONNormalized: pathGeoJSONNormalized,
+            completedCount: completedCount,
+            flyersDelivered: leaderboardFlyersDelivered,
+            doorsHit: effectiveDoorKnockCount,
+            conversations: conversationsHad,
+            leadsCreated: leadsCreated,
+            appointmentsCount: appointmentsSet,
+            activeSeconds: activeSeconds,
+            isPaused: isPaused,
+            state: makeOfflineSessionStateSnapshot(activeSeconds: activeSeconds),
             status: isPaused ? "paused" : "active"
         )
     }
@@ -909,22 +967,47 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         currentFarmExecutionContext = snapshot.payload?.farmExecutionContext?.makeContext()
         resetVisitState()
 
-        var completed = Set<String>()
-        for event in snapshot.events.sorted(by: { $0.occurredAt < $1.occurredAt }) {
-            guard let entityId = event.entityId?.lowercased() else { continue }
-            switch event.eventType {
-            case SessionEventType.completionUndone.rawValue:
-                completed.remove(entityId)
-            case SessionEventType.completedManual.rawValue,
-                 SessionEventType.completedAuto.rawValue,
-                 SessionEventType.flyerLeft.rawValue,
-                 SessionEventType.conversation.rawValue:
-                completed.insert(entityId)
-            default:
-                break
+        if let state = snapshot.state {
+            completedBuildings = Set(state.completedBuildings)
+            pendingVisitedTargets = Set(state.pendingVisitedTargets)
+            confirmedVisitedTargets = Set(state.confirmedVisitedTargets)
+            pendingVisitedAddressIds = Set(state.pendingVisitedAddressIds)
+            confirmedVisitedAddressIds = Set(state.confirmedVisitedAddressIds)
+            pendingVisitedBuildingIds = Set(state.pendingVisitedBuildingIds)
+            confirmedVisitedBuildingIds = Set(state.confirmedVisitedBuildingIds)
+            failedVisitedTargets = state.failedVisitedTargets
+            trackedVisitedAddressIds = Set(state.trackedVisitedAddressIds)
+            anonymousDoorHitCount = state.anonymousDoorHitCount
+            addressesMarkedDelivered = state.addressesMarkedDelivered
+            conversationAddressIds = Set(state.conversationAddressIds.compactMap(UUID.init(uuidString:)))
+            appointmentAddressIds = Set(state.appointmentAddressIds.compactMap(UUID.init(uuidString:)))
+            currentWaypointIndex = state.currentWaypointIndex
+            completedWaypoints = Set(state.completedWaypointIds.compactMap(UUID.init(uuidString:)))
+            elapsedTime = state.elapsedTime
+            activeSecondsAccumulator = state.activeSecondsAccumulator
+        } else {
+            var completed = Set<String>()
+            for event in snapshot.events.sorted(by: { $0.occurredAt < $1.occurredAt }) {
+                guard let entityId = event.entityId?.lowercased() else { continue }
+                switch event.eventType {
+                case SessionEventType.completionUndone.rawValue:
+                    completed.remove(entityId)
+                case SessionEventType.completedManual.rawValue,
+                     SessionEventType.completedAuto.rawValue,
+                     SessionEventType.flyerLeft.rawValue,
+                     SessionEventType.conversation.rawValue:
+                    completed.insert(entityId)
+                default:
+                    break
+                }
             }
+            confirmedVisitedTargets = completed
+            refreshCompletedBuildingSnapshot()
+            elapsedTime = snapshot.activeSeconds > 0
+                ? TimeInterval(snapshot.activeSeconds)
+                : Date().timeIntervalSince(snapshot.startedAt)
+            activeSecondsAccumulator = elapsedTime
         }
-        confirmedVisitedTargets = completed
         refreshCompletedBuildingSnapshot()
         serverCompletedCount = nil
         startTime = snapshot.startedAt
@@ -934,24 +1017,20 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         segmentBreaks = []
         lastSimplifiedCount = 0
         cachedSimplifiedPath = []
-        conversationAddressIds = []
-        elapsedTime = Date().timeIntervalSince(snapshot.startedAt)
-        activeSecondsAccumulator = elapsedTime
         sessionRestoredThisLaunch = true
         isActive = true
         staleActiveSessionNeedsResolution = false
         restoredServerPausedAfterStalePrompt = snapshot.status == "paused"
         autoCompleteEnabled = snapshot.payload?.autoCompleteEnabled ?? false
-        flyersDelivered = 0
-        conversationsHad = 0
-        leadsCreated = 0
-        appointmentsSet = 0
-        appointmentAddressIds = []
+        flyersDelivered = max(snapshot.flyersDelivered, snapshot.completedCount)
+        conversationsHad = snapshot.conversations
+        leadsCreated = snapshot.leadsCreated
+        appointmentsSet = snapshot.appointmentsCount
         goalType = snapshot.payload.flatMap { GoalType(rawValue: $0.goalType) } ?? .knocks
         goalAmount = max(0, snapshot.payload?.goalAmount ?? 0)
         sessionMode = snapshot.mode
-        isPaused = true
-        activeSegmentStartTime = nil
+        isPaused = snapshot.isPaused || snapshot.status == "paused"
+        activeSegmentStartTime = isPaused ? nil : Date()
         progressSyncer.setBaseline(
             pathCount: pathCoordinates.count,
             distanceMeters: distanceMeters,
@@ -1395,6 +1474,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         sessionRoadCorridors = []
         activeSharedLiveSessionId = nil
         lastSharedLivePresencePeriodicSync = nil
+        lastTeamLivePresencePeriodicSync = nil
         isActive = true
 
         requestAuthorizationAndStartLocation(for: sessionMode)
@@ -1418,7 +1498,8 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         sharedLiveSessionIdOverride: UUID? = nil,
         goalAmountOverride: Int? = nil,
         routeAssignmentId: UUID? = nil,
-        farmExecutionContext: FarmExecutionContext? = nil
+        farmExecutionContext: FarmExecutionContext? = nil,
+        skipProvisionGate: Bool = false
     ) async throws {
         let trace = PerfTrace.begin("session_start", "session_manager_start", fields: [
             "campaign": campaignId.uuidString,
@@ -1442,7 +1523,8 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
             }
             throw SessionStartError.startAlreadyInFlight(campaignId: inFlight)
         }
-        if let blockReason = await CampaignsAPI.shared.sessionStartBlockReason(campaignId: campaignId) {
+        if !skipProvisionGate,
+           let blockReason = await CampaignsAPI.shared.sessionStartBlockReason(campaignId: campaignId) {
             trace.end(status: "campaign_blocked", fields: [
                 "reason": blockReason
             ])
@@ -1496,6 +1578,14 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
             payload: offlinePayload
         )
         localTrace.end(status: "success")
+        let localSessionStartMs = Int(Date().timeIntervalSince(sessionStartedAt) * 1000)
+        PerfTrace.event("session_start", "local_session_start_target", fields: [
+            "campaign": campaignId.uuidString,
+            "session": newSessionId.uuidString,
+            "durationMs": localSessionStartMs,
+            "targetMs": OfflineFirstConfig.sessionStartTargetMs,
+            "hitTarget": localSessionStartMs <= OfflineFirstConfig.sessionStartTargetMs
+        ])
 
         if NetworkMonitor.shared.isOnline {
             do {
@@ -1585,6 +1675,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         sessionId = newSessionId
         activeSharedLiveSessionId = nil
         lastSharedLivePresencePeriodicSync = nil
+        lastTeamLivePresencePeriodicSync = nil
         SessionManager.lastEndedSummaryMapSnapshot = nil
         self.routeAssignmentId = routeAssignmentId
         self.currentFarmExecutionContext = farmExecutionContext
@@ -1631,28 +1722,64 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         startElapsedTimer()
         isActive = true
         presentBackgroundLocationUpgradePromptIfNeeded()
+
+        if enableSharedLiveCanvassing, !isDemoSession {
+            activeSharedLiveSessionId = sharedLiveSessionIdOverride ?? newSessionId
+        } else {
+            activeSharedLiveSessionId = nil
+        }
+
+        logSessionStart(.eventLog, "queued")
+        print("✅ [SessionManager] Started building session with \(targetBuildings.count) targets")
+        trace.end(status: "active", fields: [
+            "session": newSessionId.uuidString,
+            "targets": targetBuildings.count,
+            "hasLocation": currentLocation != nil
+        ])
+
+        Task { [weak self] in
+            await self?.finishSessionStartBackgroundWork(
+                campaignId: campaignId,
+                sessionId: newSessionId,
+                userId: userId,
+                enableSharedLiveCanvassing: enableSharedLiveCanvassing,
+                sharedLiveSessionId: enableSharedLiveCanvassing ? (sharedLiveSessionIdOverride ?? newSessionId) : nil,
+                sessionStartTime: sessionStartedAt
+            )
+        }
+    }
+
+    private func finishSessionStartBackgroundWork(
+        campaignId: UUID,
+        sessionId: UUID,
+        userId: UUID,
+        enableSharedLiveCanvassing: Bool,
+        sharedLiveSessionId: UUID?,
+        sessionStartTime: Date
+    ) async {
         let liveActivityTrace = PerfTrace.begin("session_start", "start_live_activity", fields: [
             "campaign": campaignId.uuidString,
-            "session": newSessionId.uuidString
+            "session": sessionId.uuidString
         ])
         await syncLiveActivity(forceStart: true)
         liveActivityTrace.end(status: "done")
+
         let beaconTrace = PerfTrace.begin("session_start", "restore_safety_beacon", fields: [
-            "session": newSessionId.uuidString
+            "session": sessionId.uuidString
         ])
-        await safetyBeaconService.restoreState(for: newSessionId, startTime: startTime)
+        await safetyBeaconService.restoreState(for: sessionId, startTime: sessionStartTime)
         if let currentLocation {
             await safetyBeaconService.recordHeartbeat(location: currentLocation, isPaused: isPaused)
         }
+        await publishTeamLivePresence(location: currentLocation, isPaused: isPaused, force: true)
         beaconTrace.end(status: "done", fields: [
             "hasLocation": currentLocation != nil
         ])
 
-        if enableSharedLiveCanvassing, !isDemoSession {
-            let sharedLiveSessionId = sharedLiveSessionIdOverride ?? newSessionId
-            activeSharedLiveSessionId = sharedLiveSessionId
-
-            if sharedLiveSessionId != newSessionId {
+        if enableSharedLiveCanvassing,
+           !isDemoSession,
+           let sharedLiveSessionId {
+            if sharedLiveSessionId != sessionId {
                 do {
                     let participantTrace = PerfTrace.begin("session_start", "upsert_shared_live_participant", fields: [
                         "campaign": campaignId.uuidString,
@@ -1697,17 +1824,15 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
             } else {
                 sharedTrace.end(status: "joined")
             }
-        } else {
-            activeSharedLiveSessionId = nil
         }
 
         logSessionStart(.eventLog, "begin")
         let eventTrace = PerfTrace.begin("session_start", "enqueue_session_started_event", fields: [
             "campaign": campaignId.uuidString,
-            "session": newSessionId.uuidString
+            "session": sessionId.uuidString
         ])
         await enqueueSessionEvent(
-            sessionId: newSessionId,
+            sessionId: sessionId,
             campaignId: campaignId,
             buildingId: nil,
             eventType: .sessionStarted,
@@ -1719,13 +1844,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         if NetworkMonitor.shared.isOnline {
             OfflineSyncCoordinator.shared.scheduleProcessOutbox()
         }
-        logSessionStart(.eventLog, "queued")
-        print("✅ [SessionManager] Started building session with \(targetBuildings.count) targets")
-        trace.end(status: "active", fields: [
-            "session": newSessionId.uuidString,
-            "targets": targetBuildings.count,
-            "hasLocation": currentLocation != nil
-        ])
+        logSessionStart(.eventLog, "queued_background")
     }
 
     /// After session restore, `buildingCentroids` is cleared; map features repopulate targets.
@@ -2359,6 +2478,10 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         await sessionRepository.discardSession(id: sid)
         await outboxRepository.discardPendingSessionEntries(sessionId: sid)
         await safetyBeaconService.endSession(location: currentLocation)
+        await sharedLiveCanvassingService.clearTeamPresence(
+            campaignId: campaignId,
+            userId: AuthManager.shared.user?.id
+        )
         await sharedLiveCanvassingService.leaveCurrentSession()
         await liveActivityManager.end()
         clearActiveSessionStateAfterDiscard()
@@ -2386,6 +2509,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         isPaused = false
         activeSharedLiveSessionId = nil
         lastSharedLivePresencePeriodicSync = nil
+        lastTeamLivePresencePeriodicSync = nil
         currentHeading = 0
         headingState = .unavailable
         headingPresentationState = .unavailable
@@ -2447,6 +2571,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
             OfflineSyncCoordinator.shared.scheduleProcessOutbox()
         }
         await queueProgressSync(force: true)
+        await publishTeamLivePresence(location: currentLocation, isPaused: isPaused, force: true)
         await sharedLiveCanvassingService.publishPresence(location: currentLocation, isPaused: isPaused, force: true)
         await syncLiveActivity(forceStart: false)
     }
@@ -2502,6 +2627,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         elapsedTime = activeSecondsAccumulator
         locationManager.stopUpdatingLocation()
         headingManager.stop(reset: true)
+        await publishTeamLivePresence(location: currentLocation, isPaused: true, force: true)
         await sharedLiveCanvassingService.publishPresence(location: currentLocation, isPaused: true, force: true)
         guard !isDemoSession else {
             await syncLiveActivity(forceStart: false)
@@ -2533,6 +2659,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
             startLocationUpdatesIfAuthorized()
             presentBackgroundLocationUpgradePromptIfNeeded()
         }
+        await publishTeamLivePresence(location: currentLocation, isPaused: false, force: true)
         await sharedLiveCanvassingService.publishPresence(location: currentLocation, isPaused: false, force: true)
         guard !isDemoSession else {
             await syncLiveActivity(forceStart: false)
@@ -2586,6 +2713,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
             isEndingSession = false
             endInFlightSessionId = nil
         }
+
         locationManager.stopUpdatingLocation()
         headingManager.stop(reset: true)
         timer?.invalidate()
@@ -2596,12 +2724,6 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         headingState = .unavailable
         headingPresentationState = .unavailable
         headingPresentationEngine.reset()
-        lastLocation = nil
-        segmentBreaks = []
-        lastSimplifiedCount = 0
-        cachedSimplifiedPath = []
-        conversationAddressIds = []
-        progressSyncer.reset()
         showLongSessionPrompt = false
         hasShownLongSessionPrompt = false
         hasAutoEndedLongSession = false
@@ -2611,40 +2733,143 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         _debugLogDoors(location: "SessionManager.stopBuildingSession", message: "building session end", data: ["completedCount": completedCount, "addressesMarkedDelivered": addressesMarkedDelivered, "doorsForSummary": doorsForSummaryVal, "flyersDelivered": flyersDelivered, "sessionId": sid.uuidString], hypothesisId: "H2")
         // #endregion
 
-        if !isDemoSession {
+        let finalCampaignId = campaignId
+        let finalUserId = AuthManager.shared.user?.id
+        let finalLocation = currentLocation
+        let finalDistanceMeters = distanceMeters
+        let finalElapsedTime = elapsedTime
+        let activeSecs = Int(finalElapsedTime)
+        let pathSnapshot = pathCoordinates
+        let pathGeoJSON = coordinatesToGeoJSON(pathSnapshot)
+        let renderedPathSegments = simplifiedPath()
+        let doorsForSummary = effectiveDoorKnockCount
+        let currentFlyersDelivered = leaderboardFlyersDelivered
+        let finalConversations = conversationsHad
+        let finalLeadsCreated = leadsCreated
+        let finalAppointmentsSet = appointmentsSet
+        let finalGoalType = goalType
+        let finalGoalAmount = goalAmount
+        let finalStartTime = startTime
+        let finalIsNetworkingSession = isNetworkingSession
+        let finalIsDemoSession = isDemoSession
+        let finalAutoCompleteEnabled = autoCompleteEnabled
+        let finalFarmExecutionContext = currentFarmExecutionContext
+        let finalState = makeOfflineSessionStateSnapshot(activeSeconds: activeSecs)
+        let sessionEndTime = Date()
+        let completedHomeCoordinates = mergedCompletedHomeCoordinatesForShareCard()
+        let liveMapSnapshot = LiveCampaignMapSnapshotStore.shared.captureSnapshot()
+        let snapshot = SessionSummaryData(
+            distance: finalDistanceMeters,
+            time: finalElapsedTime,
+            goalType: finalGoalType,
+            goalAmount: finalGoalAmount,
+            pathCoordinates: pathSnapshot,
+            renderedPathSegments: renderedPathSegments,
+            completedHomeCoordinates: completedHomeCoordinates,
+            completedCount: doorsForSummary,
+            conversationsCount: finalConversations,
+            leadsCreatedCount: finalLeadsCreated,
+            startTime: finalStartTime,
+            isNetworkingSession: finalIsNetworkingSession,
+            isDemoSession: finalIsDemoSession
+        )
+
+        if presentSummary {
+            SessionManager.lastEndedSummary = snapshot
+            SessionManager.lastEndedSessionId = sid
+            SessionManager.lastEndedSummaryMapSnapshot = liveMapSnapshot
+        }
+
+        sessionId = nil
+        campaignId = nil
+        routeAssignmentId = nil
+        currentFarmExecutionContext = nil
+        sessionNotes = nil
+        sessionMode = .doorKnocking
+        goalType = .knocks
+        goalAmount = 0
+        isDemoSession = false
+        activeSharedLiveSessionId = nil
+        lastSharedLivePresencePeriodicSync = nil
+        lastTeamLivePresencePeriodicSync = nil
+        targetBuildings = []
+        resetVisitState(cancelInFlight: false)
+        buildingCentroids = [:]
+        pathCoordinates = []
+        distanceMeters = 0
+        elapsedTime = 0
+        activeSecondsAccumulator = 0
+        activeSegmentStartTime = nil
+        pauseStartTime = nil
+        startTime = nil
+        autoCompleteEnabled = false
+        flyersDelivered = 0
+        addressesMarkedDelivered = 0
+        conversationsHad = 0
+        leadsCreated = 0
+        appointmentsSet = 0
+        lastLocation = nil
+        segmentBreaks = []
+        lastSimplifiedCount = 0
+        cachedSimplifiedPath = []
+        conversationAddressIds = []
+        appointmentAddressIds = []
+        progressSyncer.reset()
+        shareCardDoorPinCoordinates = []
+        trailNormalizer = nil
+        scoredVisitEngine = nil
+        streetCoverageVisitEngine = nil
+        flyerTargetIds = []
+        flyerCentroids = [:]
+        onFlyerAddressesCompleted = nil
+        sessionRoadCorridors = []
+        showLongSessionPrompt = false
+
+        if presentSummary {
+            DispatchQueue.main.async { [weak self] in
+                self?.pendingSessionSummary = snapshot
+                self?.pendingSessionSummarySessionId = sid
+                NotificationCenter.default.post(name: .sessionEnded, object: nil)
+            }
+        } else {
+            NotificationCenter.default.post(name: .sessionEnded, object: nil)
+        }
+
+        if !finalIsDemoSession {
             try? await SessionEventsAPI.shared.logLifecycleEvent(
                 sessionId: sid,
                 eventType: .sessionEnded,
-                lat: currentLocation?.coordinate.latitude,
-                lon: currentLocation?.coordinate.longitude
+                lat: finalLocation?.coordinate.latitude,
+                lon: finalLocation?.coordinate.longitude
             )
         }
-        let pathGeoJSON = coordinatesToGeoJSON(pathCoordinates)
-        let renderedPathSegments = simplifiedPath()
-        let activeSecs = Int(elapsedTime)
-        let doorsForSummary = effectiveDoorKnockCount
-        let currentFlyersDelivered = leaderboardFlyersDelivered
-        let sessionEndTime = Date()
+
         await awaitInFlightVisitConfirmations()
-        await flushPendingEvents()
-        if !isDemoSession {
+        if !finalIsDemoSession {
+            await flushPendingEvents()
             await VisitsAPI.shared.flushPending()
         }
         // #region agent log
-        if !isDemoSession {
+        if !finalIsDemoSession {
             do {
                 try await persistEndedBuildingSession(
                     sessionId: sid,
+                    campaignId: finalCampaignId,
+                    distanceMeters: finalDistanceMeters,
                     completedCount: doorsForSummary,
                     activeSeconds: activeSecs,
                     pathGeoJSON: pathGeoJSON,
                     pathGeoJSONNormalized: nil,
                     flyersDelivered: currentFlyersDelivered,
-                    leadsCreated: leadsCreated,
+                    conversations: finalConversations,
+                    leadsCreated: finalLeadsCreated,
+                    appointmentsCount: finalAppointmentsSet,
                     doorsHit: doorsForSummary,
+                    autoCompleteEnabled: finalAutoCompleteEnabled,
+                    state: finalState,
                     endTime: sessionEndTime
                 )
-                if let userId = AuthManager.shared.user?.id {
+                if let userId = finalUserId {
                     do {
                         try await StatsService.shared.refreshUserStatsFromSessions(userID: userId)
                     } catch {
@@ -2654,15 +2879,16 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
                 _debugLogDoors(location: "SessionManager.stopBuildingSession", message: "updateSession success", data: ["flyersDelivered": currentFlyersDelivered, "doorsHit": doorsForSummary], hypothesisId: "H3")
             } catch {
                 _debugLogDoors(location: "SessionManager.stopBuildingSession", message: "updateSession failed", data: ["error": String(describing: error), "flyersDelivered": currentFlyersDelivered, "doorsHit": doorsForSummary], hypothesisId: "H3")
-                isActive = true
-                isPaused = true
-                sessionEndError = "Couldn't finish saving this session. It's still open locally, so please try ending it again."
-                await syncLiveActivity(forceStart: false)
+                sessionEndError = "Session ended locally, but some save work still needs to sync."
                 return
             }
         }
-        await safetyBeaconService.endSession(location: currentLocation)
-        if !isDemoSession, let userId = AuthManager.shared.user?.id {
+        await safetyBeaconService.endSession(location: finalLocation)
+        await sharedLiveCanvassingService.clearTeamPresence(
+            campaignId: finalCampaignId,
+            userId: finalUserId
+        )
+        if !finalIsDemoSession, let userId = finalUserId {
             do {
                 try await SessionParticipantsService.shared.markParticipantLeft(
                     sessionId: sid,
@@ -2680,21 +2906,21 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         activeSharedLiveSessionId = nil
         // #endregion
         await liveActivityManager.end()
-        if !isDemoSession, let userId = AuthManager.shared.user?.id {
+        if !finalIsDemoSession, let userId = finalUserId {
             Task {
                 await ChallengeService.shared.evaluateBadges(for: userId, sessionID: sid)
                 await ChallengeService.shared.warmShareCard(userID: userId, sessionID: sid)
             }
         }
-        if !isDemoSession,
-           let userId = AuthManager.shared.user?.id,
-           let farmExecutionContext = currentFarmExecutionContext {
+        if !finalIsDemoSession,
+           let userId = finalUserId,
+           let farmExecutionContext = finalFarmExecutionContext {
             let executionMetrics: [String: AnyCodable] = [
                 "doors_hit": AnyCodable(doorsForSummary),
                 "flyers_delivered": AnyCodable(currentFlyersDelivered),
-                "conversations": AnyCodable(conversationsHad),
-                "leads_created": AnyCodable(leadsCreated),
-                "distance_meters": AnyCodable(distanceMeters),
+                "conversations": AnyCodable(finalConversations),
+                "leads_created": AnyCodable(finalLeadsCreated),
+                "distance_meters": AnyCodable(finalDistanceMeters),
                 "active_seconds": AnyCodable(activeSecs)
             ]
 
@@ -2710,90 +2936,25 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
                 print("⚠️ [SessionManager] Failed to link planned farm touch to ended session: \(error)")
             }
         }
-        let liveMapSnapshot = await LiveCampaignMapSnapshotStore.shared.captureSummarySnapshot()
-        // Capture summary for end-session sheet before clearing (Strava-style summary).
-        let summaryPath = pathCoordinates
-        let completedHomeCoordinates = mergedCompletedHomeCoordinatesForShareCard()
-        let snapshot = SessionSummaryData(
-            distance: distanceMeters,
-            time: elapsedTime,
-            goalType: goalType,
-            goalAmount: goalAmount,
-            pathCoordinates: summaryPath,
-            renderedPathSegments: renderedPathSegments,
-            completedHomeCoordinates: completedHomeCoordinates,
-            completedCount: doorsForSummary,
-            conversationsCount: conversationsHad,
-            leadsCreatedCount: leadsCreated,
-            startTime: startTime,
-            isNetworkingSession: isNetworkingSession,
-            isDemoSession: isDemoSession
-            // TODO: verify if SessionSummaryData should also receive doorsHit/flyersDelivered separately.
-        )
-        if presentSummary {
-            SessionManager.lastEndedSummary = snapshot
-            SessionManager.lastEndedSessionId = sid
-            SessionManager.lastEndedSummaryMapSnapshot = liveMapSnapshot
-        }
-        // Clear session state first so any presented sheet (e.g. targets, lead capture) is dismissed when RecordHomeView switches away from CampaignMapView
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            sessionId = nil
-            campaignId = nil
-            routeAssignmentId = nil
-            currentFarmExecutionContext = nil
-            sessionNotes = nil
-            sessionMode = .doorKnocking
-            goalType = .knocks
-            goalAmount = 0
-            isDemoSession = false
-            targetBuildings = []
-            resetVisitState()
-            buildingCentroids = [:]
-            shareCardDoorPinCoordinates = []
-            addressesMarkedDelivered = 0
-            conversationsHad = 0
-            leadsCreated = 0
-            appointmentsSet = 0
-            lastLocation = nil
-            segmentBreaks = []
-            lastSimplifiedCount = 0
-            cachedSimplifiedPath = []
-            conversationAddressIds = []
-            appointmentAddressIds = []
-            trailNormalizer = nil
-            scoredVisitEngine = nil
-            streetCoverageVisitEngine = nil
-            flyerTargetIds = []
-            flyerCentroids = [:]
-            parcelAutoCompleteTargets = []
-            onFlyerAddressesCompleted = nil
-            sessionRoadCorridors = []
-            showLongSessionPrompt = false
-
-            print("✅ [SessionManager] Building session ended and saved")
-            if presentSummary {
-                // Post summary on the next runloop tick so local map sheets/alerts can tear down first.
-                DispatchQueue.main.async { [weak self] in
-                    self?.pendingSessionSummary = snapshot
-                    self?.pendingSessionSummarySessionId = sid
-                    NotificationCenter.default.post(name: .sessionEnded, object: nil)
-                }
-            } else {
-                NotificationCenter.default.post(name: .sessionEnded, object: nil)
-            }
-        }
+        resetVisitState()
+        print("✅ [SessionManager] Building session ended and saved")
     }
 
     private func persistEndedBuildingSession(
         sessionId: UUID,
+        campaignId: UUID?,
+        distanceMeters: Double,
         completedCount: Int,
         activeSeconds: Int,
         pathGeoJSON: String,
         pathGeoJSONNormalized: String?,
         flyersDelivered: Int,
+        conversations: Int,
         leadsCreated: Int,
+        appointmentsCount: Int,
         doorsHit: Int,
+        autoCompleteEnabled: Bool,
+        state: OfflineSessionStateSnapshot,
         endTime: Date
     ) async throws {
         await sessionRepository.endSession(
@@ -2801,16 +2962,44 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
             endedAt: endTime,
             distanceMeters: distanceMeters,
             pathGeoJSON: pathGeoJSON,
-            pathGeoJSONNormalized: pathGeoJSONNormalized
+            pathGeoJSONNormalized: pathGeoJSONNormalized,
+            completedCount: completedCount,
+            flyersDelivered: flyersDelivered,
+            doorsHit: doorsHit,
+            conversations: conversations,
+            leadsCreated: leadsCreated,
+            appointmentsCount: appointmentsCount,
+            activeSeconds: activeSeconds,
+            state: state
         )
 
-        let outboxId = await enqueueSessionProgressOutbox(
-            sessionId: sessionId,
+        let payload = SessionProgressOutboxPayload(
+            id: sessionId.uuidString,
+            campaignId: campaignId?.uuidString,
+            completedCount: completedCount,
+            distanceM: distanceMeters,
             activeSeconds: activeSeconds,
-            operation: .endSession,
+            pathGeoJSON: pathGeoJSON,
             pathGeoJSONNormalized: pathGeoJSONNormalized,
-            endTime: endTime
+            flyersDelivered: flyersDelivered,
+            conversations: conversations,
+            leadsCreated: leadsCreated,
+            appointmentsCount: appointmentsCount,
+            doorsHit: doorsHit,
+            autoCompleteEnabled: autoCompleteEnabled,
+            isPaused: false,
+            endTime: OfflineDateCodec.string(from: endTime)
         )
+        let outboxId = await outboxRepository.enqueue(
+            entityType: "session",
+            entityId: sessionId.uuidString,
+            operation: .endSession,
+            payload: payload,
+            dependencyKey: "session:\(sessionId.uuidString.lowercased())"
+        )
+        if NetworkMonitor.shared.isOnline {
+            OfflineSyncCoordinator.shared.scheduleProcessOutbox()
+        }
 
         if NetworkMonitor.shared.isOnline {
             do {
@@ -2822,8 +3011,9 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
                     pathGeoJSON: pathGeoJSON,
                     pathGeoJSONNormalized: pathGeoJSONNormalized,
                     flyersDelivered: flyersDelivered,
-                    conversations: conversationsHad,
+                    conversations: conversations,
                     leadsCreated: leadsCreated,
+                    appointmentsCount: appointmentsCount,
                     doorsHit: doorsHit,
                     autoCompleteEnabled: autoCompleteEnabled,
                     isPaused: false,
@@ -2967,6 +3157,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
     }
 
     func stop() {
+        guard !isEndingSession else { return }
         if sessionId != nil {
             Task {
                 await stopBuildingSession()
@@ -3048,6 +3239,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
                 currentLocation = location
                 refreshHeadingPresentation(using: location)
                 await safetyBeaconService.recordHeartbeat(location: location, isPaused: isPaused)
+                await publishTeamLivePresence(location: location, isPaused: isPaused)
                 await sharedLiveCanvassingService.publishPresence(location: location, isPaused: isPaused)
                 if autoCompleteEnabled, sessionMode == .doorKnocking {
                     await checkAutoComplete(location: location)
@@ -3072,6 +3264,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
             currentLocation = location
             refreshHeadingPresentation(using: location)
             await safetyBeaconService.recordHeartbeat(location: location, isPaused: isPaused)
+            await publishTeamLivePresence(location: location, isPaused: isPaused)
             await sharedLiveCanvassingService.publishPresence(location: location, isPaused: isPaused)
             recordAcceptedRawPoint()
             if let sid = sessionId {
@@ -3366,12 +3559,14 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         guard !isDemoSession else {
             lastLiveActivityPeriodicSync = nil
             lastSharedLivePresencePeriodicSync = nil
+            lastTeamLivePresencePeriodicSync = nil
             await liveActivityManager.end()
             return
         }
         guard isActive, let liveActivityState else {
             lastLiveActivityPeriodicSync = nil
             lastSharedLivePresencePeriodicSync = nil
+            lastTeamLivePresencePeriodicSync = nil
             await liveActivityManager.end()
             return
         }
@@ -3380,6 +3575,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         if forceStart {
             lastLiveActivityPeriodicSync = nil
             lastSharedLivePresencePeriodicSync = nil
+            lastTeamLivePresencePeriodicSync = nil
             await liveActivityManager.start(sessionID: sessionID, state: liveActivityState)
         } else {
             await liveActivityManager.update(sessionID: sessionID, state: liveActivityState)

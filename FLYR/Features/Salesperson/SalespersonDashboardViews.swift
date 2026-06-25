@@ -100,11 +100,15 @@ private struct SalespersonDiallerLead: Identifiable, Codable, Equatable {
             return listName
         }
         guard let createdAt else { return "Dialler queue" }
-        return "Dialler queue - \(createdAt.formatted(date: .abbreviated, time: .omitted))"
+        return "FLYR PRO - \(createdAt.formatted(date: .abbreviated, time: .shortened))"
     }
 
     var listGroupId: String {
         listId?.nilIfEmpty ?? listGroupTitle.lowercased()
+    }
+
+    var hasExplicitListIdentity: Bool {
+        listId?.nilIfEmpty != nil || listName?.nilIfEmpty != nil
     }
 }
 
@@ -131,6 +135,33 @@ private struct SalespersonDiallerImportLead: Codable, Equatable {
     let phone: String
     let company: String?
     let email: String?
+    let listId: String?
+    let listName: String?
+
+    enum CodingKeys: String, CodingKey {
+        case name
+        case phone
+        case company
+        case email
+        case listId = "list_id"
+        case listName = "list_name"
+    }
+
+    init(
+        name: String,
+        phone: String,
+        company: String?,
+        email: String?,
+        listId: String? = nil,
+        listName: String? = nil
+    ) {
+        self.name = name
+        self.phone = phone
+        self.company = company
+        self.email = email
+        self.listId = listId
+        self.listName = listName
+    }
 }
 
 private struct SalespersonDiallerSmartListOption: Identifiable, Decodable, Equatable {
@@ -220,8 +251,103 @@ private struct SalespersonDemoMessageResponse: Decodable, Equatable {
 }
 
 private struct SalespersonInboxResponse: Decodable {
-    let items: [SalespersonInboxItem]
+    let threads: [SalespersonInboxThread]?
+    let items: [SalespersonInboxItem]?
     let counts: [String: Int]?
+}
+
+private struct SalespersonInboxContactSummary: Decodable, Equatable {
+    let id: String
+    let fullName: String?
+    let phone: String?
+    let email: String?
+    let address: String?
+
+    var displayName: String {
+        fullName?.nilIfEmpty ?? phone?.nilIfEmpty ?? email?.nilIfEmpty ?? address?.nilIfEmpty ?? "Unknown contact"
+    }
+}
+
+private struct SalespersonInboxEvent: Identifiable, Decodable, Equatable {
+    let id: String
+    let source: String
+    let kind: String
+    let direction: String?
+    let title: String
+    let preview: String?
+    let body: String?
+    let status: String
+    let occurredAt: Date
+    let readAt: Date?
+    let fromLabel: String?
+    let fromEmail: String?
+    let fromPhone: String?
+    let toLabel: String?
+    let toEmail: String?
+    let toPhone: String?
+    let contactId: String?
+    let href: String?
+
+    var isInboundMessage: Bool {
+        source == "sms" && direction == "inbound"
+    }
+
+    var isOutboundMessage: Bool {
+        source == "sms" && direction == "outbound"
+    }
+}
+
+private struct SalespersonInboxThread: Identifiable, Decodable, Equatable {
+    let id: String
+    let contactId: String?
+    let contact: SalespersonInboxContactSummary?
+    let title: String
+    let subtitle: String?
+    let primaryPhone: String?
+    let primaryEmail: String?
+    let latestAt: Date
+    let latestSource: String
+    let latestPreview: String?
+    let unreadCount: Int
+    let needsResponse: Bool
+    let events: [SalespersonInboxEvent]
+
+    var canText: Bool {
+        primaryPhone?.nilIfEmpty != nil
+    }
+
+    var rowTitle: String {
+        let contactTitle = [
+            contact?.fullName,
+            contact?.phone,
+            contact?.email,
+            contact?.address
+        ]
+            .compactMap { $0?.normalizedInboxLine.nilIfEmpty }
+            .first
+
+        if let contactTitle { return contactTitle }
+
+        let normalizedTitle = title.normalizedInboxLine
+        if Self.isGenericTitle(normalizedTitle) {
+            return primaryPhone?.normalizedInboxLine.nilIfEmpty
+                ?? primaryEmail?.normalizedInboxLine.nilIfEmpty
+                ?? normalizedTitle
+        }
+        return normalizedTitle
+    }
+
+    var rowPreview: String? {
+        latestPreview?.normalizedInboxLine.nilIfEmpty
+    }
+
+    private static func isGenericTitle(_ value: String) -> Bool {
+        let lowercased = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return lowercased == "inbound text"
+            || lowercased == "incoming message"
+            || lowercased == "sent message"
+            || lowercased.hasPrefix("new text from ")
+    }
 }
 
 private struct SalespersonInboxItem: Identifiable, Decodable, Equatable {
@@ -247,6 +373,10 @@ private struct SalespersonInboxItem: Identifiable, Decodable, Equatable {
         let normalizedStatus = status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return !["done", "closed", "responded", "archived"].contains(normalizedStatus)
     }
+}
+
+private struct SalespersonInboxSendResponse: Decodable {
+    let warning: String?
 }
 
 private struct SalespersonLeadMasterRow: Identifiable, Decodable, Equatable, Hashable {
@@ -412,10 +542,12 @@ private struct SalespersonDiallerListGroup: Identifiable, Equatable {
     }
 
     static func makeGroups(from leads: [SalespersonDiallerLead]) -> [SalespersonDiallerListGroup] {
-        let groups = Dictionary(grouping: leads) { lead in
+        let listedLeads = leads.filter { $0.hasExplicitListIdentity }
+        let fallbackLeads = leads.filter { !$0.hasExplicitListIdentity }
+        let explicitGroups = Dictionary(grouping: listedLeads) { lead in
             lead.listGroupId
         }
-        return groups.map { key, rows in
+        .map { key, rows in
             let sortedRows = rows.sorted {
                 ($0.createdAt ?? .distantPast) > ($1.createdAt ?? .distantPast)
             }
@@ -426,6 +558,8 @@ private struct SalespersonDiallerListGroup: Identifiable, Equatable {
                 createdAt: sortedRows.compactMap(\.createdAt).max() ?? .distantPast
             )
         }
+
+        return (explicitGroups + makeScrapeMomentGroups(from: fallbackLeads))
         .sorted { lhs, rhs in
             if lhs.createdAt == rhs.createdAt {
                 return lhs.title < rhs.title
@@ -433,6 +567,60 @@ private struct SalespersonDiallerListGroup: Identifiable, Equatable {
             return lhs.createdAt > rhs.createdAt
         }
     }
+
+    private static func makeScrapeMomentGroups(from leads: [SalespersonDiallerLead]) -> [SalespersonDiallerListGroup] {
+        let sortedLeads = leads.sorted {
+            ($0.createdAt ?? .distantPast) > ($1.createdAt ?? .distantPast)
+        }
+        var batches: [[SalespersonDiallerLead]] = []
+
+        for lead in sortedLeads {
+            guard let createdAt = lead.createdAt else {
+                if let index = batches.firstIndex(where: { $0.first?.createdAt == nil }) {
+                    batches[index].append(lead)
+                } else {
+                    batches.append([lead])
+                }
+                continue
+            }
+
+            if let lastIndex = batches.indices.last,
+               let previousDate = batches[lastIndex].compactMap(\.createdAt).min(),
+               previousDate.timeIntervalSince(createdAt) <= 10 * 60 {
+                batches[lastIndex].append(lead)
+            } else {
+                batches.append([lead])
+            }
+        }
+
+        return batches.map { rows in
+            let sortedRows = rows.sorted {
+                ($0.createdAt ?? .distantPast) > ($1.createdAt ?? .distantPast)
+            }
+            let createdAt = sortedRows.compactMap(\.createdAt).max() ?? .distantPast
+            let id = createdAt == .distantPast
+                ? "flyr-pro-undated"
+                : "flyr-pro-\(Self.batchKeyFormatter.string(from: createdAt))"
+            let title = createdAt == .distantPast
+                ? "FLYR PRO"
+                : "FLYR PRO - \(createdAt.formatted(date: .abbreviated, time: .shortened))"
+            return SalespersonDiallerListGroup(
+                id: id,
+                title: title,
+                leads: sortedRows,
+                createdAt: createdAt
+            )
+        }
+    }
+
+    private static let batchKeyFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = .current
+        formatter.dateFormat = "yyyyMMddHHmmss"
+        return formatter
+    }()
 }
 
 private struct ProspectMarket: Identifiable, Decodable, Equatable {
@@ -704,6 +892,10 @@ private struct SalespersonPerformanceResponse: Decodable, Equatable {
 private actor SalespersonMobileAPI {
     static let shared = SalespersonMobileAPI()
     private static let fallbackDemoVideoLink = "https://www.flyrpro.app/demo-1?source=DANIELPHILLIPPE"
+
+    private static func fallbackDemoVideoLink(offer: SalespersonDiallerOffer) -> String {
+        "\(fallbackDemoVideoLink)&offer=\(offer.linkValue)"
+    }
 
     private let decoder: JSONDecoder = {
         let decoder = JSONDecoder()
@@ -1124,7 +1316,8 @@ private actor SalespersonMobileAPI {
         relatedTerms: [String],
         marketId: UUID?,
         industryId: UUID?,
-        leadIntent: String
+        leadIntent: String,
+        listName: String?
     ) async throws -> PlacesLeadSearchResponse {
         let workspaceId = try await workspaceId()
         struct Payload: Encodable {
@@ -1139,6 +1332,7 @@ private actor SalespersonMobileAPI {
             let industryId: String?
             let leadSource: String
             let leadIntent: String
+            let listName: String?
         }
         let payload = Payload(
             city: city,
@@ -1151,7 +1345,8 @@ private actor SalespersonMobileAPI {
             marketId: marketId?.uuidString,
             industryId: industryId?.uuidString,
             leadSource: "places",
-            leadIntent: leadIntent
+            leadIntent: leadIntent,
+            listName: listName?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
         )
         let body = try encoder.encode(payload)
         let request = try await request(path: "api/salesperson/google-places", method: "POST", body: body)
@@ -1354,15 +1549,17 @@ private actor SalespersonMobileAPI {
         }
     }
 
-    func prepareDemoMessage(for lead: SalespersonDiallerLead) async throws -> SalespersonDemoMessageResponse {
+    func prepareDemoMessage(for lead: SalespersonDiallerLead, offer: SalespersonDiallerOffer) async throws -> SalespersonDemoMessageResponse {
         let workspaceId = try await workspaceId()
         struct Payload: Encodable {
             let workspaceId: String
             let email: String?
+            let offer: String
         }
         let payload = Payload(
             workspaceId: workspaceId.uuidString,
-            email: lead.email?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+            email: lead.email?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty,
+            offer: offer.linkValue
         )
         let body = try encoder.encode(payload)
         let request = try await request(
@@ -1374,19 +1571,21 @@ private actor SalespersonMobileAPI {
             return try decoder.decode(SalespersonDemoMessageResponse.self, from: try await data(for: request))
         } catch {
             guard isDiallerBackendUnavailable(error) else { throw error }
-            return fallbackDemoMessage()
+            return fallbackDemoMessage(offer: offer)
         }
     }
 
-    func prepareDemoMessage(for lead: SalespersonDiallerLead, email: String?) async throws -> SalespersonDemoMessageResponse {
+    func prepareDemoMessage(for lead: SalespersonDiallerLead, email: String?, offer: SalespersonDiallerOffer) async throws -> SalespersonDemoMessageResponse {
         let workspaceId = try await workspaceId()
         struct Payload: Encodable {
             let workspaceId: String
             let email: String?
+            let offer: String
         }
         let payload = Payload(
             workspaceId: workspaceId.uuidString,
-            email: email?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+            email: email?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty,
+            offer: offer.linkValue
         )
         let body = try encoder.encode(payload)
         let request = try await request(
@@ -1398,12 +1597,12 @@ private actor SalespersonMobileAPI {
             return try decoder.decode(SalespersonDemoMessageResponse.self, from: try await data(for: request))
         } catch {
             guard isDiallerBackendUnavailable(error) else { throw error }
-            return fallbackDemoMessage()
+            return fallbackDemoMessage(offer: offer)
         }
     }
 
-    private func fallbackDemoMessage() -> SalespersonDemoMessageResponse {
-        let link = Self.fallbackDemoVideoLink
+    private func fallbackDemoMessage(offer: SalespersonDiallerOffer) -> SalespersonDemoMessageResponse {
+        let link = Self.fallbackDemoVideoLink(offer: offer)
         return SalespersonDemoMessageResponse(
             demoUrl: link,
             demoLinkToken: nil,
@@ -1555,6 +1754,44 @@ private actor SalespersonMobileAPI {
         return try decoder.decode(SalespersonInboxResponse.self, from: try await data(for: request))
     }
 
+    func fetchInboxThread(contactId: String, source: String = "all") async throws -> SalespersonInboxThread? {
+        let workspaceId = try await workspaceId()
+        let request = try await request(
+            path: "api/inbox",
+            queryItems: [
+                URLQueryItem(name: "workspaceId", value: workspaceId.uuidString),
+                URLQueryItem(name: "source", value: source),
+                URLQueryItem(name: "contactId", value: contactId),
+                URLQueryItem(name: "limit", value: "1")
+            ]
+        )
+        return try decoder.decode(SalespersonInboxResponse.self, from: try await data(for: request)).threads?.first
+    }
+
+    func sendInboxText(contactId: String?, body messageBody: String, phone: String?) async throws -> String? {
+        let workspaceId = try await workspaceId()
+        struct Payload: Encodable {
+            let workspaceId: String
+            let body: String
+            let phone: String?
+            let contactId: String?
+        }
+        let payload = Payload(
+            workspaceId: workspaceId.uuidString,
+            body: messageBody,
+            phone: phone?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty,
+            contactId: contactId?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+        )
+        let body = try encoder.encode(payload)
+        let request = try await request(
+            path: "api/inbox",
+            queryItems: [URLQueryItem(name: "workspaceId", value: workspaceId.uuidString)],
+            method: "POST",
+            body: body
+        )
+        return try decoder.decode(SalespersonInboxSendResponse.self, from: try await data(for: request)).warning
+    }
+
     func updateInboxItem(id: String, status: String? = nil, read: Bool = true) async throws {
         let workspaceId = try await workspaceId()
         let payload: [String: AnyCodable] = [
@@ -1610,6 +1847,11 @@ private final class SalespersonDiallerViewModel: ObservableObject {
     private let gabeTestLeadId = UUID(uuidString: "90526066-8800-4000-9000-000000000001")!
     private let santanaTestPhone = "289-261-9598"
     private let santanaTestLeadId = UUID(uuidString: "28926195-9800-4000-9000-000000000002")!
+    private let danielQaqishTestPhone = "289-927-1774"
+    private let danielQaqishTestLeadId = UUID(uuidString: "28992717-7400-4000-9000-000000000003")!
+    private let mainListId = "flyr-pro-main-list"
+    private let testListId = "flyr-pro-test-list"
+    private let testListName = "FLYR PRO"
     private var emailAutosaveTask: Task<Void, Never>?
 
     deinit {
@@ -1620,13 +1862,29 @@ private final class SalespersonDiallerViewModel: ObservableObject {
         SalespersonDiallerListGroup.makeGroups(from: leads)
     }
 
+    var mainList: SalespersonDiallerListGroup? {
+        guard !leads.isEmpty else { return nil }
+        let sortedLeads = leads.sorted {
+            ($0.createdAt ?? .distantPast) > ($1.createdAt ?? .distantPast)
+        }
+        return SalespersonDiallerListGroup(
+            id: mainListId,
+            title: "FLYR PRO",
+            leads: sortedLeads,
+            createdAt: sortedLeads.compactMap(\.createdAt).max() ?? .distantPast
+        )
+    }
+
     var selectedList: SalespersonDiallerListGroup? {
         guard let selectedListId else { return nil }
+        if selectedListId == mainListId {
+            return mainList
+        }
         return leadLists.first { $0.id == selectedListId }
     }
 
     var activeList: SalespersonDiallerListGroup? {
-        selectedList ?? leadLists.first
+        selectedList
     }
 
     var visibleLeads: [SalespersonDiallerLead] {
@@ -1640,16 +1898,15 @@ private final class SalespersonDiallerViewModel: ObservableObject {
         defer { isLoading = false }
         do {
             leads = try await SalespersonMobileAPI.shared.fetchDiallerLeads()
-            if let selectedListId, !leadLists.contains(where: { $0.id == selectedListId }) {
-                self.selectedListId = leadLists.first?.id
-            } else if selectedListId == nil {
-                self.selectedListId = leadLists.first?.id
+            if let selectedListId,
+               !leadLists.contains(where: { $0.id == selectedListId }) {
+                self.selectedListId = nil
             }
             selectedLead = selectedLead.flatMap { selected in
                 leads.first(where: { $0.id == selected.id })
             }
             if let selectedLead {
-                selectedListId = selectedLead.listGroupId
+                selectedListId = selectedListId ?? listId(containing: selectedLead) ?? leadLists.first?.id
                 email = selectedLead.email ?? ""
                 textDropBody = defaultTextDropBody(for: selectedLead)
             } else {
@@ -1671,6 +1928,26 @@ private final class SalespersonDiallerViewModel: ObservableObject {
         textDropBody = ""
         activeCall = nil
         isCallSessionActive = false
+    }
+
+    func openMainList() {
+        guard let list = leadLists.first ?? mainList else { return }
+        openList(list)
+    }
+
+    func openListMatching(id: String?, title: String?) {
+        let normalizedId = Self.normalizedListKey(id)
+        let normalizedTitle = Self.normalizedListKey(title)
+
+        if let list = leadLists.first(where: { list in
+            Self.normalizedListKey(list.id) == normalizedId ||
+            Self.normalizedListKey(list.title) == normalizedTitle
+        }) {
+            openList(list)
+            return
+        }
+
+        openMainList()
     }
 
     func closeList() {
@@ -1696,7 +1973,7 @@ private final class SalespersonDiallerViewModel: ObservableObject {
 
     func select(_ lead: SalespersonDiallerLead) {
         emailAutosaveTask?.cancel()
-        selectedListId = lead.listGroupId
+        selectedListId = selectedListId ?? listId(containing: lead) ?? leadLists.first?.id ?? mainListId
         selectedLead = lead
         notes = ""
         email = lead.email ?? ""
@@ -1736,7 +2013,9 @@ private final class SalespersonDiallerViewModel: ObservableObject {
                 return copy
             }
             leads.append(contentsOf: imported)
-            selectedListId = list.id
+            selectedListId = leadLists.first(where: { $0.id == list.id })?.id
+                ?? listId(containing: imported.first)
+                ?? leadLists.first?.id
             selectedLead = nil
             statusMessage = response.warning ?? "\(response.importedCount ?? imported.count) added from \(list.name)."
         } catch {
@@ -1769,10 +2048,16 @@ private final class SalespersonDiallerViewModel: ObservableObject {
         await openTestLead(name: "Santana Phillippe", phone: santanaTestPhone, id: santanaTestLeadId)
     }
 
+    func openDanielQaqishTestLead() async {
+        await openTestLead(name: "Daniel Qaqish", phone: danielQaqishTestPhone, id: danielQaqishTestLeadId)
+    }
+
     private func openTestLead(name: String, phone: String, id: UUID) async {
         guard !isOpeningTestLead else { return }
         if let existingLead = leads.first(where: { $0.phone.normalizedPhoneDigits == phone.normalizedPhoneDigits }) {
-            select(existingLead)
+            let listBackedLead = leadWithTestList(existingLead)
+            replaceOrAppendLead(listBackedLead)
+            select(listBackedLead)
             statusMessage = "Opened \(name)."
             return
         }
@@ -1788,12 +2073,15 @@ private final class SalespersonDiallerViewModel: ObservableObject {
                     name: name,
                     phone: phone,
                     company: nil,
-                    email: nil
+                    email: nil,
+                    listId: testListId,
+                    listName: testListName
                 )
             ])
             if let importedLead = response.leads?.first {
-                replaceOrAppendLead(importedLead)
-                select(importedLead)
+                let listBackedLead = leadWithTestList(importedLead)
+                replaceOrAppendLead(listBackedLead)
+                select(listBackedLead)
                 statusMessage = response.warning ?? "Opened \(name)."
                 return
             }
@@ -2022,7 +2310,7 @@ private final class SalespersonDiallerViewModel: ObservableObject {
         }
     }
 
-    func sendDemoText() async {
+    func sendDemoText(offer: SalespersonDiallerOffer) async {
         guard let selectedLead else { return }
         isSendingDemoText = true
         errorMessage = nil
@@ -2030,7 +2318,7 @@ private final class SalespersonDiallerViewModel: ObservableObject {
         defer { isSendingDemoText = false }
 
         do {
-            let message = try await SalespersonMobileAPI.shared.prepareDemoMessage(for: selectedLead)
+            let message = try await SalespersonMobileAPI.shared.prepareDemoMessage(for: selectedLead, offer: offer)
             guard let body = message.textBody?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty else {
                 throw SalespersonAPIError.status(400, "Demo text is not ready yet.")
             }
@@ -2041,7 +2329,7 @@ private final class SalespersonDiallerViewModel: ObservableObject {
         }
     }
 
-    func sendDemoEmail() async {
+    func sendDemoEmail(offer: SalespersonDiallerOffer) async {
         guard let selectedLead else { return }
         emailAutosaveTask?.cancel()
         isSendingDemoEmail = true
@@ -2050,7 +2338,7 @@ private final class SalespersonDiallerViewModel: ObservableObject {
         defer { isSendingDemoEmail = false }
 
         do {
-            let message = try await SalespersonMobileAPI.shared.prepareDemoMessage(for: selectedLead, email: email)
+            let message = try await SalespersonMobileAPI.shared.prepareDemoMessage(for: selectedLead, email: email, offer: offer)
             let (updatedLead, warning) = try await SalespersonMobileAPI.shared.sendDemoEmail(
                 lead: selectedLead,
                 email: email,
@@ -2131,6 +2419,13 @@ private final class SalespersonDiallerViewModel: ObservableObject {
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    private func listId(containing lead: SalespersonDiallerLead?) -> String? {
+        guard let lead else { return nil }
+        return leadLists.first { list in
+            list.leads.contains(where: { $0.id == lead.id })
+        }?.id
     }
 
     private func placeCall(lead: SalespersonDiallerLead) async {
@@ -2223,8 +2518,8 @@ private final class SalespersonDiallerViewModel: ObservableObject {
             email: nil,
             website: nil,
             websiteDomain: nil,
-            listId: "test-dialler",
-            listName: "Test dialler",
+            listId: testListId,
+            listName: testListName,
             latestCallRecording: nil,
             isStarred: false,
             disposition: nil,
@@ -2234,8 +2529,21 @@ private final class SalespersonDiallerViewModel: ObservableObject {
         )
     }
 
+    private func leadWithTestList(_ lead: SalespersonDiallerLead) -> SalespersonDiallerLead {
+        var copy = lead
+        copy.listId = copy.listId?.nilIfEmpty ?? testListId
+        copy.listName = copy.listName?.nilIfEmpty ?? testListName
+        return copy
+    }
+
     private static func normalizedEmail(_ value: String) -> String {
         value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private static func normalizedListKey(_ value: String?) -> String {
+        value?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? ""
     }
 
     private func selectNextLead() {
@@ -2275,11 +2583,13 @@ private final class SalespersonDiallerViewModel: ObservableObject {
 
 @MainActor
 private final class SalespersonInboxViewModel: ObservableObject {
-    @Published var items: [SalespersonInboxItem] = []
+    @Published var threads: [SalespersonInboxThread] = []
     @Published var counts: [String: Int] = [:]
     @Published var selectedSource = "all"
     @Published var isLoading = false
+    @Published var isSending = false
     @Published var errorMessage: String?
+    @Published var statusMessage: String?
 
     let sources = ["all", "sms", "email", "call"]
 
@@ -2289,7 +2599,7 @@ private final class SalespersonInboxViewModel: ObservableObject {
         defer { isLoading = false }
         do {
             let response = try await SalespersonMobileAPI.shared.fetchInbox(source: selectedSource)
-            items = Self.sortedChronologically(response.items)
+            threads = Self.sortedThreads(response.threads ?? Self.threads(from: response.items ?? []))
             counts = response.counts ?? [:]
         } catch {
             errorMessage = error.localizedDescription
@@ -2304,7 +2614,7 @@ private final class SalespersonInboxViewModel: ObservableObject {
     func markDone(_ item: SalespersonInboxItem) async {
         do {
             try await SalespersonMobileAPI.shared.updateInboxItem(id: item.id, status: "done")
-            items.removeAll { $0.id == item.id }
+            await load()
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -2313,21 +2623,110 @@ private final class SalespersonInboxViewModel: ObservableObject {
     func markRead(_ item: SalespersonInboxItem) async {
         do {
             try await SalespersonMobileAPI.shared.updateInboxItem(id: item.id)
-            if let index = items.firstIndex(where: { $0.id == item.id }) {
-                await load()
-                if index < items.count { items[index] = items[index] }
-            }
+            await load()
         } catch {
             errorMessage = error.localizedDescription
         }
     }
 
-    private static func sortedChronologically(_ items: [SalespersonInboxItem]) -> [SalespersonInboxItem] {
-        items.sorted { lhs, rhs in
-            if lhs.occurredAt == rhs.occurredAt {
+    func sendText(in thread: SalespersonInboxThread, body: String) async -> SalespersonInboxThread? {
+        guard let phone = thread.primaryPhone?.nilIfEmpty else {
+            errorMessage = "This thread does not have a phone number."
+            return nil
+        }
+        let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        isSending = true
+        statusMessage = nil
+        errorMessage = nil
+        defer { isSending = false }
+
+        do {
+            let warning = try await SalespersonMobileAPI.shared.sendInboxText(
+                contactId: thread.contactId,
+                body: trimmed,
+                phone: phone
+            )
+            if let warning { statusMessage = warning }
+            var refreshed: SalespersonInboxThread?
+            if let contactId = thread.contactId?.nilIfEmpty {
+                refreshed = try await SalespersonMobileAPI.shared.fetchInboxThread(contactId: contactId, source: selectedSource)
+                if refreshed == nil {
+                    refreshed = try await SalespersonMobileAPI.shared.fetchInboxThread(contactId: contactId)
+                }
+            }
+            await load()
+            return refreshed ?? threads.first(where: { $0.id == thread.id }) ?? thread
+        } catch {
+            errorMessage = error.localizedDescription
+            return nil
+        }
+    }
+
+    private static func sortedThreads(_ threads: [SalespersonInboxThread]) -> [SalespersonInboxThread] {
+        threads.sorted { lhs, rhs in
+            if lhs.latestAt == rhs.latestAt {
                 return lhs.id < rhs.id
             }
-            return lhs.occurredAt > rhs.occurredAt
+            return lhs.latestAt > rhs.latestAt
+        }
+    }
+
+    private static func threads(from items: [SalespersonInboxItem]) -> [SalespersonInboxThread] {
+        items.map { item in
+            let event = SalespersonInboxEvent(
+                id: item.id,
+                source: item.source,
+                kind: "\(item.source)_item",
+                direction: nil,
+                title: item.title,
+                preview: item.preview,
+                body: item.body,
+                status: item.status,
+                occurredAt: item.occurredAt,
+                readAt: item.readAt,
+                fromLabel: item.fromLabel,
+                fromEmail: item.fromEmail,
+                fromPhone: item.fromPhone,
+                toLabel: item.toLabel,
+                toEmail: item.toEmail,
+                toPhone: item.toPhone,
+                contactId: item.contactId,
+                href: item.href
+            )
+            return SalespersonInboxThread(
+                id: item.contactId.map { "contact:\($0)" } ?? item.id,
+                contactId: item.contactId,
+                contact: nil,
+                title: item.title,
+                subtitle: [item.fromPhone, item.fromEmail].compactMap { $0?.nilIfEmpty }.first,
+                primaryPhone: item.fromPhone ?? item.toPhone,
+                primaryEmail: item.fromEmail ?? item.toEmail,
+                latestAt: item.occurredAt,
+                latestSource: item.source,
+                latestPreview: item.preview ?? item.body,
+                unreadCount: item.isUnread ? 1 : 0,
+                needsResponse: item.needsResponse,
+                events: [event]
+            )
+        }
+    }
+}
+
+@MainActor
+private enum SalespersonTaskDueFilter: String, CaseIterable, Identifiable {
+    case today
+    case overdue
+    case future
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .today: return "Today"
+        case .overdue: return "Overdue"
+        case .future: return "Future"
         }
     }
 }
@@ -2337,14 +2736,35 @@ private final class SalespersonTasksViewModel: ObservableObject {
     @Published var items: [CalendarItem] = []
     @Published var isLoading = false
     @Published var errorMessage: String?
+    @Published var selectedDueFilters: Set<SalespersonTaskDueFilter> = Set(SalespersonTaskDueFilter.allCases)
+
+    var filteredItems: [CalendarItem] {
+        let selectedDueFilters = selectedDueFilters
+        guard !selectedDueFilters.isEmpty else { return [] }
+        let now = Date()
+        return items.filter { item in
+            selectedDueFilters.contains(Self.dueFilter(for: item, now: now))
+        }
+    }
+
+    func toggleDueFilter(_ filter: SalespersonTaskDueFilter) {
+        if selectedDueFilters.contains(filter) {
+            selectedDueFilters.remove(filter)
+        } else {
+            selectedDueFilters.insert(filter)
+        }
+    }
 
     func load() async {
         isLoading = true
         errorMessage = nil
         defer { isLoading = false }
+        let calendar = Calendar.current
         let now = Date()
-        let end = Calendar.current.date(byAdding: .day, value: 14, to: now) ?? now
-        let loaded = await FlyrCalendarService.shared.fetchCalendarItems(start: now.addingTimeInterval(-3600), end: end)
+        let startOfToday = calendar.startOfDay(for: now)
+        let start = calendar.date(byAdding: .day, value: -90, to: startOfToday) ?? startOfToday
+        let end = calendar.date(byAdding: .day, value: 90, to: startOfToday) ?? now
+        let loaded = await FlyrCalendarService.shared.fetchCalendarItems(start: start, end: end)
         items = loaded.filter { item in
             item.eventType == FlyrCalendarEventType.followUp.rawValue ||
             item.eventType == FlyrCalendarEventType.call.rawValue ||
@@ -2359,6 +2779,14 @@ private final class SalespersonTasksViewModel: ObservableObject {
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    private static func dueFilter(for item: CalendarItem, now: Date) -> SalespersonTaskDueFilter {
+        let calendar = Calendar.current
+        if calendar.isDate(item.startAt, inSameDayAs: now) {
+            return .today
+        }
+        return item.startAt < calendar.startOfDay(for: now) ? .overdue : .future
     }
 }
 
@@ -2589,7 +3017,7 @@ private final class SalespersonScraperViewModel: ObservableObject {
     let realEstateTargetOptions = [
         ("teams", "Team"),
         ("individual_agents", "Agent"),
-        ("brokerages", "Brokerage"),
+        ("offices", "Office"),
     ]
 
     let industryOptions: [ScraperIndustryOption] = [
@@ -2609,6 +3037,30 @@ private final class SalespersonScraperViewModel: ObservableObject {
 
     var realEstateMode: Bool {
         Self.isRealEstateIndustry(industry)
+    }
+
+    var defaultListName: String {
+        let dateText = Date().formatted(.dateTime.month(.abbreviated).day())
+        let cleanCity = city.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanRegion = region.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanIndustry = industry.trimmingCharacters(in: .whitespacesAndNewlines)
+        let location = [cleanCity.nilIfEmpty, cleanRegion.nilIfEmpty]
+            .compactMap { $0 }
+            .joined(separator: ", ")
+            .nilIfEmpty
+
+        if realEstateMode && realEstateTarget == "individual_agents", let location {
+            return "\(location) agents - \(dateText)"
+        }
+
+        let base = [
+            location,
+            cleanIndustry.nilIfEmpty
+        ]
+            .compactMap { $0 }
+            .joined(separator: " - ")
+            .nilIfEmpty ?? "Places leads"
+        return "\(base) - \(dateText)"
     }
 
     var selectedRun: ProspectSearchRun? {
@@ -2692,7 +3144,7 @@ private final class SalespersonScraperViewModel: ObservableObject {
         }
     }
 
-    func runSearch() async -> Bool {
+    func runSearch(listName: String? = nil) async -> Bool {
         guard canSubmit else { return false }
         isSearching = true
         errorMessage = nil
@@ -2709,7 +3161,8 @@ private final class SalespersonScraperViewModel: ObservableObject {
                 relatedTerms: resolvedRelatedTerms(),
                 marketId: selectedMarketId,
                 industryId: selectedIndustryId,
-                leadIntent: resolvedLeadIntent()
+                leadIntent: resolvedLeadIntent(),
+                listName: listName
             )
             prospects = payload.prospects
             summary = payload
@@ -2781,10 +3234,10 @@ private final class SalespersonScraperViewModel: ObservableObject {
         let teamTerms = realEstateMode && realEstateTarget == "teams"
             ? ["real estate team", "realtor team", "real estate group", "realtor group"]
             : []
-        let brokerageTerms = realEstateMode && realEstateTarget == "brokerages"
+        let officeTerms = realEstateMode && realEstateTarget == "offices"
             ? ["real estate brokerage", "real estate office", "realtor office", "realty brokerage"]
             : []
-        return Array(Self.uniqueTerms(teamTerms + brokerageTerms + safeTerms).prefix(12))
+        return Array(Self.uniqueTerms(teamTerms + officeTerms + safeTerms).prefix(12))
     }
 
     private func resolvedLeadIntent() -> String {
@@ -2792,7 +3245,7 @@ private final class SalespersonScraperViewModel: ObservableObject {
         switch realEstateTarget {
         case "teams": return "real_estate_teams"
         case "individual_agents": return "real_estate_individual_agents"
-        case "brokerages": return "real_estate_brokerages"
+        case "offices": return "real_estate_brokerages"
         default: return "real_estate_agents"
         }
     }
@@ -2800,7 +3253,7 @@ private final class SalespersonScraperViewModel: ObservableObject {
     private func leadIntentLabel() -> String {
         switch resolvedLeadIntent() {
         case "real_estate_teams": return "team leads"
-        case "real_estate_brokerages": return "brokerage leads"
+        case "real_estate_brokerages": return "office leads"
         case "real_estate_individual_agents": return "individual agent leads"
         case "real_estate_agents": return "agent leads"
         default: return "leads"
@@ -3020,7 +3473,7 @@ struct SalespersonLeadsView: View {
                 salespersonLeadsList
             }
             .background(Color.bg.ignoresSafeArea())
-            .navigationTitle("Leads")
+            .navigationTitle("FLYR PRO")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -3058,11 +3511,11 @@ struct SalespersonLeadsView: View {
                     onOpenDialler: { savedList in
                         scraperSavedList = savedList
                         showScraper = false
-                        uiState.selectedTabIndex = 1
+                        uiState.openSalespersonDiallerList(id: savedList?.listId, title: savedList?.listName)
                     }
                 )
             }
-            .alert("Leads", isPresented: Binding(
+            .alert("FLYR PRO", isPresented: Binding(
                 get: { viewModel.errorMessage != nil },
                 set: {
                     if !$0 {
@@ -3553,6 +4006,9 @@ private struct SalespersonLeadScraperView: View {
     @StateObject private var viewModel = SalespersonScraperViewModel()
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
+    @State private var showSaveListSheet = false
+    @State private var listNameDraft = ""
+    @State private var listNameError: String?
     let onOpenLeads: (SavedScraperList?) -> Void
     let onOpenDialler: (SavedScraperList?) -> Void
 
@@ -3568,6 +4024,8 @@ private struct SalespersonLeadScraperView: View {
                 }
                 .padding()
             }
+            .blur(radius: showSaveListSheet ? 2 : 0)
+            .animation(.easeInOut(duration: 0.18), value: showSaveListSheet)
             .navigationTitle("Add Leads")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -3583,6 +4041,11 @@ private struct SalespersonLeadScraperView: View {
                 Button("OK", role: .cancel) {}
             } message: {
                 Text(viewModel.errorMessage ?? "")
+            }
+            .sheet(isPresented: $showSaveListSheet) {
+                saveLeadListSheet
+                    .presentationDetents([.height(260)])
+                    .presentationDragIndicator(.visible)
             }
         }
     }
@@ -3606,16 +4069,6 @@ private struct SalespersonLeadScraperView: View {
                 }
                 .pickerStyle(.menu)
                 .tint(.red)
-
-                if viewModel.realEstateMode {
-                    Picker("Real estate target", selection: $viewModel.realEstateTarget) {
-                        ForEach(viewModel.realEstateTargetOptions, id: \.0) { option in
-                            Text(option.1).tag(option.0)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    .tint(.red)
-                }
             }
 
             scraperControlRow(title: "City") {
@@ -3679,13 +4132,20 @@ private struct SalespersonLeadScraperView: View {
                 .tint(.red)
             }
 
-            Button {
-                Task {
-                    let didCreateLeads = await viewModel.runSearch()
-                    if didCreateLeads {
-                        onOpenLeads(viewModel.summary?.savedList)
+            if viewModel.realEstateMode {
+                scraperControlRow(title: "Filter") {
+                    Picker("Real estate target", selection: $viewModel.realEstateTarget) {
+                        ForEach(viewModel.realEstateTargetOptions, id: \.0) { option in
+                            Text(option.1).tag(option.0)
+                        }
                     }
+                    .pickerStyle(.menu)
+                    .tint(.red)
                 }
+            }
+
+            Button {
+                openSaveListSheet()
             } label: {
                 Label(viewModel.isSearching ? "Adding Leads" : "Add Leads", systemImage: "plus.circle.fill")
                     .font(.headline)
@@ -3700,6 +4160,96 @@ private struct SalespersonLeadScraperView: View {
         .padding()
         .background(Color.bgSecondary)
         .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func openSaveListSheet() {
+        listNameDraft = viewModel.defaultListName
+        listNameError = nil
+        showSaveListSheet = true
+    }
+
+    private func saveNamedList() {
+        let cleanedName = listNameDraft
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(whereSeparator: { $0.isWhitespace })
+            .joined(separator: " ")
+        guard !cleanedName.isEmpty else {
+            listNameError = "Name your list before saving."
+            return
+        }
+
+        listNameError = nil
+        Task {
+            let didCreateLeads = await viewModel.runSearch(listName: String(cleanedName.prefix(120)))
+            if didCreateLeads {
+                showSaveListSheet = false
+                onOpenLeads(viewModel.summary?.savedList)
+            }
+        }
+    }
+
+    private var saveLeadListSheet: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 10) {
+                Image(systemName: "checklist")
+                    .font(.headline)
+                    .foregroundStyle(.red)
+                    .frame(width: 36, height: 36)
+                    .background(Color.red.opacity(0.12), in: Circle())
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Save Lead List")
+                        .font(.headline)
+                    Text("Name this list before FLYR saves the leads.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                TextField(viewModel.defaultListName, text: $listNameDraft)
+                    .textFieldStyle(.roundedBorder)
+                    .textInputAutocapitalization(.words)
+                    .submitLabel(.done)
+
+                if let listNameError {
+                    Text(listNameError)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                } else {
+                    Text("Uses the same naming style as your saved lead lists.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Spacer(minLength: 0)
+
+            HStack(spacing: 10) {
+                Button("Cancel") {
+                    showSaveListSheet = false
+                    listNameError = nil
+                }
+                .buttonStyle(.bordered)
+                .frame(maxWidth: .infinity)
+
+                Button {
+                    saveNamedList()
+                } label: {
+                    if viewModel.isSearching {
+                        ProgressView()
+                            .frame(maxWidth: .infinity)
+                    } else {
+                        Label("Save Leads", systemImage: "square.and.arrow.down")
+                            .frame(maxWidth: .infinity)
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.red)
+                .disabled(viewModel.isSearching)
+            }
+        }
+        .padding()
     }
 
     private func scraperControlRow<Content: View>(
@@ -4452,6 +5002,75 @@ private struct SalespersonDTMFKeypad: View {
     }
 }
 
+private enum SalespersonDiallerIndustryMode: String, CaseIterable, Identifiable {
+    case realEstate
+    case roofing
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .realEstate: return "Real Estate"
+        case .roofing: return "Roofing"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .realEstate: return "Listings, buyers, sellers, and brokerage growth"
+        case .roofing: return "Coming soon"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .realEstate: return "house.fill"
+        case .roofing: return "hammer.fill"
+        }
+    }
+
+    var isEnabled: Bool {
+        switch self {
+        case .realEstate: return true
+        case .roofing: return false
+        }
+    }
+}
+
+private enum SalespersonDiallerOffer: String, CaseIterable, Identifiable {
+    case solo
+    case team
+    case brokerage
+
+    var id: String { rawValue }
+
+    var linkValue: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .solo: return "Solo"
+        case .team: return "Team"
+        case .brokerage: return "Brokerage"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .solo: return "One agent"
+        case .team: return "Small group"
+        case .brokerage: return "Office-wide"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .solo: return "person.fill"
+        case .team: return "person.2.fill"
+        case .brokerage: return "building.2.fill"
+        }
+    }
+}
+
 struct SalespersonDiallerView: View {
     @StateObject private var viewModel = SalespersonDiallerViewModel()
     @ObservedObject private var voice = SalespersonVoiceCallService.shared
@@ -4461,8 +5080,12 @@ struct SalespersonDiallerView: View {
     @State private var isRecordingsSheetPresented = false
     @State private var isFollowUpSheetPresented = false
     @State private var isListSheetPresented = false
+    @State private var isSettingsPresented = false
     @State private var isAudioRouteDialogPresented = false
     @State private var isKeypadPresented = false
+    @State private var selectedIndustryMode: SalespersonDiallerIndustryMode = .realEstate
+    @State private var selectedOffer: SalespersonDiallerOffer?
+    @State private var selectedOffersByLeadId: [UUID: SalespersonDiallerOffer] = [:]
 
     private var isBusy: Bool {
         viewModel.isPlacingCall ||
@@ -4481,6 +5104,14 @@ struct SalespersonDiallerView: View {
 
     private var editorHeight: CGFloat { 96 }
 
+    private var activeOffer: SalespersonDiallerOffer {
+        if let leadId = viewModel.selectedLead?.id,
+           let offer = selectedOffersByLeadId[leadId] {
+            return offer
+        }
+        return selectedOffer ?? .solo
+    }
+
     private var shouldShowCallStatus: Bool {
         switch voice.callPhase {
         case .connecting, .connected:
@@ -4493,32 +5124,37 @@ struct SalespersonDiallerView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                if let lead = viewModel.selectedLead {
+                if selectedOffer != nil {
                     VStack(alignment: .leading, spacing: 18) {
-                        selectedLeadHeader(lead)
-
-                        actionBlock(lead: lead)
-                        emailBlock
-                        textBlock
-                        notesBlock
+                        if viewModel.selectedLead != nil {
+                            selectedLeadOfferPicker
+                        } else if let list = viewModel.activeList {
+                            selectedDiallerListHeader(list)
+                            diallerQueue
+                        } else if viewModel.isLoading {
+                            ProgressView()
+                                .frame(maxWidth: .infinity, minHeight: 260)
+                        } else if viewModel.mainList == nil {
+                            ContentUnavailableView("No dialler lists", systemImage: "phone")
+                                .frame(maxWidth: .infinity, minHeight: 260)
+                        } else {
+                            diallerListOverview
+                        }
                     }
                     .padding(.horizontal, 16)
                     .padding(.vertical, 12)
                     .padding(.bottom, 28)
-                } else if let list = viewModel.activeList {
-                    VStack(alignment: .leading, spacing: 14) {
-                        selectedDiallerListHeader(list)
-                        diallerQueue
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 12)
-                    .padding(.bottom, 28)
-                } else if viewModel.isLoading {
-                    ProgressView()
-                        .frame(maxWidth: .infinity, minHeight: 260)
-                } else if viewModel.leadLists.isEmpty {
-                    ContentUnavailableView("No dialler lists", systemImage: "phone")
-                        .frame(maxWidth: .infinity, minHeight: 260)
+                } else {
+                    SalespersonDiallerModeStartView(
+                        selectedMode: $selectedIndustryMode,
+                        onSelectOffer: { offer in
+                            HapticManager.light()
+                            selectedOffer = offer
+                        }
+                    )
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 12)
+                        .padding(.bottom, 28)
                 }
             }
 	            .navigationTitle("Dialler")
@@ -4570,6 +5206,12 @@ struct SalespersonDiallerView: View {
                             } label: {
                                 Label("Santana Phillippe", systemImage: "person.fill")
                             }
+
+                            Button {
+                                Task { await viewModel.openDanielQaqishTestLead() }
+                            } label: {
+                                Label("Daniel Qaqish", systemImage: "person.fill")
+                            }
                         } label: {
                             Label("Test", systemImage: "phone.fill")
                         }
@@ -4578,35 +5220,30 @@ struct SalespersonDiallerView: View {
                     }
 
 	                    ToolbarItemGroup(placement: .topBarTrailing) {
-	                        Menu {
-                            Button {
-                                isSmartListSheetPresented = true
-                                Task { await viewModel.loadSmartLists() }
-                            } label: {
-                                Label("Import Smart List", systemImage: "square.and.arrow.down")
-                            }
-
-                            Button {
-                                isRecordingsSheetPresented = true
-                                Task { await viewModel.loadRecordings() }
-                            } label: {
-                                Label("Recordings", systemImage: "waveform")
-                            }
-
-                        } label: {
-                            Image(systemName: "ellipsis.circle")
-                        }
-
                         Button {
-                            isListSheetPresented = true
+                            if viewModel.selectedLead != nil || viewModel.activeList != nil {
+                                viewModel.closeList()
+                            } else {
+                                viewModel.openMainList()
+                            }
                         } label: {
                             Image(systemName: "list.bullet")
                         }
                         .accessibilityLabel("Dialler lists")
+
+                        Button {
+                            isSettingsPresented = true
+                        } label: {
+                            Image(systemName: "gearshape")
+                        }
+                        .accessibilityLabel("Dialler settings")
                     }
 	            }
                 .sheet(isPresented: $isSmartListSheetPresented) {
                     SalespersonDiallerSmartListSheet(viewModel: viewModel)
+                }
+                .sheet(isPresented: $isSettingsPresented) {
+                    SettingsView()
                 }
                 .sheet(isPresented: $isListSheetPresented) {
                     SalespersonDiallerListsSheet(viewModel: viewModel) { list in
@@ -4674,9 +5311,18 @@ struct SalespersonDiallerView: View {
                         }
                     }
                 }
-	            .refreshable { await viewModel.load() }
-	            .task { await viewModel.load() }
+	            .refreshable {
+                    await viewModel.load()
+                    applyPendingDiallerListSelection()
+                }
+	            .task {
+                    await viewModel.load()
+                    applyPendingDiallerListSelection()
+                }
 	            .task { await voice.refreshRegistrationIfNeeded() }
+                .onChange(of: uiState.pendingSalespersonDiallerListSelection) { _, _ in
+                    applyPendingDiallerListSelection()
+                }
 	            .alert("Dialler", isPresented: Binding(
 	                get: { viewModel.errorMessage != nil },
 	                set: { if !$0 { viewModel.errorMessage = nil } }
@@ -4687,6 +5333,67 @@ struct SalespersonDiallerView: View {
             }
 	        }
 	    }
+
+    private func applyPendingDiallerListSelection() {
+        guard let pending = uiState.pendingSalespersonDiallerListSelection else { return }
+        selectedIndustryMode = .realEstate
+        selectedOffer = selectedOffer ?? .solo
+        viewModel.openListMatching(id: pending.listId, title: pending.listTitle)
+        uiState.pendingSalespersonDiallerListSelection = nil
+    }
+
+    private func diallerModeSummary(offer: SalespersonDiallerOffer) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: selectedIndustryMode.systemImage)
+                .font(.headline)
+                .foregroundStyle(Color.flyrPrimary)
+                .frame(width: 40, height: 40)
+                .background(Color.bgSecondary)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text("\(selectedIndustryMode.title) / \(offer.title)")
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(1)
+                Text("Dialler offer mode")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer(minLength: 8)
+
+            Button {
+                selectedOffer = nil
+                viewModel.closeLead()
+                viewModel.closeList()
+            } label: {
+                Text("Change")
+                    .font(.caption.weight(.bold))
+                    .padding(.horizontal, 12)
+                    .frame(minHeight: 34)
+                    .background(Color.bgSecondary)
+                    .clipShape(Capsule())
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(12)
+        .background(Color.bgSecondary.opacity(0.65))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.border.opacity(0.55), lineWidth: 1))
+    }
+
+    private var diallerListOverview: some View {
+        LazyVStack(spacing: 10) {
+            ForEach(viewModel.leadLists) { list in
+                Button {
+                    viewModel.openList(list)
+                } label: {
+                    SalespersonDiallerListSummaryRow(list: list)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
 
     private func selectedLeadHeader(_ lead: SalespersonDiallerLead) -> some View {
         HStack(spacing: 12) {
@@ -4743,6 +5450,38 @@ struct SalespersonDiallerView: View {
         }
     }
 
+    private var selectedLeadOfferPicker: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                ForEach(SalespersonDiallerOffer.allCases) { offer in
+                    Button {
+                        HapticManager.light()
+                        selectedOffer = offer
+                        if let leadId = viewModel.selectedLead?.id {
+                            selectedOffersByLeadId[leadId] = offer
+                        }
+                    } label: {
+                        Label(offer.title, systemImage: offer.systemImage)
+                            .font(.caption.weight(.bold))
+                            .labelStyle(.titleAndIcon)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.82)
+                            .frame(maxWidth: .infinity, minHeight: 42)
+                            .foregroundStyle(activeOffer == offer ? .white : Color.flyrPrimary)
+                            .background(activeOffer == offer ? Color.flyrPrimary : Color.bgSecondary)
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(activeOffer == offer ? Color.flyrPrimary : Color.border.opacity(0.6), lineWidth: 1)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityAddTraits(activeOffer == offer ? .isSelected : [])
+                }
+            }
+        }
+    }
+
     private func actionBlock(lead: SalespersonDiallerLead) -> some View {
         VStack(spacing: 12) {
             HStack(spacing: 12) {
@@ -4773,9 +5512,9 @@ struct SalespersonDiallerView: View {
                 floatingActionButton(
                     "Demo Text",
                     systemImage: "message.fill",
-                    disabled: viewModel.isSendingCallbackText
+                    disabled: viewModel.isSendingDemoText
                 ) {
-                    Task { await viewModel.sendCallbackText() }
+                    Task { await viewModel.sendDemoText(offer: activeOffer) }
                 }
 
                 floatingActionButton(
@@ -4783,7 +5522,7 @@ struct SalespersonDiallerView: View {
                     systemImage: "envelope.fill",
                     disabled: viewModel.isSendingDemoEmail || viewModel.email.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 ) {
-                    Task { await viewModel.sendDemoEmail() }
+                    Task { await viewModel.sendDemoEmail(offer: activeOffer) }
                 }
             }
 
@@ -4815,7 +5554,7 @@ struct SalespersonDiallerView: View {
                     .font(.subheadline.weight(.semibold))
                 Spacer()
                 Button {
-                    Task { await viewModel.sendDemoEmail() }
+                    Task { await viewModel.sendDemoEmail(offer: activeOffer) }
                 } label: {
                     Label("Send", systemImage: "paperplane.fill")
                         .font(.subheadline.weight(.semibold))
@@ -4917,7 +5656,7 @@ struct SalespersonDiallerView: View {
 
 	    private var diallerQueue: some View {
 	        VStack(alignment: .leading, spacing: 10) {
-	            Text("Leads")
+	            Text("FLYR PRO")
 	                .font(.subheadline.weight(.semibold))
 
                 if viewModel.visibleLeads.isEmpty {
@@ -5154,6 +5893,134 @@ struct SalespersonDiallerView: View {
         return String(format: "%02d:%02d", minutes, seconds)
     }
 
+}
+
+private struct SalespersonDiallerModeStartView: View {
+    @Binding var selectedMode: SalespersonDiallerIndustryMode
+    let onSelectOffer: (SalespersonDiallerOffer) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Choose dialler mode")
+                    .font(.title2.weight(.bold))
+                Text("Pick the market first, then choose the offer.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+
+            VStack(alignment: .leading, spacing: 10) {
+                Text("MODE")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.secondary)
+
+                VStack(spacing: 10) {
+                    ForEach(SalespersonDiallerIndustryMode.allCases) { mode in
+                        Button {
+                            guard mode.isEnabled else { return }
+                            HapticManager.light()
+                            selectedMode = mode
+                        } label: {
+                            HStack(spacing: 12) {
+                                Image(systemName: mode.systemImage)
+                                    .font(.headline)
+                                    .foregroundStyle(mode.isEnabled ? Color.flyrPrimary : .secondary)
+                                    .frame(width: 42, height: 42)
+                                    .background(Color.bgSecondary)
+                                    .clipShape(RoundedRectangle(cornerRadius: 8))
+
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(mode.title)
+                                        .font(.headline)
+                                        .foregroundStyle(.primary)
+                                    Text(mode.subtitle)
+                                        .font(.caption.weight(.medium))
+                                        .foregroundStyle(.secondary)
+                                }
+
+                                Spacer(minLength: 8)
+
+                                if selectedMode == mode {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .font(.title3)
+                                        .foregroundStyle(Color.flyrPrimary)
+                                } else if !mode.isEnabled {
+                                    Text("Soon")
+                                        .font(.caption.weight(.bold))
+                                        .foregroundStyle(.secondary)
+                                        .padding(.horizontal, 10)
+                                        .frame(minHeight: 28)
+                                        .background(Color.bgSecondary)
+                                        .clipShape(Capsule())
+                                }
+                            }
+                            .padding(12)
+                            .background(modeBackground(for: mode))
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(modeBorder(for: mode), lineWidth: selectedMode == mode ? 1.5 : 1)
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(!mode.isEnabled)
+                        .opacity(mode.isEnabled ? 1 : 0.55)
+                    }
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 10) {
+                Text("REAL ESTATE OFFER")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.secondary)
+
+                VStack(spacing: 10) {
+                    ForEach(SalespersonDiallerOffer.allCases) { offer in
+                        Button {
+                            onSelectOffer(offer)
+                        } label: {
+                            HStack(spacing: 12) {
+                                Image(systemName: offer.systemImage)
+                                    .font(.headline)
+                                    .foregroundStyle(.white)
+                                    .frame(width: 42, height: 42)
+                                    .background(Color.flyrPrimary)
+                                    .clipShape(RoundedRectangle(cornerRadius: 8))
+
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(offer.title)
+                                        .font(.headline)
+                                        .foregroundStyle(.primary)
+                                    Text(offer.subtitle)
+                                        .font(.caption.weight(.medium))
+                                        .foregroundStyle(.secondary)
+                                }
+
+                                Spacer(minLength: 8)
+
+                                Image(systemName: "chevron.right")
+                                    .font(.caption.weight(.bold))
+                                    .foregroundStyle(.secondary)
+                            }
+                            .padding(12)
+                            .background(Color.bgSecondary)
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.border.opacity(0.65), lineWidth: 1))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+        }
+    }
+
+    private func modeBackground(for mode: SalespersonDiallerIndustryMode) -> Color {
+        selectedMode == mode ? Color.flyrPrimary.opacity(0.11) : Color.bgSecondary
+    }
+
+    private func modeBorder(for mode: SalespersonDiallerIndustryMode) -> Color {
+        selectedMode == mode ? Color.flyrPrimary.opacity(0.55) : Color.border.opacity(0.65)
+    }
 }
 
 private struct SalespersonDiallerListsSheet: View {
@@ -5434,22 +6301,14 @@ struct SalespersonInboxView: View {
     var body: some View {
         NavigationStack {
             List {
-                ForEach(viewModel.items) { item in
-                    SalespersonInboxRow(item: item)
+                ForEach(viewModel.threads) { thread in
+                    NavigationLink {
+                        SalespersonInboxThreadView(thread: thread, viewModel: viewModel)
+                    } label: {
+                        SalespersonInboxRow(thread: thread)
+                    }
                         .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
-                        .listRowBackground(item.needsResponse ? Color.flyrPrimary.opacity(0.08) : Color(.systemBackground))
-                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                            Button("Done") {
-                                Task { await viewModel.markDone(item) }
-                            }
-                            .tint(Color.flyrPrimary)
-                        }
-                        .swipeActions(edge: .leading, allowsFullSwipe: true) {
-                            Button("Read") {
-                                Task { await viewModel.markRead(item) }
-                            }
-                            .tint(.gray)
-                        }
+                        .listRowBackground(thread.needsResponse ? Color.flyrPrimary.opacity(0.08) : Color(.systemBackground))
                 }
             }
             .listStyle(.plain)
@@ -5482,7 +6341,7 @@ struct SalespersonInboxView: View {
             .overlay {
                 if viewModel.isLoading {
                     ProgressView()
-                } else if viewModel.items.isEmpty {
+                } else if viewModel.threads.isEmpty {
                     ContentUnavailableView(emptyMessage, systemImage: icon(for: viewModel.selectedSource))
                 }
             }
@@ -5528,28 +6387,18 @@ struct SalespersonInboxView: View {
 }
 
 private struct SalespersonInboxRow: View {
-    let item: SalespersonInboxItem
-
-    private func contactLine(for item: SalespersonInboxItem) -> String? {
-        [
-            item.fromLabel,
-            item.fromPhone,
-            item.fromEmail
-        ]
-        .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty }
-        .first
-    }
+    let thread: SalespersonInboxThread
 
     var body: some View {
         HStack(alignment: .center, spacing: 10) {
             ZStack(alignment: .topTrailing) {
-                Image(systemName: icon(for: item.source))
+                Image(systemName: icon(for: thread.latestSource))
                     .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(item.isUnread ? Color.flyrPrimary : Color.secondary)
+                    .foregroundStyle(thread.unreadCount > 0 ? Color.flyrPrimary : Color.secondary)
                     .frame(width: 28, height: 28)
                     .background(Color(.secondarySystemGroupedBackground))
                     .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                if item.isUnread {
+                if thread.unreadCount > 0 {
                     Circle()
                         .fill(Color.flyrPrimary)
                         .frame(width: 7, height: 7)
@@ -5559,27 +6408,23 @@ private struct SalespersonInboxRow: View {
 
             VStack(alignment: .leading, spacing: 3) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(item.title)
-                        .font(.subheadline.weight(item.isUnread ? .semibold : .medium))
+                    Text(thread.rowTitle)
+                        .font(.subheadline.weight(thread.unreadCount > 0 ? .semibold : .medium))
                         .foregroundStyle(.primary)
                         .lineLimit(1)
                     Spacer(minLength: 8)
-                    Text(item.occurredAt, style: .relative)
+                    Text(thread.latestAt, style: .relative)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
-                Text((item.preview ?? item.body) ?? "")
+                Text(thread.rowPreview ?? thread.subtitle?.normalizedInboxLine ?? "")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
-                Text(contactLine(for: item) ?? "")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
             }
         }
-        .frame(height: 72, alignment: .center)
+        .frame(height: 64, alignment: .center)
         .contentShape(Rectangle())
     }
 
@@ -5594,56 +6439,240 @@ private struct SalespersonInboxRow: View {
     }
 }
 
+private struct SalespersonInboxThreadView: View {
+    @State var thread: SalespersonInboxThread
+    @ObservedObject var viewModel: SalespersonInboxViewModel
+    @State private var draft = ""
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(spacing: 10) {
+                        ForEach(thread.events) { event in
+                            SalespersonInboxThreadEventView(event: event)
+                                .id(event.id)
+                        }
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 12)
+                }
+                .background(Color(.systemGroupedBackground))
+                .onAppear {
+                    if let lastId = thread.events.last?.id {
+                        proxy.scrollTo(lastId, anchor: .bottom)
+                    }
+                }
+                .onChange(of: thread.events.count) { _, _ in
+                    if let lastId = thread.events.last?.id {
+                        withAnimation(.easeOut(duration: 0.2)) {
+                            proxy.scrollTo(lastId, anchor: .bottom)
+                        }
+                    }
+                }
+            }
+
+            composer
+        }
+        .navigationTitle(thread.title)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                if let phone = thread.primaryPhone?.nilIfEmpty, let url = URL(string: "tel://\(phone.normalizedPhoneDigits)") {
+                    Link(destination: url) {
+                        Image(systemName: "phone.fill")
+                    }
+                }
+            }
+        }
+        .alert("Inbox", isPresented: Binding(
+            get: { viewModel.errorMessage != nil },
+            set: { if !$0 { viewModel.errorMessage = nil } }
+        )) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(viewModel.errorMessage ?? "")
+        }
+    }
+
+    private var composer: some View {
+        VStack(spacing: 6) {
+            if let status = viewModel.statusMessage?.nilIfEmpty {
+                Text(status)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            HStack(alignment: .bottom, spacing: 8) {
+                TextField(thread.canText ? "Message" : "No phone on contact", text: $draft, axis: .vertical)
+                    .textFieldStyle(.plain)
+                    .lineLimit(1...4)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 9)
+                    .background(Color(.secondarySystemGroupedBackground))
+                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                    .disabled(!thread.canText || viewModel.isSending)
+
+                Button {
+                    Task { await send() }
+                } label: {
+                    Image(systemName: viewModel.isSending ? "hourglass" : "arrow.up.circle.fill")
+                        .font(.title2)
+                        .foregroundStyle(canSend ? Color.flyrPrimary : Color.secondary)
+                }
+                .disabled(!canSend)
+                .accessibilityLabel("Send message")
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 8)
+        .padding(.bottom, 10)
+        .background(.regularMaterial)
+    }
+
+    private var canSend: Bool {
+        thread.canText && !viewModel.isSending && draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+    }
+
+    private func send() async {
+        let body = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !body.isEmpty else { return }
+        if let refreshed = await viewModel.sendText(in: thread, body: body) {
+            draft = ""
+            thread = refreshed
+        }
+    }
+}
+
+private struct SalespersonInboxThreadEventView: View {
+    let event: SalespersonInboxEvent
+
+    var body: some View {
+        if event.source == "sms" {
+            messageBubble
+        } else {
+            timelineCard
+        }
+    }
+
+    private var messageBubble: some View {
+        HStack {
+            if event.isOutboundMessage { Spacer(minLength: 44) }
+
+            VStack(alignment: event.isOutboundMessage ? .trailing : .leading, spacing: 4) {
+                Text(event.body ?? event.preview ?? "")
+                    .font(.subheadline)
+                    .foregroundStyle(event.isOutboundMessage ? Color.white : Color.primary)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 9)
+                    .background(event.isOutboundMessage ? Color.flyrPrimary : Color(.secondarySystemGroupedBackground))
+                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+
+                Text(event.occurredAt, format: .dateTime.month().day().hour().minute())
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            if !event.isOutboundMessage { Spacer(minLength: 44) }
+        }
+    }
+
+    private var timelineCard: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: icon(for: event.source))
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Color.flyrPrimary)
+                .frame(width: 28, height: 28)
+                .background(Color(.secondarySystemGroupedBackground))
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(event.title)
+                        .font(.subheadline.weight(.semibold))
+                    Spacer()
+                    Text(event.occurredAt, format: .dateTime.month().day().hour().minute())
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                if let body = (event.body ?? event.preview)?.nilIfEmpty {
+                    Text(body)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .padding(10)
+        .background(Color(.systemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    private func icon(for source: String) -> String {
+        switch source {
+        case "sms": return "message"
+        case "email": return "envelope"
+        case "call": return "phone"
+        default: return "bell"
+        }
+    }
+}
+
 struct SalespersonTasksView: View {
     @StateObject private var viewModel = SalespersonTasksViewModel()
 
     var body: some View {
         NavigationStack {
-            List {
-                ForEach(viewModel.items) { item in
-                    HStack(alignment: .top, spacing: 10) {
-                        Image(systemName: icon(for: item.eventType))
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(Color.flyrPrimary)
-                            .frame(width: 28, height: 28)
-                            .background(Color(.secondarySystemGroupedBackground))
-                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            VStack(spacing: 0) {
+                taskDueFilterBar
 
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(item.title)
-                                .font(.subheadline.weight(.semibold))
-                                .lineLimit(1)
-                            if let contactName = item.contactName {
-                                Text(contactName)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
+                List {
+                    ForEach(viewModel.filteredItems) { item in
+                        HStack(alignment: .top, spacing: 10) {
+                            Image(systemName: icon(for: item.eventType))
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(Color.flyrPrimary)
+                                .frame(width: 28, height: 28)
+                                .background(Color(.secondarySystemGroupedBackground))
+                                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(item.title)
+                                    .font(.subheadline.weight(.semibold))
                                     .lineLimit(1)
+                                if let contactName = item.contactName {
+                                    Text(contactName)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                }
+                                Text(item.startAt, format: .dateTime.month().day().hour().minute())
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
                             }
-                            Text(item.startAt, format: .dateTime.month().day().hour().minute())
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
                         }
-                    }
-                    .padding(.vertical, 4)
-                    .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                        Button("Complete") {
-                            Task { await viewModel.complete(item) }
+                        .padding(.vertical, 4)
+                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                            Button("Complete") {
+                                Task { await viewModel.complete(item) }
+                            }
+                            .tint(Color.flyrPrimary)
                         }
-                        .tint(Color.flyrPrimary)
                     }
                 }
+                .listStyle(.plain)
+                .overlay {
+                    if viewModel.isLoading {
+                        ProgressView()
+                    } else if viewModel.filteredItems.isEmpty {
+                        ContentUnavailableView("No tasks", systemImage: "checklist")
+                    }
+                }
+                .refreshable { await viewModel.load() }
             }
-            .listStyle(.plain)
             .navigationTitle("Task")
             .navigationBarTitleDisplayMode(.inline)
-            .overlay {
-                if viewModel.isLoading {
-                    ProgressView()
-                } else if viewModel.items.isEmpty {
-                    ContentUnavailableView("No tasks", systemImage: "checklist")
-                }
-            }
-            .refreshable { await viewModel.load() }
             .task { await viewModel.load() }
             .alert("Task", isPresented: Binding(
                 get: { viewModel.errorMessage != nil },
@@ -5654,6 +6683,42 @@ struct SalespersonTasksView: View {
                 Text(viewModel.errorMessage ?? "")
             }
         }
+    }
+
+    private var taskDueFilterBar: some View {
+        HStack(spacing: 8) {
+            ForEach(SalespersonTaskDueFilter.allCases) { filter in
+                let isSelected = viewModel.selectedDueFilters.contains(filter)
+
+                Button {
+                    withAnimation(.easeInOut(duration: 0.16)) {
+                        viewModel.toggleDueFilter(filter)
+                    }
+                } label: {
+                    Text(filter.title)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(isSelected ? Color.white : Color.primary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 8)
+                        .background {
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(isSelected ? Color.flyrPrimary : Color(.secondarySystemGroupedBackground))
+                        }
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .stroke(isSelected ? Color.flyrPrimary : Color(.separator).opacity(0.35), lineWidth: 1)
+                        }
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(isSelected ? .isSelected : [])
+                .accessibilityLabel(filter.title)
+                .accessibilityValue(isSelected ? "On" : "Off")
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 8)
+        .padding(.bottom, 10)
+        .background(Color(.systemBackground))
     }
 
     private func icon(for eventType: String) -> String {
@@ -5682,6 +6747,12 @@ private extension ISO8601DateFormatter {
 private extension String {
     var nilIfEmpty: String? {
         isEmpty ? nil : self
+    }
+
+    var normalizedInboxLine: String {
+        components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
     }
 
     var normalizedPhoneDigits: String {

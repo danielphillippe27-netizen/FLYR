@@ -57,6 +57,23 @@ export function normalizePhone(value: string | null | undefined): string | null 
   return trimmed;
 }
 
+function phoneMatchKeys(value: string | null | undefined): string[] {
+  const normalized = normalizePhone(value);
+  if (!normalized) return [];
+  const digits = normalized.replace(/\D/g, "");
+  const lastTen = digits.length >= 10 ? digits.slice(-10) : digits;
+  return Array.from(new Set([normalized, digits, lastTen].filter(Boolean)));
+}
+
+function phoneSearchTerms(value: string | null | undefined): string[] {
+  const normalized = normalizePhone(value);
+  if (!normalized) return [];
+  const digits = normalized.replace(/\D/g, "");
+  const lastTen = digits.length >= 10 ? digits.slice(-10) : digits;
+  const lastFour = digits.length >= 4 ? digits.slice(-4) : digits;
+  return Array.from(new Set([normalized, digits, lastTen, lastFour].filter(Boolean)));
+}
+
 export function telnyxSmsFromNumber(): string | null {
   return (
     clean(process.env.TELNYX_DEFAULT_SMS_FROM_NUMBER) ??
@@ -126,10 +143,8 @@ export async function findContactForInbound(
   const normalized = normalizePhone(fromNumber);
   if (!normalized) return null;
 
-  const digits = normalized.replace(/\D/g, "");
-  const variants = Array.from(
-    new Set([normalized, digits, digits.length > 10 ? digits.slice(-10) : digits].filter(Boolean))
-  );
+  const variants = phoneSearchTerms(normalized);
+  const targetKeys = new Set(phoneMatchKeys(normalized));
 
   const { data, error } = await admin
     .from("contacts")
@@ -137,11 +152,12 @@ export async function findContactForInbound(
     .eq("workspace_id", workspaceId)
     .or(variants.map((value) => `phone.ilike.%${value}%`).join(","))
     .order("updated_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
+    .limit(25);
 
   if (error) throw error;
-  return (data as DialerContact | null) ?? null;
+  return ((data ?? []) as DialerContact[]).find((contact) =>
+    phoneMatchKeys(contact.phone).some((key) => targetKeys.has(key))
+  ) ?? null;
 }
 
 export async function sendTelnyxSms(params: {

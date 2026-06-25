@@ -148,13 +148,6 @@ struct CampaignsListView: View {
                             onArchiveFailed: { message in
                                 campaignActionErrorMessage = message
                                 showCampaignActionError = true
-                            },
-                            onArchiveSucceeded: {
-                                if externalFilter != nil {
-                                    externalFilter?.wrappedValue = .archived
-                                } else {
-                                    campaignFilter = .archived
-                                }
                             }
                         )
                         CampaignListEmptyFilteredSection(
@@ -582,11 +575,6 @@ struct CampaignsListView: View {
                 storeV2.setStatus(ids: idsToArchive, status: .archived)
                 isBulkActionInProgress = false
                 exitBulkSelection()
-                if externalFilter != nil {
-                    externalFilter?.wrappedValue = .archived
-                } else {
-                    campaignFilter = .archived
-                }
             }
         } catch {
             await MainActor.run {

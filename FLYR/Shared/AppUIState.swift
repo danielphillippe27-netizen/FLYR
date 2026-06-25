@@ -16,6 +16,12 @@ struct PendingSalespersonLeadListSelection: Identifiable, Equatable {
     let listTitle: String?
 }
 
+struct PendingSalespersonDiallerListSelection: Identifiable, Equatable {
+    let id = UUID()
+    let listId: String?
+    let listTitle: String?
+}
+
 @MainActor
 final class AppUIState: ObservableObject {
     @Published var showTabBar: Bool = true
@@ -31,6 +37,7 @@ final class AppUIState: ObservableObject {
     @Published var plannedFarmExecution: FarmExecutionContext?
     @Published var pendingLiveInviteHandoff: PendingLiveInviteHandoff?
     @Published var pendingSalespersonLeadListSelection: PendingSalespersonLeadListSelection?
+    @Published var pendingSalespersonDiallerListSelection: PendingSalespersonDiallerListSelection?
     @Published private(set) var campaignCreationPresentationDepth: Int = 0
 
     var isCampaignCreationFlowPresented: Bool {
@@ -185,6 +192,16 @@ final class AppUIState: ObservableObject {
             listTitle: cleanTitle?.isEmpty == false ? cleanTitle : nil
         )
         selectedTabIndex = 2
+    }
+
+    func openSalespersonDiallerList(id: String?, title: String?) {
+        let cleanId = id?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines)
+        pendingSalespersonDiallerListSelection = PendingSalespersonDiallerListSelection(
+            listId: cleanId?.isEmpty == false ? cleanId : nil,
+            listTitle: cleanTitle?.isEmpty == false ? cleanTitle : nil
+        )
+        selectedTabIndex = 1
     }
 
     func beginCalendarTabPresentation() {

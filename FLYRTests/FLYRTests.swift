@@ -11,6 +11,23 @@ import Testing
 
 struct FLYRTests {
 
+    @Test func offlinePreloadSelectorPrioritizesAssignedFarmAndRecentCampaigns() throws {
+        let assigned = UUID()
+        let farm = UUID()
+        let recent = UUID()
+        let duplicate = UUID()
+
+        let candidates = OfflinePreloadSelector.selectCandidates(
+            assignedCampaignIds: [assigned, duplicate],
+            recentCampaignIds: [recent, duplicate],
+            inProgressFarmCampaignIds: [farm]
+        )
+
+        #expect(candidates.map(\.campaignId) == [assigned, duplicate, farm, recent])
+        #expect(candidates.map(\.reason) == ["assigned_route", "assigned_route", "in_progress_farm", "recent_campaign"])
+        #expect(candidates.map(\.priority) == [300, 300, 200, 100])
+    }
+
     @Test func diamondManifestDecodesSeparateWinnipegTileTemplates() throws {
         let json = """
         {

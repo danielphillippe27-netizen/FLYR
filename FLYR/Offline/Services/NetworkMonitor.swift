@@ -7,6 +7,7 @@ final class NetworkMonitor: ObservableObject {
 
     @Published private(set) var isOnline = true
     @Published private(set) var connectionDescription = "Online"
+    @Published private(set) var isCellular = false
 
     private let monitor = NWPathMonitor()
     private let queue = DispatchQueue(label: "com.flyr.network-monitor", qos: .utility)
@@ -29,6 +30,7 @@ final class NetworkMonitor: ObservableObject {
 
     private func apply(path: NWPath) {
         isOnline = path.status == .satisfied
+        isCellular = path.status == .satisfied && path.usesInterfaceType(.cellular)
         if path.status != .satisfied {
             connectionDescription = "Offline"
         } else if path.usesInterfaceType(.wifi) {

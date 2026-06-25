@@ -2105,7 +2105,10 @@ struct CampaignMapView: View {
         let baseView = campaignMapGeometry
             .alert("Are you sure?", isPresented: $showEndSessionConfirmation) {
                 Button("Cancel", role: .cancel) {}
-                Button("End", role: .destructive) { SessionManager.shared.stop() }
+                Button(sessionManager.isEndingSession ? "Ending..." : "End", role: .destructive) {
+                    sessionManager.stop()
+                }
+                .disabled(sessionManager.isEndingSession)
             } message: {
                 Text("This will end your session. You’ll see your summary and can share the transparent card.")
             }
@@ -2150,9 +2153,10 @@ struct CampaignMapView: View {
             }
             .alert("Session still running", isPresented: $sessionManager.showLongSessionPrompt) {
                 Button("Keep Running", role: .cancel) {}
-                Button("End Session", role: .destructive) {
-                    SessionManager.shared.stop()
+                Button(sessionManager.isEndingSession ? "Ending..." : "End Session", role: .destructive) {
+                    sessionManager.stop()
                 }
+                .disabled(sessionManager.isEndingSession)
             } message: {
                 Text("This session has been running for a long time. End it now to save progress and prevent accidental all-day tracking.")
             }
@@ -3132,7 +3136,7 @@ struct CampaignMapView: View {
                                 showEndSessionConfirmation = true
                             }
                         } label: {
-                            Text(sessionManager.isDemoSession ? "Stop" : "End")
+                            Text(sessionManager.isDemoSession ? "Stop" : (sessionManager.isEndingSession ? "..." : "End"))
                                 .font(.system(size: 20, weight: .semibold))
                                 .foregroundColor(.white)
                                 .lineLimit(1)
@@ -3144,6 +3148,8 @@ struct CampaignMapView: View {
                         }
                         .buttonStyle(.plain)
                         .fixedSize(horizontal: true, vertical: false)
+                        .disabled(!sessionManager.isDemoSession && sessionManager.isEndingSession)
+                        .opacity(!sessionManager.isDemoSession && sessionManager.isEndingSession ? 0.7 : 1)
                     }
                     if !usesStandardPinsRenderer {
                         HStack(spacing: 0) {
@@ -4711,6 +4717,10 @@ struct CampaignMapView: View {
             trace.end(status: "no_targets")
             return
         }
+        OfflinePreloadCoordinator.shared.pauseForForegroundWork(
+            reason: "session_start_gate",
+            campaignId: campaignId.uuidString
+        )
         prepareCampaignForFieldUse(campaignId: campaignId.uuidString)
         HapticManager.medium()
         quickStartStartingMode = mode
@@ -4757,6 +4767,7 @@ struct CampaignMapView: View {
                 sharedLiveSessionIdOverride: sharedLiveSourceSessionId,
                 goalAmount: goalAmount,
                 routeAssignmentId: activeRouteWorkContext?.assignmentId,
+                skipProvisionGate: true,
                 farmExecutionContext: nil,
                 onFinished: {
                     quickStartStartingMode = nil
@@ -4780,6 +4791,10 @@ struct CampaignMapView: View {
         let goalType = mode.defaultGoalType
         let goalAmount = 0
         guard !targets.isEmpty else { return }
+        OfflinePreloadCoordinator.shared.pauseForForegroundWork(
+            reason: "planned_session_start_gate",
+            campaignId: campaignId.uuidString
+        )
         prepareCampaignForFieldUse(campaignId: campaignId.uuidString)
 
         if !skipGPSDisclaimer, gpsProximityAvailableForCampaign && preSessionGPSProximityEnabled {
@@ -4836,6 +4851,7 @@ struct CampaignMapView: View {
                     goalType: goalType,
                     goalAmount: goalAmount,
                     routeAssignmentId: activeRouteWorkContext?.assignmentId,
+                    skipProvisionGate: true,
                     farmExecutionContext: context,
                     onFinished: {
                         quickStartStartingMode = nil
@@ -5857,6 +5873,10 @@ struct CampaignMapView: View {
 
     private func loadCampaignData(force: Bool) {
         let loadKey = currentMapLoadKey
+        OfflinePreloadCoordinator.shared.pauseForForegroundWork(
+            reason: force ? "campaign_open_force" : "campaign_open",
+            campaignId: campaignId
+        )
         if !force, lastLoadedDataKey == loadKey {
             PerfTrace.event("campaign_open", "load_campaign_data.skip", fields: [
                 "campaign": campaignId,
@@ -7588,7 +7608,8 @@ struct CampaignMapView: View {
     }
 
     private func effectiveVisitOwnerState(addressId: UUID, baseStatus: AddressStatus) -> String? {
-        guard baseStatus.mapLayerStatus == "visited" else { return nil }
+        let inactiveStatuses: Set<String> = ["not_visited", "flyer_unvisited", "pending_visited"]
+        guard !inactiveStatuses.contains(baseStatus.mapLayerStatus) else { return nil }
         guard let actorUserId = addressStatusRows[addressId]?.lastActionBy else {
             return AuthManager.shared.user?.id == nil ? nil : "self"
         }
@@ -7638,10 +7659,11 @@ struct CampaignMapView: View {
             addressIds: addressIds,
             fallbackStatus: fallbackStatus
         )
-        guard effectiveStatus == "visited" else { return nil }
+        let inactiveStatuses: Set<String> = ["not_visited", "flyer_unvisited", "pending_visited"]
+        guard !inactiveStatuses.contains(effectiveStatus) else { return nil }
 
         let candidateRows = addressIds.compactMap { addressStatusRows[$0] }
-            .filter { $0.status.mapLayerStatus == "visited" }
+            .filter { !inactiveStatuses.contains($0.status.mapLayerStatus) }
             .sorted { $0.updatedAt > $1.updatedAt }
 
         if let row = candidateRows.first,
@@ -7650,7 +7672,9 @@ struct CampaignMapView: View {
             return actorUserId == currentUserId ? "self" : "teammate"
         }
 
-        if let fallbackStatus, fallbackStatus.mapLayerStatus == "visited", AuthManager.shared.user?.id != nil {
+        if let fallbackStatus,
+           !inactiveStatuses.contains(fallbackStatus.mapLayerStatus),
+           AuthManager.shared.user?.id != nil {
             return "self"
         }
 
@@ -12831,9 +12855,14 @@ struct CampaignMapView: View {
         sharedLiveSessionIdOverride: UUID? = nil,
         goalAmount: Int? = nil,
         routeAssignmentId: UUID? = nil,
+        skipProvisionGate: Bool = false,
         farmExecutionContext: FarmExecutionContext? = nil,
         onFinished: (() -> Void)? = nil
     ) {
+        OfflinePreloadCoordinator.shared.pauseForForegroundWork(
+            reason: "session_start",
+            campaignId: campaignId.uuidString
+        )
         let uniqueTargets = deduplicatedSessionTargets(targets)
         let targetIds = uniqueTargets.map(\.id)
         guard !targetIds.isEmpty else {
@@ -12856,7 +12885,8 @@ struct CampaignMapView: View {
                     sharedLiveSessionIdOverride: sharedLiveSessionIdOverride,
                     goalAmountOverride: goalAmount,
                     routeAssignmentId: routeAssignmentId,
-                    farmExecutionContext: farmExecutionContext
+                    farmExecutionContext: farmExecutionContext,
+                    skipProvisionGate: skipProvisionGate
                 )
                 let liveShareContext = await MainActor.run { () -> (UUID?, UUID?) in
                     if farmExecutionContext != nil {
@@ -14789,17 +14819,17 @@ struct LocationCardView: View {
 
     private var lockedHomeMessage: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Details locked")
+            Text("Locked to another user")
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundColor(cardText)
 
             if let currentHomeUpdatedByLabel {
-                Text("\(currentHomeUpdatedByLabel) owns this home entry. You can see the address and who hit it, but not the saved details.")
+                Text("This home is locked to \(currentHomeUpdatedByLabel). You can see the address and who hit it, but not the saved details.")
                     .font(.system(size: 13))
                     .foregroundColor(cardPlaceholder)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
-                Text("You can see the address, but the saved details for this home are hidden.")
+                Text("This home is locked to another user. You can see the address, but the saved details are hidden.")
                     .font(.system(size: 13))
                     .foregroundColor(cardPlaceholder)
                     .fixedSize(horizontal: false, vertical: true)

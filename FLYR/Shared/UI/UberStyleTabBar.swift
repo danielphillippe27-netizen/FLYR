@@ -48,7 +48,7 @@ struct UberStyleTabBar: View {
     private let salespersonTabs: [SalespersonTab] = [
         SalespersonTab(id: 0, title: "Home", icon: "house", selectedIcon: "house.fill"),
         SalespersonTab(id: 1, title: "Dialler", icon: "phone", selectedIcon: "phone.fill"),
-        SalespersonTab(id: 2, title: "Leads", icon: "person.2", selectedIcon: "person.2.fill"),
+        SalespersonTab(id: 2, title: "FLYR PRO", icon: "person.2", selectedIcon: "person.2.fill"),
         SalespersonTab(id: 3, title: "Inbox", icon: "tray", selectedIcon: "tray.fill"),
         SalespersonTab(id: 4, title: "Task", icon: "checklist", selectedIcon: "checklist")
     ]

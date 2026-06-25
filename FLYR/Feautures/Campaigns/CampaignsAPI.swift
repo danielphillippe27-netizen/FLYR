@@ -491,6 +491,22 @@ final class CampaignsAPI {
     // Fetches campaign metadata and address counts so list shows correct house count
     func fetchCampaignsV2(workspaceId: UUID? = nil) async throws -> [CampaignV2] {
         print("🌐 [API DEBUG] Fetching campaigns V2 from Supabase (metadata + address counts)")
+        if OfflineFirstConfig.isEnabled {
+            let cachedCampaigns = await CampaignRepository.shared.getCachedCampaigns()
+            if !cachedCampaigns.isEmpty {
+                PerfTrace.event("offline_first", "campaign_list_cache_hit", fields: [
+                    "count": cachedCampaigns.count,
+                    "online": NetworkMonitor.shared.isOnline
+                ])
+                if NetworkMonitor.shared.isOnline {
+                    await MainActor.run {
+                        OfflinePreloadCoordinator.shared.schedule(reason: "campaign_list_cache_hit")
+                    }
+                }
+                return cachedCampaigns
+            }
+        }
+
         if !NetworkMonitor.shared.isOnline {
             let cachedCampaigns = await CampaignRepository.shared.getCachedCampaigns()
             if !cachedCampaigns.isEmpty {
@@ -946,6 +962,9 @@ final class CampaignsAPI {
             .update(payload)
             .eq("id", value: campaignId.uuidString)
             .execute()
+
+        try await verifyCampaignStatus(campaignId: campaignId, expectedStatus: status)
+        await CampaignRepository.shared.updateCachedCampaignStatus(campaignId: campaignId, status: status)
         print("✅ [API] Updated campaign \(campaignId) status to \(status.rawValue)")
     }
 
@@ -955,6 +974,9 @@ final class CampaignsAPI {
             .delete()
             .eq("id", value: campaignId.uuidString)
             .execute()
+
+        try await verifyCampaignDeleted(campaignId: campaignId)
+        await CampaignRepository.shared.removeCachedCampaign(campaignId: campaignId)
         print("✅ [API] Deleted campaign \(campaignId)")
     }
 
@@ -967,7 +989,61 @@ final class CampaignsAPI {
             .delete()
             .in("id", values: uniqueIDs.map(\.uuidString))
             .execute()
+
+        try await verifyCampaignsDeleted(campaignIds: uniqueIDs)
+        for campaignID in uniqueIDs {
+            await CampaignRepository.shared.removeCachedCampaign(campaignId: campaignID)
+        }
         print("✅ [API] Deleted \(uniqueIDs.count) campaign(s)")
+    }
+
+    private struct CampaignMutationCheckRow: Decodable {
+        let id: UUID
+        let status: CampaignStatus?
+    }
+
+    private func verifyCampaignStatus(campaignId: UUID, expectedStatus: CampaignStatus) async throws {
+        let response: PostgrestResponse<[CampaignMutationCheckRow]> = try await client
+            .from("campaigns")
+            .select("id,status")
+            .eq("id", value: campaignId.uuidString)
+            .limit(1)
+            .execute()
+
+        guard response.value.first?.status?.rawValue == expectedStatus.rawValue else {
+            throw NSError(
+                domain: "CampaignsAPI",
+                code: 409,
+                userInfo: [
+                    NSLocalizedDescriptionKey: "Campaign status was not updated. You may not have permission to modify this campaign."
+                ]
+            )
+        }
+    }
+
+    private func verifyCampaignDeleted(campaignId: UUID) async throws {
+        try await verifyCampaignsDeleted(campaignIds: [campaignId])
+    }
+
+    private func verifyCampaignsDeleted(campaignIds: [UUID]) async throws {
+        let uniqueIDs = Array(Set(campaignIds))
+        guard !uniqueIDs.isEmpty else { return }
+
+        let response: PostgrestResponse<[CampaignMutationCheckRow]> = try await client
+            .from("campaigns")
+            .select("id,status")
+            .in("id", values: uniqueIDs.map(\.uuidString))
+            .execute()
+
+        guard response.value.isEmpty else {
+            throw NSError(
+                domain: "CampaignsAPI",
+                code: 409,
+                userInfo: [
+                    NSLocalizedDescriptionKey: "Campaign was not deleted. You may not have permission to delete it."
+                ]
+            )
+        }
     }
 
     /// Trigger provision: backend reads territory_boundary and resolves Diamond first, then Bedrock S3.
@@ -1265,6 +1341,20 @@ final class CampaignsAPI {
 
     /// `nil` = allowed to start session; non-nil = user-facing reason to block.
     func sessionStartBlockReason(campaignId: UUID) async -> String? {
+        if OfflineFirstConfig.isEnabled {
+            let campaignIdString = campaignId.uuidString
+            let downloadState = await CampaignRepository.shared.getDownloadState(campaignId: campaignIdString)
+            let readiness = await CampaignDownloadService.shared.readiness(for: campaignIdString)
+            let mapReadiness = await CampaignDownloadService.shared.mapReadiness(for: campaignIdString)
+            let hasCachedBundle = await CampaignRepository.shared.getCampaignMapBundle(campaignId: campaignIdString) != nil
+            if downloadState?.isAvailableOffline == true ||
+                readiness?.isVerified == true ||
+                mapReadiness?.isMapUsable == true ||
+                hasCachedBundle {
+                return nil
+            }
+        }
+
         if !NetworkMonitor.shared.isOnline {
             let campaignIdString = campaignId.uuidString
             let downloadState = await CampaignRepository.shared.getDownloadState(campaignId: campaignIdString)
@@ -1594,6 +1684,17 @@ final class CampaignsV2APISupabase: CampaignsV2APIType {
     }
     
     func fetchCampaign(id: UUID) async throws -> CampaignV2 {
+        if OfflineFirstConfig.isEnabled,
+           let cachedCampaign = await CampaignRepository.shared.getCachedCampaign(campaignId: id) {
+            print("📴 [API DEBUG] Offline-first cached campaign V2 detail: \(id)")
+            if NetworkMonitor.shared.isOnline {
+                await MainActor.run {
+                    OfflinePreloadCoordinator.shared.schedule(reason: "campaign_detail_cache_hit")
+                }
+            }
+            return cachedCampaign
+        }
+
         if !NetworkMonitor.shared.isOnline,
            let cachedCampaign = await CampaignRepository.shared.getCachedCampaign(campaignId: id) {
             print("📴 [API DEBUG] Loaded cached campaign V2 for offline detail: \(id)")

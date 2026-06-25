@@ -49,6 +49,7 @@ final class SalespersonVoiceCallService: NSObject, ObservableObject {
     private var isResettingClientConnection = false
     private var currentTelnyxSessionId: String?
     private var activeCalls: [UUID: Call] = [:]
+    private var reportedMissedCallIds: Set<UUID> = []
     private var pendingClientReadyContinuations: [CheckedContinuation<Void, Error>] = []
     private var pendingSessionReadyContinuations: [CheckedContinuation<Void, Error>] = []
     private var pendingPushCompletion: (() -> Void)?
@@ -684,6 +685,18 @@ final class SalespersonVoiceCallService: NSObject, ObservableObject {
         return "Incoming FLYR call"
     }
 
+    private func incomingNumber(for call: Call?) -> String? {
+        let callerNumber = call?.callInfo?.callerNumber?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "client:", with: "")
+        let fallback = activeCallLabel?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "client:", with: "")
+        let value = callerNumber?.nilIfEmpty ?? fallback?.nilIfEmpty
+        guard let value, value.filter(\.isNumber).count >= 7 else { return nil }
+        return value
+    }
+
     private func request(transaction: CXTransaction) async throws {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             callController.request(transaction) { error in
@@ -710,6 +723,92 @@ final class SalespersonVoiceCallService: NSObject, ObservableObject {
     private func completePendingPushIfNeeded() {
         pendingPushCompletion?()
         pendingPushCompletion = nil
+    }
+
+    private func reportMissedCallIfNeeded(callId: UUID, endedAt: Date, reason: String) {
+        guard callConnectedAt == nil,
+              reportedMissedCallIds.insert(callId).inserted,
+              let fromNumber = incomingNumber(for: activeCalls[callId]),
+              let workspaceId = WorkspaceContext.shared.workspaceId else {
+            return
+        }
+
+        Task {
+            await Self.postCallLog(
+                workspaceId: workspaceId,
+                providerCallId: callId.uuidString,
+                direction: "inbound",
+                from: fromNumber,
+                to: nil,
+                status: "missed",
+                disposition: reason,
+                startedAt: callStartedAt,
+                endedAt: endedAt
+            )
+        }
+    }
+
+    private nonisolated static func postCallLog(
+        workspaceId: UUID,
+        providerCallId: String,
+        direction: String,
+        from: String,
+        to: String?,
+        status: String,
+        disposition: String?,
+        startedAt: Date?,
+        endedAt: Date
+    ) async {
+        struct Payload: Encodable {
+            let providerCallId: String
+            let direction: String
+            let from: String
+            let to: String?
+            let status: String
+            let disposition: String?
+            let startedAt: String?
+            let endedAt: String
+        }
+
+        do {
+            var components = URLComponents(
+                url: Config.backendAPIURL.appendingPathComponent("api/dialer/calls"),
+                resolvingAgainstBaseURL: false
+            )
+            components?.queryItems = [URLQueryItem(name: "workspaceId", value: workspaceId.uuidString)]
+            guard let url = components?.url else { return }
+
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            let payload = Payload(
+                providerCallId: providerCallId,
+                direction: direction,
+                from: from,
+                to: to,
+                status: status,
+                disposition: disposition,
+                startedAt: startedAt.map { formatter.string(from: $0) },
+                endedAt: formatter.string(from: endedAt)
+            )
+
+            let session = try await SupabaseManager.shared.client.auth.session
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.timeoutInterval = 8
+            request.httpBody = try JSONEncoder().encode(payload)
+            request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            let (_, response) = try await URLSession.shared.data(for: request)
+            if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+                #if DEBUG
+                print("Missed call log failed status=\(http.statusCode)")
+                #endif
+            }
+        } catch {
+            #if DEBUG
+            print("Missed call log failed: \(error.localizedDescription)")
+            #endif
+        }
     }
 
     private func clearCall(uuid: UUID) {
@@ -892,6 +991,7 @@ extension SalespersonVoiceCallService: TxClientDelegate {
             provider.reportOutgoingCall(with: callId, connectedAt: Date())
         case .DONE:
             provider.reportCall(with: callId, endedAt: Date(), reason: .remoteEnded)
+            reportMissedCallIfNeeded(callId: callId, endedAt: Date(), reason: "ended")
             clearCall(uuid: callId)
             callPhase = .ended
         case .RECONNECTING, .DROPPED:
@@ -920,6 +1020,7 @@ extension SalespersonVoiceCallService: TxClientDelegate {
             endedReason = .remoteEnded
         }
         provider.reportCall(with: callId, endedAt: Date(), reason: endedReason)
+        reportMissedCallIfNeeded(callId: callId, endedAt: Date(), reason: "remote_ended")
         clearCall(uuid: callId)
         callPhase = .ended
         completePendingPushIfNeeded()
@@ -990,6 +1091,7 @@ extension SalespersonVoiceCallService: CXProviderDelegate {
 
     func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
         if activeCalls[action.callUUID] != nil || telnyxClient.isConnected() {
+            reportMissedCallIfNeeded(callId: action.callUUID, endedAt: Date(), reason: "declined")
             telnyxClient.endCallFromCallkit(endAction: action, callId: action.callUUID)
             clearCall(uuid: action.callUUID)
             hasIncomingCall = false
@@ -1179,6 +1281,12 @@ private extension Data {
 
     var telnyxHexString: String {
         map { String(format: "%02x", $0) }.joined()
+    }
+}
+
+private extension String {
+    var nilIfEmpty: String? {
+        isEmpty ? nil : self
     }
 }
 

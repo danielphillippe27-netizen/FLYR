@@ -1,11 +1,13 @@
 import SwiftUI
 
 struct EndSessionButton: View {
+    @ObservedObject private var sessionManager = SessionManager.shared
+
     var body: some View {
-        Button(action: { 
-            SessionManager.shared.stop()
+        Button(action: {
+            sessionManager.stop()
         }) {
-            Text("End Session")
+            Text(sessionManager.isEndingSession ? "Ending..." : "End Session")
                 .font(.flyrHeadline)
                 .foregroundColor(.white)
                 .padding(.horizontal, 24)
@@ -14,8 +16,9 @@ struct EndSessionButton: View {
                 .clipShape(Capsule())
                 .shadow(radius: 5)
         }
+        .disabled(sessionManager.isEndingSession)
+        .opacity(sessionManager.isEndingSession ? 0.7 : 1)
         .padding(.bottom, 40)
     }
 }
-
 

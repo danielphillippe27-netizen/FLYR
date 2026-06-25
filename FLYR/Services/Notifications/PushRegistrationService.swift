@@ -43,6 +43,7 @@ final class PushRegistrationService {
     func uploadPendingTokenIfPossible() async {
         guard !isUploading else { return }
         guard let token = pendingDeviceToken, token != lastUploadedDeviceToken else { return }
+        guard NetworkMonitor.shared.isOnline else { return }
         guard let session = try? await client.auth.session else { return }
 
         isUploading = true
