@@ -78,6 +78,9 @@ actor FieldLeadsService {
             return await enrichedWithAppointmentSignals(cached)
         }
 
+        var mergedLeads = cached
+        var didLoadContacts = false
+
         do {
             let contacts = try await fetchContactLeadRows(
                 userId: userId,
@@ -85,26 +88,34 @@ actor FieldLeadsService {
                 campaignId: campaignId,
                 sessionId: sessionId
             )
+            didLoadContacts = true
             if !contacts.isEmpty {
                 await cacheLeadRows(contacts, userId: userId, workspaceId: workspaceId)
                 let refreshedCached = await fetchCachedLeads(userId: userId, workspaceId: workspaceId, campaignId: campaignId)
-                let leads = Self.deduplicated(contacts.map(Self.makeFieldLead(from:)) + refreshedCached)
-                return await enrichedWithAppointmentSignals(leads)
+                mergedLeads.append(contentsOf: contacts.map(Self.makeFieldLead(from:)))
+                mergedLeads.append(contentsOf: refreshedCached)
             }
         } catch {
             print("⚠️ [FieldLeadsService] Contacts fetch failed, falling back to field_leads: \(error.localizedDescription)")
-            if !cached.isEmpty {
-                return await enrichedWithAppointmentSignals(cached)
+        }
+
+        do {
+            let legacyLeads = try await fetchLegacyLeads(
+                userId: userId,
+                workspaceId: workspaceId,
+                campaignId: campaignId,
+                sessionId: sessionId
+            )
+            mergedLeads.append(contentsOf: legacyLeads)
+        } catch {
+            if didLoadContacts || !mergedLeads.isEmpty {
+                print("⚠️ [FieldLeadsService] Legacy field_leads fetch failed: \(error.localizedDescription)")
+            } else {
+                throw error
             }
         }
 
-        let legacyLeads = try await fetchLegacyLeads(
-            userId: userId,
-            workspaceId: workspaceId,
-            campaignId: campaignId,
-            sessionId: sessionId
-        )
-        return await enrichedWithAppointmentSignals(Self.deduplicated(cached + legacyLeads))
+        return await enrichedWithAppointmentSignals(Self.deduplicated(mergedLeads))
     }
 
     // MARK: - Create
@@ -328,7 +339,7 @@ actor FieldLeadsService {
             "user_id": AnyCodable(lead.userId),
             "full_name": AnyCodable(Self.contactFullName(from: lead.name)),
             "address": AnyCodable(lead.address),
-            "status": AnyCodable(lead.status.rawValue),
+            "status": AnyCodable(Self.contactStatus(from: lead.status).rawValue),
             "created_at": AnyCodable(lead.createdAt),
             "updated_at": AnyCodable(lead.updatedAt)
         ]

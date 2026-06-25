@@ -19,6 +19,7 @@
 		30A4A6182EA71CB500FA72B1 /* GoogleSignIn in Frameworks */ = {isa = PBXBuildFile; productRef = 30A4A6192EA71CB500FA72B1 /* GoogleSignIn */; };
 		30A4A6222EA71CC000FA72B1 /* Lottie in Frameworks */ = {isa = PBXBuildFile; productRef = 30A4A6212EA71CC000FA72B1 /* Lottie */; };
 		30DC41E02F35A3A5003EBA4A /* GoogleSignInSwift in Frameworks */ = {isa = PBXBuildFile; productRef = 30DC41DF2F35A3A5003EBA4A /* GoogleSignInSwift */; };
+		4D9F102C2F94000100A1F1A1 /* telnyx-webrtc-ios in Frameworks */ = {isa = PBXBuildFile; productRef = 4D9F102B2F94000100A1F1A1 /* telnyx-webrtc-ios */; };
 		58364365322F42ACD84162FE /* FLYRSessionActivityExtension.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 6D459D5D3353C7164A9DE29E /* FLYRSessionActivityExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		6E6070619E28865FB84BCA38 /* SessionLiveActivityWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5194BCD47B2F8D7EAA1E888C /* SessionLiveActivityWidget.swift */; };
 		7B3EAA072F50A001003EBA4A /* LiveKit in Frameworks */ = {isa = PBXBuildFile; productRef = 7B3EAA062F50A001003EBA4A /* LiveKit */; };
@@ -80,21 +81,11 @@
 		AA7395B8BD595392DE025A5C /* Assets.xcassets */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = folder.assetcatalog; name = Assets.xcassets; path = FLYR/Assets.xcassets; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
-/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
-		8D6A5E932EA7000100FA72B1 /* Exceptions for "FLYR" folder in "FLYR" target */ = {
-			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
-			membershipExceptions = (
-				Info.plist,
-			);
-			target = 30A4A57D2EA6CD9800FA72B1 /* FLYR */;
-		};
-/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
-
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		30A4A5802EA6CD9800FA72B1 /* FLYR */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
-				8D6A5E932EA7000100FA72B1 /* Exceptions for "FLYR" folder in "FLYR" target */,
+				7F0C1B3A4E2D4895A6120F44 /* Exceptions for "FLYR" folder in "FLYR" target */,
 			);
 			path = FLYR;
 			sourceTree = "<group>";
@@ -111,6 +102,16 @@
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		7F0C1B3A4E2D4895A6120F44 /* Exceptions for "FLYR" folder in "FLYR" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 30A4A57D2EA6CD9800FA72B1 /* FLYR */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFrameworksBuildPhase section */
 		30A4A57B2EA6CD9800FA72B1 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
@@ -124,6 +125,7 @@
 				30A4A5ED2EA70F4800FA72B1 /* Supabase in Frameworks */,
 				30A4A5E22EA70F3500FA72B1 /* Auth in Frameworks */,
 				30A4A5EA2EA70F3500FA72B1 /* Storage in Frameworks */,
+				4D9F102C2F94000100A1F1A1 /* telnyx-webrtc-ios in Frameworks */,
 				30A4A6162EA71CA500FA72B1 /* MapboxMaps in Frameworks */,
 				30A4A6182EA71CB500FA72B1 /* GoogleSignIn in Frameworks */,
 				30A4A5E82EA70F3500FA72B1 /* Realtime in Frameworks */,
@@ -248,6 +250,7 @@
 				30A4A6192EA71CB500FA72B1 /* GoogleSignIn */,
 				30DC41DF2F35A3A5003EBA4A /* GoogleSignInSwift */,
 				30A4A6212EA71CC000FA72B1 /* Lottie */,
+				4D9F102B2F94000100A1F1A1 /* telnyx-webrtc-ios */,
 				9A1B2C3D4E5F60718293A4B7 /* GoogleMaps */,
 				7B3EAA062F50A001003EBA4A /* LiveKit */,
 				A1B2C3D4E5F60718293A4B5C /* GRDB */,
@@ -355,6 +358,7 @@
 				30A4A6142EA71CA500FA72B1 /* XCRemoteSwiftPackageReference "mapbox-maps-ios" */,
 				30A4A6172EA71CB500FA72B1 /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */,
 				30A4A6202EA71CC000FA72B1 /* XCRemoteSwiftPackageReference "lottie-ios" */,
+				4D9F102A2F94000100A1F1A1 /* XCRemoteSwiftPackageReference "telnyx-webrtc-ios" */,
 				9A1B2C3D4E5F60718293A4B6 /* XCRemoteSwiftPackageReference "ios-maps-sdk" */,
 				7B3EAA052F50A001003EBA4A /* XCRemoteSwiftPackageReference "client-sdk-swift" */,
 				A1B2C3D4E5F60718293A4B5B /* XCRemoteSwiftPackageReference "GRDB.swift" */,
@@ -630,11 +634,12 @@
 		30A4A5A02EA6CD9900FA72B1 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				APS_ENVIRONMENT = development;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = FLYR/FLYR.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 6;
+				CURRENT_PROJECT_VERSION = 9;
 				DEVELOPMENT_TEAM = 2AR5T8ZYAS;
 				ENABLE_DEBUG_DYLIB = NO;
 				ENABLE_PREVIEWS = YES;
@@ -649,7 +654,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.22;
+				MARKETING_VERSION = 1.25;
 				PRODUCT_BUNDLE_IDENTIFIER = com.danielphillippe.FLYR;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -669,11 +674,12 @@
 		30A4A5A12EA6CD9900FA72B1 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				APS_ENVIRONMENT = production;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = FLYR/FLYR.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 6;
+				CURRENT_PROJECT_VERSION = 9;
 				DEVELOPMENT_TEAM = 2AR5T8ZYAS;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -687,7 +693,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.22;
+				MARKETING_VERSION = 1.25;
 				PRODUCT_BUNDLE_IDENTIFIER = com.danielphillippe.FLYR;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -709,11 +715,11 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 6;
+				CURRENT_PROJECT_VERSION = 9;
 				DEVELOPMENT_TEAM = 2AR5T8ZYAS;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				MARKETING_VERSION = 1.22;
+				MARKETING_VERSION = 1.25;
 				PRODUCT_BUNDLE_IDENTIFIER = com.danielphillippe.FLYRTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
@@ -731,11 +737,11 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 6;
+				CURRENT_PROJECT_VERSION = 9;
 				DEVELOPMENT_TEAM = 2AR5T8ZYAS;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				MARKETING_VERSION = 1.22;
+				MARKETING_VERSION = 1.25;
 				PRODUCT_BUNDLE_IDENTIFIER = com.danielphillippe.FLYRTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
@@ -752,10 +758,10 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 6;
+				CURRENT_PROJECT_VERSION = 9;
 				DEVELOPMENT_TEAM = 2AR5T8ZYAS;
 				GENERATE_INFOPLIST_FILE = YES;
-				MARKETING_VERSION = 1.22;
+				MARKETING_VERSION = 1.25;
 				PRODUCT_BUNDLE_IDENTIFIER = com.danielphillippe.FLYRUITests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
@@ -772,10 +778,10 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 6;
+				CURRENT_PROJECT_VERSION = 9;
 				DEVELOPMENT_TEAM = 2AR5T8ZYAS;
 				GENERATE_INFOPLIST_FILE = YES;
-				MARKETING_VERSION = 1.22;
+				MARKETING_VERSION = 1.25;
 				PRODUCT_BUNDLE_IDENTIFIER = com.danielphillippe.FLYRUITests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
@@ -794,7 +800,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CLANG_ENABLE_OBJC_WEAK = NO;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 6;
+				CURRENT_PROJECT_VERSION = 9;
 				DEVELOPMENT_TEAM = 2AR5T8ZYAS;
 				ENABLE_DEBUG_DYLIB = NO;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -805,7 +811,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.22;
+				MARKETING_VERSION = 1.25;
 				PRODUCT_BUNDLE_IDENTIFIER = com.danielphillippe.FLYR.SessionActivityExtension;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
@@ -830,7 +836,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CLANG_ENABLE_OBJC_WEAK = NO;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 6;
+				CURRENT_PROJECT_VERSION = 9;
 				DEVELOPMENT_TEAM = 2AR5T8ZYAS;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = FLYRSessionActivityExtension/Info.plist;
@@ -840,7 +846,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.22;
+				MARKETING_VERSION = 1.25;
 				PRODUCT_BUNDLE_IDENTIFIER = com.danielphillippe.FLYR.SessionActivityExtension;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
@@ -939,6 +945,14 @@
 			requirement = {
 				kind = upToNextMajorVersion;
 				minimumVersion = 4.0.0;
+			};
+		};
+		4D9F102A2F94000100A1F1A1 /* XCRemoteSwiftPackageReference "telnyx-webrtc-ios" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/team-telnyx/telnyx-webrtc-ios.git";
+			requirement = {
+				branch = main;
+				kind = branch;
 			};
 		};
 		7B3EAA052F50A001003EBA4A /* XCRemoteSwiftPackageReference "client-sdk-swift" */ = {
@@ -1047,6 +1061,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 30A4A6172EA71CB500FA72B1 /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */;
 			productName = GoogleSignInSwift;
+		};
+		4D9F102B2F94000100A1F1A1 /* telnyx-webrtc-ios */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 4D9F102A2F94000100A1F1A1 /* XCRemoteSwiftPackageReference "telnyx-webrtc-ios" */;
+			productName = "telnyx-webrtc-ios";
 		};
 		7B3EAA062F50A001003EBA4A /* LiveKit */ = {
 			isa = XCSwiftPackageProductDependency;

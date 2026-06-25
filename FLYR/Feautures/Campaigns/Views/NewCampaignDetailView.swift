@@ -18,6 +18,7 @@ struct NewCampaignDetailView: View {
     @EnvironmentObject private var campaignDownloadService: CampaignDownloadService
     @ObservedObject private var authManager = AuthManager.shared
     @ObservedObject private var sessionManager = SessionManager.shared
+    @StateObject private var onboardingDemo = OnboardingDemoViewModel.shared
     @StateObject private var hook = UseCampaignV2()
     @State private var mapCenter: CLLocationCoordinate2D?
     @State private var territoryBoundary: [CLLocationCoordinate2D] = []
@@ -60,7 +61,15 @@ struct NewCampaignDetailView: View {
             campaign: campaign,
             sessions: campaignActivities,
             fieldLeads: campaignLeads,
-            addressStatuses: addressStatuses
+            addressStatuses: effectiveAddressStatuses
+        )
+    }
+
+    private var effectiveAddressStatuses: [String: AddressStatus] {
+        guard let campaign = hook.item else { return addressStatuses }
+        return CampaignCompletionShowcase.completedAddressStatuses(
+            for: campaign,
+            overlaidOn: addressStatuses
         )
     }
 
@@ -73,11 +82,19 @@ struct NewCampaignDetailView: View {
     }
 
     private var effectiveCampaignLeads: [FieldLead] {
-        campaignLeads
+        if CampaignCompletionShowcase.isJustSoldLivingCourt(hook.item?.name ?? ""),
+           let syntheticLeads = presentation?.syntheticLeads,
+           !syntheticLeads.isEmpty {
+            return syntheticLeads
+        }
+        return campaignLeads
     }
 
     private var effectiveCampaignLeadsCount: Int {
-        campaignLeadsCount
+        if CampaignCompletionShowcase.isJustSoldLivingCourt(hook.item?.name ?? "") {
+            return presentation?.leads ?? 12
+        }
+        return campaignLeadsCount
     }
 
     private var shouldShowFullDemoStatsCard: Bool {
@@ -205,6 +222,10 @@ struct NewCampaignDetailView: View {
                             .font(.flyrCaption)
                             .foregroundColor(.muted)
                     }
+                }
+
+                if shouldShowOnboardingDemoNudge {
+                    onboardingDemoNudge
                 }
                 
                 // Progress Section
@@ -691,7 +712,7 @@ struct NewCampaignDetailView: View {
             if let addressId = selectedAddressId {
                 StatusPickerSheet(
                     addressLabel: selectedAddressLabel,
-                    currentStatus: addressStatuses[addressId] ?? .none,
+                    currentStatus: effectiveAddressStatuses[addressId] ?? .none,
                     onSelect: { status in
                         handleStatusSelected(addressId: addressId, newStatus: status)
                     }
@@ -702,6 +723,7 @@ struct NewCampaignDetailView: View {
             print("📱 [DETAIL DEBUG] NewCampaignDetailView appeared for campaign ID: \(campaignID)")
             hook.load(id: campaignID, store: store)
             Task {
+                await onboardingDemo.load()
                 await campaignDownloadService.refreshState(campaignId: campaignID.uuidString)
                 await refreshCampaignDetailData()
             }
@@ -769,6 +791,40 @@ struct NewCampaignDetailView: View {
         formatter.dateStyle = .medium
         formatter.timeStyle = .short
         return formatter
+    }
+
+    private var shouldShowOnboardingDemoNudge: Bool {
+        onboardingDemo.shouldShowPanel && onboardingDemo.state?.seededCampaignId == campaignID
+    }
+
+    private var onboardingDemoNudge: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "map.fill")
+                .font(.system(size: 16, weight: .bold))
+                .foregroundStyle(Color.red)
+                .frame(width: 22)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Starter campaign")
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(Color.text)
+                Text("Tap homes to see status colors, check sample leads, then start a session when you are ready.")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(Color.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer()
+
+            Button("Got it") {
+                Task { await onboardingDemo.markComplete("open_starter_campaign") }
+            }
+            .font(.system(size: 13, weight: .bold))
+            .foregroundStyle(Color.red)
+        }
+        .padding(14)
+        .background(Color.red.opacity(0.09))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
     @ViewBuilder
@@ -1414,6 +1470,7 @@ struct CampaignDetailPresentation {
 
         let isMearnsDemoCampaign = Self.isMearnsDemoCampaign(campaign.name)
         isJustListedMearnsDemo = Self.isJustListedMearnsCampaign(campaign.name)
+        let isJustSoldLivingCourtShowcase = CampaignCompletionShowcase.isJustSoldLivingCourt(campaign.name)
         let totalAddresses = max(campaign.addresses.count, campaign.totalFlyers)
         let realDoors = sessions.reduce(0) { $0 + $1.doorsCount }
         let realSeconds = sessions.reduce(0.0) { $0 + $1.durationSeconds }
@@ -1438,13 +1495,18 @@ struct CampaignDetailPresentation {
             derivedConversations,
             max(realAppointments, appointmentStatusCount)
         )
-        let derivedLeadCount = max(leadCount, leadStatusCount, derivedAppointments)
+        var derivedLeadCount = max(leadCount, leadStatusCount, derivedAppointments)
 
         if isMearnsDemoCampaign {
             let demoDoorsFloor = max(derivedDoors, max(0, totalAddresses - 20))
             derivedDoors = min(totalAddresses, demoDoorsFloor)
             let demoConversationFloor = max(derivedConversations, max(12, Int((Double(derivedDoors) * 0.1).rounded())))
             derivedConversations = min(derivedDoors, demoConversationFloor)
+        }
+        if isJustSoldLivingCourtShowcase, totalAddresses > 0 {
+            derivedDoors = totalAddresses
+            derivedConversations = min(derivedDoors, 57)
+            derivedLeadCount = min(derivedConversations, 12)
         }
         if isJustListedMearnsDemo {
             let targetDoors = totalAddresses > 0 ? min(totalAddresses, 322) : 322
@@ -1531,7 +1593,7 @@ struct CampaignDetailPresentation {
             startTime: sessions.last?.start_time ?? campaign.createdAt
         )
 
-        syntheticLeads = fieldLeads.isEmpty
+        syntheticLeads = fieldLeads.isEmpty || isJustSoldLivingCourtShowcase
             ? Self.makeSyntheticLeads(
                 campaign: campaign,
                 addressStatuses: addressStatuses,
@@ -1654,7 +1716,14 @@ struct CampaignDetailPresentation {
             "Chris Bennett",
             "Maya Singh",
             "Ethan Parker",
-            "Olivia Chen"
+            "Olivia Chen",
+            "Daniela Reyes",
+            "Marcus Lee",
+            "Priya Kapoor",
+            "Jordan Miller",
+            "Ava Williams",
+            "Noah Campbell",
+            "Grace Patel"
         ]
         let notes = [
             "Asked for a market update next week.",
@@ -1686,6 +1755,91 @@ struct CampaignDetailPresentation {
     private static func isJustListedMearnsCampaign(_ campaignName: String) -> Bool {
         let normalized = campaignName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return normalized.contains("mearns") && normalized.contains("just listed")
+    }
+}
+
+enum CampaignCompletionShowcase {
+    static func isJustSoldLivingCourt(_ campaignName: String) -> Bool {
+        let normalized = campaignName
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        return normalized.contains("just sold") && normalized.contains("living court")
+    }
+
+    static func completedAddressStatuses(
+        for campaign: CampaignV2,
+        overlaidOn statuses: [String: AddressStatus]
+    ) -> [String: AddressStatus] {
+        guard isJustSoldLivingCourt(campaign.name), !campaign.addresses.isEmpty else {
+            return statuses
+        }
+
+        var completedStatuses = statuses
+        for address in campaign.addresses {
+            let key = address.id.uuidString
+            completedStatuses[key] = AddressStatus.preferredForDisplay(
+                current: completedStatuses[key],
+                incoming: .delivered
+            )
+        }
+        return completedStatuses
+    }
+
+    static func completedAddressStatuses(
+        addressIds: [UUID],
+        overlaidOn statuses: [UUID: AddressStatus]
+    ) -> [UUID: AddressStatus] {
+        guard !addressIds.isEmpty else { return statuses }
+
+        var completedStatuses = statuses
+        for addressId in addressIds {
+            completedStatuses[addressId] = AddressStatus.preferredForDisplay(
+                current: completedStatuses[addressId],
+                incoming: .delivered
+            )
+        }
+        return completedStatuses
+    }
+
+    static func assortedMapAddressStatuses(
+        addressIds: [UUID],
+        overlaidOn statuses: [UUID: AddressStatus]
+    ) -> [UUID: AddressStatus] {
+        guard !addressIds.isEmpty else { return statuses }
+
+        let sortedAddressIds = addressIds.sorted { $0.uuidString < $1.uuidString }
+        let yellowIndexes = yellowHighlightIndexes(total: sortedAddressIds.count)
+        var completedStatuses = statuses
+
+        for (index, addressId) in sortedAddressIds.enumerated() {
+            completedStatuses[addressId] = AddressStatus.preferredForDisplay(
+                current: completedStatuses[addressId],
+                incoming: assortedMapStatus(index: index, yellowIndexes: yellowIndexes)
+            )
+        }
+        return completedStatuses
+    }
+
+    private static func assortedMapStatus(index: Int, yellowIndexes: Set<Int>) -> AddressStatus {
+        if yellowIndexes.contains(index) {
+            return .appointment
+        }
+        if index.isMultiple(of: 11) {
+            return .noAnswer
+        }
+        if index.isMultiple(of: 5) {
+            return .hotLead
+        }
+        return .delivered
+    }
+
+    private static func yellowHighlightIndexes(total: Int) -> Set<Int> {
+        guard total > 0 else { return [] }
+        if total == 1 { return [0] }
+        return [
+            max(0, min(total - 1, total / 3)),
+            max(0, min(total - 1, (total * 2) / 3))
+        ]
     }
 }
 

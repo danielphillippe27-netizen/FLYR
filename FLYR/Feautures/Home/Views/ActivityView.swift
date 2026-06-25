@@ -623,9 +623,9 @@ struct ActivitySessionDetailView: View {
                         subtitle: session.end_time == nil ? "Active session" : "Completed session"
                     )
                     ActivitySessionMetricCard(
-                        title: "Flyers",
-                        value: "\(max(0, session.flyers_delivered ?? 0))",
-                        subtitle: session.goalTypeValue.rawValue.capitalized
+                        title: "Appointments",
+                        value: "\(session.appointmentsCount)",
+                        subtitle: formattedPercent(session.appointmentsPerConversation) + " of conv"
                     )
                 }
             }
@@ -785,14 +785,11 @@ private struct ActivitySessionBreadcrumbMapboxView: UIViewRepresentable {
         let mapView = DisplayLinkRecoveringMapView(frame: .zero)
         mapView.ornaments.options.scaleBar.visibility = .hidden
         mapView.ornaments.options.compass.visibility = .adaptive
+        context.coordinator.mapView = mapView
         if let map = mapView.mapboxMap {
             MapTheme.loadBlueStandardLightStyle(on: map)
         }
-        _ = mapView.mapboxMap?.onMapLoaded.observeNext { _ in
-            context.coordinator.setup(mapView: mapView)
-            context.coordinator.updateRoute(with: self.coordinates)
-        }
-        context.coordinator.mapView = mapView
+        context.coordinator.setupWhenStyleLoads(mapView: mapView, coordinates: coordinates)
         return mapView
     }
 
@@ -811,13 +808,28 @@ private struct ActivitySessionBreadcrumbMapboxView: UIViewRepresentable {
         weak var mapView: MapView?
         private var isSetup = false
         private var hasFramedRoute = false
+        private var styleLoadedObserver: AnyCancelable?
 
         init(routeSourceId: String, routeLayerId: String) {
             self.routeSourceId = routeSourceId
             self.routeLayerId = routeLayerId
         }
 
-        func setup(mapView: MapView) {
+        func setupWhenStyleLoads(mapView: MapView, coordinates: [CLLocationCoordinate2D]) {
+            guard let map = mapView.mapboxMap else { return }
+            if map.isStyleLoaded {
+                setup(mapView: mapView)
+                updateRoute(with: coordinates)
+            } else {
+                styleLoadedObserver = map.onStyleLoaded.observeNext { [weak self, weak mapView] _ in
+                    guard let self, let mapView else { return }
+                    self.setup(mapView: mapView)
+                    self.updateRoute(with: coordinates)
+                }
+            }
+        }
+
+        private func setup(mapView: MapView) {
             guard !isSetup, let map = mapView.mapboxMap else { return }
             isSetup = true
 
@@ -839,22 +851,23 @@ private struct ActivitySessionBreadcrumbMapboxView: UIViewRepresentable {
         }
 
         func updateRoute(with coordinates: [CLLocationCoordinate2D]) {
+            let validCoordinates = coordinates.filter(CLLocationCoordinate2DIsValid)
             guard let map = mapView?.mapboxMap,
                   map.sourceExists(withId: routeSourceId) else { return }
 
             let features: [Feature]
-            if coordinates.count >= 2 {
-                let line = coordinates.map { LocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
+            if validCoordinates.count >= 2 {
+                let line = validCoordinates.map { LocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
                 features = [Feature(geometry: .lineString(LineString(line)))]
             } else {
                 features = []
             }
             map.updateGeoJSONSource(withId: routeSourceId, geoJSON: .featureCollection(FeatureCollection(features: features)))
 
-            guard coordinates.count >= 2 else { return }
+            guard validCoordinates.count >= 2 else { return }
             if !hasFramedRoute {
                 hasFramedRoute = true
-                frameRoute(coordinates: coordinates)
+                frameRoute(coordinates: validCoordinates)
             }
         }
 

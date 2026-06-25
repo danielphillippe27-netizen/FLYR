@@ -1,5 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
+import { invalidateCampaignMapBundle } from "@/lib/services/CampaignMapBundleInvalidation";
 
 const SUPABASE_URL = process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY ?? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
@@ -209,14 +210,19 @@ export async function DELETE(request: Request, context: RouteContext): Promise<R
       console.warn("[campaign-building-delete] building stats cleanup warning:", deleteStatsError);
     }
 
-    const { error: deleteUnitsError } = await supabase
-      .from("building_units")
-      .delete()
-      .eq("campaign_id", campaignId)
-      .eq("parent_building_id", publicBuildingId);
+    const unitParentIds = Array.from(
+      new Set([publicBuildingId, buildingRow?.id].filter((value): value is string => Boolean(value)))
+    );
+    for (const parentBuildingId of unitParentIds) {
+      const { error: deleteUnitsError } = await supabase
+        .from("building_units")
+        .delete()
+        .eq("campaign_id", campaignId)
+        .eq("parent_building_id", parentBuildingId);
 
-    if (deleteUnitsError) {
-      console.warn("[campaign-building-delete] building units cleanup warning:", deleteUnitsError);
+      if (deleteUnitsError) {
+        console.warn("[campaign-building-delete] building units cleanup warning:", deleteUnitsError);
+      }
     }
 
     const shouldDeleteBuildingRow =
@@ -234,6 +240,8 @@ export async function DELETE(request: Request, context: RouteContext): Promise<R
         return NextResponse.json({ error: "Failed to delete building" }, { status: 500 });
       }
     }
+
+    await invalidateCampaignMapBundle(supabase, campaignId);
 
     return NextResponse.json({
       deleted: true,

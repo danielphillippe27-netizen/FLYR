@@ -26,7 +26,7 @@ struct SessionMapView: View {
                         HapticManager.light()
                         showEndSessionConfirmation = true
                     } label: {
-                        Text("End")
+                        Text(manager.isEndingSession ? "Ending..." : "End")
                             .font(.system(size: 15, weight: .semibold))
                             .foregroundColor(.white)
                             .padding(.horizontal, 14)
@@ -35,6 +35,7 @@ struct SessionMapView: View {
                             .clipShape(RoundedRectangle(cornerRadius: 10))
                     }
                     .buttonStyle(.plain)
+                    .disabled(manager.isEndingSession)
                     .padding(.top, 56)
                     .padding(.trailing, 12)
                 }
@@ -86,17 +87,19 @@ struct SessionMapView: View {
         .ignoresSafeArea(.all)
         .alert("Are you sure?", isPresented: $showEndSessionConfirmation) {
             Button("Cancel", role: .cancel) {}
-            Button("End", role: .destructive) {
-                SessionManager.shared.stop()
+            Button(manager.isEndingSession ? "Ending..." : "End", role: .destructive) {
+                manager.stop()
             }
+            .disabled(manager.isEndingSession)
         } message: {
             Text("This will end your session. You’ll see your summary and can share the transparent card.")
         }
         .alert("Session still running", isPresented: $manager.showLongSessionPrompt) {
             Button("Keep Running", role: .cancel) {}
-            Button("End Session", role: .destructive) {
-                SessionManager.shared.stop()
+            Button(manager.isEndingSession ? "Ending..." : "End Session", role: .destructive) {
+                manager.stop()
             }
+            .disabled(manager.isEndingSession)
         } message: {
             Text("This session has been running for a long time. End it now to save progress and prevent accidental all-day tracking.")
         }

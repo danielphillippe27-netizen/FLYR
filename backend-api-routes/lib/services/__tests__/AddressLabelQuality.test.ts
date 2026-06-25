@@ -55,3 +55,16 @@ test('accepts real house numbers on ordinal street names', () => {
   assert.equal(quality.streetOnlyOrdinal, 0);
   assert.equal(quality.acceptable, true);
 });
+
+test('rejects Brisbane-style number-only labels even when house_number is present', () => {
+  const quality = addressLabelQuality([
+    address({ formatted: '32', house_number: '32', street_name: '32', locality: 'Hamilton' }),
+    address({ formatted: '32A', house_number: '32A', street_name: '32A', locality: 'Hamilton' }),
+    address({ formatted: '34', house_number: '34', street_name: '34', locality: 'Hamilton' }),
+  ]);
+
+  assert.equal(quality.usable, 0);
+  assert.equal(quality.houseNumberUsable, 3);
+  assert.equal(quality.numericOnly, 2);
+  assert.equal(quality.acceptable, false);
+});

@@ -60,6 +60,10 @@ final class TeamWebHandoff {
     }
 
     func createTeamOnboardingURL() async throws -> URL {
+        try await createAuthenticatedWebURL(path: "/onboarding/team")
+    }
+
+    func createAuthenticatedWebURL(path: String, queryItems: [URLQueryItem] = []) async throws -> URL {
         let session = try await SupabaseManager.shared.client.auth.session
         guard !session.accessToken.isEmpty else {
             throw TeamWebHandoffError.missingSession
@@ -101,7 +105,7 @@ final class TeamWebHandoff {
             } else if let apiMessage = apiMessage, !apiMessage.isEmpty {
                 message = apiMessage
             } else if http.statusCode == 405 {
-                message = "Team setup on web is temporarily unavailable. Please try again later."
+                message = "Web handoff is temporarily unavailable. Please try again later."
             } else {
                 message = "Failed to continue on web (\(http.statusCode)): \(fallbackBody)"
             }
@@ -114,7 +118,7 @@ final class TeamWebHandoff {
                 #if DEBUG
                 print("🔗 Handoff: 200 but response body is empty")
                 #endif
-                throw TeamWebHandoffError.requestFailed("Team setup on web is temporarily unavailable. Please try again later.")
+                throw TeamWebHandoffError.requestFailed("Web handoff is temporarily unavailable. Please try again later.")
             }
             handoff = try decoder.decode(TeamWebHandoffResponse.self, from: data)
         } catch is DecodingError {
@@ -122,17 +126,18 @@ final class TeamWebHandoff {
             let snippet = String(data: data, encoding: .utf8).map { String($0.prefix(300)) } ?? "?."
             print("🔗 Handoff: 200 but decode failed. Body snippet: \(snippet)")
             #endif
-            throw TeamWebHandoffError.requestFailed("Team setup on web is temporarily unavailable. Please try again later.")
+            throw TeamWebHandoffError.requestFailed("Web handoff is temporarily unavailable. Please try again later.")
         }
-        guard let onboardingBaseURL = URL(string: "\(baseURL)/onboarding/team"),
-              var components = URLComponents(url: onboardingBaseURL, resolvingAgainstBaseURL: false) else {
+        let normalizedPath = path.hasPrefix("/") ? path : "/\(path)"
+        guard let webBaseURL = URL(string: "\(baseURL)\(normalizedPath)"),
+              var components = URLComponents(url: webBaseURL, resolvingAgainstBaseURL: false) else {
             throw TeamWebHandoffError.invalidBaseURL
         }
-        components.queryItems = [URLQueryItem(name: "code", value: handoff.code)]
-        guard let onboardingURL = components.url else {
+        components.queryItems = [URLQueryItem(name: "code", value: handoff.code)] + queryItems
+        guard let webURL = components.url else {
             throw TeamWebHandoffError.invalidBaseURL
         }
-        return onboardingURL
+        return webURL
     }
 }
 

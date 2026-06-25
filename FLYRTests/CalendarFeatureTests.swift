@@ -115,6 +115,12 @@ final class CalendarFeatureTests: XCTestCase {
         XCTAssertEqual(event.colorKey, CalendarColorKey.green.rawValue)
     }
 
+    func testManualCalendarEventTypesAreLimitedToDoorKnockAndFlyerSchedule() {
+        XCTAssertEqual(FlyrCalendarEventType.manualCreationTypes, [.doorKnock, .flyerSchedule])
+        XCTAssertEqual(FlyrCalendarEventType.flyerSchedule.rawValue, "flyer_schedule")
+        XCTAssertEqual(FlyrCalendarEventType.flyerSchedule.defaultColorKey, CalendarColorKey.blue.rawValue)
+    }
+
     func testLinkedCalendarEventIdIsStableAndTypeScoped() {
         let contactId = UUID(uuidString: "11111111-1111-1111-1111-111111111111")!
         let appointmentId = FlyrCalendarEvent.linkedId(
@@ -135,6 +141,16 @@ final class CalendarFeatureTests: XCTestCase {
 
         XCTAssertEqual(appointmentId, appointmentIdAgain)
         XCTAssertNotEqual(appointmentId, followUpId)
+    }
+
+    func testExternalCalendarItemSourceIdIsStableAndSourceScoped() {
+        let appleEventId = "A1B2C3"
+        let appleId = CalendarItem.stableExternalSourceId(source: "apple_calendar", externalId: appleEventId)
+        let appleIdAgain = CalendarItem.stableExternalSourceId(source: "apple_calendar", externalId: appleEventId)
+        let otherSourceId = CalendarItem.stableExternalSourceId(source: "google_calendar", externalId: appleEventId)
+
+        XCTAssertEqual(appleId, appleIdAgain)
+        XCTAssertNotEqual(appleId, otherSourceId)
     }
 
     func testOfflineCalendarMigrationCreatesTypeAndContactColumns() throws {

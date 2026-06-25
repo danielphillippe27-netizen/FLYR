@@ -51,6 +51,11 @@ export function isStreetOnlyOrdinalAddressLabel(value: unknown): boolean {
   return Boolean(raw && /^\d+(?:st|nd|rd|th)$/i.test(raw));
 }
 
+export function isNumericOnlyAddressLabel(value: unknown): boolean {
+  const raw = stringValue(value);
+  return Boolean(raw && /^[\d\s#./-]+$/.test(raw));
+}
+
 export function isUsableHouseNumberAddressLabel(value: unknown): boolean {
   const raw = stringValue(value);
   return Boolean(raw && !isStreetOnlyOrdinalAddressLabel(raw) && /^\d+[A-Za-z0-9/-]*$/.test(raw));
@@ -121,7 +126,10 @@ export function normalizedAddressDisplayIdentity(input: AddressIdentityInput): s
     : null;
   const houseNumber = explicitHouseNumber ?? houseNumberFromAddressLine(addressLine);
   const unit = normalizedAddressPart(input.unit) ?? unitFromAddressText(addressLine) ?? unitFromAddressText(formatted);
-  const street = normalizedAddressPart(input.street_name) ?? streetFromAddressLine(addressLine, houseNumber);
+  const explicitStreet = isNumericOnlyAddressLabel(input.street_name)
+    ? null
+    : normalizedAddressPart(input.street_name);
+  const street = explicitStreet ?? streetFromAddressLine(addressLine, houseNumber);
 
   if (houseNumber && street) {
     return [

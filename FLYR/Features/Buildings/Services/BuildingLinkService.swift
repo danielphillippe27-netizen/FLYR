@@ -1360,7 +1360,10 @@ final class BuildingLinkService {
             "country": input.country,
             "building_id": input.buildingId,
             "address_provenance": input.addressProvenance,
-            "user_confirmed": input.userConfirmed
+            "user_confirmed": input.userConfirmed,
+            "parcel_id": input.parcelId,
+            "campaign_parcel_id": input.campaignParcelId,
+            "has_parcel_link": input.hasParcelLink
         ]
 
         let data = try JSONSerialization.data(withJSONObject: payload.compactMapValues { $0 })
@@ -1425,6 +1428,29 @@ final class BuildingLinkService {
 
     func performRemoteDeleteAddress(campaignId: String, addressId: UUID) async throws {
         guard let url = URL(string: "\(baseURL)/api/campaigns/\(campaignId)/addresses/\(addressId.uuidString)") else {
+            throw BuildingLinkError.invalidURL
+        }
+        let (data, response) = try await authorizedDataRequest(url: url, method: "DELETE")
+        try ensureSuccessfulResponse(response, data: data)
+    }
+
+    func deleteParcel(campaignId: String, parcelId: String) async throws {
+        let normalizedParcelId = parcelId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedParcelId.isEmpty else {
+            throw BuildingLinkError.invalidURL
+        }
+        guard NetworkMonitor.shared.isOnline else {
+            throw ManualShapeServiceError.api("Parcel delete needs a network connection.")
+        }
+
+        try await performRemoteDeleteParcel(campaignId: campaignId, parcelId: normalizedParcelId)
+        await CampaignDownloadService.shared.recordSuccessfulSync(campaignId: campaignId)
+    }
+
+    func performRemoteDeleteParcel(campaignId: String, parcelId: String) async throws {
+        let encodedCampaignId = encodedPathComponent(campaignId)
+        let encodedParcelId = encodedPathComponent(parcelId)
+        guard let url = URL(string: "\(baseURL)/api/campaigns/\(encodedCampaignId)/parcels/\(encodedParcelId)") else {
             throw BuildingLinkError.invalidURL
         }
         let (data, response) = try await authorizedDataRequest(url: url, method: "DELETE")
@@ -1754,6 +1780,9 @@ final class BuildingLinkService {
                 buildingId: input.buildingId,
                 addressProvenance: input.addressProvenance,
                 userConfirmed: input.userConfirmed,
+                parcelId: input.parcelId,
+                campaignParcelId: input.campaignParcelId,
+                hasParcelLink: input.hasParcelLink,
                 latitude: input.coordinate.latitude,
                 longitude: input.coordinate.longitude
             ),
@@ -2312,6 +2341,9 @@ struct ManualAddressCreateInput {
     let buildingId: String?
     let addressProvenance: String?
     let userConfirmed: Bool
+    let parcelId: String?
+    let campaignParcelId: String?
+    let hasParcelLink: Bool?
 
     init(
         coordinate: CLLocationCoordinate2D,
@@ -2324,7 +2356,10 @@ struct ManualAddressCreateInput {
         country: String?,
         buildingId: String?,
         addressProvenance: String? = nil,
-        userConfirmed: Bool = true
+        userConfirmed: Bool = true,
+        parcelId: String? = nil,
+        campaignParcelId: String? = nil,
+        hasParcelLink: Bool? = nil
     ) {
         self.coordinate = coordinate
         self.formatted = formatted
@@ -2337,6 +2372,9 @@ struct ManualAddressCreateInput {
         self.buildingId = buildingId
         self.addressProvenance = addressProvenance
         self.userConfirmed = userConfirmed
+        self.parcelId = parcelId
+        self.campaignParcelId = campaignParcelId
+        self.hasParcelLink = hasParcelLink
     }
 }
 

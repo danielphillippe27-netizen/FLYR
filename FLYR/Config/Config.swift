@@ -4,7 +4,7 @@ enum Config {
     private static let dialerEnabledWorkspaceIDsKey = "DIALER_ENABLED_WORKSPACE_IDS"
     private static let dialerEnabledEmailsKey = "DIALER_ENABLED_EMAILS"
 
-    private static func stringValue(for key: String) -> String? {
+    fileprivate static func stringValue(for key: String) -> String? {
         let rawValue = (Bundle.main.object(forInfoDictionaryKey: key) as? String)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard let rawValue,
@@ -41,6 +41,26 @@ enum Config {
                     .lowercased()
             }
             .filter { !$0.isEmpty }
+    }
+
+    fileprivate static func boolValue(for key: String, default defaultValue: Bool) -> Bool {
+        guard let rawValue = stringValue(for: key)?.lowercased() else { return defaultValue }
+        switch rawValue {
+        case "1", "true", "yes", "on", "enabled":
+            return true
+        case "0", "false", "no", "off", "disabled":
+            return false
+        default:
+            return defaultValue
+        }
+    }
+
+    fileprivate static func intValue(for key: String, default defaultValue: Int) -> Int {
+        guard let rawValue = stringValue(for: key),
+              let value = Int(rawValue) else {
+            return defaultValue
+        }
+        return value
     }
 
     static var mapboxAccessToken: String {
@@ -258,5 +278,41 @@ enum Config {
         let signalNames = Set(queryMap.keys).union(fragmentNames)
         let recoveryMarkers = ["code", "token", "token_hash", "access_token", "refresh_token"]
         return recoveryMarkers.contains(where: signalNames.contains)
+    }
+}
+
+enum OfflineFirstConfig {
+    #if DEBUG
+    private static let defaultEnabled = true
+    #else
+    private static let defaultEnabled = false
+    #endif
+
+    static var isEnabled: Bool {
+        Config.boolValue(for: "OFFLINE_FIRST_MODE_ENABLED", default: defaultEnabled)
+    }
+
+    static var cellularPreloadAllowed: Bool {
+        Config.boolValue(for: "OFFLINE_FIRST_CELLULAR_PRELOAD_ALLOWED", default: true)
+    }
+
+    static var activeCampaignWindowDays: Int {
+        max(1, Config.intValue(for: "OFFLINE_FIRST_ACTIVE_CAMPAIGN_WINDOW_DAYS", default: 30))
+    }
+
+    static var offlineStorageCapGB: Int {
+        max(1, Config.intValue(for: "OFFLINE_FIRST_STORAGE_CAP_GB", default: 5))
+    }
+
+    static var cachedMapFirstDrawTargetMs: Int {
+        max(100, Config.intValue(for: "OFFLINE_FIRST_CACHED_MAP_TARGET_MS", default: 1_000))
+    }
+
+    static var sessionStartTargetMs: Int {
+        max(50, Config.intValue(for: "OFFLINE_FIRST_SESSION_START_TARGET_MS", default: 300))
+    }
+
+    static var offlineStorageCapBytes: Int64 {
+        Int64(offlineStorageCapGB) * 1_024 * 1_024 * 1_024
     }
 }

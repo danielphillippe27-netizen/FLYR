@@ -10,6 +10,18 @@ struct PendingLiveInviteHandoff: Identifiable, Equatable {
     let sourceSessionId: UUID?
 }
 
+struct PendingSalespersonLeadListSelection: Identifiable, Equatable {
+    let id = UUID()
+    let listId: String?
+    let listTitle: String?
+}
+
+struct PendingSalespersonDiallerListSelection: Identifiable, Equatable {
+    let id = UUID()
+    let listId: String?
+    let listTitle: String?
+}
+
 @MainActor
 final class AppUIState: ObservableObject {
     @Published var showTabBar: Bool = true
@@ -24,6 +36,8 @@ final class AppUIState: ObservableObject {
     @Published var selectedRouteWorkContext: RouteWorkContext?
     @Published var plannedFarmExecution: FarmExecutionContext?
     @Published var pendingLiveInviteHandoff: PendingLiveInviteHandoff?
+    @Published var pendingSalespersonLeadListSelection: PendingSalespersonLeadListSelection?
+    @Published var pendingSalespersonDiallerListSelection: PendingSalespersonDiallerListSelection?
     @Published private(set) var campaignCreationPresentationDepth: Int = 0
 
     var isCampaignCreationFlowPresented: Bool {
@@ -49,12 +63,16 @@ final class AppUIState: ObservableObject {
     func loadAppearancePreference(userID: UUID) async {
         do {
             if let settings = try await settingsService.fetchUserSettings(userID: userID) {
+                guard !Task.isCancelled else { return }
                 // Apply user's preference
                 colorScheme = settings.dark_mode ? .dark : .light
             } else {
+                guard !Task.isCancelled else { return }
                 // No user preference set, detect system appearance
                 detectSystemAppearance()
             }
+        } catch is CancellationError {
+            return
         } catch {
             print("❌ Error loading appearance preference: \(error)")
             // Fallback to system appearance
@@ -164,6 +182,26 @@ final class AppUIState: ObservableObject {
         guard let pendingLiveInviteHandoff else { return }
         guard campaignId == nil || pendingLiveInviteHandoff.campaignId == campaignId else { return }
         self.pendingLiveInviteHandoff = nil
+    }
+
+    func openSalespersonLeadList(id: String?, title: String?) {
+        let cleanId = id?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines)
+        pendingSalespersonLeadListSelection = PendingSalespersonLeadListSelection(
+            listId: cleanId?.isEmpty == false ? cleanId : nil,
+            listTitle: cleanTitle?.isEmpty == false ? cleanTitle : nil
+        )
+        selectedTabIndex = 2
+    }
+
+    func openSalespersonDiallerList(id: String?, title: String?) {
+        let cleanId = id?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines)
+        pendingSalespersonDiallerListSelection = PendingSalespersonDiallerListSelection(
+            listId: cleanId?.isEmpty == false ? cleanId : nil,
+            listTitle: cleanTitle?.isEmpty == false ? cleanTitle : nil
+        )
+        selectedTabIndex = 1
     }
 
     func beginCalendarTabPresentation() {

@@ -58,7 +58,9 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
     }
 
     static func linkedAddressNumberOpacityExpression(linkedExpression: Exp, isAddressMode: Bool = false) -> Exp {
-        _ = isAddressMode
+        if isAddressMode {
+            return Self.addressNumberZoomOpacityExpression
+        }
         return Exp(.switchCase) {
             linkedExpression
             Self.addressNumberZoomOpacityExpression
@@ -431,8 +433,7 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
         fill.fillExtrusionColor = .expression(
             statusFillColorExpression(
                 defaultColor: MapStatusColor.untouched,
-                selectedOverridesStatus: true,
-                townhomeOverlayBaseOverridesStatus: true
+                selectedOverridesStatus: true
             )
         )
         fill.fillExtrusionHeight = .expression(
@@ -466,7 +467,7 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
             }
         )
         selectedGlow.lineBlur = .constant(4.0)
-        // Selection is shown by recoloring the full extrusion; keep outline layers silent.
+        // Selection is shown by recoloring the extrusion; keep footprint outlines silent.
         selectedGlow.lineOpacity = .constant(0.0)
         selectedGlow.lineOpacityTransition = StyleTransition(duration: 0.2, delay: 0)
         selectedGlow.minZoom = 12
@@ -993,23 +994,13 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
 
     private func statusFillColorExpression(
         defaultColor: UIColor,
-        selectedOverridesStatus: Bool = false,
-        townhomeOverlayBaseOverridesStatus: Bool = false
+        selectedOverridesStatus: Bool = false
     ) -> Exp {
-        if townhomeOverlayBaseOverridesStatus {
-            return Exp(.switchCase) {
-                MapLayerManager.hasTownhomeOverlayExpression
-                MapStatusColor.townhomeBase
-
-                selectedOverridesStatus ? isSelectedExpression() : isSelectedUnvisitedStatusExpression()
-                MapStatusColor.selectedHome
-
-                statusMatchColorExpression(defaultColor: defaultColor)
-            }
-        }
-
         return Exp(.switchCase) {
-            selectedOverridesStatus ? isSelectedExpression() : isSelectedUnvisitedStatusExpression()
+            isTeammateOwnedExpression()
+            MapStatusColor.teammateTouched
+
+            selectedOverridesStatus ? isSelectedHighlightVisibleExpression() : isSelectedUnvisitedStatusExpression()
             MapStatusColor.selectedHome
 
             statusMatchColorExpression(defaultColor: defaultColor)
@@ -1064,6 +1055,34 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
                 false
             }
             true
+        }
+    }
+
+    private func isSelectedHighlightVisibleExpression() -> Exp {
+        Exp(.all) {
+            isSelectedExpression()
+            Exp(.neq) {
+                Exp(.coalesce) {
+                    Exp(.featureState) { "suppress_selected_highlight" }
+                    false
+                }
+                true
+            }
+        }
+    }
+
+    private func visitOwnerExpression() -> Exp {
+        Exp(.coalesce) {
+            Exp(.featureState) { "visit_owner" }
+            Exp(.get) { "visit_owner" }
+            ""
+        }
+    }
+
+    private func isTeammateOwnedExpression() -> Exp {
+        Exp(.eq) {
+            visitOwnerExpression()
+            "teammate"
         }
     }
 

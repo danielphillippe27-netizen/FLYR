@@ -313,10 +313,16 @@ struct SettingsView: View {
     
     private var appearanceSection: some View {
         Section {
-            Toggle("Dark Mode", isOn: $darkMode)
-                .onChange(of: darkMode) { _, newValue in
-                    saveDarkMode(newValue)
-                }
+            Picker("Appearance", selection: $darkMode) {
+                Label("Light", systemImage: "sun.max.fill")
+                    .tag(false)
+                Label("Dark", systemImage: "moon.fill")
+                    .tag(true)
+            }
+            .pickerStyle(.segmented)
+            .onChange(of: darkMode) { _, newValue in
+                saveDarkMode(newValue)
+            }
         } header: {
             Text("Appearance")
         }

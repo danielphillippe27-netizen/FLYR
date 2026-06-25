@@ -21,6 +21,14 @@ final class FUBOAuthAPI {
     private init() {}
 
     func fetchAuthorizeURL(platform: String = "ios") async throws -> URL {
+        guard NetworkMonitor.shared.isOnline else {
+            throw NSError(
+                domain: "FUBOAuthAPI",
+                code: NSURLErrorNotConnectedToInternet,
+                userInfo: [NSLocalizedDescriptionKey: "Follow Up Boss connection requires internet. Reconnect and try again."]
+            )
+        }
+
         let session = try await SupabaseManager.shared.client.auth.session
         var comps = URLComponents(string: "\(requestBaseURL)/api/integrations/fub/oauth/start")!
         comps.queryItems = [

@@ -36,7 +36,10 @@ final class SettingsViewModel: ObservableObject {
         
         do {
             settings = try await settingsService.fetchUserSettings(userID: userID)
+            guard !Task.isCancelled else { return }
             await loadProfile(userID: userID)
+        } catch is CancellationError {
+            return
         } catch {
             errorMessage = "Failed to load settings: \(error.localizedDescription)"
             print("❌ Error loading settings: \(error)")
@@ -52,7 +55,10 @@ final class SettingsViewModel: ObservableObject {
                 .single()
                 .execute()
                 .value
+            guard !Task.isCancelled else { return }
             profile = result
+        } catch is CancellationError {
+            return
         } catch {
             profile = nil
         }
@@ -65,8 +71,11 @@ final class SettingsViewModel: ObservableObject {
         
         do {
             try await settingsService.updateSetting(userID: userID, key: key, value: value)
+            guard !Task.isCancelled else { return }
             // Reload settings to get updated values
             await loadSettings(for: userID)
+        } catch is CancellationError {
+            return
         } catch {
             errorMessage = "Failed to update setting: \(error.localizedDescription)"
             print("❌ Update failed: \(error)")
@@ -82,7 +91,10 @@ final class SettingsViewModel: ObservableObject {
         
         do {
             try await settingsService.upsertUserSettings(currentSettings)
+            guard !Task.isCancelled else { return }
             await loadSettings(for: userID)
+        } catch is CancellationError {
+            return
         } catch {
             errorMessage = "Failed to save settings: \(error.localizedDescription)"
             print("❌ Save failed: \(error)")

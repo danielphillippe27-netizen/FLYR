@@ -315,6 +315,12 @@ export default function StatsPage() {
             value={stats.leads_created}
           />
           <StatCard
+            icon="📅"
+            color="#f97316"
+            title="Appointments"
+            value={stats.appointments}
+          />
+          <StatCard
             icon="📱"
             color="#ef4444"
             title="QR Codes Scanned"

@@ -58,6 +58,31 @@ export interface SplitResult {
   error_message?: string;
 }
 
+export type SplitAxisMode = 'auto' | 'long' | 'short';
+
+export interface BuildingSplitOverride {
+  split_axis_mode?: SplitAxisMode | null;
+  reverse_order?: boolean | null;
+}
+
+export interface RecalculateTownhouseUnitsInput {
+  campaignId: string;
+  parentBuildingId: string;
+  buildingRowId?: string | null;
+  linkedAddressIds?: string[];
+  override?: BuildingSplitOverride;
+  overtureRelease?: string;
+}
+
+export interface RecalculateTownhouseUnitsResult {
+  parent_building_id: string;
+  linked_address_ids: string[];
+  units_created: number;
+  recalculated: boolean;
+  cleared: boolean;
+  reason?: 'missing_geometry' | 'single_or_no_unit' | 'split_failed' | 'save_failed';
+}
+
 export interface BuildingAnalysis {
   building_id: string;
   building: BuildingFeature;
@@ -379,6 +404,51 @@ function createUnitPolygon(
   };
 }
 
+function parseGeoJSONGeometry(value: unknown): GeoJSON.Geometry | null {
+  if (!value) return null;
+  if (typeof value === 'string') {
+    try {
+      return parseGeoJSONGeometry(JSON.parse(value));
+    } catch {
+      return null;
+    }
+  }
+  if (typeof value !== 'object') return null;
+  const geometry = value as GeoJSON.Geometry;
+  return typeof geometry.type === 'string' && Array.isArray((geometry as any).coordinates)
+    ? geometry
+    : null;
+}
+
+function parsePolygonGeometry(value: unknown): GeoJSON.Polygon | null {
+  const geometry = parseGeoJSONGeometry(value);
+  if (!geometry) return null;
+  if (geometry.type === 'Polygon') return geometry;
+  if (geometry.type === 'MultiPolygon') {
+    const coordinates = geometry.coordinates?.[0];
+    return coordinates ? { type: 'Polygon', coordinates } : null;
+  }
+  return null;
+}
+
+function parsePointCoordinates(value: unknown): [number, number] | null {
+  const geometry = parseGeoJSONGeometry(value);
+  if (!geometry || geometry.type !== 'Point') return null;
+  const coordinates = geometry.coordinates;
+  const lon = coordinates?.[0];
+  const lat = coordinates?.[1];
+  return typeof lon === 'number' && Number.isFinite(lon) &&
+    typeof lat === 'number' && Number.isFinite(lat)
+    ? [lon, lat]
+    : null;
+}
+
+function edgeLengthMeters(p1: number[], p2: number[]): number {
+  const [x1, y1] = lonLatToMeters(p1[0], p1[1]);
+  const [x2, y2] = lonLatToMeters(p2[0], p2[1]);
+  return Math.hypot(x2 - x1, y2 - y1);
+}
+
 /**
  * Calculate polygon area using shoelace formula
  */
@@ -404,6 +474,84 @@ export class TownhouseSplitterService {
 
   constructor(supabase: SupabaseClient) {
     this.supabase = supabase;
+  }
+
+  /**
+   * Rebuild the persisted unit polygons for one parent building after manual
+   * address edits or split-direction changes.
+   */
+  async recalculateBuildingUnits(
+    input: RecalculateTownhouseUnitsInput
+  ): Promise<RecalculateTownhouseUnitsResult> {
+    const parentBuildingId = input.buildingRowId || input.parentBuildingId;
+    const parentIdentifiers = Array.from(
+      new Set(
+        [input.parentBuildingId, input.buildingRowId, parentBuildingId]
+          .filter((value): value is string => Boolean(value))
+      )
+    );
+
+    const [building, linkedAddresses, persistedOverride] = await Promise.all([
+      this.loadParentBuildingFeature(input.campaignId, input.parentBuildingId, input.buildingRowId ?? null),
+      this.loadLinkedAddresses(input.campaignId, input.parentBuildingId, input.buildingRowId ?? null, input.linkedAddressIds ?? []),
+      this.loadSplitOverride(input.campaignId, input.parentBuildingId),
+    ]);
+
+    await this.clearUnits(input.campaignId, parentIdentifiers);
+
+    if (!building) {
+      return {
+        parent_building_id: parentBuildingId,
+        linked_address_ids: linkedAddresses.map((address) => address.id),
+        units_created: 0,
+        recalculated: false,
+        cleared: true,
+        reason: 'missing_geometry',
+      };
+    }
+
+    if (linkedAddresses.length < 2) {
+      await this.updateBuildingLinkClassification(input.campaignId, input.buildingRowId ?? null, linkedAddresses.length);
+      return {
+        parent_building_id: parentBuildingId,
+        linked_address_ids: linkedAddresses.map((address) => address.id),
+        units_created: 0,
+        recalculated: false,
+        cleared: true,
+        reason: 'single_or_no_unit',
+      };
+    }
+
+    const override = {
+      ...persistedOverride,
+      ...input.override,
+    };
+    const analysis = this.analyzeBuildingFromAddresses(parentBuildingId, building, linkedAddresses);
+    const result = this.splitBuilding(analysis, override);
+
+    if (result.status !== 'success' || !result.units?.length) {
+      await this.logSplitError(input.campaignId, analysis, result);
+      return {
+        parent_building_id: parentBuildingId,
+        linked_address_ids: linkedAddresses.map((address) => address.id),
+        units_created: 0,
+        recalculated: false,
+        cleared: true,
+        reason: 'split_failed',
+      };
+    }
+
+    const saved = await this.saveUnits(input.campaignId, result, input.overtureRelease ?? 'manual');
+    await this.updateBuildingLinkClassification(input.campaignId, input.buildingRowId ?? null, result.units.length);
+
+    return {
+      parent_building_id: parentBuildingId,
+      linked_address_ids: linkedAddresses.map((address) => address.id),
+      units_created: saved ? result.units.length : 0,
+      recalculated: saved,
+      cleared: true,
+      reason: saved ? undefined : 'save_failed',
+    };
   }
 
   /**
@@ -558,10 +706,235 @@ export class TownhouseSplitterService {
     }
   }
 
+  private async loadParentBuildingFeature(
+    campaignId: string,
+    parentBuildingId: string,
+    buildingRowId: string | null
+  ): Promise<BuildingFeature | null> {
+    if (buildingRowId) {
+      const { data, error } = await this.supabase
+        .from('buildings')
+        .select('id, gers_id, geom, height_m, height')
+        .eq('campaign_id', campaignId)
+        .eq('id', buildingRowId)
+        .maybeSingle();
+
+      if (!error && data) {
+        const row = data as { id: string; gers_id: string | null; geom: unknown; height_m?: number | null; height?: number | null };
+        const geometry = parsePolygonGeometry(row.geom);
+        if (geometry) {
+          return {
+            type: 'Feature',
+            geometry,
+            properties: {
+              gers_id: row.id,
+              height: row.height_m ?? row.height ?? null,
+              public_building_id: row.gers_id ?? row.id,
+            },
+          };
+        }
+      }
+    }
+
+    const { data: cache } = await this.supabase
+      .from('campaign_polished_building_features')
+      .select('feature_collection')
+      .eq('campaign_id', campaignId)
+      .maybeSingle();
+
+    const features = ((cache as { feature_collection?: { features?: unknown[] } } | null)
+      ?.feature_collection?.features ?? []) as Array<{
+        type?: string;
+        id?: unknown;
+        geometry?: unknown;
+        properties?: Record<string, unknown>;
+      }>;
+    const targetIds = new Set([parentBuildingId, buildingRowId].filter(Boolean).map((value) => String(value).toLowerCase()));
+
+    for (const feature of features) {
+      const props = feature.properties ?? {};
+      const identifiers = [
+        feature.id,
+        props.id,
+        props.gers_id,
+        props.public_building_id,
+        props.canonical_building_id,
+        props.building_id,
+      ]
+        .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+        .map((value) => value.toLowerCase());
+      if (!identifiers.some((identifier) => targetIds.has(identifier))) continue;
+      const geometry = parsePolygonGeometry(feature.geometry);
+      if (!geometry) continue;
+      return {
+        type: 'Feature',
+        geometry,
+        properties: {
+          ...props,
+          gers_id: buildingRowId ?? parentBuildingId,
+          height: typeof props.height_m === 'number' ? props.height_m : typeof props.height === 'number' ? props.height : null,
+        },
+      };
+    }
+
+    return null;
+  }
+
+  private async loadLinkedAddresses(
+    campaignId: string,
+    parentBuildingId: string,
+    buildingRowId: string | null,
+    seedAddressIds: string[]
+  ): Promise<AddressFeature[]> {
+    const addressIds = new Set(seedAddressIds.map((id) => id.toLowerCase()));
+
+    if (buildingRowId) {
+      const { data: links, error } = await this.supabase
+        .from('building_address_links')
+        .select('address_id')
+        .eq('campaign_id', campaignId)
+        .eq('building_id', buildingRowId);
+      if (!error) {
+        for (const row of (links ?? []) as Array<{ address_id: string }>) {
+          if (row.address_id) addressIds.add(row.address_id.toLowerCase());
+        }
+      }
+    }
+
+    const addressRows: Array<{
+      id: string;
+      formatted: string | null;
+      house_number: string | null;
+      street_name: string | null;
+      geom: unknown;
+    }> = [];
+
+    if (addressIds.size > 0) {
+      const { data, error } = await this.supabase
+        .from('campaign_addresses')
+        .select('id, formatted, house_number, street_name, geom')
+        .eq('campaign_id', campaignId)
+        .in('id', Array.from(addressIds));
+      if (error) throw new Error(`Failed to load linked townhouse addresses: ${error.message}`);
+      addressRows.push(...((data ?? []) as typeof addressRows));
+    }
+
+    const identifiers = Array.from(
+      new Set([parentBuildingId, buildingRowId].filter((value): value is string => Boolean(value)))
+    );
+    for (const identifier of identifiers) {
+      const column = identifier === buildingRowId ? 'building_id' : 'building_gers_id';
+      const { data, error } = await this.supabase
+        .from('campaign_addresses')
+        .select('id, formatted, house_number, street_name, geom')
+        .eq('campaign_id', campaignId)
+        .eq(column, identifier);
+      if (error) continue;
+      addressRows.push(...((data ?? []) as typeof addressRows));
+    }
+
+    const seen = new Set<string>();
+    const addresses: AddressFeature[] = [];
+    for (const row of addressRows) {
+      const key = row.id.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const coordinate = parsePointCoordinates(row.geom);
+      if (!coordinate) continue;
+      addresses.push({
+        id: row.id,
+        lon: coordinate[0],
+        lat: coordinate[1],
+        house_number: row.house_number,
+        street_name: row.street_name,
+        formatted: row.formatted,
+      });
+    }
+
+    return addresses;
+  }
+
+  private async loadSplitOverride(
+    campaignId: string,
+    parentBuildingId: string
+  ): Promise<BuildingSplitOverride> {
+    const { data, error } = await this.supabase
+      .from('building_split_overrides')
+      .select('split_axis_mode, reverse_order')
+      .eq('campaign_id', campaignId)
+      .eq('parent_building_id', parentBuildingId)
+      .maybeSingle();
+
+    if (error || !data) return {};
+    const row = data as { split_axis_mode: string | null; reverse_order: boolean | null };
+    return {
+      split_axis_mode: row.split_axis_mode === 'long' || row.split_axis_mode === 'short' ? row.split_axis_mode : 'auto',
+      reverse_order: row.reverse_order === true,
+    };
+  }
+
+  private async clearUnits(campaignId: string, parentBuildingIds: string[]): Promise<void> {
+    const ids = Array.from(new Set(parentBuildingIds.filter(Boolean)));
+    for (const parentBuildingId of ids) {
+      const { error } = await this.supabase
+        .from('building_units')
+        .delete()
+        .eq('campaign_id', campaignId)
+        .eq('parent_building_id', parentBuildingId);
+      if (error) {
+        console.warn('[TownhouseSplitter] Error clearing existing units:', error.message);
+      }
+    }
+  }
+
+  private async updateBuildingLinkClassification(
+    campaignId: string,
+    buildingRowId: string | null,
+    unitCount: number
+  ): Promise<void> {
+    if (!buildingRowId) return;
+    const normalizedUnitCount = Math.max(unitCount, 1);
+    const { error } = await this.supabase
+      .from('building_address_links')
+      .update({
+        is_multi_unit: normalizedUnitCount > 1,
+        unit_count: normalizedUnitCount,
+        unit_arrangement: normalizedUnitCount > 1 ? 'horizontal' : 'single',
+        building_class: normalizedUnitCount > 1 ? 'townhouse' : null,
+      })
+      .eq('campaign_id', campaignId)
+      .eq('building_id', buildingRowId);
+    if (error) {
+      console.warn('[TownhouseSplitter] Error updating building link classification:', error.message);
+    }
+  }
+
+  private analyzeBuildingFromAddresses(
+    buildingId: string,
+    building: BuildingFeature,
+    addresses: AddressFeature[]
+  ): BuildingAnalysis {
+    const fauxLinks = addresses.map((address) => ({
+      address_id: address.id,
+      campaign_addresses: {
+        id: address.id,
+        formatted: address.formatted,
+        house_number: address.house_number,
+        street_name: address.street_name,
+        geom: { coordinates: [address.lon, address.lat] },
+      },
+    }));
+    return {
+      ...this.analyzeBuilding(building, fauxLinks),
+      building_id: buildingId,
+      addresses,
+    };
+  }
+
   /**
    * Split building into units using proper polygon clipping
    */
-  private splitBuilding(analysis: BuildingAnalysis): SplitResult {
+  private splitBuilding(analysis: BuildingAnalysis, override: BuildingSplitOverride = {}): SplitResult {
     const { building, addresses, building_id } = analysis;
     const nUnits = addresses.length;
 
@@ -570,27 +943,7 @@ export class TownhouseSplitterService {
     try {
       const coords = building.geometry.coordinates[0];
       
-      // Find the street-facing edge (most addresses near it)
-      let bestEdgeIndex = 0;
-      let bestEdgeScore = -Infinity;
-      
-      for (let i = 0; i < coords.length - 1; i++) {
-        const p1 = coords[i];
-        const p2 = coords[i + 1];
-        
-        let score = 0;
-        for (const addr of addresses) {
-          const dist = this.pointToLineDistance([addr.lon, addr.lat], p1, p2);
-          if (dist < 20) {
-            score += 1 / (dist + 1);
-          }
-        }
-        
-        if (score > bestEdgeScore) {
-          bestEdgeScore = score;
-          bestEdgeIndex = i;
-        }
-      }
+      const bestEdgeIndex = this.selectSplitAxisEdge(coords, addresses, override.split_axis_mode ?? 'auto');
 
       const streetEdgeP1 = coords[bestEdgeIndex] as [number, number];
       const streetEdgeP2 = coords[bestEdgeIndex + 1] as [number, number];
@@ -600,11 +953,14 @@ export class TownhouseSplitterService {
       const edgeLen = Math.sqrt(edgeVec[0] * edgeVec[0] + edgeVec[1] * edgeVec[1]);
       const edgeUnit = [edgeVec[0] / edgeLen, edgeVec[1] / edgeLen];
       
-      const orderedAddrs = [...addresses].sort((a, b) => {
+      let orderedAddrs = [...addresses].sort((a, b) => {
         const da = (a.lon - streetEdgeP1[0]) * edgeUnit[0] + (a.lat - streetEdgeP1[1]) * edgeUnit[1];
         const db = (b.lon - streetEdgeP1[0]) * edgeUnit[0] + (b.lat - streetEdgeP1[1]) * edgeUnit[1];
         return da - db;
       });
+      if (override.reverse_order === true) {
+        orderedAddrs = orderedAddrs.reverse();
+      }
 
       // Create units using proper polygon clipping
       const units: SplitUnit[] = [];
@@ -678,6 +1034,52 @@ export class TownhouseSplitterService {
         split_method: 'obb_linear',
       };
     }
+  }
+
+  private selectSplitAxisEdge(
+    coords: number[][],
+    addresses: AddressFeature[],
+    mode: SplitAxisMode
+  ): number {
+    if (coords.length < 2) return 0;
+
+    if (mode === 'long' || mode === 'short') {
+      let selectedIndex = 0;
+      let selectedLength = mode === 'long' ? -Infinity : Infinity;
+
+      for (let i = 0; i < coords.length - 1; i++) {
+        const length = edgeLengthMeters(coords[i], coords[i + 1]);
+        if ((mode === 'long' && length > selectedLength) || (mode === 'short' && length < selectedLength)) {
+          selectedLength = length;
+          selectedIndex = i;
+        }
+      }
+
+      return selectedIndex;
+    }
+
+    let bestEdgeIndex = 0;
+    let bestEdgeScore = -Infinity;
+
+    for (let i = 0; i < coords.length - 1; i++) {
+      const p1 = coords[i];
+      const p2 = coords[i + 1];
+
+      let score = 0;
+      for (const addr of addresses) {
+        const dist = this.pointToLineDistance([addr.lon, addr.lat], p1, p2);
+        if (dist < 20) {
+          score += 1 / (dist + 1);
+        }
+      }
+
+      if (score > bestEdgeScore) {
+        bestEdgeScore = score;
+        bestEdgeIndex = i;
+      }
+    }
+
+    return bestEdgeIndex;
   }
 
   /**

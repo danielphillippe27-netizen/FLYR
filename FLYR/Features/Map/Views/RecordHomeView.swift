@@ -68,9 +68,9 @@ struct RecordHomeView: View {
                     .multilineTextAlignment(.center)
                 Button {
                     HapticManager.light()
-                    SessionManager.shared.stop()
+                    sessionManager.stop()
                 } label: {
-                    Text("End Session")
+                    Text(sessionManager.isEndingSession ? "Ending..." : "End Session")
                         .font(.system(size: 16, weight: .semibold))
                         .foregroundColor(.white)
                         .padding(.horizontal, 20)
@@ -79,6 +79,7 @@ struct RecordHomeView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 10))
                 }
                 .buttonStyle(.plain)
+                .disabled(sessionManager.isEndingSession)
             }
             .padding(24)
             .background(Color.bgSecondary)

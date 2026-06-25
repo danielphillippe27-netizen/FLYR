@@ -260,7 +260,7 @@ struct BeaconControlSheet: View {
                 Button {
                     showingContactPicker = true
                 } label: {
-                    beaconOutlineButtonLabel("Edit Safety Contacts")
+                    beaconOutlineButtonLabel(selectedRecipients.isEmpty ? "Add Safety Contacts" : "Edit Safety Contacts")
                 }
                 .buttonStyle(.plain)
             }

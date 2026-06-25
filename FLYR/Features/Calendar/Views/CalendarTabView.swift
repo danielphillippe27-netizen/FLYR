@@ -24,6 +24,9 @@ struct CalendarTabView: View {
     @State private var selectedCalendarEditableItem: CalendarEditableItem?
     @State private var selectedSessionDetail: CalendarSessionDetailItem?
     @State private var showItemOpenError = false
+    @State private var appleCalendarAccessState: AppleCalendarAccessState = .notDetermined
+    @State private var appleCalendarPullEnabled = false
+    @State private var appleCalendarAlertMessage: String?
 
     private let calendar = FlyrCalendarDateHelpers.configuredCalendar()
     private let calendarRed = Color(red: 1, green: 0.23, blue: 0.19)
@@ -51,7 +54,10 @@ struct CalendarTabView: View {
             if dayMode == .multiDay { dayMode = .singleDay }
             uiState.beginCalendarTabPresentation()
             nowTicker.start()
-            Task { await reloadItems() }
+            Task {
+                await refreshAppleCalendarState()
+                await reloadItems()
+            }
         }
         .onDisappear {
             nowTicker.stop()
@@ -110,6 +116,14 @@ struct CalendarTabView: View {
         }
         .alert("Couldn’t open this calendar item.", isPresented: $showItemOpenError) {
             Button("OK", role: .cancel) {}
+        }
+        .alert("Apple Calendar", isPresented: Binding(
+            get: { appleCalendarAlertMessage != nil },
+            set: { if !$0 { appleCalendarAlertMessage = nil } }
+        )) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(appleCalendarAlertMessage ?? "")
         }
     }
 
@@ -183,6 +197,8 @@ struct CalendarTabView: View {
                             .frame(width: 54, height: 42)
                     }
                     .buttonStyle(.plain)
+
+                    appleCalendarButton
 
                     Button {
                         draftStartDate = defaultDraftStart
@@ -275,6 +291,8 @@ struct CalendarTabView: View {
                 }
                 .buttonStyle(.plain)
 
+                appleCalendarButton
+
                 Button {
                     draftStartDate = defaultDraftStart
                     showingAddSheet = true
@@ -323,6 +341,19 @@ struct CalendarTabView: View {
                 .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
+    }
+
+    private var appleCalendarButton: some View {
+        Button {
+            Task { await toggleAppleCalendarPull() }
+        } label: {
+            Image(systemName: appleCalendarPullEnabled ? "calendar.badge.checkmark" : "calendar.badge.plus")
+                .font(.system(size: 22, weight: .regular))
+                .foregroundColor(appleCalendarPullEnabled ? calendarRed : .primary)
+                .frame(width: 48, height: 42)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(appleCalendarPullEnabled ? "Stop showing Apple Calendar events" : "Show Apple Calendar events")
     }
 
     @ViewBuilder
@@ -548,6 +579,54 @@ struct CalendarTabView: View {
         }
     }
 
+    private func refreshAppleCalendarState() async {
+        let enabled = await FlyrCalendarService.shared.isAppleCalendarPullEnabled()
+        let state = await FlyrCalendarService.shared.appleCalendarAccessState()
+        await MainActor.run {
+            appleCalendarPullEnabled = enabled && state == .fullAccess
+            appleCalendarAccessState = state
+        }
+        if enabled && state != .fullAccess {
+            await FlyrCalendarService.shared.setAppleCalendarPullEnabled(false)
+        }
+    }
+
+    private func toggleAppleCalendarPull() async {
+        if appleCalendarPullEnabled {
+            await FlyrCalendarService.shared.setAppleCalendarPullEnabled(false)
+            await MainActor.run { appleCalendarPullEnabled = false }
+            await reloadItems()
+            return
+        }
+
+        let state = await FlyrCalendarService.shared.requestAppleCalendarPull()
+        await MainActor.run {
+            appleCalendarAccessState = state
+            appleCalendarPullEnabled = state == .fullAccess
+            appleCalendarAlertMessage = appleCalendarAccessMessage(for: state)
+        }
+        if state == .fullAccess {
+            await reloadItems()
+        }
+    }
+
+    private func appleCalendarAccessMessage(for state: AppleCalendarAccessState) -> String? {
+        switch state {
+        case .fullAccess:
+            return "Apple Calendar events are now visible in FLYR."
+        case .writeOnly:
+            return "FLYR can add events to Apple Calendar, but needs full access to show existing iCloud events."
+        case .denied:
+            return "Calendar access is denied. Turn on Full Access for FLYR in Settings to show Apple Calendar events."
+        case .restricted:
+            return "Calendar access is restricted on this device."
+        case .notDetermined:
+            return "FLYR needs full calendar access to show your Apple Calendar events."
+        case .unavailable:
+            return "Apple Calendar access is unavailable on this device."
+        }
+    }
+
     private func refreshVisibleLayouts() async {
         let days = dayMode == .multiDay ? multiDayDates : [selectedDate]
         var next: [String: [CalendarTimedEventLayout]] = [:]
@@ -595,6 +674,8 @@ struct CalendarTabView: View {
             } else {
                 showItemOpenError = true
             }
+        case .appleCalendar:
+            appleCalendarAlertMessage = "Apple Calendar events are read-only in FLYR."
         }
     }
 
@@ -879,6 +960,10 @@ private struct MonthDayCell: View {
 
     private func monthLetter(for item: CalendarItem) -> String? {
         switch FlyrCalendarEventType(rawValue: item.eventType) {
+        case .doorKnock:
+            return "D"
+        case .flyerSchedule:
+            return "F"
         case .followUp:
             return "F"
         case .appointment:
@@ -1635,7 +1720,7 @@ private struct CalendarEventEditorSheet: View {
     @State private var startDate: Date
     @State private var endDate: Date
     @State private var isAllDay = false
-    @State private var eventType: FlyrCalendarEventType = .appointment
+    @State private var eventType: FlyrCalendarEventType = .doorKnock
     @State private var contacts: [Contact] = []
     @State private var selectedContact: Contact?
     @State private var contactSearchText = ""
@@ -1650,7 +1735,7 @@ private struct CalendarEventEditorSheet: View {
     @State private var notes = ""
     @State private var location = ""
     @StateObject private var locationAuto = UseAddressAutocomplete()
-    @State private var colorKey: CalendarColorKey = .red
+    @State private var colorKey: CalendarColorKey = .green
     @FocusState private var focusedField: EventEditorField?
 
     let onSave: (FlyrCalendarEvent) -> Void
@@ -1948,7 +2033,7 @@ private struct CalendarEventEditorSheet: View {
     }
 
     private var selectableEventTypes: [FlyrCalendarEventType] {
-        FlyrCalendarEventType.allCases.filter { $0 != .showing }
+        FlyrCalendarEventType.manualCreationTypes
     }
 
     private var contactSearchQuery: String {
@@ -2002,9 +2087,10 @@ private struct CalendarEventEditorSheet: View {
     }
 
     private func selectEventType(_ type: FlyrCalendarEventType) {
+        let shouldRefreshTitle = titleLooksGeneratedByManualType(title)
         eventType = type
         colorKey = CalendarColorKey(rawValue: type.defaultColorKey) ?? colorKey
-        if title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || title == FlyrCalendarEventType.appointment.title {
+        if shouldRefreshTitle {
             title = type.defaultTitle(contactName: selectedContact?.fullName, campaignName: selectedCampaign?.displayName)
         }
     }
@@ -2024,14 +2110,18 @@ private struct CalendarEventEditorSheet: View {
     private func selectCampaign(_ campaign: CalendarCampaignOption) {
         selectedCampaign = campaign
         campaignSearchText = ""
-        if eventType == .appointment {
-            eventType = .doorKnock
-            colorKey = CalendarColorKey(rawValue: eventType.defaultColorKey) ?? colorKey
-        }
-        if title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || title == FlyrCalendarEventType.appointment.title {
+        if titleLooksGeneratedByManualType(title) {
             title = eventType.defaultTitle(contactName: selectedContact?.fullName, campaignName: campaign.displayName)
         }
         focusedField = nil
+    }
+
+    private func titleLooksGeneratedByManualType(_ value: String) -> Bool {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return true }
+        return FlyrCalendarEventType.manualCreationTypes.contains { type in
+            trimmed == type.title || trimmed.hasPrefix("\(type.title):")
+        }
     }
 
     private func loadContacts() async {

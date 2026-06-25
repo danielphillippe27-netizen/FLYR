@@ -36,6 +36,15 @@ final class LiveSessionVoiceService: NSObject, ObservableObject {
     }
 
     func connectIfNeeded(campaignId: UUID, sessionId: UUID) async {
+        guard NetworkMonitor.shared.isOnline else {
+            activeCampaignId = campaignId
+            activeSessionId = sessionId
+            connectionState = .failed
+            lastErrorMessage = "Voice requires internet. Reconnect and try again."
+            participants = []
+            return
+        }
+
         if activeCampaignId == campaignId,
            activeSessionId == sessionId,
            connectionState == .connected || connectionState == .connecting || connectionState == .reconnecting {

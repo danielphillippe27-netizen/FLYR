@@ -131,7 +131,10 @@ final class EntitlementsService: ObservableObject {
             print(
                 "🔐 [Entitlements] workspace access from /api/access/state -> \(state.hasAccess) " +
                 "userId=\(state.userId ?? "nil") workspaceId=\(state.workspaceId ?? "nil") " +
-                "role=\(state.role ?? "nil") reason=\(state.reason ?? "nil")"
+                "role=\(state.role ?? "nil") reason=\(state.reason ?? "nil") " +
+                "dashboardMode=\(state.dashboardMode ?? "nil") " +
+                "salespersonId=\(state.salespersonId ?? "nil") " +
+                "canUseSalespersonDashboard=\(state.canUseSalespersonDashboard)"
             )
             #endif
             return state.hasAccess

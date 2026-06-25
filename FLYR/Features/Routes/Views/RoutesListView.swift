@@ -13,6 +13,7 @@ private struct RouteAssignmentDetailSheetItem: Identifiable {
 struct RoutesListView: View {
     @ObservedObject private var workspace = WorkspaceContext.shared
     @EnvironmentObject private var uiState: AppUIState
+    @StateObject private var onboardingDemo = OnboardingDemoViewModel.shared
 
     @State private var allAssignments: [RouteAssignmentSummary] = []
     @State private var searchText = ""
@@ -53,6 +54,9 @@ struct RoutesListView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            if onboardingDemo.shouldShowPanel, onboardingDemo.state?.rolePath == .teamOwner || onboardingDemo.state?.rolePath == .member {
+                routesDemoNudge
+            }
             Picker("", selection: $selectedTab) {
                 Text("Active (\(activeCount))").tag(AssignmentTab.active)
                 Text("Completed (\(completedCount))").tag(AssignmentTab.completed)
@@ -113,6 +117,7 @@ struct RoutesListView: View {
             }
         }
         .task(id: workspace.workspaceId) {
+            await onboardingDemo.load()
             await loadRoutes()
         }
         .refreshable {
@@ -138,6 +143,29 @@ struct RoutesListView: View {
         } message: {
             Text(routeOpenErrorMessage ?? "")
         }
+    }
+
+    private var routesDemoNudge: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "point.topleft.down.curvedto.point.bottomright.up")
+                .font(.system(size: 15, weight: .bold))
+                .foregroundStyle(Color.red)
+            Text(onboardingDemo.state?.rolePath == .member ? "Assigned routes are your fastest path into session work." : "Assign routes to split campaign work across members.")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Color.text)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer()
+            Button("Got it") {
+                Task { await onboardingDemo.markComplete(onboardingDemo.state?.rolePath == .member ? "open_assigned_work" : "assign_work") }
+            }
+            .font(.system(size: 13, weight: .bold))
+            .foregroundStyle(Color.red)
+        }
+        .padding(12)
+        .background(Color.red.opacity(0.09))
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .padding(.horizontal, 16)
+        .padding(.top, 10)
     }
 
     @ViewBuilder

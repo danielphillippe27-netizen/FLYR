@@ -220,6 +220,51 @@ final class BuildingDataServiceTests: XCTestCase {
             properties: properties
         )
     }
+
+    func testBuildingSourcePromoteIdFallsBackToBuildingIdWhenGersMissing() throws {
+        let payload: [String: Any] = [
+            "type": "Feature",
+            "id": "row-building-1",
+            "geometry": [
+                "type": "Polygon",
+                "coordinates": [[
+                    [-79.0, 43.0],
+                    [-78.999, 43.0],
+                    [-78.999, 43.001],
+                    [-79.0, 43.001],
+                    [-79.0, 43.0]
+                ]]
+            ],
+            "properties": [
+                "id": "row-building-1",
+                "building_id": "Standalone-Building-1",
+                "height": 10,
+                "height_m": 10,
+                "min_height": 0,
+                "is_townhome": false,
+                "units_count": 1,
+                "status": "not_visited",
+                "scans_today": 0,
+                "scans_total": 0
+            ]
+        ]
+
+        let featureData = try JSONSerialization.data(withJSONObject: payload, options: [])
+        let feature = try JSONDecoder().decode(BuildingFeature.self, from: featureData)
+        let sourceData = try MapLayerManager.normalizedBuildingSourceGeoJSONData(
+            BuildingFeatureCollection(type: "FeatureCollection", features: [feature])
+        )
+        let source = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: sourceData) as? [String: Any]
+        )
+        let features = try XCTUnwrap(source["features"] as? [[String: Any]])
+        let properties = try XCTUnwrap(features.first?["properties"] as? [String: Any])
+
+        XCTAssertEqual(
+            properties[MapLayerManager.promotedBuildingIdProperty] as? String,
+            "standalone-building-1"
+        )
+    }
     
     // Note: These tests require a mock Supabase client for full testing
     // For now, we'll test the data models and logic
@@ -746,6 +791,30 @@ final class BuildingDataServiceTests: XCTestCase {
         XCTAssertEqual(coordinates[1].latitude, secondCoordinate[1], accuracy: 0.0000001)
     }
 
+    func testAddressNumberLabelsIncludeUnlinkedAddressesAsAddressModeOnly() throws {
+        let addressId = UUID()
+        let address = try makeAddressFeature(
+            id: addressId,
+            buildingGersId: "",
+            houseNumber: "140",
+            formatted: "140 East 24th Street",
+            coordinate: [-73.9814, 40.7407]
+        )
+
+        let data = try MapLayerManager.buildAddressNumberLabelPointGeoJSON(
+            addresses: [address],
+            buildings: [],
+            orderedAddressIdsByBuilding: [:]
+        )
+        let features = try geoJSONFeatures(from: data)
+        let properties = try XCTUnwrap(features.first?["properties"] as? [String: Any])
+
+        XCTAssertEqual(features.count, 1)
+        XCTAssertEqual(properties["house_number_label"] as? String, "140")
+        XCTAssertEqual(properties["label_visibility_mode"] as? String, "address_mode_only")
+        XCTAssertEqual(properties["geometry_source"] as? String, "parcel")
+    }
+
     func testAddressNumberLabelsIncludeLinkedBuildingFallbackWithoutAddressPoint() throws {
         let addressId = UUID()
         let building = try makeBuildingFeature(
@@ -882,10 +951,12 @@ final class BuildingDataServiceTests: XCTestCase {
         defer { MapStatusColor.useLightMapBuildingDefault = original }
 
         MapStatusColor.useLightMapBuildingDefault = false
-        XCTAssertEqual(hexString(from: MapStatusColor.townhomeBase), "#000000")
+        XCTAssertEqual(hexString(from: MapStatusColor.townhomeBase), hexString(from: MapStatusColor.untouched))
+        XCTAssertEqual(hexString(from: MapStatusColor.townhomeBase), "#475569")
 
         MapStatusColor.useLightMapBuildingDefault = true
-        XCTAssertEqual(hexString(from: MapStatusColor.townhomeBase), "#ffffff")
+        XCTAssertEqual(hexString(from: MapStatusColor.townhomeBase), hexString(from: MapStatusColor.untouched))
+        XCTAssertEqual(hexString(from: MapStatusColor.townhomeBase), "#cfd8e3")
     }
 
     func testTownhomeOverlayBuildingIdentifiersIncludeBaseFeatureAliases() throws {

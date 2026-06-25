@@ -101,6 +101,11 @@ final class CampaignProvisionMonitor: ObservableObject {
                 progressPercent: Self.progressPercent(status: state.provisionStatus, phase: state.provisionPhase)
             )
         } catch {
+            let nsError = error as NSError
+            if nsError.domain == "CampaignsAPI", nsError.code == 404 {
+                dismiss(campaignId: tracked.campaignId)
+                return
+            }
             #if DEBUG
             print("⚠️ [CampaignProvisionMonitor] Refresh failed: \(error.localizedDescription)")
             #endif

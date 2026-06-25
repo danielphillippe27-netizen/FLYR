@@ -110,16 +110,27 @@ final class MapController {
             // Expression: if feature-state("selected") is true, use selected slate, otherwise use the map default.
             // Use match with boolean converted to string for matching
             layer.fillExtrusionColor = .expression(
-                Exp(.match) {
-                    Exp(.toString) {
-                        Exp(.eq) {
-                            Exp(.featureState) { "selected" }
-                            true
+                Exp(.switchCase) {
+                    Exp(.eq) {
+                        Exp(.coalesce) {
+                            Exp(.featureState) { "visit_owner" }
+                            Exp(.get) { "visit_owner" }
+                            ""
                         }
+                        "teammate"
                     }
-                    "true"  // label for true
-                    selectedColor  // output if true
-                    defaultBuildingColor  // fallback if false
+                    MapStatusColor.teammateTouched
+                    Exp(.match) {
+                        Exp(.toString) {
+                            Exp(.eq) {
+                                Exp(.featureState) { "selected" }
+                                true
+                            }
+                        }
+                        "true"  // label for true
+                        selectedColor  // output if true
+                        defaultBuildingColor  // fallback if false
+                    }
                 }
             )
             
@@ -259,6 +270,15 @@ final class MapController {
             
             layer.fillExtrusionColor = .expression(
                 Exp(.switchCase) {
+                    Exp(.eq) {
+                        Exp(.coalesce) {
+                            Exp(.featureState) { "visit_owner" }
+                            Exp(.get) { "visit_owner" }
+                            ""
+                        }
+                        "teammate"
+                    }
+                    MapStatusColor.teammateTouched
                     Exp(.all) {
                         Exp(.eq) {
                             Exp(.coalesce) {
@@ -418,16 +438,27 @@ final class MapController {
             // Expression: if feature-state("selected") is true, use selected slate, otherwise use the map default.
             // Use match with boolean converted to string for matching
             layer.fillExtrusionColor = .expression(
-                Exp(.match) {
-                    Exp(.toString) {
-                        Exp(.eq) {
-                            Exp(.featureState) { "selected" }
-                            true
+                Exp(.switchCase) {
+                    Exp(.eq) {
+                        Exp(.coalesce) {
+                            Exp(.featureState) { "visit_owner" }
+                            Exp(.get) { "visit_owner" }
+                            ""
                         }
+                        "teammate"
                     }
-                    "true"  // label for true
-                    selectedColor  // output if true
-                    defaultColor  // fallback if false
+                    MapStatusColor.teammateTouched
+                    Exp(.match) {
+                        Exp(.toString) {
+                            Exp(.eq) {
+                                Exp(.featureState) { "selected" }
+                                true
+                            }
+                        }
+                        "true"  // label for true
+                        selectedColor  // output if true
+                        defaultColor  // fallback if false
+                    }
                 }
             )
             
@@ -654,16 +685,27 @@ final class MapController {
             // Expression: if feature-state("selected") is true, use selected slate, otherwise use dark slate.
             // Use match with boolean converted to string for matching
             layer.fillExtrusionColor = .expression(
-                Exp(.match) {
-                    Exp(.toString) {
-                        Exp(.eq) {
-                            Exp(.featureState) { "selected" }
-                            true
+                Exp(.switchCase) {
+                    Exp(.eq) {
+                        Exp(.coalesce) {
+                            Exp(.featureState) { "visit_owner" }
+                            Exp(.get) { "visit_owner" }
+                            ""
                         }
+                        "teammate"
                     }
-                    "true"  // label for true
-                    selectedColor  // output if true
-                    defaultColor  // fallback if false
+                    MapStatusColor.teammateTouched
+                    Exp(.match) {
+                        Exp(.toString) {
+                            Exp(.eq) {
+                                Exp(.featureState) { "selected" }
+                                true
+                            }
+                        }
+                        "true"  // label for true
+                        selectedColor  // output if true
+                        defaultColor  // fallback if false
+                    }
                 }
             )
             

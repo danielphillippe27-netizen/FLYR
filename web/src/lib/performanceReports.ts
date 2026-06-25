@@ -118,11 +118,14 @@ export async function fetchLatestPerformanceReports(
 ): Promise<PerformanceReport[]> {
   if (!supabase) throw new Error('Supabase client not configured')
 
+  const baseSelect =
+    'id, period_type, period, period_start, period_end, generated_at, created_at, metrics, deltas, llm_summary, recommendations, subject_user_id, workspace_id'
+  const legacySelect =
+    'id, period, period_start, period_end, created_at, metrics, deltas, subject_user_id, workspace_id'
+
   let query = supabase
     .from('reports')
-    .select(
-      'id, period_type, period, period_start, period_end, generated_at, created_at, metrics, deltas, llm_summary, recommendations, subject_user_id, workspace_id'
-    )
+    .select(baseSelect)
     .eq('scope', 'member')
     .eq('subject_user_id', userId)
     .order('period_end', { ascending: false })
@@ -132,7 +135,26 @@ export async function fetchLatestPerformanceReports(
     query = query.eq('workspace_id', workspaceId)
   }
 
-  const { data, error } = await query
+  const initialResult = await query
+  let data: JsonObject[] | null = initialResult.data as JsonObject[] | null
+  let error = initialResult.error
+  if (error && error.message.includes('period_type')) {
+    let legacyQuery = supabase
+      .from('reports')
+      .select(legacySelect)
+      .eq('scope', 'member')
+      .eq('subject_user_id', userId)
+      .order('period_end', { ascending: false })
+      .limit(24)
+
+    if (workspaceId) {
+      legacyQuery = legacyQuery.eq('workspace_id', workspaceId)
+    }
+
+    const legacyResult = await legacyQuery
+    data = legacyResult.data as JsonObject[] | null
+    error = legacyResult.error
+  }
   if (error) throw error
 
   const rows = Array.isArray(data) ? data : []

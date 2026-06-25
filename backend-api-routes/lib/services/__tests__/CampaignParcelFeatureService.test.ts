@@ -8,9 +8,11 @@ import {
 import { reconstructParcelFragments } from '../../geo/parcelFragments';
 import {
   BedrockCountryService,
+  BEDROCK_AUSTRALIA_CONFIG,
   BEDROCK_CANADA_CONFIG,
   BEDROCK_NZ_CONFIG,
   BEDROCK_US_CONFIG,
+  __bedrockCountryServiceTestHooks,
 } from '../BedrockCountryService';
 import { BedrockUsService } from '../BedrockUsService';
 
@@ -238,6 +240,163 @@ async function main() {
       'bedrock/canada/current/parcels/parcels.pmtiles'
     );
     assert.equal(snapshot.s3_keys.parcels, 'bedrock/canada/current/parcels/parcels.pmtiles');
+  });
+
+  await test('Bedrock Australia snapshots derive parcel metadata beside an address-scoped prefix', () => {
+    const previousPrefix = process.env.BEDROCK_AU_PREFIX;
+    process.env.BEDROCK_AU_PREFIX = 'bedrock/australia/current/addresses';
+    try {
+      const service = new BedrockCountryService(BEDROCK_AUSTRALIA_CONFIG);
+      const snapshot = service.snapshotForCampaign(
+        'campaign-id',
+        1,
+        scanMetric,
+        { partitioning: { scheme: 'web_mercator_xyz', tile_z: 12 } },
+        'AU'
+      );
+
+      assert.equal(
+        snapshot.metadata?.tile_metrics?.addresses_pmtiles_key,
+        'bedrock/australia/current/addresses/addresses.pmtiles'
+      );
+      assert.equal(
+        snapshot.metadata?.tile_metrics?.parcels_pmtiles_key,
+        'bedrock/australia/current/parcels/parcels.pmtiles'
+      );
+      assert.equal(snapshot.s3_keys.parcels, 'bedrock/australia/current/parcels/parcels.pmtiles');
+    } finally {
+      if (previousPrefix == null) {
+        delete process.env.BEDROCK_AU_PREFIX;
+      } else {
+        process.env.BEDROCK_AU_PREFIX = previousPrefix;
+      }
+    }
+  });
+
+  await test('Bedrock Australia snapshots use the indexed parcel key selected during scan', () => {
+    const service = new BedrockCountryService(BEDROCK_AUSTRALIA_CONFIG);
+    const snapshot = service.snapshotForCampaign(
+      'campaign-id',
+      1,
+      scanMetric,
+      { partitioning: { scheme: 'web_mercator_xyz', tile_z: 12 } },
+      'AU',
+      0,
+      undefined,
+      24,
+      {
+        ...scanMetric,
+        pmtilesKey: 'diamond/parcels/australia/nsw/statewide/nsw-spatial-services/parcels.pmtiles',
+        partitioning: 'pmtiles_vector_index',
+      }
+    );
+
+    assert.equal(
+      snapshot.metadata?.tile_metrics?.parcels_pmtiles_key,
+      'diamond/parcels/australia/nsw/statewide/nsw-spatial-services/parcels.pmtiles'
+    );
+    assert.equal(
+      snapshot.s3_keys.parcels,
+      'diamond/parcels/australia/nsw/statewide/nsw-spatial-services/parcels.pmtiles'
+    );
+    assert.equal(snapshot.counts.parcels, 24);
+  });
+
+  await test('Bedrock Australia address normalization reads GNAF uppercase street aliases', () => {
+    const address = __bedrockCountryServiceTestHooks.normalizeAddress(
+      BEDROCK_AUSTRALIA_CONFIG,
+      'campaign-id',
+      {
+        ADDRESS_DETAIL_PID: 'GNAF-1',
+        NUMBER_FIRST: '34',
+        STREET_NAME: 'Second',
+        STREET_TYPE_CODE: 'Ave',
+        LOCALITY_NAME: 'Willoughby',
+        STATE: 'NSW',
+        LAT: -33.7996,
+        LON: 151.2060,
+      }
+    );
+
+    assert.ok(address);
+    assert.equal(address.house_number, '34');
+    assert.equal(address.street_name, 'Second Ave');
+    assert.equal(address.formatted, '34 Second Ave Willoughby');
+  });
+
+  await test('Bedrock Australia PMTiles address normalization composes labels from compact aliases', () => {
+    const address = __bedrockCountryServiceTestHooks.normalizePmtilesAddress(
+      BEDROCK_AUSTRALIA_CONFIG,
+      'campaign-id',
+      {
+        type: 'Feature',
+        geometry: { type: 'Point', coordinates: [151.2060, -33.7996] },
+        properties: {
+          addressDetailPid: 'GNAF-2',
+          numberFirst: '8',
+          streetName: 'Sulman',
+          streetTypeCode: 'Pl',
+          localityName: 'Mascot',
+          state: 'NSW',
+          postcode: '2020',
+          formatted: '8',
+        },
+      }
+    );
+
+    assert.ok(address);
+    assert.equal(address.house_number, '8');
+    assert.equal(address.street_name, 'Sulman Pl');
+    assert.equal(address.formatted, '8 Sulman Pl Mascot');
+    assert.equal(address.postal_code, '2020');
+  });
+
+  await test('Bedrock Australia PMTiles address normalization ignores numeric street aliases when road aliases exist', () => {
+    const address = __bedrockCountryServiceTestHooks.normalizePmtilesAddress(
+      BEDROCK_AUSTRALIA_CONFIG,
+      'campaign-id',
+      {
+        type: 'Feature',
+        geometry: { type: 'Point', coordinates: [153.0705, -27.4386] },
+        properties: {
+          addressDetailPid: 'GNAF-JOYNT-32',
+          streetNumber: '32',
+          streetName: '32',
+          roadName: 'Joynt',
+          roadTypeCode: 'St',
+          localityName: 'Hamilton',
+          state: 'QLD',
+          postcode: '4007',
+          formatted: '32',
+        },
+      }
+    );
+
+    assert.ok(address);
+    assert.equal(address.house_number, '32');
+    assert.equal(address.street_name, 'Joynt St');
+    assert.equal(address.formatted, '32 Joynt St Hamilton');
+    assert.equal(address.gers_id, 'bedrock_au:GNAF-JOYNT-32');
+  });
+
+  await test('snapshot PMTiles parcel extraction accepts non-parcels layer aliases', () => {
+    const parcelFeatureSource = readFileSync(
+      resolve(process.cwd(), 'lib/services/CampaignParcelFeatureService.ts'),
+      'utf8'
+    );
+    const enrichmentSource = readFileSync(
+      resolve(process.cwd(), 'lib/services/ParcelEnrichmentService.ts'),
+      'utf8'
+    );
+
+    assert.match(parcelFeatureSource, /function pmtilesParcelLayer/);
+    assert.match(parcelFeatureSource, /'property'/);
+    assert.match(parcelFeatureSource, /'cadastre'/);
+    assert.match(parcelFeatureSource, /pmtilesParcelLayer\(vectorTile\.layers,\s*parcelTiles\.sourceLayer\)/);
+    assert.match(enrichmentSource, /function pmtilesParcelLayer/);
+    assert.match(enrichmentSource, /'property'/);
+    assert.match(enrichmentSource, /'cadastre'/);
+    assert.match(enrichmentSource, /pmtilesParcelLayer\(vectorTile\.layers,\s*parcelTiles\.sourceLayer\)/);
   });
 
   await test('Bedrock USA snapshots expose per-state parcel PMTiles metadata', () => {

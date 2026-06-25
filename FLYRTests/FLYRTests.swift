@@ -11,6 +11,23 @@ import Testing
 
 struct FLYRTests {
 
+    @Test func offlinePreloadSelectorPrioritizesAssignedFarmAndRecentCampaigns() throws {
+        let assigned = UUID()
+        let farm = UUID()
+        let recent = UUID()
+        let duplicate = UUID()
+
+        let candidates = OfflinePreloadSelector.selectCandidates(
+            assignedCampaignIds: [assigned, duplicate],
+            recentCampaignIds: [recent, duplicate],
+            inProgressFarmCampaignIds: [farm]
+        )
+
+        #expect(candidates.map(\.campaignId) == [assigned, duplicate, farm, recent])
+        #expect(candidates.map(\.reason) == ["assigned_route", "assigned_route", "in_progress_farm", "recent_campaign"])
+        #expect(candidates.map(\.priority) == [300, 300, 200, 100])
+    }
+
     @Test func diamondManifestDecodesSeparateWinnipegTileTemplates() throws {
         let json = """
         {
@@ -88,7 +105,7 @@ struct FLYRTests {
     }
 
     @Test func doorKnockGoalPickerCasesMatchNewSessionStartFlow() async throws {
-        #expect(GoalType.goalPickerCases(for: .doorKnocking) == [.knocks, .conversations, .appointments])
+        #expect(GoalType.goalPickerCases(for: .doorKnocking) == [.knocks, .conversations, .appointments, .time])
     }
 
     @Test func doorKnockSessionsDefaultToAllCampaignHomes() async throws {
@@ -202,6 +219,110 @@ struct FLYRTests {
         #expect(presentation.doorsHit == 0)
         #expect(presentation.progressPercent == 50)
         #expect(abs(presentation.progressValue - 0.5) < 0.0001)
+    }
+
+    @Test func justSoldLivingCourtPresentationCompletesAllDoors() async throws {
+        let campaign = CampaignV2(
+            id: UUID(),
+            name: "Just Sold - Living Court",
+            type: .doorKnock,
+            addressSource: .closestHome,
+            addresses: (1...165).map { CampaignAddress(address: "\($0) Living Court") },
+            totalFlyers: 165,
+            scans: 0,
+            conversions: 0,
+            createdAt: Date()
+        )
+        let session = SessionRecord(
+            id: UUID(),
+            user_id: UUID(),
+            start_time: Date(),
+            end_time: Date().addingTimeInterval(240),
+            doors_hit: 4,
+            distance_meters: 100,
+            conversations: 2,
+            session_mode: nil,
+            goal_type: nil,
+            goal_amount: nil,
+            path_geojson: nil,
+            path_geojson_normalized: nil,
+            active_seconds: nil,
+            created_at: nil,
+            updated_at: nil,
+            campaign_id: campaign.id,
+            farm_id: nil,
+            farm_touch_id: nil,
+            route_assignment_id: nil,
+            target_building_ids: nil,
+            completed_count: nil,
+            flyers_delivered: nil,
+            is_paused: nil,
+            auto_complete_enabled: nil,
+            notes: nil,
+            doors_per_hour: nil,
+            conversations_per_hour: nil,
+            completions_per_km: nil,
+            appointments_count: nil,
+            appointments_per_conversation: nil,
+            leads_created: nil,
+            conversations_per_door: nil,
+            leads_per_conversation: nil
+        )
+
+        let presentation = CampaignDetailPresentation(
+            campaign: campaign,
+            sessions: [session],
+            fieldLeads: [],
+            addressStatuses: [:]
+        )
+
+        #expect(presentation.totalDoors == 165)
+        #expect(presentation.doorsHit == 165)
+        #expect(presentation.progressPercent == 100)
+        #expect(presentation.progressValue == 1.0)
+        #expect(presentation.conversations == 57)
+        #expect(presentation.leads == 12)
+        #expect(presentation.syntheticLeads.count == 12)
+        #expect(Set(presentation.syntheticLeads.compactMap(\.name)).count == 12)
+    }
+
+    @Test func livingCourtCompletionOverlayPreservesHotterStatuses() async throws {
+        let addresses = (1...3).map { CampaignAddress(address: "\($0) Living Court") }
+        let campaign = CampaignV2(
+            id: UUID(),
+            name: "Just Sold - Living Court",
+            type: .doorKnock,
+            addressSource: .closestHome,
+            addresses: addresses,
+            totalFlyers: addresses.count,
+            scans: 0,
+            conversions: 0,
+            createdAt: Date()
+        )
+
+        let statuses = CampaignCompletionShowcase.completedAddressStatuses(
+            for: campaign,
+            overlaidOn: [addresses[0].id.uuidString: .hotLead]
+        )
+
+        #expect(statuses[addresses[0].id.uuidString] == .hotLead)
+        #expect(statuses[addresses[1].id.uuidString] == .delivered)
+        #expect(statuses[addresses[2].id.uuidString] == .delivered)
+    }
+
+    @Test func livingCourtMapOverlayUsesAssortedCompletedColorsWithTwoYellow() async throws {
+        let addressIds = (1...24).map { _ in UUID() }
+
+        let statuses = CampaignCompletionShowcase.assortedMapAddressStatuses(
+            addressIds: addressIds,
+            overlaidOn: [:]
+        )
+
+        let values = Array(statuses.values)
+        #expect(values.contains(.noAnswer))
+        #expect(values.contains(.delivered))
+        #expect(values.contains(.hotLead))
+        #expect(values.filter { $0 == .appointment }.count == 2)
     }
 
 }

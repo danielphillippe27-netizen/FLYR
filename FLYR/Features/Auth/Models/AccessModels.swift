@@ -8,6 +8,11 @@ struct AccessStateResponse: Codable {
     let workspaceName: String?
     let workspaceId: String?
     let industry: String?
+    let accessLevel: String?
+    let dashboardMode: String?
+    let salespersonId: String?
+    let canUseSalespersonDashboard: Bool
+    let isSalesperson: Bool
     /// When API omits this (e.g. returns workspace + subscription payload), treat as true if we have a workspace.
     let hasAccess: Bool
     let reason: String?
@@ -21,8 +26,18 @@ struct AccessStateResponse: Codable {
         case workspaceId = "workspace_id"
         case workspaceIdCamel = "workspaceId"
         case industry
+        case accessLevel
+        case dashboardMode
+        case salespersonId
+        case salesperson
+        case isSalesperson
+        case canUseSalespersonDashboard
         case hasAccess = "has_access"
         case hasAccessCamel = "hasAccess"
+    }
+
+    private enum SalespersonCodingKeys: String, CodingKey {
+        case id
     }
 
     init(from decoder: Decoder) throws {
@@ -35,6 +50,19 @@ struct AccessStateResponse: Codable {
         workspaceId = try c.decodeIfPresent(String.self, forKey: .workspaceId)
             ?? c.decodeIfPresent(String.self, forKey: .workspaceIdCamel)
         industry = try c.decodeIfPresent(String.self, forKey: .industry)
+        let decodedAccessLevel = try c.decodeIfPresent(String.self, forKey: .accessLevel)
+        accessLevel = decodedAccessLevel
+        dashboardMode = try c.decodeIfPresent(String.self, forKey: .dashboardMode)
+        if let topLevelSalespersonId = try c.decodeIfPresent(String.self, forKey: .salespersonId) {
+            salespersonId = topLevelSalespersonId
+        } else if let salesperson = try? c.nestedContainer(keyedBy: SalespersonCodingKeys.self, forKey: .salesperson) {
+            salespersonId = try salesperson.decodeIfPresent(String.self, forKey: .id)
+        } else {
+            salespersonId = nil
+        }
+        isSalesperson = try c.decodeIfPresent(Bool.self, forKey: .isSalesperson) ?? false
+        canUseSalespersonDashboard = try c.decodeIfPresent(Bool.self, forKey: .canUseSalespersonDashboard)
+            ?? (decodedAccessLevel == "salesperson")
         hasAccess = try c.decodeIfPresent(Bool.self, forKey: .hasAccess)
             ?? c.decodeIfPresent(Bool.self, forKey: .hasAccessCamel)
             ?? true
@@ -48,6 +76,11 @@ struct AccessStateResponse: Codable {
         try c.encodeIfPresent(workspaceName, forKey: .workspaceName)
         try c.encodeIfPresent(workspaceId, forKey: .workspaceId)
         try c.encodeIfPresent(industry, forKey: .industry)
+        try c.encodeIfPresent(accessLevel, forKey: .accessLevel)
+        try c.encodeIfPresent(dashboardMode, forKey: .dashboardMode)
+        try c.encodeIfPresent(salespersonId, forKey: .salespersonId)
+        try c.encode(isSalesperson, forKey: .isSalesperson)
+        try c.encode(canUseSalespersonDashboard, forKey: .canUseSalespersonDashboard)
         try c.encode(hasAccess, forKey: .hasAccess)
         try c.encodeIfPresent(reason, forKey: .reason)
     }

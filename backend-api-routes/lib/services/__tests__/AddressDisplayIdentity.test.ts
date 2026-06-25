@@ -22,6 +22,23 @@ test('collapses display-equivalent street suffix variants', () => {
   );
 });
 
+test('matches reverse-geocoded street lines to existing nearby address rows', () => {
+  assert.equal(
+    normalizedAddressDisplayIdentity({
+      formatted: '123 Main Street',
+      house_number: '123',
+      street_name: 'Main Street',
+      postal_code: 'L5M 5B2',
+    }),
+    normalizedAddressDisplayIdentity({
+      formatted: '123 MAIN ST, Mississauga ON L5M5B2',
+      house_number: '123',
+      street_name: 'MAIN ST',
+      postal_code: 'L5M5B2',
+    })
+  );
+});
+
 test('keeps real units distinct', () => {
   assert.notEqual(
     normalizedAddressDisplayIdentity({
@@ -63,6 +80,28 @@ test('allows ordinal street names when a real house number is present', () => {
       street_name: '51st St',
     }),
     'h:11089|s:51st st|u:'
+  );
+});
+
+test('does not use numeric-only street_name values as street identity', () => {
+  assert.equal(
+    normalizedAddressDisplayIdentity({
+      formatted: '32',
+      house_number: '32',
+      street_name: '32',
+      locality: 'Hamilton',
+    }),
+    'f:32|l:hamilton|p:'
+  );
+
+  assert.equal(
+    normalizedAddressDisplayIdentity({
+      formatted: '32 Joynt St, Hamilton QLD',
+      house_number: '32',
+      street_name: '32',
+      locality: 'Hamilton',
+    }),
+    'h:32|s:joynt st|u:'
   );
 });
 

@@ -706,6 +706,20 @@ type ProvisionParcelPreparationResult = {
   shouldRunDeferred: boolean;
 };
 
+async function queueSnapshotParcelEnrichment(params: {
+  supabase: ReturnType<typeof createAdminClient>;
+  campaignId: string;
+}): Promise<ProvisionParcelPreparationResult> {
+  await new ParcelEnrichmentService(params.supabase).markQueued(params.campaignId);
+  return {
+    count: 0,
+    status: 'queued',
+    sourceId: null,
+    error: null,
+    shouldRunDeferred: true,
+  };
+}
+
 async function queueProvisionParcelEnrichment(params: {
   supabase: ReturnType<typeof createAdminClient>;
   campaignId: string;
@@ -791,6 +805,18 @@ async function prepareProvisionParcels(params: {
       shouldRunDeferred: true,
     };
   }
+}
+
+function shouldDeferSnapshotParcelPreparation(
+  snapshot: LambdaSnapshotResponse | null | undefined,
+  regionCode: string | null | undefined,
+  hasPreparedLinkGeometryParcels: boolean
+): boolean {
+  if (hasPreparedLinkGeometryParcels || isParcelRegionSupported(regionCode)) return false;
+  const metrics = snapshot?.metadata?.tile_metrics;
+  if (!metrics) return false;
+  const countryCode = stringTileMetric(metrics, 'bedrock_country_code');
+  return countryCode === 'AU' && snapshotHasStaticParcelPmtiles(snapshot);
 }
 
 async function runDeferredParcelEnrichment(campaignId: string) {
@@ -2414,6 +2440,11 @@ export async function POST(request: NextRequest) {
                 : 0;
           const hasPreparedLinkGeometryParcels = (bedrockLinkGeometry?.parcels?.length ?? 0) > 0;
           const hasSnapshotParcelPmtiles = snapshotHasStaticParcelPmtiles(snapshot);
+          const deferSnapshotParcelPreparation = shouldDeferSnapshotParcelPreparation(
+            snapshot,
+            regionCode,
+            hasPreparedLinkGeometryParcels
+          );
 
           const [
             addressInsertResult,
@@ -2438,6 +2469,12 @@ export async function POST(request: NextRequest) {
             })),
             timings.measure('snapshot_metadata_ms', () => upsertSnapshotMetadata(supabase, campaignId!, snapshot)),
             timings.measure('parcel_enrichment_ms', () => {
+              if (deferSnapshotParcelPreparation) {
+                return queueSnapshotParcelEnrichment({
+                  supabase,
+                  campaignId: campaignId!,
+                });
+              }
               if (hasPreparedLinkGeometryParcels || isParcelRegionSupported(regionCode) || hasSnapshotParcelPmtiles) {
                 return prepareProvisionParcels({
                   supabase,

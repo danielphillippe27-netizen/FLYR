@@ -322,6 +322,19 @@ enum AddressStatus: String, Codable, CaseIterable {
         }
     }
 
+    var countsAsSessionConversation: Bool {
+        switch self {
+        case .talked, .appointment, .futureSeller, .hotLead:
+            return true
+        case .none, .untouched, .noAnswer, .delivered, .doNotKnock:
+            return false
+        }
+    }
+
+    var countsAsSessionAppointment: Bool {
+        self == .appointment
+    }
+
     /// Value safe to send to `record_campaign_address_outcome` / DB CHECK constraints (`untouched` is UI-only).
     var persistedRPCValue: String {
         switch self {

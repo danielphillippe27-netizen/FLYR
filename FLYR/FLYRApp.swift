@@ -6,12 +6,14 @@ import Supabase
 @main
 struct FLYRApp: App {
     @UIApplicationDelegateAdaptor(FLYRAppDelegate.self) private var appDelegate
+    @Environment(\.scenePhase) private var scenePhase
     @StateObject private var auth = AuthManager.shared
     @StateObject private var uiState = AppUIState()
     @StateObject private var entitlementsService = EntitlementsService()
     @StateObject private var networkMonitor = NetworkMonitor.shared
     @StateObject private var offlineSyncCoordinator = OfflineSyncCoordinator.shared
     @StateObject private var campaignDownloadService = CampaignDownloadService.shared
+    @StateObject private var offlinePreloadCoordinator = OfflinePreloadCoordinator.shared
 
     init() {
         let mapboxToken = Config.mapboxAccessToken
@@ -35,6 +37,7 @@ struct FLYRApp: App {
         NetworkMonitor.shared.startIfNeeded()
         _ = OfflineSyncCoordinator.shared
         _ = CampaignDownloadService.shared
+        _ = OfflinePreloadCoordinator.shared
         #if DEBUG
         Self.verifyInterFonts()
         #endif
@@ -70,6 +73,7 @@ struct FLYRApp: App {
                 .environmentObject(networkMonitor)
                 .environmentObject(offlineSyncCoordinator)
                 .environmentObject(campaignDownloadService)
+                .environmentObject(offlinePreloadCoordinator)
                 .task {
                     // Health check in background with lower priority - don't block UI
                     Task.detached(priority: .utility) {
@@ -79,6 +83,17 @@ struct FLYRApp: App {
                         await AddressServiceHealth.shared.checkHealth(lat: 43.987854, lon: -78.622448)
                     }
                     offlineSyncCoordinator.scheduleProcessOutbox()
+                    offlinePreloadCoordinator.schedule(reason: "app_task")
+                }
+                .onChange(of: networkMonitor.isOnline) { isOnline in
+                    if isOnline {
+                        offlineSyncCoordinator.scheduleProcessOutbox()
+                        offlinePreloadCoordinator.schedule(reason: "network_online")
+                    }
+                }
+                .onChange(of: scenePhase) { phase in
+                    guard phase == .active else { return }
+                    offlinePreloadCoordinator.schedule(reason: "foreground")
                 }
                 .onOpenURL { url in
                     Task { @MainActor in
@@ -97,6 +112,13 @@ struct FLYRApp: App {
     // MARK: - OAuth Redirect Handler
     
     private func handleOAuthRedirect(url: URL) async {
+        guard NetworkMonitor.shared.isOnline else {
+            #if DEBUG
+            print("⚠️ OAuth redirect received while offline; reconnect before completing integration refresh.")
+            #endif
+            return
+        }
+
         guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
               let queryItems = components.queryItems else {
             print("⚠️ Invalid OAuth redirect URL")
@@ -191,6 +213,11 @@ struct FLYRApp: App {
 
         if url.scheme == "flyr" && url.host == "oauth" {
             await handleOAuthRedirect(url: url)
+            return
+        }
+
+        if url.scheme == "flyr", url.host == "salesperson", url.path == "/leads" {
+            uiState.selectedTabIndex = 2
             return
         }
 

@@ -17,10 +17,14 @@ enum LeaderboardScope: String, CaseIterable {
 struct LeaderboardView: View {
     @StateObject private var vm = LeaderboardViewModel()
     @StateObject private var auth = AuthManager.shared
+    @StateObject private var onboardingDemo = OnboardingDemoViewModel.shared
     @Environment(\.toastManager) private var toastManager
 
     var body: some View {
         VStack(spacing: 0) {
+            if onboardingDemo.shouldShowPanel, onboardingDemo.state?.rolePath == .teamOwner {
+                teamDemoNudge
+            }
             if vm.isLoading {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -73,6 +77,7 @@ struct LeaderboardView: View {
             }
         }
         .task(id: "\(vm.metric.rawValue)-\(vm.timeRange.rawValue)-\(vm.scope.rawValue)") {
+            await onboardingDemo.load()
             await vm.fetchLeaderboard()
         }
         .refreshable {
@@ -82,6 +87,29 @@ struct LeaderboardView: View {
         .onReceive(NotificationCenter.default.publisher(for: .sessionEnded)) { _ in
             Task { await vm.fetchLeaderboard() }
         }
+    }
+
+    private var teamDemoNudge: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "person.3.fill")
+                .font(.system(size: 15, weight: .bold))
+                .foregroundStyle(Color.red)
+            Text("Team owners use this view to compare member sessions and follow-up activity.")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Color.text)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer()
+            Button("Got it") {
+                Task { await onboardingDemo.markComplete("view_team_stats") }
+            }
+            .font(.system(size: 13, weight: .bold))
+            .foregroundStyle(Color.red)
+        }
+        .padding(12)
+        .background(Color.red.opacity(0.09))
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .padding(.horizontal, 16)
+        .padding(.top, 10)
     }
 
     @ViewBuilder

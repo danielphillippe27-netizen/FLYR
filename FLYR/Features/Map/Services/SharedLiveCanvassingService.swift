@@ -34,6 +34,12 @@ final class SharedLiveCanvassingService: ObservableObject {
     private var lastPublishedLocation: CLLocation?
     private var lastPublishedStatus: SharedLiveCanvassingPresenceStatus?
     private var inviteAvailabilityCampaignId: UUID?
+    private var lastTeamPublishedAt: Date?
+    private var lastTeamPublishedLocation: CLLocation?
+    private var lastTeamPublishedStatus: SharedLiveCanvassingPresenceStatus?
+    private var lastTeamPresenceCampaignId: UUID?
+    private var lastTeamPresenceSessionId: UUID?
+    private var lastTeamPresenceUserId: UUID?
 
     private init() {}
 
@@ -189,6 +195,93 @@ final class SharedLiveCanvassingService: ObservableObject {
             try await upsertPresence(status: nextStatus, location: locationToPersist, force: true)
         } catch {
             print("⚠️ [SharedLive] Failed to publish presence: \(error)")
+        }
+    }
+
+    func publishTeamPresence(
+        campaignId: UUID?,
+        sessionId: UUID?,
+        userId: UUID?,
+        location: CLLocation?,
+        isPaused: Bool,
+        force: Bool = false
+    ) async {
+        guard NetworkMonitor.shared.isOnline,
+              let campaignId,
+              let sessionId,
+              let userId else { return }
+
+        let nextStatus: SharedLiveCanvassingPresenceStatus = isPaused ? .paused : .active
+        let now = Date()
+        let locationToPersist = location ?? lastTeamPublishedLocation
+        let statusChanged = nextStatus != lastTeamPublishedStatus
+        let sessionChanged = lastTeamPresenceSessionId != sessionId
+            || lastTeamPresenceCampaignId != campaignId
+            || lastTeamPresenceUserId != userId
+        let timeReady = lastTeamPublishedAt.map { now.timeIntervalSince($0) >= presenceMinInterval } ?? true
+        let movedEnough = {
+            guard let locationToPersist, let lastTeamPublishedLocation else { return locationToPersist != nil }
+            return locationToPersist.distance(from: lastTeamPublishedLocation) >= presenceMinDistanceMeters
+        }()
+
+        guard force || sessionChanged || statusChanged || timeReady || movedEnough else { return }
+
+        let payload: [String: AnyCodable] = [
+            "campaign_id": AnyCodable(campaignId.uuidString),
+            "user_id": AnyCodable(userId.uuidString),
+            "session_id": AnyCodable(sessionId.uuidString),
+            "lat": AnyCodable(locationToPersist?.coordinate.latitude as Any),
+            "lng": AnyCodable(locationToPersist?.coordinate.longitude as Any),
+            "updated_at": AnyCodable(ISO8601DateFormatter().string(from: now)),
+            "status": AnyCodable(nextStatus.rawValue)
+        ]
+
+        do {
+            _ = try await client
+                .from("campaign_presence")
+                .upsert(payload, onConflict: "campaign_id,user_id")
+                .execute()
+
+            lastTeamPresenceCampaignId = campaignId
+            lastTeamPresenceSessionId = sessionId
+            lastTeamPresenceUserId = userId
+            if locationToPersist != nil {
+                lastTeamPublishedLocation = locationToPersist
+            }
+            lastTeamPublishedAt = now
+            lastTeamPublishedStatus = nextStatus
+        } catch {
+            if !isMissingSharedLiveInfrastructure(error) {
+                print("⚠️ [SharedLive] Failed to publish team presence: \(error)")
+            }
+        }
+    }
+
+    func clearTeamPresence(campaignId: UUID?, userId: UUID?) async {
+        guard NetworkMonitor.shared.isOnline,
+              let campaignId,
+              let userId else { return }
+
+        do {
+            _ = try await client
+                .from("campaign_presence")
+                .delete()
+                .eq("campaign_id", value: campaignId.uuidString)
+                .eq("user_id", value: userId.uuidString)
+                .execute()
+        } catch {
+            if !isMissingSharedLiveInfrastructure(error) {
+                print("⚠️ [SharedLive] Failed to clear team presence: \(error)")
+            }
+        }
+
+        if lastTeamPresenceCampaignId == campaignId, lastTeamPresenceUserId == userId {
+            lastTeamPublishedAt = nil
+            lastTeamPublishedLocation = nil
+            lastTeamPublishedStatus = nil
+            lastTeamPresenceCampaignId = nil
+            lastTeamPresenceSessionId = nil
+            lastTeamPresenceUserId = nil
         }
     }
 

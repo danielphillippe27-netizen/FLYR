@@ -49,11 +49,13 @@ final class OfflineDatabase {
     static let shared = OfflineDatabase()
 
     let dbQueue: DatabaseQueue
+    let storageDirectory: URL
 
     private init() {
         let initializedQueue: DatabaseQueue
         do {
             let rootURL = try Self.makeStorageDirectory()
+            storageDirectory = rootURL
             let databaseURL = rootURL.appendingPathComponent("flyr-offline.sqlite")
             let queue = try DatabaseQueue(path: databaseURL.path)
             try OfflineMigrations.migrator().migrate(queue)

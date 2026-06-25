@@ -1117,6 +1117,37 @@ final class MapFeaturesService: ObservableObject {
             && !cachedBundleRequiresClientFallback
             && !cachedBundleNeedsLinkRefresh
 
+        if OfflineFirstConfig.isEnabled,
+           loadedCachedFirstDrawBundle,
+           cachedBundleHasBuildings || cachedBundleHasAddresses {
+            isLoading = false
+            print(
+                "🧪 [MAP_DEBUG] offline_first_cache_first_draw campaign=\(campaignId) " +
+                "fresh=\(cachedBundleIsFresh) linksStatus=\(cachedBundleMetadata?.linksStatus ?? "unknown")"
+            )
+            startCanonicalMapBundleRefresh(
+                campaignId: campaignId,
+                requestId: requestId,
+                localSignature: cachedBundleMetadata?.assetSignature
+            )
+            let debugTotalMilliseconds = Int(Date().timeIntervalSince(debugLoadStartedAt) * 1000)
+            PerfTrace.event("campaign_open", "cached_map_first_draw_target", fields: [
+                "campaign": campaignId,
+                "durationMs": debugTotalMilliseconds,
+                "targetMs": OfflineFirstConfig.cachedMapFirstDrawTargetMs,
+                "hitTarget": debugTotalMilliseconds <= OfflineFirstConfig.cachedMapFirstDrawTargetMs
+            ])
+            trace.end(status: "offline_first_local_cache_background_refresh", fields: [
+                "renderer": "local_canonical_cache",
+                "durationMs": debugTotalMilliseconds,
+                "buildings": self.buildings?.features.count ?? 0,
+                "addresses": self.addresses?.features.count ?? 0,
+                "parcels": self.parcels?.features.count ?? 0,
+                "roads": self.roads?.features.count ?? 0
+            ])
+            return
+        }
+
         if cachedBundleCanSkipLegacyGeoJSON,
            let metadata = cachedBundleMetadata {
             print(

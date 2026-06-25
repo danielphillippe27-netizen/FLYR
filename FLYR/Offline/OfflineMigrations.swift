@@ -597,6 +597,40 @@ enum OfflineMigrations {
             try db.create(index: "idx_cached_map_bundles_expires", on: "cached_campaign_map_bundles", columns: ["campaign_id", "expires_at"], ifNotExists: true)
         }
 
+        migrator.registerMigration("offline_first_session_state_v1") { db in
+            let existingColumns = Set(try db.columns(in: "local_sessions").map(\.name))
+
+            try db.alter(table: "local_sessions") { t in
+                if !existingColumns.contains("completed_count") {
+                    t.add(column: "completed_count", .integer).notNull().defaults(to: 0)
+                }
+                if !existingColumns.contains("flyers_delivered") {
+                    t.add(column: "flyers_delivered", .integer).notNull().defaults(to: 0)
+                }
+                if !existingColumns.contains("doors_hit") {
+                    t.add(column: "doors_hit", .integer).notNull().defaults(to: 0)
+                }
+                if !existingColumns.contains("conversations") {
+                    t.add(column: "conversations", .integer).notNull().defaults(to: 0)
+                }
+                if !existingColumns.contains("leads_created") {
+                    t.add(column: "leads_created", .integer).notNull().defaults(to: 0)
+                }
+                if !existingColumns.contains("appointments_count") {
+                    t.add(column: "appointments_count", .integer).notNull().defaults(to: 0)
+                }
+                if !existingColumns.contains("active_seconds") {
+                    t.add(column: "active_seconds", .integer).notNull().defaults(to: 0)
+                }
+                if !existingColumns.contains("is_paused") {
+                    t.add(column: "is_paused", .integer).notNull().defaults(to: 0)
+                }
+                if !existingColumns.contains("state_json") {
+                    t.add(column: "state_json", .text)
+                }
+            }
+        }
+
         return migrator
     }
 }

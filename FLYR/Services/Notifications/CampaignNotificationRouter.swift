@@ -93,6 +93,7 @@ final class FLYRAppDelegate: NSObject, UIApplicationDelegate {
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
         UNUserNotificationCenter.current().delegate = CampaignNotificationRouter.shared
+        SalespersonVoiceCallService.shared.start()
         return true
     }
 

@@ -4,6 +4,7 @@ import SwiftUI
 struct ContactsHubView: View {
     @StateObject private var leadsViewModel = LeadsViewModel()
     @StateObject private var campaignStore = CampaignV2Store.shared
+    @StateObject private var onboardingDemo = OnboardingDemoViewModel.shared
     @StateObject private var auth = AuthManager.shared
     @EnvironmentObject var entitlementsService: EntitlementsService
     @State private var showSyncSettings = false
@@ -54,6 +55,7 @@ struct ContactsHubView: View {
                 Color.bg.ignoresSafeArea()
                 VStack(spacing: 0) {
                     filterSection
+                    demoLeadNudge
                     searchBarSection
                     if leadsViewModel.selectedFilter == .campaigns {
                         campaignFilterSection
@@ -116,11 +118,13 @@ struct ContactsHubView: View {
                 await leadsViewModel.loadLeads()
                 await loadIntegrations()
                 await loadCampaignFilters()
+                await onboardingDemo.load()
             }
             .refreshable {
                 await leadsViewModel.loadLeads()
                 await loadIntegrations()
                 await loadCampaignFilters(force: true)
+                await onboardingDemo.load()
                 HapticManager.rigid()
             }
             .onReceive(NotificationCenter.default.publisher(for: .leadSavedFromSession)) { _ in
@@ -227,6 +231,37 @@ struct ContactsHubView: View {
         .cornerRadius(10)
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
+    }
+
+    @ViewBuilder
+    private var demoLeadNudge: some View {
+        if let campaignId = onboardingDemo.state?.seededCampaignId,
+           leadsViewModel.leads.contains(where: { $0.campaignId == campaignId }) {
+            Button {
+                leadsViewModel.selectCampaign(campaignId)
+                Task { await onboardingDemo.markComplete("review_leads") }
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(Color.red)
+                    Text("Sugar House sample leads are mixed in here.")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Color.text)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Text("View")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(Color.red)
+                }
+                .padding(.horizontal, 12)
+                .frame(minHeight: 40)
+                .background(Color.red.opacity(0.09))
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .padding(.horizontal, 16)
+                .padding(.top, 10)
+            }
+            .buttonStyle(.plain)
+        }
     }
 
     private var filterSection: some View {
