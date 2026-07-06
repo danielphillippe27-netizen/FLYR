@@ -40,9 +40,11 @@
 	<key>FacebookAppID</key>
 	<string>1629419134987825</string>
 	<key>FLYR_PRO_API_URL</key>
-	<string>https://flyrpro.app</string>
+	<string>$(FLYR_PRO_API_URL)</string>
+	<key>FLYR_API_BASE_URL</key>
+	<string>$(FLYR_API_BASE_URL)</string>
 	<key>FLYR_INVITES_API_URL</key>
-	<string>https://www.flyrpro.app</string>
+	<string>$(FLYR_INVITES_API_URL)</string>
 	<key>FLYR_PASSWORD_RECOVERY_DEV_CALLBACK_URL</key>
 	<string>$(FLYR_PASSWORD_RECOVERY_DEV_CALLBACK_URL)</string>
 	<key>FLYR_PASSWORD_RECOVERY_PRODUCTION_URL</key>
@@ -99,9 +101,9 @@
 	<key>MONDAY_CLIENT_ID</key>
 	<string>$(MONDAY_CLIENT_ID)</string>
 	<key>SUPABASE_ANON_KEY</key>
-	<string>eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtmbnNud3F5bHNkc2JnbndneHZhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA5MjY3MzEsImV4cCI6MjA3NjUwMjczMX0.k2TZKPi3VxAVpEGggLiROYvfVu2nV_oSqBt2GM4jX-Y</string>
+	<string>$(SUPABASE_ANON_KEY)</string>
 	<key>SUPABASE_URL</key>
-	<string>https://kfnsnwqylsdsbgnwgxva.supabase.co</string>
+	<string>$(SUPABASE_URL)</string>
 	<key>TRANSCRIPTION_API_URL</key>
 	<string>https://flyr-transcription-api.up.railway.app</string>
 	<key>UIAppFonts</key>

@@ -5,6 +5,13 @@ enum Config {
     private static let dialerEnabledEmailsKey = "DIALER_ENABLED_EMAILS"
 
     fileprivate static func stringValue(for key: String) -> String? {
+        if let environmentValue = ProcessInfo.processInfo.environment[key]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !environmentValue.isEmpty,
+           !environmentValue.hasPrefix("$(") {
+            return environmentValue
+        }
+
         let rawValue = (Bundle.main.object(forInfoDictionaryKey: key) as? String)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard let rawValue,
