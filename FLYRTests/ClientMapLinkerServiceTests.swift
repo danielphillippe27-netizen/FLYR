@@ -46,7 +46,7 @@ final class ClientMapLinkerServiceTests: XCTestCase {
 
     func testSemanticProximityLinksMatchingStreetAndHouseNumber() async throws {
         let buildings = BuildingFeatureCollection(type: "FeatureCollection", features: [
-            building(id: "building-4", ring: square(lon: -79.00025, lat: 43.00025, size: 0.00008), street: "Queen Street", house: "44")
+            building(id: "building-4", ring: square(lon: -79.00005, lat: 43.00005, size: 0.00004), street: "Queen Street", house: "44")
         ])
         let addresses = AddressFeatureCollection(type: "FeatureCollection", features: [
             address(id: "44444444-4444-4444-4444-444444444444", lon: -79.0, lat: 43.0, street: "Queen St", house: "44")
@@ -61,6 +61,23 @@ final class ClientMapLinkerServiceTests: XCTestCase {
         XCTAssertEqual(summary.links.count, 1)
         XCTAssertEqual(summary.links.first?.buildingId, "building-4")
         XCTAssertEqual(summary.links.first?.matchType, "proximity_verified")
+    }
+
+    func testSemanticProximityBeyondTenMetersStaysUnlinkedForServerReview() async throws {
+        let buildings = BuildingFeatureCollection(type: "FeatureCollection", features: [
+            building(id: "review-building", ring: square(lon: -79.00014, lat: 43.0, size: 0.00004), street: "Crane Court", house: "5350")
+        ])
+        let addresses = AddressFeatureCollection(type: "FeatureCollection", features: [
+            address(id: "53505350-5350-5350-5350-535053505350", lon: -79.0, lat: 43.0, street: "Crane Ct", house: "5350")
+        ])
+
+        let summary = await ClientMapLinkerService.shared.link(
+            buildings: buildings,
+            addresses: addresses,
+            parcels: nil
+        )
+
+        XCTAssertTrue(summary.links.isEmpty)
     }
 
     func testSemanticMismatchDoesNotCreateFallbackLink() async throws {
@@ -91,11 +108,11 @@ final class ClientMapLinkerServiceTests: XCTestCase {
             building(id: "building-24", ring: square(lon: -78.9996, lat: 43.0000, size: 0.00008), street: "Bowsprit Ave", house: "24")
         ])
         let addresses = AddressFeatureCollection(type: "FeatureCollection", features: [
-            address(id: "16161616-1616-1616-1616-161616161616", lon: -79.0004, lat: 42.9998, street: "Bowsprit Ave", house: "16"),
-            address(id: "18181818-1818-1818-1818-181818181818", lon: -79.0002, lat: 42.9998, street: "Bowsprit Ave", house: "18"),
-            address(id: "20202020-2020-2020-2020-202020202020", lon: -79.0000, lat: 42.9998, street: "Bowsprit Ave", house: "20"),
-            address(id: "22222222-2222-2222-2222-222222222222", lon: -78.9998, lat: 42.9998, street: "Bowsprit Ave", house: "22"),
-            address(id: "24242424-2424-2424-2424-242424242424", lon: -78.9996, lat: 42.9998, street: "Bowsprit Ave", house: "24")
+            address(id: "16161616-1616-1616-1616-161616161616", lon: -79.0004, lat: 42.99993, street: "Bowsprit Ave", house: "16"),
+            address(id: "18181818-1818-1818-1818-181818181818", lon: -79.0002, lat: 42.99993, street: "Bowsprit Ave", house: "18"),
+            address(id: "20202020-2020-2020-2020-202020202020", lon: -79.0000, lat: 42.99993, street: "Bowsprit Ave", house: "20"),
+            address(id: "22222222-2222-2222-2222-222222222222", lon: -78.9998, lat: 42.99993, street: "Bowsprit Ave", house: "22"),
+            address(id: "24242424-2424-2424-2424-242424242424", lon: -78.9996, lat: 42.99993, street: "Bowsprit Ave", house: "24")
         ])
 
         let summary = await ClientMapLinkerService.shared.link(

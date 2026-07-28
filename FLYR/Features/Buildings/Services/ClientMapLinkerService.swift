@@ -96,7 +96,9 @@ final class ClientMapLinkerService: Sendable {
     private let parcelConfidence = 0.95
     private let proximityConfidence = 0.80
     private let fallbackConfidence = 0.50
-    private let proximityRadiusMeters = 60.0
+    // Keep offline semantic linking aligned with the server's detached-neighbourhood
+    // policy. Candidate discovery stays broad for authoritative parcel evidence.
+    private let proximityRadiusMeters = 10.0
     private let fallbackRadiusMeters = 75.0
     private let minimumSemanticProximityScore = 0.65
 
