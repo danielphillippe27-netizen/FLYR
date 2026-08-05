@@ -6189,8 +6189,8 @@ struct CampaignMapView: View {
                         .font(.system(size: 16, weight: .bold))
                     if report.appliedChangeCount > 0 {
                         HStack(spacing: 14) {
-                            Label("\(report.addressesLinked ?? 0) paired", systemImage: "link")
-                            Label("\(report.reviewNeeded ?? 0) review", systemImage: "exclamationmark.triangle")
+                            Label("\(report.matchedBuildingCount) resolved", systemImage: "link")
+                            Label("\(report.remainingBuildingCount) remaining", systemImage: "exclamationmark.triangle")
                         }
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(.secondary)
@@ -19114,11 +19114,15 @@ private struct MapQualityReportView: View {
 
     private var rows: [(String, String)] {
         [
-            ("Addresses examined", "\(report.addressesExamined ?? 0)"),
-            ("Addresses paired", "\(report.addressesLinked ?? 0)"),
+            ("Unlinked buildings checked", "\(report.checkedBuildingCount)"),
+            ("Reverse geocodes matched", "\(report.matchedBuildingCount)"),
+            ("Existing addresses reused", "\(report.matchedExistingAddressCount)"),
+            ("Provisional addresses added", "\(report.createdAddressCount)"),
+            ("Source coordinates corrected", "\(report.sourceCoordinatesCorrected ?? 0)"),
+            ("Unresolved buildings", "\(report.remainingBuildingCount)"),
             ("Links reassigned", "\(report.linksReassigned ?? 0)"),
             ("Labels cleaned up", "\(report.labelAnchorsAdjusted ?? 0)"),
-            ("New address points", "\(report.syntheticAddressesCreated ?? 0)"),
+            ("New address points", "\(report.createdAddressCount)"),
             (
                 "Footprints hidden",
                 "\((report.duplicateBuildingsHidden ?? 0) + (report.auxiliaryBuildingsHidden ?? 0))"
@@ -19133,7 +19137,7 @@ private struct MapQualityReportView: View {
                     report.coverageAfter ?? 0
                 )
             ),
-            ("Needs review", "\(report.reviewNeeded ?? 0)")
+            ("Needs review", "\(report.remainingBuildingCount)")
         ]
     }
 
@@ -19152,7 +19156,7 @@ private struct MapQualityReportView: View {
                 } header: {
                     Text("Latest downloaded report")
                 } footer: {
-                    Text("Source address and building geometry is preserved. Hidden footprints can be restored from the founder review console.")
+                    Text("Coordinate corrections and hidden footprints remain auditable and can be reviewed from the founder console.")
                 }
                 if !previousReports.isEmpty {
                     Section("Previous downloaded reports") {
@@ -19189,11 +19193,16 @@ private struct MapQualityReportView: View {
 
     private func reportRows(_ report: CanonicalMapReconciliationReport) -> [(String, String)] {
         [
-            ("Addresses paired", "\(report.addressesLinked ?? 0)"),
+            ("Buildings checked", "\(report.checkedBuildingCount)"),
+            ("Reverse geocodes matched", "\(report.matchedBuildingCount)"),
+            ("Existing addresses reused", "\(report.matchedExistingAddressCount)"),
+            ("Provisional addresses added", "\(report.createdAddressCount)"),
+            ("Coordinates corrected", "\(report.sourceCoordinatesCorrected ?? 0)"),
+            ("Unresolved buildings", "\(report.remainingBuildingCount)"),
             ("Links reassigned", "\(report.linksReassigned ?? 0)"),
             ("Labels cleaned up", "\(report.labelAnchorsAdjusted ?? 0)"),
-            ("New address points", "\(report.syntheticAddressesCreated ?? 0)"),
-            ("Needs review", "\(report.reviewNeeded ?? 0)"),
+            ("New address points", "\(report.createdAddressCount)"),
+            ("Needs review", "\(report.remainingBuildingCount)"),
             (
                 "Coverage",
                 String(
@@ -19275,7 +19284,7 @@ private struct BuildingAddressPickerSheet: View {
         }
         .task {
             if candidates.isEmpty {
-                await loadCandidates(forceReverseGeocode: true)
+                await loadCandidates()
             }
         }
         .alert("Couldn't choose address", isPresented: Binding(
@@ -19401,7 +19410,7 @@ private struct BuildingAddressPickerSheet: View {
                 if !isExpanded {
                     Button {
                         isExpanded = true
-                        Task { await loadCandidates(forceReverseGeocode: true) }
+                        Task { await loadCandidates() }
                     } label: {
                         HStack(spacing: 10) {
                             Image(systemName: "plus.magnifyingglass")
@@ -19423,7 +19432,7 @@ private struct BuildingAddressPickerSheet: View {
             .padding(.bottom, 4)
         }
         .refreshable {
-            await loadCandidates(forceReverseGeocode: true)
+            await loadCandidates()
         }
     }
 
@@ -19544,7 +19553,6 @@ private struct BuildingAddressPickerSheet: View {
             break
         }
         if candidate.isReverseGeocode { return "Needs review" }
-        if reverseGeocodeResolvedCandidateIds.contains(candidate.id) { return "Recommended" }
         return candidate.score >= 0.92 ? "Recommended" : candidate.score >= 0.70 ? "Strong" : "Needs review"
     }
 
@@ -19584,10 +19592,6 @@ private struct BuildingAddressPickerSheet: View {
             reverseGeocodeResolvedCandidateIds = exactExistingCandidateIdsMatchingReverseGeocode(in: rawCandidates)
             let nextCandidates = prioritizedCandidates(rawCandidates)
             candidates = nextCandidates
-            if candidates.isEmpty, networkMonitor.isOnline {
-                await loadReverseGeocodeCandidate(userInitiated: false)
-                return
-            }
             if candidates.isEmpty, !networkMonitor.isOnline {
                 searchMessage = "Connect to search for new addresses."
             }

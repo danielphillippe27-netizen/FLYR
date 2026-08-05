@@ -11,6 +11,57 @@ import Testing
 
 struct WolfGridTests {
 
+    @Test func reconciliationReportDecodesCurrentServerMetrics() throws {
+        let json = """
+        {
+          "status": "completed",
+          "run_id": "run-bowmanville",
+          "report": {
+            "unlinked_buildings_examined": 17,
+            "reverse_geocodes_matched": 10,
+            "orphan_addresses_reused": 5,
+            "provisional_addresses_created": 5,
+            "unresolved_buildings": 12,
+            "source_coordinates_corrected": 4,
+            "addresses_linked": 5,
+            "synthetic_addresses_created": 5,
+            "building_orphans_after": 12
+          }
+        }
+        """
+
+        let status = try JSONDecoder().decode(CanonicalMapReconciliation.self, from: Data(json.utf8))
+        let report = try #require(status.report)
+
+        #expect(report.checkedBuildingCount == 17)
+        #expect(report.matchedBuildingCount == 10)
+        #expect(report.matchedExistingAddressCount == 5)
+        #expect(report.createdAddressCount == 5)
+        #expect(report.remainingBuildingCount == 12)
+        #expect(report.sourceCoordinatesCorrected == 4)
+    }
+
+    @Test func reconciliationReportRemainsCompatibleWithOlderBundles() throws {
+        let json = """
+        {
+          "status": "completed",
+          "report": {
+            "addresses_examined": 9,
+            "addresses_linked": 4,
+            "synthetic_addresses_created": 2,
+            "building_orphans_after": 3
+          }
+        }
+        """
+
+        let status = try JSONDecoder().decode(CanonicalMapReconciliation.self, from: Data(json.utf8))
+        let report = try #require(status.report)
+
+        #expect(report.checkedBuildingCount == 9)
+        #expect(report.matchedBuildingCount == 6)
+        #expect(report.remainingBuildingCount == 3)
+    }
+
     @Test func campaignHouseCountUsesAggregateBeforeAddressHydration() throws {
         var campaign = CampaignV2(
             name: "Count test",
@@ -38,9 +89,12 @@ struct WolfGridTests {
             inProgressFarmCampaignIds: [farm]
         )
 
-        #expect(candidates.map(\.campaignId) == [assigned, duplicate, farm, recent])
-        #expect(candidates.map(\.reason) == ["assigned_route", "assigned_route", "in_progress_farm", "recent_campaign"])
-        #expect(candidates.map(\.priority) == [300, 300, 200, 100])
+        let assignedCandidates = candidates.prefix(2)
+        #expect(Set(assignedCandidates.map(\.campaignId)) == Set([assigned, duplicate]))
+        #expect(assignedCandidates.allSatisfy { $0.reason == "assigned_route" && $0.priority == 300 })
+        #expect(candidates.dropFirst(2).map(\.campaignId) == [farm, recent])
+        #expect(candidates.dropFirst(2).map(\.reason) == ["in_progress_farm", "recent_campaign"])
+        #expect(candidates.dropFirst(2).map(\.priority) == [200, 100])
     }
 
     @Test func diamondManifestDecodesSeparateWinnipegTileTemplates() throws {

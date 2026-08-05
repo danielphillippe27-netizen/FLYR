@@ -70,6 +70,18 @@ private actor MapBundleFetchDeduper {
     }
 }
 
+private actor ReconciliationETagStore {
+    private var values: [String: String] = [:]
+
+    func value(for campaignId: String) -> String? {
+        values[campaignId.lowercased()]
+    }
+
+    func remember(_ value: String, for campaignId: String) {
+        values[campaignId.lowercased()] = value
+    }
+}
+
 struct CanonicalCampaignMapBundleCounts: Codable, Sendable {
     static let currentRenderVersion = "2026-07-24-reconciliation-v1"
 
@@ -137,6 +149,12 @@ struct CanonicalMapReconciliation: Codable, Sendable {
 }
 
 struct CanonicalMapReconciliationReport: Codable, Sendable {
+    let unlinkedBuildingsExamined: Int?
+    let reverseGeocodesMatched: Int?
+    let orphanAddressesReused: Int?
+    let provisionalAddressesCreated: Int?
+    let unresolvedBuildings: Int?
+    let sourceCoordinatesCorrected: Int?
     let addressesExamined: Int?
     let addressesLinked: Int?
     let linksReassigned: Int?
@@ -153,6 +171,12 @@ struct CanonicalMapReconciliationReport: Codable, Sendable {
     let reviewNeeded: Int?
 
     enum CodingKeys: String, CodingKey {
+        case unlinkedBuildingsExamined = "unlinked_buildings_examined"
+        case reverseGeocodesMatched = "reverse_geocodes_matched"
+        case orphanAddressesReused = "orphan_addresses_reused"
+        case provisionalAddressesCreated = "provisional_addresses_created"
+        case unresolvedBuildings = "unresolved_buildings"
+        case sourceCoordinatesCorrected = "source_coordinates_corrected"
         case addressesExamined = "addresses_examined"
         case addressesLinked = "addresses_linked"
         case linksReassigned = "links_reassigned"
@@ -172,9 +196,18 @@ struct CanonicalMapReconciliationReport: Codable, Sendable {
     var appliedChangeCount: Int {
         let linkChanges = (addressesLinked ?? 0) + (linksReassigned ?? 0)
         let mapChanges = (labelAnchorsAdjusted ?? 0) + (syntheticAddressesCreated ?? 0)
+            + (sourceCoordinatesCorrected ?? 0)
         let hiddenBuildings = (duplicateBuildingsHidden ?? 0) + (auxiliaryBuildingsHidden ?? 0)
         return linkChanges + mapChanges + hiddenBuildings
     }
+
+    var checkedBuildingCount: Int { unlinkedBuildingsExamined ?? addressesExamined ?? 0 }
+    var matchedExistingAddressCount: Int { orphanAddressesReused ?? addressesLinked ?? 0 }
+    var createdAddressCount: Int { provisionalAddressesCreated ?? syntheticAddressesCreated ?? 0 }
+    var matchedBuildingCount: Int {
+        reverseGeocodesMatched ?? (matchedExistingAddressCount + createdAddressCount)
+    }
+    var remainingBuildingCount: Int { unresolvedBuildings ?? buildingOrphansAfter ?? reviewNeeded ?? 0 }
 }
 
 struct CachedMapQualityReport: Codable, Identifiable {
@@ -308,6 +341,7 @@ final class BuildingLinkService {
     private let outboxRepository = OutboxRepository.shared
     private let buildingFetchDeduper = BuildingFetchDeduper()
     private let mapBundleFetchDeduper = MapBundleFetchDeduper()
+    private let reconciliationETagStore = ReconciliationETagStore()
     
     private init() {
         self.supabaseClient = SupabaseManager.shared.client
@@ -634,17 +668,31 @@ final class BuildingLinkService {
         return .bundle(bundle)
     }
 
-    func fetchCampaignReconciliationStatus(campaignId: String) async throws -> CanonicalMapReconciliation {
+    func fetchCampaignReconciliationStatus(campaignId: String) async throws -> CanonicalMapReconciliation? {
         let encodedCampaignId = encodedPathComponent(campaignId)
         guard let url = URL(string: "\(baseURL)/api/campaigns/\(encodedCampaignId)/reconciliation") else {
             throw BuildingLinkError.invalidURL
         }
+        var headers: [String: String] = [:]
+        if let etag = await reconciliationETagStore.value(for: campaignId) {
+            headers["If-None-Match"] = etag
+        }
         let (data, response) = try await authorizedDataRequest(
             url: url,
             timeoutInterval: 15,
-            suppressHTTPWarning: true
+            suppressHTTPWarning: true,
+            additionalHeaders: headers
         )
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw BuildingLinkError.fetchFailed
+        }
+        if httpResponse.statusCode == 304 {
+            return nil
+        }
         try ensureSuccessfulResponse(response, data: data, logFailures: false)
+        if let etag = httpResponse.value(forHTTPHeaderField: "ETag"), !etag.isEmpty {
+            await reconciliationETagStore.remember(etag, for: campaignId)
+        }
         return try JSONDecoder().decode(CanonicalMapReconciliation.self, from: data)
     }
 

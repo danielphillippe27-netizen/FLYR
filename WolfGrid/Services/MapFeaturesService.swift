@@ -1819,8 +1819,10 @@ final class MapFeaturesService: ObservableObject {
                     "attempt=\(attempt + 1)"
                 )
                 do {
-                    let status = try await BuildingLinkService.shared
-                        .fetchCampaignReconciliationStatus(campaignId: campaignId)
+                    guard let status = try await BuildingLinkService.shared
+                        .fetchCampaignReconciliationStatus(campaignId: campaignId) else {
+                        continue
+                    }
                     await MainActor.run {
                         guard self.isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else {
                             return
