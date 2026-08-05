@@ -132,7 +132,7 @@ export default function PasswordResetPage() {
   return (
     <div className="auth-shell">
       <div className="auth-card">
-        <p className="auth-eyebrow">FLYR</p>
+        <p className="auth-eyebrow">WolfGrid</p>
         <h1>Reset your password</h1>
 
         {state === 'validating' && (

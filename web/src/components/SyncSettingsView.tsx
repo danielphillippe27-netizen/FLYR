@@ -102,7 +102,7 @@ export default function SyncSettingsView({ onClose, onSaved }: SyncSettingsViewP
           address: '123 Test St',
           name: 'Test Lead',
           status: 'interested',
-          source: 'FLYR',
+          source: 'WolfGrid',
           created_at: new Date().toISOString(),
         }),
       })

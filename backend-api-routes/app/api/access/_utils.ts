@@ -71,20 +71,7 @@ function roleRank(role: string | null | undefined): number {
 }
 
 function workspaceHasAccess(workspace: WorkspaceRow | null): boolean {
-  if (!workspace) return false;
-
-  const status = (workspace.subscription_status ?? "").toLowerCase();
-  if (status === "inactive" || status === "canceled" || status === "past_due" || status === "unpaid") {
-    return false;
-  }
-
-  if (status === "trialing") {
-    if (!workspace.trial_ends_at) return true;
-    const trialEnd = new Date(workspace.trial_ends_at);
-    return Number.isNaN(trialEnd.getTime()) || trialEnd > new Date();
-  }
-
-  return true;
+  return !!workspace;
 }
 
 function envList(name: string): string[] {

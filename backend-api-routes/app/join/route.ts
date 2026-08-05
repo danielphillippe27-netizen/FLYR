@@ -17,7 +17,7 @@ export async function GET(request: Request) {
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Open FLYR Invite</title>
+    <title>Open WolfGrid Invite</title>
     ${
       token
         ? `<script>
@@ -79,7 +79,7 @@ export async function GET(request: Request) {
   </head>
   <body>
     <main>
-      <h1>${token ? "Join this session in FLYR" : "Invite link missing"}</h1>
+      <h1>${token ? "Join this session in WolfGrid" : "Invite link missing"}</h1>
       <p>${
         token
           ? "Open the app to join the live session and jump straight onto the map."

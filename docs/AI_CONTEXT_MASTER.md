@@ -10,7 +10,7 @@ FLYR is a door-knocking and flyer tracking app for real estate agents and field 
 - **Map**: Mapbox Maps SDK (3D fill-extrusion buildings)
 - **Backend**: Supabase Postgres + PostGIS for spatial data
 - **Database**: Supabase relational state; legacy RPCs can return GeoJSON FeatureCollections
-- **Web API**: Next.js backend at `https://flyrpro.app`
+- **Web API**: Next.js backend at `https://wolfgrid.app`
 - **Address Data**: Backend Lambda + S3 (Overture parquet) primary source, Mapbox Geocoding fallback
 - **Building Data**: PMTiles/vector tiles are the strategic render path; S3 GeoJSON snapshots + GET `/api/campaigns/[id]/buildings` are legacy fallback
 - **Integrations**: HubSpot, Monday.com, Follow Up Boss, KVCore, Zapier
@@ -165,7 +165,7 @@ All map RPCs return GeoJSON in this format:
 
 ### Production
 
-- **Backend API**: `https://flyrpro.app`
+- **Backend API**: `https://wolfgrid.app`
 - **Supabase**: Project URL and anon key in `Info.plist`
 - **Mapbox**: Access token in `Info.plist`
 

@@ -1,0 +1,1310 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		C8A100000000000000000002 /* WhiteWolfSales.icon in Resources */ = {isa = PBXBuildFile; fileRef = C8A100000000000000000001 /* WhiteWolfSales.icon */; };
+		B8A100000000000000000002 /* SalespersonMainTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8A100000000000000000001 /* SalespersonMainTabView.swift */; };
+		1CACC434BF75CC566159355F /* PostgREST in Frameworks */ = {isa = PBXBuildFile; productRef = 30A4A5E52EA70F3500FA72B1 /* PostgREST */; };
+		20C2A5368BEFBBC4F41A064B /* telnyx-webrtc-ios in Frameworks */ = {isa = PBXBuildFile; productRef = 4D9F102B2F94000100A1F1A1 /* telnyx-webrtc-ios */; };
+		256A6DB64C951F7679B03285 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 79E245EF5F24004170C35541 /* Foundation.framework */; };
+		30A113B02F9C567D00F50F88 /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = A1B2C3D4E5F60718293A4B5C /* GRDB */; };
+		30A4A5E22EA70F3500FA72B1 /* Auth in Frameworks */ = {isa = PBXBuildFile; productRef = 30A4A5E12EA70F3500FA72B1 /* Auth */; };
+		30A4A5E42EA70F3500FA72B1 /* Functions in Frameworks */ = {isa = PBXBuildFile; productRef = 30A4A5E32EA70F3500FA72B1 /* Functions */; };
+		30A4A5E62EA70F3500FA72B1 /* PostgREST in Frameworks */ = {isa = PBXBuildFile; productRef = 30A4A5E52EA70F3500FA72B1 /* PostgREST */; };
+		30A4A5E82EA70F3500FA72B1 /* Realtime in Frameworks */ = {isa = PBXBuildFile; productRef = 30A4A5E72EA70F3500FA72B1 /* Realtime */; };
+		30A4A5EA2EA70F3500FA72B1 /* Storage in Frameworks */ = {isa = PBXBuildFile; productRef = 30A4A5E92EA70F3500FA72B1 /* Storage */; };
+		30A4A5ED2EA70F4800FA72B1 /* Supabase in Frameworks */ = {isa = PBXBuildFile; productRef = 30A4A5EC2EA70F4800FA72B1 /* Supabase */; };
+		30A4A6162EA71CA500FA72B1 /* MapboxMaps in Frameworks */ = {isa = PBXBuildFile; productRef = 30A4A6152EA71CA500FA72B1 /* MapboxMaps */; };
+		30A4A6182EA71CB500FA72B1 /* GoogleSignIn in Frameworks */ = {isa = PBXBuildFile; productRef = 30A4A6192EA71CB500FA72B1 /* GoogleSignIn */; };
+		30A4A6222EA71CC000FA72B1 /* Lottie in Frameworks */ = {isa = PBXBuildFile; productRef = 30A4A6212EA71CC000FA72B1 /* Lottie */; };
+		30DC41E02F35A3A5003EBA4A /* GoogleSignInSwift in Frameworks */ = {isa = PBXBuildFile; productRef = 30DC41DF2F35A3A5003EBA4A /* GoogleSignInSwift */; };
+		3131E301951249468DCE60E1 /* LiveKit in Frameworks */ = {isa = PBXBuildFile; productRef = 7B3EAA062F50A001003EBA4A /* LiveKit */; };
+		34028A72351DD9A11F0A5E8C /* GoogleMaps in Frameworks */ = {isa = PBXBuildFile; productRef = 9A1B2C3D4E5F60718293A4B7 /* GoogleMaps */; };
+		3FC2BD30BB5656455623A5CB /* MapboxMaps in Frameworks */ = {isa = PBXBuildFile; productRef = 30A4A6152EA71CA500FA72B1 /* MapboxMaps */; };
+		4D9F102C2F94000100A1F1A1 /* telnyx-webrtc-ios in Frameworks */ = {isa = PBXBuildFile; productRef = 4D9F102B2F94000100A1F1A1 /* telnyx-webrtc-ios */; };
+		58364365322F42ACD84162FE /* WolfGridSessionActivityExtension.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 6D459D5D3353C7164A9DE29E /* WolfGridSessionActivityExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		6E6070619E28865FB84BCA38 /* SessionLiveActivityWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5194BCD47B2F8D7EAA1E888C /* SessionLiveActivityWidget.swift */; };
+		6F7425C6E149E560D59BFFDC /* GoogleSignInSwift in Frameworks */ = {isa = PBXBuildFile; productRef = 30DC41DF2F35A3A5003EBA4A /* GoogleSignInSwift */; };
+		7418DC3C0E3864D424C22B74 /* Functions in Frameworks */ = {isa = PBXBuildFile; productRef = 30A4A5E32EA70F3500FA72B1 /* Functions */; };
+		7B3EAA072F50A001003EBA4A /* LiveKit in Frameworks */ = {isa = PBXBuildFile; productRef = 7B3EAA062F50A001003EBA4A /* LiveKit */; };
+		9A1B2C3D4E5F60718293A4B5 /* GoogleMaps in Frameworks */ = {isa = PBXBuildFile; productRef = 9A1B2C3D4E5F60718293A4B7 /* GoogleMaps */; };
+		9A53263F101C0745DAA278FD /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = A1B2C3D4E5F60718293A4B5C /* GRDB */; };
+		B666D9B179DB98D0135C86D4 /* SessionLiveActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1F739542582267E77AA500C4 /* SessionLiveActivityAttributes.swift */; };
+		D4C78D0AA4117F21B8EF129D /* Lottie in Frameworks */ = {isa = PBXBuildFile; productRef = 30A4A6212EA71CC000FA72B1 /* Lottie */; };
+		DF68D92A586821CAB5327679 /* Realtime in Frameworks */ = {isa = PBXBuildFile; productRef = 30A4A5E72EA70F3500FA72B1 /* Realtime */; };
+		E26E0150653C05C6BEF265BD /* Storage in Frameworks */ = {isa = PBXBuildFile; productRef = 30A4A5E92EA70F3500FA72B1 /* Storage */; };
+		E2E484C557CD751C7D6DCE3E /* GoogleSignIn in Frameworks */ = {isa = PBXBuildFile; productRef = 30A4A6192EA71CB500FA72B1 /* GoogleSignIn */; };
+		E40E734AA2B6D98D3958BECB /* Auth in Frameworks */ = {isa = PBXBuildFile; productRef = 30A4A5E12EA70F3500FA72B1 /* Auth */; };
+		ECE4782B93CD6156B37DC437 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 79E245EF5F24004170C35541 /* Foundation.framework */; };
+		F4EA04B3F2333EC3DE50F0FB /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AA7395B8BD595392DE025A5C /* Assets.xcassets */; };
+		F6C8D7CE610BEEA5E9B07DDB /* Supabase in Frameworks */ = {isa = PBXBuildFile; productRef = 30A4A5EC2EA70F4800FA72B1 /* Supabase */; };
+		FF2316BFD5B89C25757FBD16 /* WolfGridSessionActivityBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 91CCBD85356FC43A6E8767FE /* WolfGridSessionActivityBundle.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		30A4A58C2EA6CD9900FA72B1 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 30A4A5762EA6CD9800FA72B1 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 30A4A57D2EA6CD9800FA72B1;
+			remoteInfo = WolfGrid;
+		};
+		30A4A5962EA6CD9900FA72B1 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 30A4A5762EA6CD9800FA72B1 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 30A4A57D2EA6CD9800FA72B1;
+			remoteInfo = WolfGrid;
+		};
+		504238C45A02B1D820B58FD0 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 30A4A5762EA6CD9800FA72B1 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 51FB34537882BC17BB64EBC9;
+			remoteInfo = WolfGridSessionActivityExtension;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		128D6ADF8B16E49150BC8127 /* Embed App Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				58364365322F42ACD84162FE /* WolfGridSessionActivityExtension.appex in Embed App Extensions */,
+			);
+			name = "Embed App Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		C8A100000000000000000001 /* WhiteWolfSales.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = WolfGridSales/WhiteWolfSales.icon; sourceTree = SOURCE_ROOT; };
+		B8A100000000000000000001 /* SalespersonMainTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WolfGridSales/SalespersonMainTabView.swift; sourceTree = SOURCE_ROOT; };
+		05030697214A2D9EDD508F34 /* Info.plist */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		0AD261E306FAE62EF87A9A36 /* WolfGridSales.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = WolfGridSales.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		1F739542582267E77AA500C4 /* SessionLiveActivityAttributes.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SessionLiveActivityAttributes.swift; path = WolfGrid/Shared/LiveActivity/SessionLiveActivityAttributes.swift; sourceTree = "<group>"; };
+		30A4A57E2EA6CD9800FA72B1 /* WolfGrid.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = WolfGrid.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		30A4A58B2EA6CD9900FA72B1 /* WolfGridTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = WolfGridTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		30A4A5952EA6CD9900FA72B1 /* WolfGridUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = WolfGridUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		30A4A5D82EA7089C00FA72B1 /* Config.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config.xcconfig; sourceTree = "<group>"; };
+		5194BCD47B2F8D7EAA1E888C /* SessionLiveActivityWidget.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SessionLiveActivityWidget.swift; sourceTree = "<group>"; };
+		6D459D5D3353C7164A9DE29E /* WolfGridSessionActivityExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = WolfGridSessionActivityExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		79E245EF5F24004170C35541 /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS18.0.sdk/System/Library/Frameworks/Foundation.framework; sourceTree = DEVELOPER_DIR; };
+		91CCBD85356FC43A6E8767FE /* WolfGridSessionActivityBundle.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = WolfGridSessionActivityBundle.swift; sourceTree = "<group>"; };
+		AA7395B8BD595392DE025A5C /* Assets.xcassets */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = folder.assetcatalog; name = Assets.xcassets; path = WolfGrid/Assets.xcassets; sourceTree = "<group>"; };
+		E1679E8381A2ED5D165B57D9 /* WolfGridSales.entitlements */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.entitlements; path = WolfGridSales.entitlements; sourceTree = "<group>"; };
+		EA8FCBA9368E8DCE17DB6292 /* WolfGridSales-Info.plist */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.xml; path = "WolfGridSales-Info.plist"; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		C0DE00000000000000000001 /* Exceptions for "WolfGridUITests" folder in "WolfGridUITests" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 30A4A5942EA6CD9900FA72B1 /* WolfGridUITests */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		30A4A5802EA6CD9800FA72B1 /* WolfGrid */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = WolfGrid;
+			sourceTree = "<group>";
+		};
+		30A4A58E2EA6CD9900FA72B1 /* WolfGridTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = WolfGridTests;
+			sourceTree = "<group>";
+		};
+		30A4A5982EA6CD9900FA72B1 /* WolfGridUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				C0DE00000000000000000001 /* Exceptions for "WolfGridUITests" folder in "WolfGridUITests" target */,
+			);
+			path = WolfGridUITests;
+			sourceTree = "<group>";
+		};
+		C9A100000000000000000001 /* WolfGridSalesApp */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			name = WolfGridSalesApp;
+			path = WolfGridSales/App;
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		30A4A57B2EA6CD9800FA72B1 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				30A113B02F9C567D00F50F88 /* GRDB in Frameworks */,
+				7B3EAA072F50A001003EBA4A /* LiveKit in Frameworks */,
+				30DC41E02F35A3A5003EBA4A /* GoogleSignInSwift in Frameworks */,
+				30A4A5E62EA70F3500FA72B1 /* PostgREST in Frameworks */,
+				30A4A5E42EA70F3500FA72B1 /* Functions in Frameworks */,
+				30A4A5ED2EA70F4800FA72B1 /* Supabase in Frameworks */,
+				30A4A5E22EA70F3500FA72B1 /* Auth in Frameworks */,
+				30A4A5EA2EA70F3500FA72B1 /* Storage in Frameworks */,
+				4D9F102C2F94000100A1F1A1 /* telnyx-webrtc-ios in Frameworks */,
+				30A4A6162EA71CA500FA72B1 /* MapboxMaps in Frameworks */,
+				30A4A6182EA71CB500FA72B1 /* GoogleSignIn in Frameworks */,
+				30A4A5E82EA70F3500FA72B1 /* Realtime in Frameworks */,
+				30A4A6222EA71CC000FA72B1 /* Lottie in Frameworks */,
+				9A1B2C3D4E5F60718293A4B5 /* GoogleMaps in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		30A4A5882EA6CD9900FA72B1 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		30A4A5922EA6CD9900FA72B1 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		7CAECFAA7DC1E69A7AFA7CF8 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				256A6DB64C951F7679B03285 /* Foundation.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B33A39C45A5D6A33F2AEE79C /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				ECE4782B93CD6156B37DC437 /* Foundation.framework in Frameworks */,
+				E40E734AA2B6D98D3958BECB /* Auth in Frameworks */,
+				7418DC3C0E3864D424C22B74 /* Functions in Frameworks */,
+				1CACC434BF75CC566159355F /* PostgREST in Frameworks */,
+				DF68D92A586821CAB5327679 /* Realtime in Frameworks */,
+				E26E0150653C05C6BEF265BD /* Storage in Frameworks */,
+				F6C8D7CE610BEEA5E9B07DDB /* Supabase in Frameworks */,
+				3FC2BD30BB5656455623A5CB /* MapboxMaps in Frameworks */,
+				E2E484C557CD751C7D6DCE3E /* GoogleSignIn in Frameworks */,
+				6F7425C6E149E560D59BFFDC /* GoogleSignInSwift in Frameworks */,
+				D4C78D0AA4117F21B8EF129D /* Lottie in Frameworks */,
+				20C2A5368BEFBBC4F41A064B /* telnyx-webrtc-ios in Frameworks */,
+				34028A72351DD9A11F0A5E8C /* GoogleMaps in Frameworks */,
+				3131E301951249468DCE60E1 /* LiveKit in Frameworks */,
+				9A53263F101C0745DAA278FD /* GRDB in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		30A4A5752EA6CD9800FA72B1 = {
+			isa = PBXGroup;
+			children = (
+				30A4A5D82EA7089C00FA72B1 /* Config.xcconfig */,
+				30A4A5802EA6CD9800FA72B1 /* WolfGrid */,
+				30A4A58E2EA6CD9900FA72B1 /* WolfGridTests */,
+				30A4A5982EA6CD9900FA72B1 /* WolfGridUITests */,
+				30A4A5EB2EA70F4800FA72B1 /* Frameworks */,
+				30A4A57F2EA6CD9800FA72B1 /* Products */,
+				34FFFFD0C09877FFAE599E7E /* WolfGridSessionActivityExtension */,
+				1F739542582267E77AA500C4 /* SessionLiveActivityAttributes.swift */,
+				AA7395B8BD595392DE025A5C /* Assets.xcassets */,
+				F0516957BB93BD02C534C91B /* WolfGridSales */,
+				C9A100000000000000000001 /* WolfGridSalesApp */,
+			);
+			sourceTree = "<group>";
+		};
+		30A4A57F2EA6CD9800FA72B1 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				30A4A57E2EA6CD9800FA72B1 /* WolfGrid.app */,
+				30A4A58B2EA6CD9900FA72B1 /* WolfGridTests.xctest */,
+				30A4A5952EA6CD9900FA72B1 /* WolfGridUITests.xctest */,
+				6D459D5D3353C7164A9DE29E /* WolfGridSessionActivityExtension.appex */,
+				0AD261E306FAE62EF87A9A36 /* WolfGridSales.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		30A4A5EB2EA70F4800FA72B1 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				7F9EA72C5B7A27BB5EB1FB61 /* iOS */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		34FFFFD0C09877FFAE599E7E /* WolfGridSessionActivityExtension */ = {
+			isa = PBXGroup;
+			children = (
+				91CCBD85356FC43A6E8767FE /* WolfGridSessionActivityBundle.swift */,
+				5194BCD47B2F8D7EAA1E888C /* SessionLiveActivityWidget.swift */,
+				05030697214A2D9EDD508F34 /* Info.plist */,
+			);
+			path = WolfGridSessionActivityExtension;
+			sourceTree = "<group>";
+		};
+		7F9EA72C5B7A27BB5EB1FB61 /* iOS */ = {
+			isa = PBXGroup;
+			children = (
+				79E245EF5F24004170C35541 /* Foundation.framework */,
+			);
+			name = iOS;
+			sourceTree = "<group>";
+		};
+		F0516957BB93BD02C534C91B /* WolfGridSales */ = {
+			isa = PBXGroup;
+			children = (
+				C8A100000000000000000001 /* WhiteWolfSales.icon */,
+				B8A100000000000000000001 /* SalespersonMainTabView.swift */,
+				EA8FCBA9368E8DCE17DB6292 /* WolfGridSales-Info.plist */,
+				E1679E8381A2ED5D165B57D9 /* WolfGridSales.entitlements */,
+			);
+			name = WolfGridSales;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		30A4A57D2EA6CD9800FA72B1 /* WolfGrid */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 30A4A59F2EA6CD9900FA72B1 /* Build configuration list for PBXNativeTarget "WolfGrid" */;
+			buildPhases = (
+				30A4A57A2EA6CD9800FA72B1 /* Sources */,
+				30A4A57B2EA6CD9800FA72B1 /* Frameworks */,
+				30A4A57C2EA6CD9800FA72B1 /* Resources */,
+				128D6ADF8B16E49150BC8127 /* Embed App Extensions */,
+				8DA7EA6C8EA51D99DE4D2806 /* Generate Framework dSYMs */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				30A4A5EF2EA70F6500FA72B1 /* PBXTargetDependency */,
+				30A4A5F12EA70F6500FA72B1 /* PBXTargetDependency */,
+				30A4A5F32EA70F6500FA72B1 /* PBXTargetDependency */,
+				30A4A5F52EA70F6500FA72B1 /* PBXTargetDependency */,
+				30A4A5F72EA70F6500FA72B1 /* PBXTargetDependency */,
+				30A4A5F92EA70F6500FA72B1 /* PBXTargetDependency */,
+				F3A74D16E14D2B1F3064F6BE /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				30A4A5802EA6CD9800FA72B1 /* WolfGrid */,
+			);
+			name = WolfGrid;
+			packageProductDependencies = (
+				30A4A5E12EA70F3500FA72B1 /* Auth */,
+				30A4A5E32EA70F3500FA72B1 /* Functions */,
+				30A4A5E52EA70F3500FA72B1 /* PostgREST */,
+				30A4A5E72EA70F3500FA72B1 /* Realtime */,
+				30A4A5E92EA70F3500FA72B1 /* Storage */,
+				30A4A5EC2EA70F4800FA72B1 /* Supabase */,
+				30A4A6152EA71CA500FA72B1 /* MapboxMaps */,
+				30A4A6192EA71CB500FA72B1 /* GoogleSignIn */,
+				30DC41DF2F35A3A5003EBA4A /* GoogleSignInSwift */,
+				30A4A6212EA71CC000FA72B1 /* Lottie */,
+				4D9F102B2F94000100A1F1A1 /* telnyx-webrtc-ios */,
+				9A1B2C3D4E5F60718293A4B7 /* GoogleMaps */,
+				7B3EAA062F50A001003EBA4A /* LiveKit */,
+				A1B2C3D4E5F60718293A4B5C /* GRDB */,
+			);
+			productName = WolfGrid;
+			productReference = 30A4A57E2EA6CD9800FA72B1 /* WolfGrid.app */;
+			productType = "com.apple.product-type.application";
+		};
+		30A4A58A2EA6CD9900FA72B1 /* WolfGridTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 30A4A5A22EA6CD9900FA72B1 /* Build configuration list for PBXNativeTarget "WolfGridTests" */;
+			buildPhases = (
+				30A4A5872EA6CD9900FA72B1 /* Sources */,
+				30A4A5882EA6CD9900FA72B1 /* Frameworks */,
+				30A4A5892EA6CD9900FA72B1 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				30A4A58D2EA6CD9900FA72B1 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				30A4A58E2EA6CD9900FA72B1 /* WolfGridTests */,
+			);
+			name = WolfGridTests;
+			productName = WolfGridTests;
+			productReference = 30A4A58B2EA6CD9900FA72B1 /* WolfGridTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		30A4A5942EA6CD9900FA72B1 /* WolfGridUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 30A4A5A52EA6CD9900FA72B1 /* Build configuration list for PBXNativeTarget "WolfGridUITests" */;
+			buildPhases = (
+				30A4A5912EA6CD9900FA72B1 /* Sources */,
+				30A4A5922EA6CD9900FA72B1 /* Frameworks */,
+				30A4A5932EA6CD9900FA72B1 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				30A4A5972EA6CD9900FA72B1 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				30A4A5982EA6CD9900FA72B1 /* WolfGridUITests */,
+			);
+			name = WolfGridUITests;
+			productName = WolfGridUITests;
+			productReference = 30A4A5952EA6CD9900FA72B1 /* WolfGridUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+		51FB34537882BC17BB64EBC9 /* WolfGridSessionActivityExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AF3DC3FC1D882E2CB02E7D99 /* Build configuration list for PBXNativeTarget "WolfGridSessionActivityExtension" */;
+			buildPhases = (
+				A01342B55529231B8167926B /* Sources */,
+				7CAECFAA7DC1E69A7AFA7CF8 /* Frameworks */,
+				DFA0BF22BF664F18CD92C47E /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = WolfGridSessionActivityExtension;
+			productName = WolfGridSessionActivityExtension;
+			productReference = 6D459D5D3353C7164A9DE29E /* WolfGridSessionActivityExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+		624B0C90D44E88D1B294A1BF /* WolfGrid Sales */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A97E133A1BC041B37A5FB31F /* Build configuration list for PBXNativeTarget "WolfGrid Sales" */;
+			buildPhases = (
+				31BA3EEC37BA1B8562EC559F /* Sources */,
+				B33A39C45A5D6A33F2AEE79C /* Frameworks */,
+				EDDE1A36AD1636D9CF9FE5EE /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				C9A100000000000000000001 /* WolfGridSalesApp */,
+			);
+			name = "WolfGrid Sales";
+			packageProductDependencies = (
+				30A4A5E12EA70F3500FA72B1 /* Auth */,
+				30A4A5E32EA70F3500FA72B1 /* Functions */,
+				30A4A5E52EA70F3500FA72B1 /* PostgREST */,
+				30A4A5E72EA70F3500FA72B1 /* Realtime */,
+				30A4A5E92EA70F3500FA72B1 /* Storage */,
+				30A4A5EC2EA70F4800FA72B1 /* Supabase */,
+				30A4A6152EA71CA500FA72B1 /* MapboxMaps */,
+				30A4A6192EA71CB500FA72B1 /* GoogleSignIn */,
+				30DC41DF2F35A3A5003EBA4A /* GoogleSignInSwift */,
+				30A4A6212EA71CC000FA72B1 /* Lottie */,
+				4D9F102B2F94000100A1F1A1 /* telnyx-webrtc-ios */,
+				9A1B2C3D4E5F60718293A4B7 /* GoogleMaps */,
+				7B3EAA062F50A001003EBA4A /* LiveKit */,
+				A1B2C3D4E5F60718293A4B5C /* GRDB */,
+			);
+			productName = WolfGridSales;
+			productReference = 0AD261E306FAE62EF87A9A36 /* WolfGridSales.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		30A4A5762EA6CD9800FA72B1 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2600;
+				LastUpgradeCheck = 2600;
+				TargetAttributes = {
+					30A4A57D2EA6CD9800FA72B1 = {
+						CreatedOnToolsVersion = 26.0.1;
+					};
+					30A4A58A2EA6CD9900FA72B1 = {
+						CreatedOnToolsVersion = 26.0.1;
+						TestTargetID = 30A4A57D2EA6CD9800FA72B1;
+					};
+					30A4A5942EA6CD9900FA72B1 = {
+						CreatedOnToolsVersion = 26.0.1;
+						TestTargetID = 30A4A57D2EA6CD9800FA72B1;
+					};
+					51FB34537882BC17BB64EBC9 = {
+						CreatedOnToolsVersion = 26.0.1;
+					};
+					624B0C90D44E88D1B294A1BF = {
+						CreatedOnToolsVersion = 26.0.1;
+					};
+				};
+			};
+			buildConfigurationList = 30A4A5792EA6CD9800FA72B1 /* Build configuration list for PBXProject "WolfGrid" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 30A4A5752EA6CD9800FA72B1;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				30A4A5E02EA70F3500FA72B1 /* XCRemoteSwiftPackageReference "supabase-swift" */,
+				30A4A6142EA71CA500FA72B1 /* XCRemoteSwiftPackageReference "mapbox-maps-ios" */,
+				30A4A6172EA71CB500FA72B1 /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */,
+				30A4A6202EA71CC000FA72B1 /* XCRemoteSwiftPackageReference "lottie-ios" */,
+				4D9F102A2F94000100A1F1A1 /* XCRemoteSwiftPackageReference "telnyx-webrtc-ios" */,
+				9A1B2C3D4E5F60718293A4B6 /* XCRemoteSwiftPackageReference "ios-maps-sdk" */,
+				7B3EAA052F50A001003EBA4A /* XCRemoteSwiftPackageReference "client-sdk-swift" */,
+				A1B2C3D4E5F60718293A4B5B /* XCRemoteSwiftPackageReference "GRDB.swift" */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 30A4A57F2EA6CD9800FA72B1 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				30A4A57D2EA6CD9800FA72B1 /* WolfGrid */,
+				30A4A58A2EA6CD9900FA72B1 /* WolfGridTests */,
+				30A4A5942EA6CD9900FA72B1 /* WolfGridUITests */,
+				51FB34537882BC17BB64EBC9 /* WolfGridSessionActivityExtension */,
+				624B0C90D44E88D1B294A1BF /* WolfGrid Sales */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		30A4A57C2EA6CD9800FA72B1 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		30A4A5892EA6CD9900FA72B1 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		30A4A5932EA6CD9900FA72B1 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		DFA0BF22BF664F18CD92C47E /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				F4EA04B3F2333EC3DE50F0FB /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		EDDE1A36AD1636D9CF9FE5EE /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C8A100000000000000000002 /* WhiteWolfSales.icon in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		8DA7EA6C8EA51D99DE4D2806 /* Generate Framework dSYMs */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Generate Framework dSYMs";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -eu\n\nif [ \"${DEBUG_INFORMATION_FORMAT:-}\" != \"dwarf-with-dsym\" ]; then\n  exit 0\nfi\n\nframeworks_dir=\"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH:-}\"\ndsym_dir=\"${DWARF_DSYM_FOLDER_PATH:-}\"\n\nif [ ! -d \"$frameworks_dir\" ] || [ -z \"$dsym_dir\" ]; then\n  exit 0\nfi\n\nfind \"$frameworks_dir\" -maxdepth 1 -type d -name '*.framework' | while IFS= read -r framework; do\n  framework_name=\"$(basename \"$framework\" .framework)\"\n  binary_path=\"$framework/$framework_name\"\n  output_dsym=\"$dsym_dir/$framework_name.framework.dSYM\"\n\n  if [ ! -f \"$binary_path\" ] || [ -d \"$output_dsym\" ]; then\n    continue\n  fi\n\n  echo \"Generating dSYM for $framework_name.framework\"\n  dsymutil -o \"$output_dsym\" \"$binary_path\"\ndone\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		30A4A57A2EA6CD9800FA72B1 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		30A4A5872EA6CD9900FA72B1 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		30A4A5912EA6CD9900FA72B1 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		31BA3EEC37BA1B8562EC559F /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B8A100000000000000000002 /* SalespersonMainTabView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A01342B55529231B8167926B /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				FF2316BFD5B89C25757FBD16 /* WolfGridSessionActivityBundle.swift in Sources */,
+				6E6070619E28865FB84BCA38 /* SessionLiveActivityWidget.swift in Sources */,
+				B666D9B179DB98D0135C86D4 /* SessionLiveActivityAttributes.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		30A4A58D2EA6CD9900FA72B1 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 30A4A57D2EA6CD9800FA72B1 /* WolfGrid */;
+			targetProxy = 30A4A58C2EA6CD9900FA72B1 /* PBXContainerItemProxy */;
+		};
+		30A4A5972EA6CD9900FA72B1 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 30A4A57D2EA6CD9800FA72B1 /* WolfGrid */;
+			targetProxy = 30A4A5962EA6CD9900FA72B1 /* PBXContainerItemProxy */;
+		};
+		30A4A5EF2EA70F6500FA72B1 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			productRef = 30A4A5EE2EA70F6500FA72B1 /* Auth */;
+		};
+		30A4A5F12EA70F6500FA72B1 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			productRef = 30A4A5F02EA70F6500FA72B1 /* Functions */;
+		};
+		30A4A5F32EA70F6500FA72B1 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			productRef = 30A4A5F22EA70F6500FA72B1 /* PostgREST */;
+		};
+		30A4A5F52EA70F6500FA72B1 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			productRef = 30A4A5F42EA70F6500FA72B1 /* Realtime */;
+		};
+		30A4A5F72EA70F6500FA72B1 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			productRef = 30A4A5F62EA70F6500FA72B1 /* Storage */;
+		};
+		30A4A5F92EA70F6500FA72B1 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			productRef = 30A4A5F82EA70F6500FA72B1 /* Supabase */;
+		};
+		F3A74D16E14D2B1F3064F6BE /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = WolfGridSessionActivityExtension;
+			target = 51FB34537882BC17BB64EBC9 /* WolfGridSessionActivityExtension */;
+			targetProxy = 504238C45A02B1D820B58FD0 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		30A4A59D2EA6CD9900FA72B1 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 30A4A5D82EA7089C00FA72B1 /* Config.xcconfig */;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = 2AR5T8ZYAS;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		30A4A59E2EA6CD9900FA72B1 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 30A4A5D82EA7089C00FA72B1 /* Config.xcconfig */;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = 2AR5T8ZYAS;
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		30A4A5A02EA6CD9900FA72B1 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APS_ENVIRONMENT = development;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = WolfGrid/WolfGrid.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 12;
+				DEVELOPMENT_TEAM = 2AR5T8ZYAS;
+				ENABLE_DEBUG_DYLIB = NO;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "WolfGrid-Info.plist";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = NO;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.26;
+				PRODUCT_BUNDLE_IDENTIFIER = com.danielphillippe.FLYR;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = nonisolated;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		30A4A5A12EA6CD9900FA72B1 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APS_ENVIRONMENT = production;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = WolfGrid/WolfGrid.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 12;
+				DEVELOPMENT_TEAM = 2AR5T8ZYAS;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "WolfGrid-Info.plist";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = NO;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.26;
+				PRODUCT_BUNDLE_IDENTIFIER = com.danielphillippe.FLYR;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = nonisolated;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+		30A4A5A32EA6CD9900FA72B1 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 12;
+				DEVELOPMENT_TEAM = 2AR5T8ZYAS;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 1.26;
+				PRODUCT_BUNDLE_IDENTIFIER = com.danielphillippe.wolfgrid.Tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/WolfGrid.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/WolfGrid";
+			};
+			name = Debug;
+		};
+		30A4A5A42EA6CD9900FA72B1 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 12;
+				DEVELOPMENT_TEAM = 2AR5T8ZYAS;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 1.26;
+				PRODUCT_BUNDLE_IDENTIFIER = com.danielphillippe.wolfgrid.Tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/WolfGrid.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/WolfGrid";
+			};
+			name = Release;
+		};
+		30A4A5A62EA6CD9900FA72B1 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 11;
+				DEVELOPMENT_TEAM = 2AR5T8ZYAS;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = WolfGridUITests/Info.plist;
+				INFOPLIST_KEY_QA_IOS_EMAIL = "$(QA_IOS_EMAIL)";
+				INFOPLIST_KEY_QA_IOS_PASSWORD = "$(QA_IOS_PASSWORD)";
+				INFOPLIST_KEY_QA_SUPABASE_ANON_KEY = "$(QA_SUPABASE_ANON_KEY)";
+				INFOPLIST_KEY_QA_SUPABASE_URL = "$(QA_SUPABASE_URL)";
+				INFOPLIST_KEY_QA_WORKSPACE_ID = "$(QA_WORKSPACE_ID)";
+				MARKETING_VERSION = 1.26;
+				PRODUCT_BUNDLE_IDENTIFIER = com.danielphillippe.wolfgrid.UITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = WolfGrid;
+			};
+			name = Debug;
+		};
+		30A4A5A72EA6CD9900FA72B1 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 11;
+				DEVELOPMENT_TEAM = 2AR5T8ZYAS;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = WolfGridUITests/Info.plist;
+				INFOPLIST_KEY_QA_IOS_EMAIL = "$(QA_IOS_EMAIL)";
+				INFOPLIST_KEY_QA_IOS_PASSWORD = "$(QA_IOS_PASSWORD)";
+				INFOPLIST_KEY_QA_SUPABASE_ANON_KEY = "$(QA_SUPABASE_ANON_KEY)";
+				INFOPLIST_KEY_QA_SUPABASE_URL = "$(QA_SUPABASE_URL)";
+				INFOPLIST_KEY_QA_WORKSPACE_ID = "$(QA_WORKSPACE_ID)";
+				MARKETING_VERSION = 1.26;
+				PRODUCT_BUNDLE_IDENTIFIER = com.danielphillippe.wolfgrid.UITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = WolfGrid;
+			};
+			name = Release;
+		};
+		3BC4967DC059EFB5D025EB2D /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APS_ENVIRONMENT = production;
+				ASSETCATALOG_COMPILER_APPICON_NAME = WhiteWolfSales;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = WolfGridSales/WolfGridSales.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 2AR5T8ZYAS;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "WolfGridSales/WolfGridSales-Info.plist";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = NO;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.danielphillippe.wolfgrid.sales;
+				PRODUCT_NAME = WolfGridSales;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "WOLFGRID_SALES $(inherited)";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = nonisolated;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+		6DF737D9995BF5371F062067 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 12;
+				DEVELOPMENT_TEAM = 2AR5T8ZYAS;
+				ENABLE_DEBUG_DYLIB = NO;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = WolfGridSessionActivityExtension/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.26;
+				PRODUCT_BUNDLE_IDENTIFIER = com.danielphillippe.FLYR.SessionActivityExtension;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		83DAAAE04165CA6FA945ABE1 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APS_ENVIRONMENT = development;
+				ASSETCATALOG_COMPILER_APPICON_NAME = WhiteWolfSales;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = WolfGridSales/WolfGridSales.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 2AR5T8ZYAS;
+				ENABLE_DEBUG_DYLIB = NO;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "WolfGridSales/WolfGridSales-Info.plist";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = NO;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.danielphillippe.wolfgrid.sales;
+				PRODUCT_NAME = WolfGridSales;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "WOLFGRID_SALES $(inherited)";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = nonisolated;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		D22EACB72589D428D37F7BE9 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 12;
+				DEVELOPMENT_TEAM = 2AR5T8ZYAS;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = WolfGridSessionActivityExtension/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.26;
+				PRODUCT_BUNDLE_IDENTIFIER = com.danielphillippe.FLYR.SessionActivityExtension;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		30A4A5792EA6CD9800FA72B1 /* Build configuration list for PBXProject "WolfGrid" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				30A4A59D2EA6CD9900FA72B1 /* Debug */,
+				30A4A59E2EA6CD9900FA72B1 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		30A4A59F2EA6CD9900FA72B1 /* Build configuration list for PBXNativeTarget "WolfGrid" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				30A4A5A02EA6CD9900FA72B1 /* Debug */,
+				30A4A5A12EA6CD9900FA72B1 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		30A4A5A22EA6CD9900FA72B1 /* Build configuration list for PBXNativeTarget "WolfGridTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				30A4A5A32EA6CD9900FA72B1 /* Debug */,
+				30A4A5A42EA6CD9900FA72B1 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		30A4A5A52EA6CD9900FA72B1 /* Build configuration list for PBXNativeTarget "WolfGridUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				30A4A5A62EA6CD9900FA72B1 /* Debug */,
+				30A4A5A72EA6CD9900FA72B1 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A97E133A1BC041B37A5FB31F /* Build configuration list for PBXNativeTarget "WolfGrid Sales" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				3BC4967DC059EFB5D025EB2D /* Release */,
+				83DAAAE04165CA6FA945ABE1 /* Debug */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		AF3DC3FC1D882E2CB02E7D99 /* Build configuration list for PBXNativeTarget "WolfGridSessionActivityExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				6DF737D9995BF5371F062067 /* Release */,
+				D22EACB72589D428D37F7BE9 /* Debug */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		30A4A5E02EA70F3500FA72B1 /* XCRemoteSwiftPackageReference "supabase-swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/supabase-community/supabase-swift.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.5.1;
+			};
+		};
+		30A4A6142EA71CA500FA72B1 /* XCRemoteSwiftPackageReference "mapbox-maps-ios" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/mapbox/mapbox-maps-ios.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 11.0.0;
+			};
+		};
+		30A4A6172EA71CB500FA72B1 /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/google/GoogleSignIn-iOS";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 8.0.0;
+			};
+		};
+		30A4A6202EA71CC000FA72B1 /* XCRemoteSwiftPackageReference "lottie-ios" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/airbnb/lottie-ios";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 4.0.0;
+			};
+		};
+		4D9F102A2F94000100A1F1A1 /* XCRemoteSwiftPackageReference "telnyx-webrtc-ios" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/team-telnyx/telnyx-webrtc-ios.git";
+			requirement = {
+				branch = main;
+				kind = branch;
+			};
+		};
+		7B3EAA052F50A001003EBA4A /* XCRemoteSwiftPackageReference "client-sdk-swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/livekit/client-sdk-swift.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.11.0;
+			};
+		};
+		9A1B2C3D4E5F60718293A4B6 /* XCRemoteSwiftPackageReference "ios-maps-sdk" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/googlemaps/ios-maps-sdk";
+			requirement = {
+				kind = exactVersion;
+				version = 10.12.0;
+			};
+		};
+		A1B2C3D4E5F60718293A4B5B /* XCRemoteSwiftPackageReference "GRDB.swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/groue/GRDB.swift.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 7.0.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		30A4A5E12EA70F3500FA72B1 /* Auth */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 30A4A5E02EA70F3500FA72B1 /* XCRemoteSwiftPackageReference "supabase-swift" */;
+			productName = Auth;
+		};
+		30A4A5E32EA70F3500FA72B1 /* Functions */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 30A4A5E02EA70F3500FA72B1 /* XCRemoteSwiftPackageReference "supabase-swift" */;
+			productName = Functions;
+		};
+		30A4A5E52EA70F3500FA72B1 /* PostgREST */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 30A4A5E02EA70F3500FA72B1 /* XCRemoteSwiftPackageReference "supabase-swift" */;
+			productName = PostgREST;
+		};
+		30A4A5E72EA70F3500FA72B1 /* Realtime */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 30A4A5E02EA70F3500FA72B1 /* XCRemoteSwiftPackageReference "supabase-swift" */;
+			productName = Realtime;
+		};
+		30A4A5E92EA70F3500FA72B1 /* Storage */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 30A4A5E02EA70F3500FA72B1 /* XCRemoteSwiftPackageReference "supabase-swift" */;
+			productName = Storage;
+		};
+		30A4A5EC2EA70F4800FA72B1 /* Supabase */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 30A4A5E02EA70F3500FA72B1 /* XCRemoteSwiftPackageReference "supabase-swift" */;
+			productName = Supabase;
+		};
+		30A4A5EE2EA70F6500FA72B1 /* Auth */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 30A4A5E02EA70F3500FA72B1 /* XCRemoteSwiftPackageReference "supabase-swift" */;
+			productName = Auth;
+		};
+		30A4A5F02EA70F6500FA72B1 /* Functions */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 30A4A5E02EA70F3500FA72B1 /* XCRemoteSwiftPackageReference "supabase-swift" */;
+			productName = Functions;
+		};
+		30A4A5F22EA70F6500FA72B1 /* PostgREST */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 30A4A5E02EA70F3500FA72B1 /* XCRemoteSwiftPackageReference "supabase-swift" */;
+			productName = PostgREST;
+		};
+		30A4A5F42EA70F6500FA72B1 /* Realtime */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 30A4A5E02EA70F3500FA72B1 /* XCRemoteSwiftPackageReference "supabase-swift" */;
+			productName = Realtime;
+		};
+		30A4A5F62EA70F6500FA72B1 /* Storage */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 30A4A5E02EA70F3500FA72B1 /* XCRemoteSwiftPackageReference "supabase-swift" */;
+			productName = Storage;
+		};
+		30A4A5F82EA70F6500FA72B1 /* Supabase */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 30A4A5E02EA70F3500FA72B1 /* XCRemoteSwiftPackageReference "supabase-swift" */;
+			productName = Supabase;
+		};
+		30A4A6152EA71CA500FA72B1 /* MapboxMaps */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 30A4A6142EA71CA500FA72B1 /* XCRemoteSwiftPackageReference "mapbox-maps-ios" */;
+			productName = MapboxMaps;
+		};
+		30A4A6192EA71CB500FA72B1 /* GoogleSignIn */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 30A4A6172EA71CB500FA72B1 /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */;
+			productName = GoogleSignIn;
+		};
+		30A4A6212EA71CC000FA72B1 /* Lottie */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 30A4A6202EA71CC000FA72B1 /* XCRemoteSwiftPackageReference "lottie-ios" */;
+			productName = Lottie;
+		};
+		30DC41DF2F35A3A5003EBA4A /* GoogleSignInSwift */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 30A4A6172EA71CB500FA72B1 /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */;
+			productName = GoogleSignInSwift;
+		};
+		4D9F102B2F94000100A1F1A1 /* telnyx-webrtc-ios */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 4D9F102A2F94000100A1F1A1 /* XCRemoteSwiftPackageReference "telnyx-webrtc-ios" */;
+			productName = "telnyx-webrtc-ios";
+		};
+		7B3EAA062F50A001003EBA4A /* LiveKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 7B3EAA052F50A001003EBA4A /* XCRemoteSwiftPackageReference "client-sdk-swift" */;
+			productName = LiveKit;
+		};
+		9A1B2C3D4E5F60718293A4B7 /* GoogleMaps */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 9A1B2C3D4E5F60718293A4B6 /* XCRemoteSwiftPackageReference "ios-maps-sdk" */;
+			productName = GoogleMaps;
+		};
+		A1B2C3D4E5F60718293A4B5C /* GRDB */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A1B2C3D4E5F60718293A4B5B /* XCRemoteSwiftPackageReference "GRDB.swift" */;
+			productName = GRDB;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 30A4A5762EA6CD9800FA72B1 /* Project object */;
+}

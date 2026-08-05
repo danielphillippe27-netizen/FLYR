@@ -1,0 +1,1201 @@
+import Foundation
+import CoreLocation
+import Supabase
+
+enum CampaignMutationClientError: LocalizedError {
+    case rejected(code: String, canonicalStateJSON: String?)
+
+    var errorDescription: String? {
+        switch self {
+        case .rejected(let code, _): return code
+        }
+    }
+
+    var code: String {
+        switch self {
+        case .rejected(let code, _): return code
+        }
+    }
+}
+
+actor MobileCampaignClientPolicy {
+    static let shared = MobileCampaignClientPolicy()
+
+    private struct Response: Decodable {
+        let blocked: Bool
+        let message: String?
+    }
+
+    private var lastCheckedAt: Date?
+    private var lastResponse: Response?
+
+    func assertMutationAllowed() async throws {
+        let response: Response?
+        if let lastCheckedAt,
+           Date().timeIntervalSince(lastCheckedAt) < 60 {
+            response = lastResponse
+        } else {
+            response = await fetchPolicy()
+            lastCheckedAt = Date()
+            lastResponse = response
+        }
+
+        if response?.blocked == true {
+            throw CampaignMutationClientError.rejected(
+                code: "CLIENT_UPGRADE_REQUIRED",
+                canonicalStateJSON: response?.message
+            )
+        }
+    }
+
+    private func fetchPolicy() async -> Response? {
+        let configured = (Bundle.main.object(forInfoDictionaryKey: "WOLFGRID_API_URL") as? String)?
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let baseURL = configured?.isEmpty == false ? configured! : "https://wolfgrid.app"
+        let build = Int(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "") ?? 0
+        guard let url = URL(string: "\(baseURL)/api/mobile/client-policy?platform=ios&build=\(build)") else {
+            return nil
+        }
+        do {
+            let (data, urlResponse) = try await URLSession.shared.data(from: url)
+            guard let http = urlResponse as? HTTPURLResponse,
+                  (200..<300).contains(http.statusCode) else { return nil }
+            return try JSONDecoder().decode(Response.self, from: data)
+        } catch {
+            // The server RPC remains the authoritative gate; a policy preflight outage
+            // must not turn normal offline work into a false upgrade block.
+            return nil
+        }
+    }
+}
+
+/// API for logging building visits/touches and updating campaign address visited status
+final class VisitsAPI {
+    static let shared = VisitsAPI()
+    private init() {}
+
+    private struct StatusFetchScope: Hashable {
+        let campaignId: UUID
+        let farmCycleNumber: Int?
+    }
+    
+    private let client = SupabaseManager.shared.client
+    private let pendingLock = NSLock()
+    private var pendingTouches: [(addressId: UUID, campaignId: UUID, buildingId: String?, sessionId: UUID?)] = []
+    private var pendingVisitedMarks: [UUID] = []
+    private let statusFetchLock = NSLock()
+    private var inFlightStatusFetches: [StatusFetchScope: Task<[UUID: AddressStatusRow], Error>] = [:]
+    private var lastStatusFetchAt: [StatusFetchScope: Date] = [:]
+    private var cachedStatuses: [StatusFetchScope: [UUID: AddressStatusRow]] = [:]
+    private let campaignRepository = CampaignRepository.shared
+    private let outboxRepository = OutboxRepository.shared
+    /// Short TTL so rapid map updates (buildings → addresses → route scope) reuse one response instead of re-hitting Supabase.
+    private let statusFetchCooldownSeconds: TimeInterval = 12
+
+    /// Clears in-memory status cache so the next `fetchStatuses` hits the network (used after writes).
+    func invalidateStatusCache(campaignId: UUID) {
+        synchronizedStatusState {
+            let matchingScopes = Set(cachedStatuses.keys.filter { $0.campaignId == campaignId })
+                .union(lastStatusFetchAt.keys.filter { $0.campaignId == campaignId })
+                .union(inFlightStatusFetches.keys.filter { $0.campaignId == campaignId })
+
+            for scope in matchingScopes {
+                cachedStatuses[scope] = nil
+                lastStatusFetchAt[scope] = nil
+                inFlightStatusFetches[scope] = nil
+            }
+        }
+    }
+    
+    /// Log a building touch/visit event
+    /// - Parameters:
+    ///   - addressId: UUID of the campaign address (from campaign_addresses.id)
+    ///   - campaignId: UUID of the campaign
+    ///   - buildingId: Mapbox building ID (optional, may be nil for some buildings)
+    ///   - sessionId: Current session ID (optional, nil if not tracking active session)
+    func logBuildingTouch(
+        addressId: UUID,
+        campaignId: UUID,
+        buildingId: String?,
+        sessionId: UUID?
+    ) {
+        // Fire and forget - non-blocking async call
+        Task {
+            let touchedAt = Date()
+            do {
+                debugLog("🏗️ [VisitsAPI] Logging building touch")
+
+                guard let user = try? await client.auth.session.user else {
+                    debugLog("⚠️ [VisitsAPI] No authenticated user for building touch logging")
+                    await enqueueBuildingTouchRetry(
+                        addressId: addressId,
+                        campaignId: campaignId,
+                        buildingId: buildingId,
+                        sessionId: sessionId,
+                        userId: nil,
+                        touchedAt: touchedAt
+                    )
+                    return
+                }
+
+                var touchData: [String: AnyCodable] = [
+                    "user_id": AnyCodable(user.id.uuidString),
+                    "address_id": AnyCodable(addressId.uuidString),
+                    "campaign_id": AnyCodable(campaignId.uuidString),
+                    "touched_at": AnyCodable(ISO8601DateFormatter().string(from: touchedAt))
+                ]
+
+                touchData["building_id"] = AnyCodable(buildingIdCodableValue(buildingId))
+
+                if let sessionId = sessionId {
+                    touchData["session_id"] = AnyCodable(sessionId.uuidString)
+                } else {
+                    touchData["session_id"] = AnyCodable(NSNull())
+                }
+
+                _ = try await client
+                    .from("building_touches")
+                    .insert(touchData)
+                    .execute()
+
+                debugLog("✅ [VisitsAPI] Building touch logged to database")
+            } catch {
+                let queuedUserId = try? await client.auth.session.user.id
+                await enqueueBuildingTouchRetry(
+                    addressId: addressId,
+                    campaignId: campaignId,
+                    buildingId: buildingId,
+                    sessionId: sessionId,
+                    userId: queuedUserId,
+                    touchedAt: touchedAt
+                )
+                debugLog("⚠️ [VisitsAPI] Error logging building touch: \(error.localizedDescription)")
+            }
+        }
+    }
+    
+    /// Mark a campaign address as visited
+    /// - Parameter addressId: UUID of the campaign address (from campaign_addresses.id)
+    func markAddressVisited(addressId: UUID) {
+        // Fire and forget - non-blocking async update
+        Task {
+            do {
+                debugLog("📍 [VisitsAPI] Marking address visited")
+                
+                // Update campaign_addresses.visited = true
+                let updateData: [String: AnyCodable] = [
+                    "visited": AnyCodable(true)
+                ]
+                
+                _ = try await client
+                    .from("campaign_addresses")
+                    .update(updateData)
+                    .eq("id", value: addressId.uuidString)
+                    .execute()
+                
+                debugLog("✅ [VisitsAPI] Address marked as visited")
+            } catch {
+                await outboxRepository.enqueue(
+                    entityType: "campaign_address",
+                    entityId: addressId.uuidString,
+                    operation: .markAddressVisited,
+                    payload: MarkAddressVisitedOutboxPayload(
+                        addressId: addressId.uuidString,
+                        visited: true
+                    ),
+                    dependencyKey: "campaign_address:\(addressId.uuidString.lowercased())"
+                )
+                await MainActor.run {
+                    OfflineSyncCoordinator.shared.scheduleProcessOutbox()
+                }
+                debugLog("⚠️ [VisitsAPI] Error marking address as visited: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    func performRemoteLogBuildingTouch(
+        addressId: UUID,
+        campaignId: UUID,
+        buildingId: String?,
+        sessionId: UUID?,
+        userId: UUID? = nil,
+        touchedAt: Date? = nil,
+        clientMutationId: String? = nil
+    ) async throws {
+        try await insertTouch(
+            addressId: addressId,
+            campaignId: campaignId,
+            buildingId: buildingId,
+            sessionId: sessionId,
+            userId: userId,
+            touchedAt: touchedAt,
+            clientMutationId: clientMutationId
+        )
+    }
+
+    func performRemoteMarkAddressVisited(addressId: UUID, visited: Bool) async throws {
+        try await updateVisited(addressId: addressId, visited: visited)
+    }
+
+    private func enqueueBuildingTouchRetry(
+        addressId: UUID,
+        campaignId: UUID,
+        buildingId: String?,
+        sessionId: UUID?,
+        userId: UUID?,
+        touchedAt: Date
+    ) async {
+        await outboxRepository.enqueue(
+            entityType: "building_touch",
+            entityId: "\(campaignId.uuidString.lowercased()):\(addressId.uuidString.lowercased())",
+            operation: .logBuildingTouch,
+            payload: BuildingTouchOutboxPayload(
+                addressId: addressId.uuidString,
+                campaignId: campaignId.uuidString,
+                buildingId: buildingId,
+                sessionId: sessionId?.uuidString,
+                userId: userId?.uuidString,
+                touchedAt: OfflineDateCodec.string(from: touchedAt)
+            ),
+            dependencyKey: "building_touch:\(campaignId.uuidString.lowercased()):\(addressId.uuidString.lowercased())"
+        )
+        await MainActor.run {
+            OfflineSyncCoordinator.shared.scheduleProcessOutbox()
+        }
+    }
+    
+    /// Fetch all address statuses for a campaign
+    /// - Parameters:
+    ///   - campaignId: UUID of the campaign
+    ///   - farmCycleNumber: Optional farm cycle scope. When present, only statuses recorded by sessions in that cycle are returned.
+    ///   - forceRefresh: When true, skips the short cooldown cache and always fetches from the server.
+    /// - Returns: Dictionary mapping address_id to AddressStatusRow
+    func fetchStatuses(
+        campaignId: UUID,
+        farmCycleNumber: Int? = nil,
+        forceRefresh: Bool = false
+    ) async throws -> [UUID: AddressStatusRow] {
+        let scope = StatusFetchScope(campaignId: campaignId, farmCycleNumber: farmCycleNumber)
+        let shouldBypassCooldownCache = forceRefresh || farmCycleNumber != nil
+
+        if let inFlight = synchronizedStatusState({ inFlightStatusFetches[scope] }) {
+            return try await inFlight.value
+        }
+
+        if !NetworkMonitor.shared.isOnline {
+            let localStatuses = await campaignRepository.getStatuses(campaignId: campaignId)
+            synchronizedStatusState {
+                cachedStatuses[scope] = localStatuses
+                lastStatusFetchAt[scope] = Date()
+            }
+            return localStatuses
+        }
+
+        if !shouldBypassCooldownCache,
+           let cached = synchronizedStatusState({ () -> [UUID: AddressStatusRow]? in
+            guard let lastFetch = lastStatusFetchAt[scope],
+                  Date().timeIntervalSince(lastFetch) <= statusFetchCooldownSeconds else {
+                return nil
+            }
+            return cachedStatuses[scope]
+        }) {
+            debugLog("📊 [VisitsAPI] Using cached statuses for campaign (cooldown)")
+            return cached
+        }
+
+        let task = Task<[UUID: AddressStatusRow], Error> {
+            let cycleLogSuffix = farmCycleNumber.map { " cycle=\($0)" } ?? ""
+            debugLog("📊 [VisitsAPI] Fetching statuses for campaign\(cycleLogSuffix)")
+
+            let rows = try await remoteFetchStatuses(campaignId: campaignId, farmCycleNumber: farmCycleNumber)
+            
+            var statuses: [UUID: AddressStatusRow] = [:]
+            for statusRow in rows {
+                statuses[statusRow.addressId] = statusRow
+            }
+
+            await campaignRepository.upsertStatuses(rows: rows, preserveDirty: true)
+            let dirtyLocalStatuses = await campaignRepository.getDirtyStatuses(campaignId: campaignId)
+            for (addressId, dirtyRow) in dirtyLocalStatuses {
+                statuses[addressId] = dirtyRow
+            }
+            
+            synchronizedStatusState {
+                cachedStatuses[scope] = statuses
+                lastStatusFetchAt[scope] = Date()
+            }
+            debugLog("✅ [VisitsAPI] Fetched \(statuses.count) statuses for campaign\(cycleLogSuffix)")
+            return statuses
+        }
+
+        synchronizedStatusState {
+            inFlightStatusFetches[scope] = task
+        }
+        defer {
+            synchronizedStatusState {
+                inFlightStatusFetches[scope] = nil
+            }
+        }
+        return try await task.value
+    }
+    
+    /// Update or create address status
+    /// - Parameters:
+    ///   - addressId: UUID of the campaign address
+    ///   - campaignId: UUID of the campaign
+    ///   - status: New status value
+    ///   - notes: Optional notes
+    @discardableResult
+    func updateStatus(
+        addressId: UUID,
+        campaignId: UUID,
+        status: AddressStatus,
+        notes: String? = nil,
+        sessionId: UUID? = nil,
+        sessionTargetId: String? = nil,
+        sessionEventType: SessionEventType? = nil,
+        location: CLLocation? = nil,
+        overrideReason: String? = nil
+    ) async throws -> AddressStatusRow? {
+        let rows = try await updateTargetStatus(
+            addressIds: [addressId],
+            campaignId: campaignId,
+            status: status,
+            notes: notes,
+            sessionId: sessionId,
+            sessionTargetId: sessionTargetId,
+            sessionEventType: sessionEventType,
+            location: location,
+            overrideReason: overrideReason
+        )
+        return rows.first
+    }
+
+    /// Clears voice/AI-derived columns on `campaign_addresses` when resetting a home to a clean slate.
+    func clearCampaignAddressCaptureMetadata(addressId: UUID, campaignId: UUID) async throws {
+        await campaignRepository.clearAddressCaptureMetadata(
+            campaignId: campaignId,
+            addressId: addressId,
+            dirty: true
+        )
+        await outboxRepository.enqueue(
+            entityType: "address_capture_metadata",
+            entityId: addressId.uuidString,
+            operation: .upsertAddressCaptureMetadata,
+            payload: AddressCaptureMetadataOutboxPayload(
+                campaignId: campaignId.uuidString,
+                addressId: addressId.uuidString,
+                contactName: nil,
+                leadStatus: nil,
+                productInterest: nil,
+                followUpDate: nil,
+                rawTranscript: nil,
+                aiSummary: nil,
+                clearAll: true
+            ),
+            dependencyKey: "address_capture_metadata:\(campaignId.uuidString.lowercased()):\(addressId.uuidString.lowercased())"
+        )
+        if NetworkMonitor.shared.isOnline {
+            await MainActor.run {
+                OfflineSyncCoordinator.shared.scheduleProcessOutbox()
+            }
+        }
+        debugLog("✅ [VisitsAPI] Queued campaign_addresses capture metadata reset for address \(addressId.uuidString)")
+    }
+
+    func performRemoteUpsertCampaignAddressCaptureMetadata(
+        addressId: UUID,
+        campaignId: UUID,
+        contactName: String?,
+        leadStatus: String?,
+        productInterest: String?,
+        followUpDate: Date?,
+        rawTranscript: String?,
+        aiSummary: String?,
+        clearAll: Bool
+    ) async throws {
+        var updateData: [String: AnyCodable] = [:]
+        if clearAll {
+            updateData = [
+                "contact_name": AnyCodable(NSNull()),
+                "lead_status": AnyCodable(NSNull()),
+                "product_interest": AnyCodable(NSNull()),
+                "follow_up_date": AnyCodable(NSNull()),
+                "raw_transcript": AnyCodable(NSNull()),
+                "ai_summary": AnyCodable(NSNull())
+            ]
+        } else {
+            if let contactName {
+                updateData["contact_name"] = AnyCodable(contactName)
+            }
+            if let leadStatus {
+                updateData["lead_status"] = AnyCodable(leadStatus)
+            }
+            if let productInterest {
+                updateData["product_interest"] = AnyCodable(productInterest)
+            }
+            if let followUpDate {
+                updateData["follow_up_date"] = AnyCodable(followUpDate)
+            }
+            if let rawTranscript {
+                updateData["raw_transcript"] = AnyCodable(rawTranscript)
+            }
+            if let aiSummary {
+                updateData["ai_summary"] = AnyCodable(aiSummary)
+            }
+        }
+
+        guard !updateData.isEmpty else { return }
+
+        _ = try await client
+            .from("campaign_addresses")
+            .update(updateData)
+            .eq("id", value: addressId.uuidString)
+            .eq("campaign_id", value: campaignId.uuidString)
+            .execute()
+    }
+
+    /// Update or create status for one or more campaign addresses that represent a single target/building.
+    /// When multiple addresses are present, the backend owns the persisted transaction and session credit.
+    @discardableResult
+    func updateTargetStatus(
+        addressIds: [UUID],
+        campaignId: UUID,
+        status: AddressStatus,
+        notes: String? = nil,
+        sessionId: UUID? = nil,
+        sessionTargetId: String? = nil,
+        sessionEventType: SessionEventType? = nil,
+        location: CLLocation? = nil,
+        overrideReason: String? = nil
+    ) async throws -> [AddressStatusRow] {
+        let uniqueAddressIds = deduplicated(addressIds)
+        guard !uniqueAddressIds.isEmpty else { return [] }
+
+        let now = Date()
+        let previousStatusRows = await campaignRepository.getStatuses(campaignId: campaignId)
+        let baseRevisions = Dictionary(uniqueKeysWithValues: uniqueAddressIds.map {
+            (
+                $0.uuidString.lowercased(),
+                CampaignStatusRevisionChain.baseRevision(from: previousStatusRows[$0]?.revision)
+            )
+        })
+        let localRows = await campaignRepository.updateStatusLocally(
+            addressIds: uniqueAddressIds,
+            campaignId: campaignId,
+            buildingId: sessionTargetId,
+            status: status,
+            notes: notes,
+            occurredAt: now,
+            sessionId: sessionId
+        )
+        guard !localRows.isEmpty else {
+            debugLog("⚠️ [VisitsAPI] Local status update returned no rows, falling back to direct remote sync")
+            return try await performRemoteTargetStatusUpdate(
+                addressIds: uniqueAddressIds,
+                campaignId: campaignId,
+                status: status,
+                notes: notes,
+                sessionId: sessionId,
+                sessionTargetId: sessionTargetId,
+                sessionEventType: sessionEventType,
+                location: location,
+                overrideReason: overrideReason
+            )
+        }
+
+        invalidateStatusCache(campaignId: campaignId)
+        cacheStatuses(localRows, scope: StatusFetchScope(campaignId: campaignId, farmCycleNumber: nil))
+        let farmExecutionContext = await MainActor.run { SessionManager.shared.currentFarmExecutionContext }
+        let matchingFarmExecutionContext = farmExecutionContext?.campaignId == campaignId ? farmExecutionContext : nil
+
+        let payload = AddressStatusOutboxPayload(
+            campaignId: campaignId.uuidString,
+            addressIds: uniqueAddressIds.map(\.uuidString),
+            buildingId: sessionTargetId,
+            status: status.rawValue,
+            notes: notes,
+            sessionId: sessionId?.uuidString,
+            sessionTargetId: sessionTargetId,
+            sessionEventType: sessionEventType?.rawValue,
+            latitude: location?.coordinate.latitude,
+            longitude: location?.coordinate.longitude,
+            occurredAt: OfflineDateCodec.string(from: now),
+            farmExecutionContext: matchingFarmExecutionContext.map(OfflineFarmExecutionPayload.init(context:)),
+            baseRevisions: baseRevisions,
+            overrideReason: overrideReason
+        )
+
+        await outboxRepository.enqueue(
+            entityType: "address_status",
+            entityId: uniqueAddressIds.map(\.uuidString).joined(separator: ","),
+            operation: .upsertAddressStatus,
+            payload: payload,
+            dependencyKey: matchingFarmExecutionContext.map {
+                "farm_touch:\($0.touchId.uuidString.lowercased())"
+            } ?? "address_status:\(campaignId.uuidString.lowercased()):\(uniqueAddressIds.map { $0.uuidString.lowercased() }.joined(separator: ","))"
+        )
+        if let matchingFarmExecutionContext,
+           sessionId != nil {
+            let occurredAt = OfflineDateCodec.date(from: payload.occurredAt) ?? now
+            for addressId in uniqueAddressIds {
+                await FarmOfflineRepository.shared.recordAddressOutcome(
+                    context: matchingFarmExecutionContext,
+                    addressId: addressId,
+                    status: status,
+                    notes: notes,
+                    occurredAt: occurredAt,
+                    dirty: true
+                )
+            }
+        }
+
+        if NetworkMonitor.shared.isOnline {
+            await MainActor.run {
+                OfflineSyncCoordinator.shared.scheduleProcessOutbox()
+            }
+        }
+
+        debugLog("✅ [VisitsAPI] Saved target status locally and queued background sync to \(status.rawValue)")
+        return localRows
+    }
+
+    func performRemoteStatusUpdate(
+        addressId: UUID,
+        campaignId: UUID,
+        status: AddressStatus,
+        notes: String? = nil,
+        sessionId: UUID? = nil,
+        sessionTargetId: String? = nil,
+        sessionEventType: SessionEventType? = nil,
+        location: CLLocation? = nil,
+        occurredAt: Date? = nil,
+        clientMutationId: String? = nil,
+        baseRevision: Int? = nil,
+        overrideReason: String? = nil
+    ) async throws -> AddressStatusRow? {
+        let rows = try await performRemoteTargetStatusUpdate(
+            addressIds: [addressId],
+            campaignId: campaignId,
+            status: status,
+            notes: notes,
+            sessionId: sessionId,
+            sessionTargetId: sessionTargetId,
+            sessionEventType: sessionEventType,
+            location: location,
+            occurredAt: occurredAt,
+            clientMutationId: clientMutationId,
+            baseRevisions: baseRevision.map { [addressId.uuidString.lowercased(): $0] },
+            overrideReason: overrideReason
+        )
+        return rows.first
+    }
+
+    func performRemoteTargetStatusUpdate(
+        addressIds: [UUID],
+        campaignId: UUID,
+        status: AddressStatus,
+        notes: String? = nil,
+        sessionId: UUID? = nil,
+        sessionTargetId: String? = nil,
+        sessionEventType: SessionEventType? = nil,
+        location: CLLocation? = nil,
+        occurredAt: Date? = nil,
+        clientMutationId: String? = nil,
+        baseRevisions: [String: Int]? = nil,
+        overrideReason: String? = nil
+    ) async throws -> [AddressStatusRow] {
+        try await MobileCampaignClientPolicy.shared.assertMutationAllowed()
+        let uniqueAddressIds = deduplicated(addressIds)
+        guard !uniqueAddressIds.isEmpty else { return [] }
+
+        if uniqueAddressIds.count == 1, let addressId = uniqueAddressIds.first {
+            let row = try await performRemoteSingleStatusUpdate(
+                addressId: addressId,
+                campaignId: campaignId,
+                status: status,
+                notes: notes,
+                sessionId: sessionId,
+                sessionTargetId: sessionTargetId,
+                sessionEventType: sessionEventType,
+                location: location,
+                occurredAt: occurredAt,
+                clientMutationId: clientMutationId,
+                baseRevision: baseRevisions?[addressId.uuidString.lowercased()],
+                overrideReason: overrideReason
+            )
+            return row.map { [$0] } ?? []
+        }
+
+        debugLog("📝 [VisitsAPI] Remotely updating target status to \(status.rawValue) for \(uniqueAddressIds.count) addresses")
+
+        let occurredAtString = ISO8601DateFormatter().string(from: occurredAt ?? Date())
+        let resolvedMutationId = clientMutationId ?? UUID().uuidString
+        let currentRows = baseRevisions == nil ? await campaignRepository.getStatuses(campaignId: campaignId) : [:]
+        let resolvedBaseRevisions = baseRevisions ?? Dictionary(uniqueKeysWithValues: uniqueAddressIds.map {
+            ($0.uuidString.lowercased(), currentRows[$0]?.revision ?? 0)
+        })
+        var canonicalParams: [String: AnyCodable] = [
+            "p_campaign_id": AnyCodable(campaignId),
+            "p_campaign_address_ids": AnyCodable(uniqueAddressIds.map(\.uuidString)),
+            "p_status": AnyCodable(status.persistedRPCValue),
+            "p_notes": AnyCodable(notes ?? ""),
+            "p_occurred_at": AnyCodable(occurredAtString),
+            "p_client_mutation_id": AnyCodable(resolvedMutationId),
+            "p_base_revisions": AnyCodable(resolvedBaseRevisions),
+            "p_origin_platform": AnyCodable("ios"),
+            "p_client_version": AnyCodable(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"),
+            "p_client_build": AnyCodable(Int(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "") ?? 0),
+            "p_override_reason": AnyCodable(overrideReason ?? "")
+        ]
+        if let sessionId {
+            canonicalParams["p_session_id"] = AnyCodable(sessionId)
+        }
+        if let sessionTargetId, !sessionTargetId.isEmpty {
+            canonicalParams["p_session_target_id"] = AnyCodable(sessionTargetId)
+        }
+        if let sessionEventType {
+            canonicalParams["p_session_event_type"] = AnyCodable(sessionEventType.rawValue)
+        }
+        if let location {
+            canonicalParams["p_lat"] = AnyCodable(location.coordinate.latitude)
+            canonicalParams["p_lon"] = AnyCodable(location.coordinate.longitude)
+        }
+
+        var updatedRows: [AddressStatusRow] = []
+        do {
+            let response = try await client
+                .rpc("v2_record_campaign_target_outcome", params: canonicalParams)
+                .execute()
+            updatedRows = try decodeV2TargetAddressStatusRows(fromRPCResponse: response.data)
+        } catch {
+            let fallbackReasonMissingRPC = isMissingFunction(error, functionName: "v2_record_campaign_target_outcome")
+            let fallbackReasonCampaignIDNotNull = isCampaignIDNotNullViolation(error)
+            guard fallbackReasonMissingRPC || fallbackReasonCampaignIDNotNull else {
+                throw error
+            }
+
+            for (index, addressId) in uniqueAddressIds.enumerated() {
+                if let row = try await performRemoteSingleStatusUpdate(
+                    addressId: addressId,
+                    campaignId: campaignId,
+                    status: status,
+                    notes: notes,
+                    sessionId: index == 0 ? sessionId : nil,
+                    sessionTargetId: index == 0 ? sessionTargetId : nil,
+                    sessionEventType: index == 0 ? sessionEventType : nil,
+                    location: index == 0 ? location : nil,
+                    occurredAt: occurredAt,
+                    clientMutationId: "\(resolvedMutationId):\(addressId.uuidString.lowercased())",
+                    baseRevision: resolvedBaseRevisions[addressId.uuidString.lowercased()],
+                    overrideReason: overrideReason
+                ) {
+                    updatedRows.append(row)
+                }
+            }
+        }
+
+        invalidateStatusCache(campaignId: campaignId)
+        await campaignRepository.upsertStatuses(rows: updatedRows, preserveDirty: false)
+        cacheStatuses(updatedRows, scope: StatusFetchScope(campaignId: campaignId, farmCycleNumber: nil))
+        return updatedRows
+    }
+
+    private func recordFarmOutcomeIfNeeded(
+        addressId: UUID,
+        campaignId: UUID,
+        status: AddressStatus,
+        notes: String?,
+        sessionId: UUID?,
+        occurredAt: String
+    ) async {
+        guard sessionId != nil else { return }
+
+        let context = await MainActor.run { SessionManager.shared.currentFarmExecutionContext }
+        guard let context,
+              context.campaignId == campaignId else {
+            return
+        }
+
+        do {
+            _ = try await client
+                .rpc(
+                    "record_farm_address_outcome",
+                    params: [
+                        "p_farm_id": AnyCodable(context.farmId),
+                        "p_farm_touch_id": AnyCodable(context.touchId),
+                        "p_campaign_address_id": AnyCodable(addressId),
+                        "p_status": AnyCodable(status.persistedRPCValue),
+                        "p_notes": AnyCodable(notes ?? ""),
+                        "p_occurred_at": AnyCodable(occurredAt)
+                    ]
+                )
+                .execute()
+        } catch {
+            debugLog("⚠️ [VisitsAPI] Failed to record farm address outcome: \(error.localizedDescription)")
+        }
+    }
+
+    func recordFarmAddressOutcome(
+        context: FarmExecutionContext,
+        addressId: UUID,
+        status: AddressStatus,
+        notes: String? = nil,
+        occurredAt: String? = nil
+    ) async {
+        let timestamp = occurredAt ?? ISO8601DateFormatter().string(from: Date())
+        let occurredAtDate = OfflineDateCodec.date(from: timestamp) ?? Date()
+        await FarmOfflineRepository.shared.recordAddressOutcome(
+            context: context,
+            addressId: addressId,
+            status: status,
+            notes: notes,
+            occurredAt: occurredAtDate,
+            dirty: !NetworkMonitor.shared.isOnline
+        )
+
+        guard NetworkMonitor.shared.isOnline else {
+            await outboxRepository.enqueue(
+                entityType: "farm_address_outcome",
+                entityId: "\(context.touchId.uuidString):\(addressId.uuidString)",
+                operation: .recordFarmAddressOutcome,
+                payload: FarmAddressOutcomeOutboxPayload(
+                    farmExecutionContext: OfflineFarmExecutionPayload(context: context),
+                    addressId: addressId.uuidString,
+                    status: status.rawValue,
+                    notes: notes,
+                    occurredAt: timestamp
+                ),
+                dependencyKey: "farm_touch:\(context.touchId.uuidString.lowercased())"
+            )
+            return
+        }
+
+        do {
+            try await performRemoteRecordFarmAddressOutcome(
+                context: context,
+                addressId: addressId,
+                status: status,
+                notes: notes,
+                occurredAt: timestamp
+            )
+            await FarmOfflineRepository.shared.markAddressOutcomeSynced(context: context, addressId: addressId)
+            invalidateStatusCache(campaignId: context.campaignId)
+        } catch {
+            debugLog("⚠️ [VisitsAPI] Failed to record explicit farm address outcome: \(error.localizedDescription)")
+            await outboxRepository.enqueue(
+                entityType: "farm_address_outcome",
+                entityId: "\(context.touchId.uuidString):\(addressId.uuidString)",
+                operation: .recordFarmAddressOutcome,
+                payload: FarmAddressOutcomeOutboxPayload(
+                    farmExecutionContext: OfflineFarmExecutionPayload(context: context),
+                    addressId: addressId.uuidString,
+                    status: status.rawValue,
+                    notes: notes,
+                    occurredAt: timestamp
+                ),
+                dependencyKey: "farm_touch:\(context.touchId.uuidString.lowercased())"
+            )
+        }
+    }
+
+    func performRemoteRecordFarmAddressOutcome(
+        context: FarmExecutionContext,
+        addressId: UUID,
+        status: AddressStatus,
+        notes: String? = nil,
+        occurredAt: String
+    ) async throws {
+        _ = try await client
+            .rpc(
+                "record_farm_address_outcome",
+                params: [
+                    "p_farm_id": AnyCodable(context.farmId),
+                    "p_farm_touch_id": AnyCodable(context.touchId),
+                    "p_campaign_address_id": AnyCodable(addressId),
+                    "p_status": AnyCodable(status.persistedRPCValue),
+                    "p_notes": AnyCodable(notes ?? ""),
+                    "p_occurred_at": AnyCodable(occurredAt)
+                ]
+            )
+            .execute()
+    }
+
+    public func flushPending() async {
+        let pendingTouchesSnapshot = dequeueAllPendingTouches()
+        var failedTouches: [(addressId: UUID, campaignId: UUID, buildingId: String?, sessionId: UUID?)] = []
+        for pending in pendingTouchesSnapshot {
+            do {
+                try await insertTouch(
+                    addressId: pending.addressId,
+                    campaignId: pending.campaignId,
+                    buildingId: pending.buildingId,
+                    sessionId: pending.sessionId
+                )
+            } catch {
+                failedTouches.append(pending)
+            }
+        }
+        if !failedTouches.isEmpty {
+            requeuePendingTouches(failedTouches)
+        }
+
+        let pendingVisitedSnapshot = dequeueAllPendingVisitedMarks()
+        var failedVisited: [UUID] = []
+        for addressId in pendingVisitedSnapshot {
+            do {
+                try await updateVisited(addressId: addressId)
+            } catch {
+                failedVisited.append(addressId)
+            }
+        }
+        if !failedVisited.isEmpty {
+            requeuePendingVisitedMarks(failedVisited)
+        }
+    }
+
+    private func insertTouch(
+        addressId: UUID,
+        campaignId: UUID,
+        buildingId: String?,
+        sessionId: UUID?,
+        userId: UUID? = nil,
+        touchedAt: Date? = nil,
+        clientMutationId: String? = nil
+    ) async throws {
+        let resolvedUserId: UUID
+        if let userId {
+            resolvedUserId = userId
+        } else if let user = try? await client.auth.session.user {
+            resolvedUserId = user.id
+        } else {
+            throw NSError(domain: "VisitsAPI", code: 1, userInfo: [NSLocalizedDescriptionKey: "No authenticated user for building touch logging"])
+        }
+
+        var touchData: [String: AnyCodable] = [
+            "user_id": AnyCodable(resolvedUserId.uuidString),
+            "address_id": AnyCodable(addressId.uuidString),
+            "campaign_id": AnyCodable(campaignId.uuidString),
+            "touched_at": AnyCodable(ISO8601DateFormatter().string(from: touchedAt ?? Date()))
+        ]
+        if let clientMutationId {
+            touchData["client_mutation_id"] = AnyCodable(clientMutationId)
+        }
+
+        touchData["building_id"] = AnyCodable(buildingIdCodableValue(buildingId))
+
+        if let sessionId = sessionId {
+            touchData["session_id"] = AnyCodable(sessionId.uuidString)
+        } else {
+            touchData["session_id"] = AnyCodable(NSNull())
+        }
+
+        do {
+            _ = try await client
+                .from("building_touches")
+                .insert(touchData)
+                .execute()
+        } catch {
+            if clientMutationId != nil, Self.isDuplicateClientMutation(error) {
+                return
+            }
+            throw error
+        }
+    }
+
+    private func updateVisited(addressId: UUID, visited: Bool = true) async throws {
+        let updateData: [String: AnyCodable] = [
+            "visited": AnyCodable(visited)
+        ]
+
+        _ = try await client
+            .from("campaign_addresses")
+            .update(updateData)
+            .eq("id", value: addressId.uuidString)
+            .execute()
+    }
+
+    private func syncVisitedFlag(addressId: UUID, status: AddressStatus) async throws {
+        let visited: Bool
+        switch status {
+        case .none, .untouched:
+            visited = false
+        default:
+            visited = true
+        }
+
+        let updateData: [String: AnyCodable] = [
+            "visited": AnyCodable(visited)
+        ]
+
+        _ = try await client
+            .from("campaign_addresses")
+            .update(updateData)
+            .eq("id", value: addressId.uuidString)
+            .execute()
+    }
+
+    private func enqueuePendingTouch(addressId: UUID, campaignId: UUID, buildingId: String?, sessionId: UUID?) {
+        pendingLock.lock()
+        pendingTouches.append((addressId: addressId, campaignId: campaignId, buildingId: buildingId, sessionId: sessionId))
+        pendingLock.unlock()
+    }
+
+    private func enqueuePendingVisitedMark(_ addressId: UUID) {
+        pendingLock.lock()
+        pendingVisitedMarks.append(addressId)
+        pendingLock.unlock()
+    }
+
+    private func dequeueAllPendingTouches() -> [(addressId: UUID, campaignId: UUID, buildingId: String?, sessionId: UUID?)] {
+        pendingLock.lock()
+        let snapshot = pendingTouches
+        pendingTouches.removeAll(keepingCapacity: true)
+        pendingLock.unlock()
+        return snapshot
+    }
+
+    private func dequeueAllPendingVisitedMarks() -> [UUID] {
+        pendingLock.lock()
+        let snapshot = pendingVisitedMarks
+        pendingVisitedMarks.removeAll(keepingCapacity: true)
+        pendingLock.unlock()
+        return snapshot
+    }
+
+    private func requeuePendingTouches(_ touches: [(addressId: UUID, campaignId: UUID, buildingId: String?, sessionId: UUID?)]) {
+        pendingLock.lock()
+        pendingTouches.append(contentsOf: touches)
+        pendingLock.unlock()
+    }
+
+    private func requeuePendingVisitedMarks(_ visited: [UUID]) {
+        pendingLock.lock()
+        pendingVisitedMarks.append(contentsOf: visited)
+        pendingLock.unlock()
+    }
+
+    private func debugLog(_ message: @autoclosure () -> String) {
+        #if DEBUG
+        print(message())
+        #endif
+    }
+
+    private func deduplicated(_ addressIds: [UUID]) -> [UUID] {
+        var seen: Set<UUID> = []
+        return addressIds.filter { seen.insert($0).inserted }
+    }
+
+    /// Prefer `UUID` for `building_touches.building_id` when the column is uuid; fall back to string for legacy text columns.
+    private func buildingIdCodableValue(_ buildingId: String?) -> Any {
+        guard let raw = buildingId?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+            return NSNull()
+        }
+        if let uuid = UUID(uuidString: raw) {
+            return uuid
+        }
+        return raw
+    }
+
+    private func isMissingFunction(_ error: Error, functionName: String) -> Bool {
+        let message = error.localizedDescription.lowercased()
+        return message.contains(functionName.lowercased()) && message.contains("does not exist")
+    }
+
+    private static func isDuplicateClientMutation(_ error: Error) -> Bool {
+        let message = error.localizedDescription.lowercased()
+        return message.contains("duplicate") && message.contains("client_mutation")
+    }
+
+    private func isCampaignIDNotNullViolation(_ error: Error) -> Bool {
+        let message = error.localizedDescription.lowercased()
+        return message.contains("campaign_id")
+            && (message.contains("23502") || message.contains("not-null") || message.contains("not null"))
+    }
+
+    private func decodeV2AddressStatusRow(fromRPCResponse data: Data) throws -> AddressStatusRow? {
+        guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        try validateMutationEnvelope(root)
+        guard let state = root["canonical_state"] as? [String: Any] else { return nil }
+        let stateData = try JSONSerialization.data(withJSONObject: state)
+        return try JSONDecoder.supabaseDates.decode(AddressStatusRow.self, from: stateData)
+    }
+
+    private func decodeV2TargetAddressStatusRows(fromRPCResponse data: Data) throws -> [AddressStatusRow] {
+        guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return []
+        }
+        try validateMutationEnvelope(root)
+        let children = root["canonical_state"] as? [[String: Any]] ?? []
+        return try children.compactMap { child in
+            try validateMutationEnvelope(child)
+            guard let state = child["canonical_state"] as? [String: Any] else { return nil }
+            let stateData = try JSONSerialization.data(withJSONObject: state)
+            return try JSONDecoder.supabaseDates.decode(AddressStatusRow.self, from: stateData)
+        }
+    }
+
+    private func validateMutationEnvelope(_ root: [String: Any]) throws {
+        guard (root["applied"] as? Bool) == true else {
+            let code = root["error_code"] as? String ?? "CAMPAIGN_MUTATION_FAILED"
+            let canonicalStateJSON: String?
+            if let state = root["canonical_state"],
+               JSONSerialization.isValidJSONObject(state),
+               let data = try? JSONSerialization.data(withJSONObject: state) {
+                canonicalStateJSON = String(data: data, encoding: .utf8)
+            } else {
+                canonicalStateJSON = nil
+            }
+            throw CampaignMutationClientError.rejected(
+                code: code,
+                canonicalStateJSON: canonicalStateJSON
+            )
+        }
+    }
+
+    @discardableResult
+    private func synchronizedStatusState<T>(_ operation: () -> T) -> T {
+        statusFetchLock.lock()
+        defer { statusFetchLock.unlock() }
+        return operation()
+    }
+
+    private func cacheStatuses(_ rows: [AddressStatusRow], scope: StatusFetchScope) {
+        synchronizedStatusState {
+            var existing = cachedStatuses[scope] ?? [:]
+            for row in rows {
+                existing[row.addressId] = row
+            }
+            cachedStatuses[scope] = existing
+            lastStatusFetchAt[scope] = Date()
+        }
+    }
+
+    private func remoteFetchStatuses(
+        campaignId: UUID,
+        farmCycleNumber: Int?
+    ) async throws -> [AddressStatusRow] {
+        if let farmCycleNumber {
+            let response = try await client
+                .rpc(
+                    "rpc_get_campaign_address_status_rows_for_farm_cycle",
+                    params: [
+                        "p_campaign_id": AnyCodable(campaignId.uuidString),
+                        "p_cycle_number": AnyCodable(farmCycleNumber)
+                    ]
+                )
+                .execute()
+            return try JSONDecoder.supabaseDates.decode([AddressStatusRow].self, from: response.data)
+        }
+
+        let response = try await client
+            .from("address_statuses")
+            .select()
+            .eq("campaign_id", value: campaignId.uuidString)
+            .execute()
+
+        #if DEBUG
+        let raw = String(data: response.data, encoding: .utf8) ?? ""
+        let preview = String(raw.prefix(2048))
+        print("[VisitsAPI DEBUG] address_statuses raw JSON (first 2KB): \(preview)\(raw.count > 2048 ? "…" : "")")
+        #endif
+
+        return try JSONDecoder.supabaseDates.decode([AddressStatusRow].self, from: response.data)
+    }
+
+    private func performRemoteSingleStatusUpdate(
+        addressId: UUID,
+        campaignId: UUID,
+        status: AddressStatus,
+        notes: String? = nil,
+        sessionId: UUID? = nil,
+        sessionTargetId: String? = nil,
+        sessionEventType: SessionEventType? = nil,
+        location: CLLocation? = nil,
+        occurredAt: Date? = nil,
+        clientMutationId: String? = nil,
+        baseRevision: Int? = nil,
+        overrideReason: String? = nil
+    ) async throws -> AddressStatusRow? {
+        debugLog("📝 [VisitsAPI] Remotely updating status to \(status.rawValue)")
+
+        let occurredAtString = ISO8601DateFormatter().string(from: occurredAt ?? Date())
+        let resolvedMutationId = clientMutationId ?? UUID().uuidString
+        let currentRevision: Int
+        if let baseRevision {
+            currentRevision = baseRevision
+        } else {
+            currentRevision = await campaignRepository.getStatuses(campaignId: campaignId)[addressId]?.revision ?? 0
+        }
+        var canonicalParams: [String: AnyCodable] = [
+            "p_campaign_id": AnyCodable(campaignId),
+            "p_campaign_address_id": AnyCodable(addressId),
+            "p_status": AnyCodable(status.persistedRPCValue),
+            "p_notes": AnyCodable(notes ?? ""),
+            "p_occurred_at": AnyCodable(occurredAtString),
+            "p_client_mutation_id": AnyCodable(resolvedMutationId),
+            "p_base_revision": AnyCodable(currentRevision),
+            "p_origin_platform": AnyCodable("ios"),
+            "p_client_version": AnyCodable(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"),
+            "p_client_build": AnyCodable(Int(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "") ?? 0),
+            "p_override_reason": AnyCodable(overrideReason ?? "")
+        ]
+        if let sessionId {
+            canonicalParams["p_session_id"] = AnyCodable(sessionId)
+        }
+        if let sessionTargetId, !sessionTargetId.isEmpty {
+            canonicalParams["p_session_target_id"] = AnyCodable(sessionTargetId)
+        }
+        if let sessionEventType {
+            canonicalParams["p_session_event_type"] = AnyCodable(sessionEventType.rawValue)
+        }
+        if let location {
+            canonicalParams["p_lat"] = AnyCodable(location.coordinate.latitude)
+            canonicalParams["p_lon"] = AnyCodable(location.coordinate.longitude)
+        }
+
+        var updatedRow: AddressStatusRow?
+        do {
+            let response = try await client
+                .rpc("v2_record_campaign_address_outcome", params: canonicalParams)
+                .execute()
+            updatedRow = try decodeV2AddressStatusRow(fromRPCResponse: response.data)
+        } catch {
+            let fallbackReasonMissingRPC = isMissingFunction(error, functionName: "v2_record_campaign_address_outcome")
+            let fallbackReasonCampaignIDNotNull = isCampaignIDNotNullViolation(error)
+            guard fallbackReasonMissingRPC || fallbackReasonCampaignIDNotNull else {
+                throw error
+            }
+
+            let fallbackParams: [String: AnyCodable] = [
+                "p_address_id": AnyCodable(addressId),
+                "p_campaign_id": AnyCodable(campaignId),
+                "p_status": AnyCodable(status.persistedRPCValue),
+                "p_notes": AnyCodable(notes ?? ""),
+                "p_last_visited_at": AnyCodable(occurredAtString)
+            ]
+
+            _ = try await client
+                .rpc("upsert_address_status", params: fallbackParams)
+                .execute()
+
+            try await syncVisitedFlag(addressId: addressId, status: status)
+        }
+
+        invalidateStatusCache(campaignId: campaignId)
+        await recordFarmOutcomeIfNeeded(
+            addressId: addressId,
+            campaignId: campaignId,
+            status: status,
+            notes: notes,
+            sessionId: sessionId,
+            occurredAt: occurredAtString
+        )
+        if let updatedRow {
+            await campaignRepository.upsertStatuses(rows: [updatedRow], preserveDirty: false)
+        }
+        return updatedRow
+    }
+}

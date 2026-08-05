@@ -27,11 +27,7 @@ function roleRank(role: string | null | undefined): number {
 function workspaceHasAccess(workspace: WorkspaceBilling | null): boolean {
   if (!workspace) return false;
   const status = (workspace.subscription_status ?? "").toLowerCase();
-  if (status === "active") return true;
-  if (status !== "trialing") return false;
-  if (!workspace.trial_ends_at) return true;
-  const trialEnd = new Date(workspace.trial_ends_at);
-  return !Number.isNaN(trialEnd.getTime()) && trialEnd > new Date();
+  return status === "active";
 }
 
 async function resolvePrimaryWorkspaceBilling(

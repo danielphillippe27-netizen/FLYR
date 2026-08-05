@@ -121,7 +121,7 @@ async function exchangeHubSpotCode(code: string): Promise<{
 }> {
   const clientId = Deno.env.get("HUBSPOT_CLIENT_ID");
   const clientSecret = Deno.env.get("HUBSPOT_CLIENT_SECRET");
-  const redirectUri = Deno.env.get("HUBSPOT_REDIRECT_URI") || "flyr://oauth";
+  const redirectUri = Deno.env.get("HUBSPOT_REDIRECT_URI") || "wolfgrid://oauth";
 
   if (!clientId || !clientSecret) {
     throw new Error("HubSpot OAuth credentials not configured");
@@ -163,7 +163,7 @@ async function exchangeMondayCode(code: string): Promise<{
 }> {
   const clientId = Deno.env.get("MONDAY_CLIENT_ID");
   const clientSecret = Deno.env.get("MONDAY_CLIENT_SECRET");
-  const redirectUri = Deno.env.get("MONDAY_REDIRECT_URI") || "flyr://oauth";
+  const redirectUri = Deno.env.get("MONDAY_REDIRECT_URI") || "wolfgrid://oauth";
 
   if (!clientId || !clientSecret) {
     throw new Error("Monday.com OAuth credentials not configured");

@@ -134,7 +134,7 @@ function normalizeLead(body: PushLeadBody): PushLeadBody {
     phone: cleaned(body.phone),
     email: cleaned(body.email),
     address: cleaned(body.address),
-    source: cleaned(body.source) || "FLYR",
+    source: cleaned(body.source) || "WolfGrid",
     notes: cleaned(body.notes),
     created_at: cleaned(body.created_at),
     campaign_id: cleaned(body.campaign_id),

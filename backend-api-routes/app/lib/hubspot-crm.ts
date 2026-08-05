@@ -364,7 +364,7 @@ export async function pushLeadToHubSpot(
         accessToken,
         contactId,
         startIso,
-        trim(input.appointment?.title) || "FLYR Appointment",
+        trim(input.appointment?.title) || "WolfGrid Appointment",
         trim(input.appointment?.notes)
       );
       meetingCreated = m;

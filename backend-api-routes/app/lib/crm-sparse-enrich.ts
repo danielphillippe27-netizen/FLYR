@@ -36,7 +36,7 @@ export function enrichHubSpotPushLeadInput(lead: PushLeadInput): PushLeadInput {
 
   const hubSpotOk = Boolean((email && email.length > 0) || (name && name.length > 0));
   if (!hubSpotOk) {
-    name = displayNameFromAddress(lead.address) ?? "FLYR field lead";
+    name = displayNameFromAddress(lead.address) ?? "WolfGrid field lead";
   } else if (!(name && name.length > 0) && lead.address?.trim()) {
     // Synthetic email satisfies HubSpot; still set a readable label from the address when possible.
     name = displayNameFromAddress(lead.address);

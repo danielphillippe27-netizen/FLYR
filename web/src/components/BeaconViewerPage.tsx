@@ -155,7 +155,7 @@ export default function BeaconViewerPage() {
   if (loading) {
     return (
       <main className="beacon-page beacon-page--centered">
-        <p className="beacon-eyebrow">FLYR Beacon</p>
+        <p className="beacon-eyebrow">WolfGrid Beacon</p>
         <h1>Loading live session…</h1>
       </main>
     )
@@ -164,7 +164,7 @@ export default function BeaconViewerPage() {
   if (error) {
     return (
       <main className="beacon-page beacon-page--centered">
-        <p className="beacon-eyebrow">FLYR Beacon</p>
+        <p className="beacon-eyebrow">WolfGrid Beacon</p>
         <h1>Couldn’t load this session</h1>
         <p className="beacon-muted">{error}</p>
       </main>
@@ -174,7 +174,7 @@ export default function BeaconViewerPage() {
   if (!payload?.active || !payload.session) {
     return (
       <main className="beacon-page beacon-page--centered">
-        <p className="beacon-eyebrow">FLYR Beacon</p>
+        <p className="beacon-eyebrow">WolfGrid Beacon</p>
         <h1>This Beacon link is no longer active</h1>
         <p className="beacon-muted">Session sharing turns off automatically when the session ends or the link is revoked.</p>
       </main>
@@ -191,7 +191,7 @@ export default function BeaconViewerPage() {
     <main className="beacon-page">
       <section className="beacon-header">
         <div>
-          <p className="beacon-eyebrow">FLYR Beacon</p>
+          <p className="beacon-eyebrow">WolfGrid Beacon</p>
           <h1>{payload.share?.viewer_label?.trim() ? `${payload.share.viewer_label} can see this live session` : 'Live door knocking session'}</h1>
         </div>
         <div className={`beacon-status ${session.is_paused ? 'beacon-status--paused' : ''}`}>

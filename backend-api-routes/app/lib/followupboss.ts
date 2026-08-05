@@ -1,10 +1,10 @@
 /**
  * Follow Up Boss API client for voice-log flow.
- * Uses Basic auth and X-System: FLYR on all requests.
+ * Uses Basic auth and X-System: WolfGrid on all requests.
  */
 
 const FUB_API_BASE = "https://api.followupboss.com/v1";
-const X_SYSTEM = "FLYR";
+const X_SYSTEM = "WolfGrid";
 const X_SYSTEM_KEY =
   process.env.FUB_SYSTEM_KEY?.trim() ||
   process.env.X_SYSTEM_KEY?.trim() ||
@@ -131,8 +131,8 @@ export async function createOrUpdateLeadViaEvents(
   person: FubPersonPayload
 ): Promise<{ personId: number }> {
   const event = {
-    source: person.source ?? "FLYR",
-    system: "FLYR",
+    source: person.source ?? "WolfGrid",
+    system: "WolfGrid",
     type: "General Inquiry",
     message: "",
     person: {

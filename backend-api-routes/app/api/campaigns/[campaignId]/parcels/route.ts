@@ -34,10 +34,10 @@ export async function GET(
       'Cache-Control': 'private, max-age=60',
     };
     if (resolved.source === 'campaign_parcels') {
-      headers['X-FLYR-Parcels-Source'] = 'campaign_parcels';
+      headers['X-WolfGrid-Parcels-Source'] = 'campaign_parcels';
     }
     if (resolved.suppressedReason) {
-      headers['X-FLYR-Parcels-Suppressed'] = resolved.suppressedReason;
+      headers['X-WolfGrid-Parcels-Suppressed'] = resolved.suppressedReason;
     }
     return NextResponse.json(resolved.features, { headers });
   } catch (error) {

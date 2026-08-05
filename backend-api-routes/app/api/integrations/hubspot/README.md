@@ -14,7 +14,7 @@
 ## Routes
 
 - `GET /api/integrations/hubspot/oauth/start?platform=ios&workspaceId=…` — Bearer JWT (optional `token` / `access_token` query for Safari-only edge cases)
-- `GET /api/integrations/hubspot/oauth/callback` — HubSpot redirect target; redirects to `flyr://oauth?provider=hubspot&status=success|error`
+- `GET /api/integrations/hubspot/oauth/callback` - HubSpot redirect target; redirects to `wolfgrid://oauth?provider=hubspot&status=success|error`
 - `GET /api/integrations/hubspot/status` — connection snapshot
 - `POST /api/integrations/hubspot/test` — lightweight CRM API probe
 - `POST /api/integrations/hubspot/push-lead` — create/update contact, optional note/task/**appointment** (CRM appointments object, not legacy meetings); uses `crm_object_links` for `crm_type=hubspot`
@@ -23,7 +23,7 @@
 ## QA checklist (manual)
 
 1. Set HubSpot app redirect URI to your deployed callback URL.
-2. iOS: Integrations → Connect HubSpot → complete OAuth → return to app via `flyr://oauth`.
+2. iOS: Integrations -> Connect HubSpot -> complete OAuth -> return to app via `wolfgrid://oauth`.
 3. `GET status` or refresh Integrations — shows connected.
 4. Tap **Test connection** (Integrations) or run Sync Settings test lead flow.
 5. Capture a field lead with email/name and confirm HubSpot contact + optional note/task/appointment.

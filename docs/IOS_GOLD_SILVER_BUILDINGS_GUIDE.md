@@ -1,6 +1,6 @@
 # iOS Guide: Gold & Silver Building Data
 
-> **Audience**: iOS developer working on FLYR PRO  
+> **Audience**: iOS developer working on WolfGrid  
 > **Last Updated**: 2026-02-18  
 > **Status**: Reflects the live codebase as of the Gold integration PR
 

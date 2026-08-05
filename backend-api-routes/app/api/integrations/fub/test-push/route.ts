@@ -102,12 +102,12 @@ export async function POST(request: Request) {
     const appointmentEnd = new Date(appointmentStart.getTime() + 60 * 60 * 1000);
 
     const event = {
-      source: "FLYR",
-      system: "FLYR",
+      source: "WolfGrid",
+      system: "WolfGrid",
       type: "General Inquiry",
-      message: "Test lead from FLYR iOS app (includes note/task/appointment)",
+      message: "Test lead from WolfGrid iOS app (includes note/task/appointment)",
       person: {
-        firstName: "FLYR",
+        firstName: "WolfGrid",
         lastName: "Test",
         emails: [{ value: "test@flyrpro.app" }],
         phones: [{ value: "5555555555" }],
@@ -192,8 +192,8 @@ export async function POST(request: Request) {
           headers: authHeaders,
           body: JSON.stringify({
             personId: fubPersonId,
-            subject: "FLYR Test Note",
-            body: "This is an automated test note from FLYR test-push.",
+            subject: "WolfGrid Test Note",
+            body: "This is an automated test note from WolfGrid test-push.",
           }),
         });
         if (!noteRes.ok) {
@@ -219,7 +219,7 @@ export async function POST(request: Request) {
           headers: authHeaders,
           body: JSON.stringify({
             personId: fubPersonId,
-            name: "FLYR Test Follow Up",
+            name: "WolfGrid Test Follow Up",
             type: "Follow Up",
             dueDate: plusOneDay.toISOString().slice(0, 10),
             dueDateTime: plusOneDay.toISOString(),
@@ -248,10 +248,10 @@ export async function POST(request: Request) {
           method: "POST",
           headers: authHeaders,
           body: JSON.stringify({
-            title: "FLYR Test Appointment",
+            title: "WolfGrid Test Appointment",
             start: appointmentStart.toISOString(),
             end: appointmentEnd.toISOString(),
-            description: "This is an automated test appointment from FLYR test-push.",
+            description: "This is an automated test appointment from WolfGrid test-push.",
             invitees: [
               { personId: fubPersonId },
               ...(assignedUserId != null ? [{ userId: assignedUserId }] : []),

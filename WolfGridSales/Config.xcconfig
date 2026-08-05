@@ -1,0 +1,18 @@
+// Supabase Configuration
+// The empty expansion preserves //, which xcconfig would otherwise parse as a comment.
+SUPABASE_URL = https:/$()/kfnsnwqylsdsbgnwgxva.supabase.co
+SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtmbnNud3F5bHNkc2JnbndneHZhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA5MjY3MzEsImV4cCI6MjA3NjUwMjczMX0.k2TZKPi3VxAVpEGggLiROYvfVu2nV_oSqBt2GM4jX-Y
+MONDAY_CLIENT_ID = YOUR_MONDAY_CLIENT_ID
+WOLFGRID_PASSWORD_RECOVERY_PRODUCTION_URL =
+WOLFGRID_PASSWORD_RECOVERY_DEV_CALLBACK_URL =
+WOLFGRID_PASSWORD_RECOVERY_REDIRECT_URL =
+DIALER_ENABLED_WORKSPACE_IDS = 9fcaabd6-0c68-4767-9cdb-6fea565eccc9
+DIALER_ENABLED_EMAILS = daniel.phillippe27@gmail.com,danielsales@gmail.com
+APS_ENVIRONMENT = development
+
+// Mapbox Configuration
+MAPBOX_ACCESS_TOKEN = YOUR_MAPBOX_PUBLIC_TOKEN
+GOOGLE_MAPS_API_KEY = <SECRET>
+
+// Optional local overrides for machine-specific secrets.
+#include? "Config.local.xcconfig"

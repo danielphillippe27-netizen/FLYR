@@ -11,7 +11,7 @@ const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const SUPABASE_ANON_KEY =
   process.env.SUPABASE_ANON_KEY ?? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-const DEFAULT_PUBLIC_JOIN_ORIGIN = "https://www.flyrpro.app";
+const DEFAULT_PUBLIC_JOIN_ORIGIN = "https://wolfgrid.app";
 type CreateInviteBody = {
   campaignId?: string | null;
   sessionId?: string | null;
@@ -96,14 +96,19 @@ function normalizedOrigin(value?: string | null): string | null {
   }
 }
 
-function isMainFlyrJoinOrigin(origin: string | null): boolean {
-  return origin === "https://flyrpro.app" || origin === "https://www.flyrpro.app";
+function isMainWolfGridJoinOrigin(origin: string | null): boolean {
+  return origin === "https://wolfgrid.app" || origin === "https://www.wolfgrid.app";
 }
 
 function buildInviteURL(token: string): string {
-  const legacyInviteOrigin = normalizedOrigin(process.env.FLYR_PUBLIC_INVITE_ORIGIN);
-  const publicInviteOrigin =
+  const inviteOrigin =
+    normalizedOrigin(process.env.WOLFGRID_PUBLIC_JOIN_ORIGIN) ??
+    normalizedOrigin(process.env.WOLFGRID_PUBLIC_INVITE_ORIGIN);
+  const legacyInviteOrigin =
     normalizedOrigin(process.env.FLYR_PUBLIC_JOIN_ORIGIN) ??
+    normalizedOrigin(process.env.FLYR_PUBLIC_INVITE_ORIGIN);
+  const publicInviteOrigin =
+    inviteOrigin ??
     legacyInviteOrigin ??
     DEFAULT_PUBLIC_JOIN_ORIGIN;
   const url = new URL("/join", publicInviteOrigin);
@@ -115,14 +120,14 @@ function buildShareMessage(inviteURL: string, campaignTitle?: string | null): st
   const trimmedTitle = campaignTitle?.trim();
   if (trimmedTitle) {
     return [
-      "I'm live in FLYR right now.",
+      "I'm live in WolfGrid right now.",
       `Open this link to join my live session in ${trimmedTitle}.`,
       inviteURL,
     ].join("\n\n");
   }
 
   return [
-    "I'm live in FLYR right now.",
+    "I'm live in WolfGrid right now.",
     "Open this link to join my live session.",
     inviteURL,
   ].join("\n\n");

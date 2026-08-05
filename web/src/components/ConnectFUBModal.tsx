@@ -85,7 +85,7 @@ export default function ConnectFUBModal({ onSuccess, onCancel }: ConnectFUBModal
       </div>
       {error && <p style={{ color: 'var(--accent)', marginBottom: 12 }}>{error}</p>}
       <p style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 16 }}>
-        We encrypt your key and only use it to sync leads/notes you create in FLYR.
+        We encrypt your key and only use it to sync leads/notes you create in WolfGrid.
       </p>
       <div style={{ display: 'flex', gap: 12, justifyContent: 'flex-end' }}>
         <button

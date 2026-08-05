@@ -40,7 +40,7 @@ export default function LoginPage() {
 
   return (
     <div style={{ maxWidth: 400, margin: '80px auto', padding: 24 }}>
-      <h1 style={{ fontSize: 24, marginBottom: 8 }}>FLYR</h1>
+      <h1 style={{ fontSize: 24, marginBottom: 8 }}>WolfGrid</h1>
       <p style={{ color: 'var(--muted)', marginBottom: 24 }}>Sign in to continue</p>
       <form onSubmit={handleSubmit}>
         <div style={{ marginBottom: 16 }}>

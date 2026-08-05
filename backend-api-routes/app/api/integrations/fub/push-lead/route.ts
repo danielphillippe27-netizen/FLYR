@@ -179,8 +179,8 @@ function buildFubEvent(body: PushLeadBody) {
   }
 
   return {
-    source: body.source ?? "FLYR",
-    system: "FLYR",
+    source: body.source ?? "WolfGrid",
+    system: "WolfGrid",
     type: "General Inquiry",
     message: body.message ?? "",
     person,
@@ -330,7 +330,7 @@ export async function POST(request: Request) {
               headers: authHeaders,
               body: JSON.stringify({
                 personId: fubPersonId,
-                subject: "FLYR Note",
+                subject: "WolfGrid Note",
                 body: noteBody,
               }),
             });
@@ -412,7 +412,7 @@ export async function POST(request: Request) {
                 method: "POST",
                 headers: authHeaders,
                 body: JSON.stringify({
-                  title: body.appointment?.title?.trim() || "FLYR Appointment",
+                  title: body.appointment?.title?.trim() || "WolfGrid Appointment",
                   start: startDate.toISOString(),
                   end: endDate.toISOString(),
                   ...(body.appointment?.notes?.trim()

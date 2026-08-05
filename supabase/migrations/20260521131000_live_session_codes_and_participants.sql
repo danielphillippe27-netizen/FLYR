@@ -1,0 +1,1 @@
+applied manually from FLYR-PRO/supabase/migrations/20260521131000_live_session_codes_and_participants.sql;

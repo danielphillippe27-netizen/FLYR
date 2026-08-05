@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>$(PRODUCT_BUNDLE_PACKAGE_TYPE)</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>QA_IOS_EMAIL</key>
+	<string>$(QA_IOS_EMAIL)</string>
+	<key>QA_IOS_PASSWORD</key>
+	<string>$(QA_IOS_PASSWORD)</string>
+	<key>QA_SUPABASE_ANON_KEY</key>
+	<string>$(QA_SUPABASE_ANON_KEY)</string>
+	<key>QA_SUPABASE_URL</key>
+	<string>$(QA_SUPABASE_URL)</string>
+	<key>QA_WORKSPACE_ID</key>
+	<string>$(QA_WORKSPACE_ID)</string>
+	<key>QA_CAMPAIGN_ID</key>
+	<string>$(QA_CAMPAIGN_ID)</string>
+	<key>QA_SESSION_ID</key>
+	<string>$(QA_SESSION_ID)</string>
+	<key>QA_LATITUDE</key>
+	<string>$(QA_LATITUDE)</string>
+	<key>QA_LONGITUDE</key>
+	<string>$(QA_LONGITUDE)</string>
+	<key>XCTContainsUITests</key>
+	<true/>
+</dict>
+</plist>

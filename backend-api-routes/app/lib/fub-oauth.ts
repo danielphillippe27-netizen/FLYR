@@ -56,7 +56,7 @@ export function getFubRedirectUri(origin?: string): string {
   if (process.env.FUB_OAUTH_REDIRECT_URI) {
     return process.env.FUB_OAUTH_REDIRECT_URI;
   }
-  const base = origin || process.env.NEXT_PUBLIC_APP_URL || "https://www.flyrpro.app";
+  const base = origin || process.env.NEXT_PUBLIC_APP_URL || "https://wolfgrid.app";
   return `${base.replace(/\/$/, "")}/api/integrations/fub/oauth/callback`;
 }
 
@@ -64,7 +64,7 @@ export function getWebSuccessUrl(origin?: string): string {
   if (process.env.FUB_OAUTH_WEB_SUCCESS_URL) {
     return process.env.FUB_OAUTH_WEB_SUCCESS_URL;
   }
-  const base = origin || process.env.NEXT_PUBLIC_APP_URL || "https://www.flyrpro.app";
+  const base = origin || process.env.NEXT_PUBLIC_APP_URL || "https://wolfgrid.app";
   return `${base.replace(/\/$/, "")}/integrations?fub=connected`;
 }
 
@@ -72,7 +72,7 @@ export function getWebErrorUrl(origin?: string): string {
   if (process.env.FUB_OAUTH_WEB_ERROR_URL) {
     return process.env.FUB_OAUTH_WEB_ERROR_URL;
   }
-  const base = origin || process.env.NEXT_PUBLIC_APP_URL || "https://www.flyrpro.app";
+  const base = origin || process.env.NEXT_PUBLIC_APP_URL || "https://wolfgrid.app";
   return `${base.replace(/\/$/, "")}/integrations?fub=error`;
 }
 
@@ -81,7 +81,7 @@ export function getIosRedirectUrl(status: "success" | "error", message?: string)
   if (message) {
     params.set("message", message);
   }
-  return `flyr://oauth?${params.toString()}`;
+  return `wolfgrid://oauth?${params.toString()}`;
 }
 
 export function createSignedState(userId: string, platform: OAuthPlatform): string {

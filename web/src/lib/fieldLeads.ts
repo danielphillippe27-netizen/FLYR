@@ -76,11 +76,8 @@ export async function fetchLeads(
     .from('contacts')
     .select('id,user_id,full_name,phone,email,address,campaign_id,status,notes,created_at,updated_at')
     .order('created_at', { ascending: false })
-  if (workspaceId) {
-    query = query.eq('workspace_id', workspaceId)
-  } else {
-    query = query.eq('user_id', userId)
-  }
+  // Lead inboxes are personal. workspace_id is metadata, not an access scope.
+  query = query.eq('user_id', userId)
   if (filters?.campaign_id) query = query.eq('campaign_id', filters.campaign_id)
   const { data, error } = await query
   if (error) throw error

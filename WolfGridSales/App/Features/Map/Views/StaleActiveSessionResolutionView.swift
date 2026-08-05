@@ -1,0 +1,101 @@
+import SwiftUI
+
+/// Shown when an active session is restored on launch. User must explicitly resume live tracking or end and save.
+struct StaleActiveSessionResolutionView: View {
+    @ObservedObject var sessionManager: SessionManager
+    @State private var showDiscardConfirmation = false
+    @State private var isDiscarding = false
+
+    private var elapsedText: String {
+        let t = sessionManager.elapsedTime
+        let h = Int(t) / 3600
+        let m = Int(t) / 60 % 60
+        if h > 0 {
+            return "\(h)h \(m)m"
+        }
+        return "\(m)m"
+    }
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.92)
+                .ignoresSafeArea()
+
+            VStack(spacing: 24) {
+                Image(systemName: "clock.badge.exclamationmark")
+                    .font(.system(size: 44))
+                    .foregroundStyle(Color.flyrPrimary)
+
+                Text("Session still open")
+                    .font(.flyrHeadline)
+                    .foregroundStyle(Color.text)
+                    .multilineTextAlignment(.center)
+
+                Text(
+                    "We found an open session from \(elapsedText) ago. Resume to keep tracking, end it now and save your progress, or discard it."
+                )
+                .font(.flyrSubheadline)
+                .foregroundStyle(Color.muted)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 8)
+
+                VStack(spacing: 12) {
+                    Button {
+                        Task { await sessionManager.resumeStaleRestoredSession() }
+                    } label: {
+                        Text("Resume session")
+                            .font(.system(size: 17, weight: .semibold))
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 54)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Color.flyrPrimary)
+
+                    Button {
+                        Task { await sessionManager.stopBuildingSession() }
+                    } label: {
+                        Text("End & save session")
+                            .font(.system(size: 17, weight: .semibold))
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 54)
+                    }
+                    .buttonStyle(.bordered)
+
+                    Button(role: .destructive) {
+                        showDiscardConfirmation = true
+                    } label: {
+                        Text(isDiscarding ? "Discarding..." : "Discard session")
+                            .font(.system(size: 17, weight: .semibold))
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 54)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isDiscarding)
+                }
+                .padding(.top, 8)
+            }
+            .padding(28)
+            .background(
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .fill(Color.bg)
+            )
+            .padding(.horizontal, 24)
+        }
+        .alert("Are you sure?", isPresented: $showDiscardConfirmation) {
+            Button("Cancel", role: .cancel) {}
+            Button("Discard", role: .destructive) {
+                isDiscarding = true
+                Task {
+                    await sessionManager.discardRestoredSession()
+                    isDiscarding = false
+                }
+            }
+        } message: {
+            Text("Discarding this session will erase it permanently.")
+        }
+    }
+}
+
+#Preview {
+    StaleActiveSessionResolutionView(sessionManager: SessionManager.shared)
+}

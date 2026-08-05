@@ -486,7 +486,7 @@ Check:
 
 - iOS `FLYR_PRO_API_URL`
 - Authorization header reaches backend
-- `flyrpro.app` redirect is not stripping auth. `BuildingLinkService` normalizes `https://flyrpro.app` to `https://www.flyrpro.app`.
+- `wolfgrid.app` redirect is not stripping auth. `BuildingLinkService` normalizes `https://wolfgrid.app` to `https://wolfgrid.app`.
 
 ### 2. Can the backend resolve the building id?
 

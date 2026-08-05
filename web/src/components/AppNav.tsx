@@ -25,7 +25,7 @@ export default function AppNav() {
         background: 'var(--bg)',
       }}
     >
-      <Link to="/" style={{ ...linkStyle('/'), marginRight: 8 }}>FLYR</Link>
+      <Link to="/" style={{ ...linkStyle('/'), marginRight: 8 }}>WolfGrid</Link>
       <Link to="/leaderboard" style={linkStyle('/leaderboard')}>Leaderboard</Link>
       <Link to="/stats" style={linkStyle('/stats')}>Stats</Link>
       <Link to="/leads" style={linkStyle('/leads')}>Leads</Link>

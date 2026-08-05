@@ -17,7 +17,7 @@ type FubAuth =
       expiresAt: number | null;
     };
 
-const X_SYSTEM = "FLYR";
+const X_SYSTEM = "WolfGrid";
 const X_SYSTEM_KEY =
   process.env.FUB_SYSTEM_KEY?.trim() ||
   process.env.X_SYSTEM_KEY?.trim() ||

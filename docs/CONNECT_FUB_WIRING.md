@@ -27,7 +27,7 @@ Lead sync for users who connected natively **must** use the key stored in `crm_c
 - Tapping **Disconnect** on the FUB card calls **FUBConnectAPI.shared.disconnect()** (backend `DELETE /api/integrations/fub/disconnect`). The backend deletes the row in `crm_connections` (and the secret in `crm_connection_secrets`); the app then refreshes the store and integrations list.
 
 ## Backend routes (copy to Next.js app)
-Copy `backend-api-routes/app/api/integrations/fub/` and `backend-api-routes/app/api/leads/` into your flyrpro.app App Router. All routes require **Bearer** token in `Authorization` header.
+Copy `backend-api-routes/app/api/integrations/fub/` and `backend-api-routes/app/api/leads/` into your wolfgrid.app App Router. All routes require **Bearer** token in `Authorization` header.
 
 | Method | Path | Purpose |
 |--------|------|--------|

@@ -386,7 +386,7 @@ export async function POST(request: Request) {
         ...(existingFubPersonId != null && { id: existingFubPersonId }),
         firstName: aiJson.contact?.first_name ?? undefined,
         lastName: aiJson.contact?.last_name ?? undefined,
-        source: "FLYR",
+        source: "WolfGrid",
       };
       if (aiJson.contact?.email) {
         personPayload.emails = [{ value: aiJson.contact.email }];

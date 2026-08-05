@@ -4,7 +4,7 @@ Reference for backend API routes (Next.js) and Supabase Edge Functions.
 
 ## Backend API (Next.js)
 
-Base URL: `https://flyrpro.app`
+Base URL: `https://wolfgrid.app`
 
 All routes require authentication via Supabase auth token in `Authorization` header.
 
@@ -429,7 +429,7 @@ do {
 
 ```xml
 <key>FLYR_PRO_API_URL</key>
-<string>https://flyrpro.app</string>
+<string>https://wolfgrid.app</string>
 
 <key>SUPABASE_URL</key>
 <string>https://xxx.supabase.co</string>

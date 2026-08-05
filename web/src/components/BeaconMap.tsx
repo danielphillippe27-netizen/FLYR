@@ -27,10 +27,14 @@ const MAPBOX_LIGHT_STYLE = (
 const CAMPAIGN_SOURCE_ID = 'beacon-campaign-features'
 const CAMPAIGN_BUILDINGS_LAYER_ID = 'beacon-campaign-buildings'
 const CAMPAIGN_ADDRESSES_LAYER_ID = 'beacon-campaign-addresses'
+const CAMPAIGN_MANUAL_PIN_HALO_LAYER_ID = 'beacon-campaign-manual-pins-halo'
+const CAMPAIGN_MANUAL_PIN_LAYER_ID = 'beacon-campaign-manual-pins-core'
 const PATH_SOURCE_ID = 'beacon-session-path'
 const PATH_LAYER_ID = 'beacon-session-path-line'
 const DOORS_SOURCE_ID = 'beacon-session-doors'
 const DOORS_LAYER_ID = 'beacon-session-doors-circle'
+const DOORS_MANUAL_PIN_HALO_LAYER_ID = 'beacon-session-manual-pins-halo'
+const DOORS_MANUAL_PIN_LAYER_ID = 'beacon-session-manual-pins-core'
 const PUCK_SOURCE_ID = 'beacon-session-puck'
 const PUCK_HALO_LAYER_ID = 'beacon-session-puck-halo'
 const PUCK_CORE_LAYER_ID = 'beacon-session-puck-core'
@@ -98,10 +102,22 @@ function buildDoorFeatureCollection(doors: BeaconSessionDoor[]) {
           street_name: door.street_name ?? null,
           status: door.status ?? 'none',
           map_status: door.map_status ?? 'not_visited',
+          is_manual_pin: isManualPinDoor(door),
           created_at: door.created_at,
         },
       })),
   }
+}
+
+function isManualPinDoor(door: BeaconSessionDoor) {
+  return [
+    door.feature_type,
+    door.source,
+    door.address_provenance,
+    door.event_type,
+  ]
+    .map((value) => value?.trim().toLowerCase())
+    .some((value) => value === 'manual_pin' || value === 'field_manual_pin')
 }
 
 function buildPuckFeatureCollection(markerPoint?: [number, number] | null) {
@@ -330,6 +346,67 @@ function ensureLayers(map: mapboxgl.Map) {
     })
   }
 
+  if (!map.getLayer(CAMPAIGN_MANUAL_PIN_HALO_LAYER_ID)) {
+    map.addLayer({
+      id: CAMPAIGN_MANUAL_PIN_HALO_LAYER_ID,
+      type: 'circle',
+      source: CAMPAIGN_SOURCE_ID,
+      filter: [
+        'all',
+        ['==', ['geometry-type'], 'Point'],
+        ['match', ['coalesce', ['get', 'feature_type'], ['get', 'source'], ['get', 'address_provenance'], ''], ['manual_pin', 'field_manual_pin'], true, false],
+      ],
+      paint: {
+        'circle-radius': [
+          'interpolate',
+          ['linear'],
+          ['zoom'],
+          13, 12,
+          18, 18,
+        ],
+        'circle-color': '#facc15',
+        'circle-opacity': 0.32,
+      },
+    })
+  }
+
+  if (!map.getLayer(CAMPAIGN_MANUAL_PIN_LAYER_ID)) {
+    map.addLayer({
+      id: CAMPAIGN_MANUAL_PIN_LAYER_ID,
+      type: 'circle',
+      source: CAMPAIGN_SOURCE_ID,
+      filter: [
+        'all',
+        ['==', ['geometry-type'], 'Point'],
+        ['match', ['coalesce', ['get', 'feature_type'], ['get', 'source'], ['get', 'address_provenance'], ''], ['manual_pin', 'field_manual_pin'], true, false],
+      ],
+      paint: {
+        'circle-radius': [
+          'interpolate',
+          ['linear'],
+          ['zoom'],
+          13, 7,
+          18, 11,
+        ],
+        'circle-color': [
+          'case',
+          ['==', ['coalesce', ['get', 'status'], 'not_visited'], 'hot'], '#2563eb',
+          ['==', ['coalesce', ['get', 'status'], 'not_visited'], 'hot_lead'], '#2563eb',
+          ['==', ['coalesce', ['get', 'status'], 'not_visited'], 'lead'], '#2563eb',
+          ['==', ['coalesce', ['get', 'status'], 'not_visited'], 'appointment'], '#facc15',
+          ['==', ['coalesce', ['get', 'status'], 'not_visited'], 'future_seller'], '#facc15',
+          ['==', ['coalesce', ['get', 'status'], 'not_visited'], 'follow_up'], '#facc15',
+          ['==', ['coalesce', ['get', 'status'], 'not_visited'], 'no_answer'], '#f97316',
+          ['==', ['coalesce', ['get', 'status'], 'not_visited'], 'visited'], '#22c55e',
+          '#ef4444',
+        ],
+        'circle-stroke-width': 4,
+        'circle-stroke-color': '#ffffff',
+        'circle-opacity': 1,
+      },
+    })
+  }
+
   if (!map.getLayer(PATH_LAYER_ID)) {
     map.addLayer({
       id: PATH_LAYER_ID,
@@ -364,6 +441,47 @@ function ensureLayers(map: mapboxgl.Map) {
           '#ef4444',
         ],
         'circle-stroke-width': 2,
+        'circle-stroke-color': '#ffffff',
+        'circle-opacity': 1,
+      },
+    })
+  }
+
+  if (!map.getLayer(DOORS_MANUAL_PIN_HALO_LAYER_ID)) {
+    map.addLayer({
+      id: DOORS_MANUAL_PIN_HALO_LAYER_ID,
+      type: 'circle',
+      source: DOORS_SOURCE_ID,
+      filter: ['==', ['get', 'is_manual_pin'], true],
+      paint: {
+        'circle-radius': 17,
+        'circle-color': '#facc15',
+        'circle-opacity': 0.34,
+      },
+    })
+  }
+
+  if (!map.getLayer(DOORS_MANUAL_PIN_LAYER_ID)) {
+    map.addLayer({
+      id: DOORS_MANUAL_PIN_LAYER_ID,
+      type: 'circle',
+      source: DOORS_SOURCE_ID,
+      filter: ['==', ['get', 'is_manual_pin'], true],
+      paint: {
+        'circle-radius': 10,
+        'circle-color': [
+          'case',
+          ['==', ['coalesce', ['get', 'map_status'], 'not_visited'], 'hot'], '#2563eb',
+          ['==', ['coalesce', ['get', 'map_status'], 'not_visited'], 'hot_lead'], '#2563eb',
+          ['==', ['coalesce', ['get', 'map_status'], 'not_visited'], 'lead'], '#2563eb',
+          ['==', ['coalesce', ['get', 'map_status'], 'not_visited'], 'appointment'], '#facc15',
+          ['==', ['coalesce', ['get', 'map_status'], 'not_visited'], 'future_seller'], '#facc15',
+          ['==', ['coalesce', ['get', 'map_status'], 'not_visited'], 'follow_up'], '#facc15',
+          ['==', ['coalesce', ['get', 'map_status'], 'not_visited'], 'no_answer'], '#f97316',
+          ['==', ['coalesce', ['get', 'map_status'], 'not_visited'], 'visited'], '#22c55e',
+          '#ef4444',
+        ],
+        'circle-stroke-width': 4,
         'circle-stroke-color': '#ffffff',
         'circle-opacity': 1,
       },

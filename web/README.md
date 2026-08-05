@@ -23,4 +23,4 @@ cd ../FLYR-PRO
 
 Production web app:
 
-- [https://www.flyrpro.app](https://www.flyrpro.app)
+- [https://wolfgrid.app](https://wolfgrid.app)

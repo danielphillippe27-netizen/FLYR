@@ -40,8 +40,8 @@ async function pushContactToFub(
   }
 
   const event = {
-    source: "FLYR",
-    system: "FLYR",
+    source: "WolfGrid",
+    system: "WolfGrid",
     type: "General Inquiry" as const,
     message: "",
     person,

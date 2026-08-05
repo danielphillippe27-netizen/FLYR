@@ -42,8 +42,8 @@ export function useLeads(userId: string | undefined, workspaceId?: string | null
   // Realtime: refetch when contacts change so web list stays in sync
   useEffect(() => {
     const client = supabase
-    if (!client || (!userId && !workspaceId)) return
-    const filter = workspaceId ? `workspace_id=eq.${workspaceId}` : `user_id=eq.${userId}`
+    if (!client || !userId) return
+    const filter = `user_id=eq.${userId}`
     const channel = client
       .channel('contacts_changes')
       .on(

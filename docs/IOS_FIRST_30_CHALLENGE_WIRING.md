@@ -241,7 +241,7 @@ Add:
 Use:
 
 - `FLYR_PRO_API_URL`
-- normalize `flyrpro.app` to `https://www.flyrpro.app` like the other iOS backend clients do
+- normalize `wolfgrid.app` to `https://wolfgrid.app` like the other iOS backend clients do
 
 Expected endpoint:
 

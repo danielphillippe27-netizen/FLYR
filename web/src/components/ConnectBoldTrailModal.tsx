@@ -131,7 +131,7 @@ export default function ConnectBoldTrailModal({
         <p style={{ fontWeight: 600, color: 'var(--text)', marginBottom: 8 }}>MVP sync scope</p>
         <ol style={{ margin: 0, paddingLeft: 20 }}>
           <li>Secure token validation and storage on the backend</li>
-          <li>One-way FLYR → BoldTrail / kvCORE contact sync</li>
+          <li>One-way WolfGrid → BoldTrail / kvCORE contact sync</li>
           <li>Remote contact ID persistence for later updates</li>
         </ol>
       </div>

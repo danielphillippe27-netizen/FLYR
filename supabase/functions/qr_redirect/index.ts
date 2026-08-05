@@ -52,7 +52,7 @@ serve(async (req) => {
     });
 
     // Redirect to landing page
-    return Response.redirect(`https://flyrpro.app/l/${landingPage.slug}`, 302);
+    return Response.redirect(`https://wolfgrid.app/l/${landingPage.slug}`, 302);
 
   } catch (err) {
     return new Response("Server Error: " + err.message, { status: 500 });

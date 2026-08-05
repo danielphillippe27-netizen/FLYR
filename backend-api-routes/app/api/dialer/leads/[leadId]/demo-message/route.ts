@@ -77,9 +77,9 @@ export async function POST(request: NextRequest, _routeContext: RouteContext) {
     return NextResponse.json({
       demoUrl: link,
       demoLinkToken: null,
-      textBody: `Hey, Daniel with FLYR. Here is the ${offerTitle} demo: ${link}`,
-      emailSubject: `Quick FLYR ${offerTitle} demo`,
-      emailBody: `Hey,\n\nDaniel with FLYR here. Here is the ${offerTitle} demo video: ${link}\n\nBest,\nDaniel`,
+      textBody: `Hey, Daniel with WolfGrid. Here is the ${offerTitle} demo: ${link}`,
+      emailSubject: `Quick WolfGrid ${offerTitle} demo`,
+      emailBody: `Hey,\n\nDaniel with WolfGrid here. Here is the ${offerTitle} demo video: ${link}\n\nBest,\nDaniel`,
       tracked: false,
       offer,
     });

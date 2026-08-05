@@ -70,7 +70,7 @@ export function getHubSpotRedirectUri(origin?: string): string {
   if (process.env.HUBSPOT_OAUTH_REDIRECT_URI) {
     return process.env.HUBSPOT_OAUTH_REDIRECT_URI;
   }
-  const base = origin || process.env.NEXT_PUBLIC_APP_URL || "https://www.flyrpro.app";
+  const base = origin || process.env.NEXT_PUBLIC_APP_URL || "https://wolfgrid.app";
   return `${base.replace(/\/$/, "")}/api/integrations/hubspot/oauth/callback`;
 }
 
@@ -78,7 +78,7 @@ export function getHubSpotWebSuccessUrl(origin?: string): string {
   if (process.env.HUBSPOT_OAUTH_WEB_SUCCESS_URL) {
     return process.env.HUBSPOT_OAUTH_WEB_SUCCESS_URL;
   }
-  const base = origin || process.env.NEXT_PUBLIC_APP_URL || "https://www.flyrpro.app";
+  const base = origin || process.env.NEXT_PUBLIC_APP_URL || "https://wolfgrid.app";
   return `${base.replace(/\/$/, "")}/integrations?hubspot=connected`;
 }
 
@@ -86,7 +86,7 @@ export function getHubSpotWebErrorUrl(origin?: string): string {
   if (process.env.HUBSPOT_OAUTH_WEB_ERROR_URL) {
     return process.env.HUBSPOT_OAUTH_WEB_ERROR_URL;
   }
-  const base = origin || process.env.NEXT_PUBLIC_APP_URL || "https://www.flyrpro.app";
+  const base = origin || process.env.NEXT_PUBLIC_APP_URL || "https://wolfgrid.app";
   return `${base.replace(/\/$/, "")}/integrations?hubspot=error`;
 }
 
@@ -95,7 +95,7 @@ export function getHubSpotIosRedirectUrl(status: "success" | "error", message?: 
   if (message) {
     params.set("message", message);
   }
-  return `flyr://oauth?${params.toString()}`;
+  return `wolfgrid://oauth?${params.toString()}`;
 }
 
 export function createHubSpotSignedState(

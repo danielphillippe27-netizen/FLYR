@@ -59,24 +59,24 @@ export function getMondayRedirectUri(origin?: string): string {
   if (/^https?:\/\//i.test(configuredRedirectUri)) {
     return configuredRedirectUri;
   }
-  const base = origin || process.env.NEXT_PUBLIC_APP_URL || "https://www.flyrpro.app";
+  const base = origin || process.env.NEXT_PUBLIC_APP_URL || "https://wolfgrid.app";
   return `${base.replace(/\/$/, "")}/api/integrations/monday/oauth/callback`;
 }
 
 export function getMondayWebSuccessUrl(origin?: string): string {
-  const base = origin || process.env.NEXT_PUBLIC_APP_URL || "https://www.flyrpro.app";
+  const base = origin || process.env.NEXT_PUBLIC_APP_URL || "https://wolfgrid.app";
   return `${base.replace(/\/$/, "")}/integrations?monday=connected`;
 }
 
 export function getMondayWebErrorUrl(origin?: string): string {
-  const base = origin || process.env.NEXT_PUBLIC_APP_URL || "https://www.flyrpro.app";
+  const base = origin || process.env.NEXT_PUBLIC_APP_URL || "https://wolfgrid.app";
   return `${base.replace(/\/$/, "")}/integrations?monday=error`;
 }
 
 export function getMondayIosRedirectUrl(status: "success" | "error", message?: string): string {
   const params = new URLSearchParams({ provider: "monday", status });
   if (message) params.set("message", message);
-  return `flyr://oauth?${params.toString()}`;
+  return `wolfgrid://oauth?${params.toString()}`;
 }
 
 export function createMondaySignedState(

@@ -57,6 +57,9 @@ export type BeaconSessionDoor = {
   lon: number
   status?: string | null
   map_status?: 'hot' | 'visited' | 'do_not_knock' | 'no_answer' | 'not_visited' | null
+  feature_type?: string | null
+  source?: string | null
+  address_provenance?: string | null
   event_type?: string | null
   created_at: string
 }

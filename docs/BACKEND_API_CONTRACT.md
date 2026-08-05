@@ -1,6 +1,6 @@
 # Backend API contract (generate-address-list, provision, buildings)
 
-Single source of truth for the FLYR backend and iOS app. Backend base URL is set on iOS via `FLYR_PRO_API_URL` (e.g. `https://flyrpro.app`).
+Single source of truth for the FLYR backend and iOS app. Backend base URL is set on iOS via `FLYR_PRO_API_URL` (e.g. `https://wolfgrid.app`).
 
 **Data architecture:** Polygon and campaign metadata live in Supabase. Provision loads the polygon from Supabase, calls the Tile Lambda with it; Lambda reads buildings and addresses from S3 parquet (DuckDB/ST_Intersects), writes snapshot GeoJSON to S3. Backend ingests addresses and snapshot metadata into Supabase and runs StableLinker + TownhouseSplitter. Building geometry lives in S3; Supabase holds `campaign_snapshots`, `campaign_addresses`, `building_address_links`, and `building_units`. The map fetches building GeoJSON via GET `/api/campaigns/[campaignId]/buildings` (S3-backed) and merges with `building_units` for extruded townhouse units.
 

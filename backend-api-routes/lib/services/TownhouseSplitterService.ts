@@ -15,6 +15,15 @@
 
 import { SupabaseClient } from '@supabase/supabase-js';
 import { isUnitPersistenceEnabled } from '../config/features';
+import {
+  canonicalAddressIdentity,
+  canonicalizePolygonRing,
+  deterministicTownhouseUnitId,
+  orderTownhouseAddressesAlongAxis,
+  TOWNHOUSE_SPLIT_VERSION,
+  townhouseSplitSignature,
+  townhouseUnitStableKey,
+} from './TownhouseUnitIdentity';
 
 // Types
 export interface BuildingFeature {
@@ -44,6 +53,7 @@ export interface SplitUnit {
   address_id: string;
   unit_geometry: GeoJSON.Polygon;
   unit_number: string;
+  unit_index: number;
   validation: 'passed' | 'warning' | 'failed';
   area_sqm: number;
 }
@@ -54,6 +64,7 @@ export interface SplitResult {
   units?: SplitUnit[];
   parent_type: 'townhouse' | 'apartment' | 'duplex' | 'triplex' | 'small_multifamily';
   split_method: 'obb_linear' | 'weighted' | 'apartment_placeholder';
+  split_signature?: string;
   error_type?: string;
   error_message?: string;
 }
@@ -497,9 +508,8 @@ export class TownhouseSplitterService {
       this.loadSplitOverride(input.campaignId, input.parentBuildingId),
     ]);
 
-    await this.clearUnits(input.campaignId, parentIdentifiers);
-
     if (!building) {
+      await this.clearUnits(input.campaignId, parentIdentifiers);
       return {
         parent_building_id: parentBuildingId,
         linked_address_ids: linkedAddresses.map((address) => address.id),
@@ -511,6 +521,7 @@ export class TownhouseSplitterService {
     }
 
     if (linkedAddresses.length < 2) {
+      await this.clearUnits(input.campaignId, parentIdentifiers);
       await this.updateBuildingLinkClassification(input.campaignId, input.buildingRowId ?? null, linkedAddresses.length);
       return {
         parent_building_id: parentBuildingId,
@@ -530,6 +541,7 @@ export class TownhouseSplitterService {
     const result = this.splitBuilding(analysis, override);
 
     if (result.status !== 'success' || !result.units?.length) {
+      await this.clearUnits(input.campaignId, parentIdentifiers);
       await this.logSplitError(input.campaignId, analysis, result);
       return {
         parent_building_id: parentBuildingId,
@@ -878,9 +890,13 @@ export class TownhouseSplitterService {
     for (const parentBuildingId of ids) {
       const { error } = await this.supabase
         .from('building_units')
-        .delete()
+        .update({
+          lifecycle_state: 'superseded',
+          superseded_at: new Date().toISOString(),
+        })
         .eq('campaign_id', campaignId)
-        .eq('parent_building_id', parentBuildingId);
+        .eq('parent_building_id', parentBuildingId)
+        .eq('lifecycle_state', 'active');
       if (error) {
         console.warn('[TownhouseSplitter] Error clearing existing units:', error.message);
       }
@@ -941,23 +957,26 @@ export class TownhouseSplitterService {
     console.log(`[TownhouseSplitter] Splitting ${building_id} into ${nUnits} units`);
 
     try {
-      const coords = building.geometry.coordinates[0];
+      const coords = canonicalizePolygonRing(building.geometry.coordinates[0]);
+      const canonicalGeometry: GeoJSON.Polygon = { type: 'Polygon', coordinates: [coords] };
       
       const bestEdgeIndex = this.selectSplitAxisEdge(coords, addresses, override.split_axis_mode ?? 'auto');
 
-      const streetEdgeP1 = coords[bestEdgeIndex] as [number, number];
-      const streetEdgeP2 = coords[bestEdgeIndex + 1] as [number, number];
+      let streetEdgeP1 = coords[bestEdgeIndex] as [number, number];
+      let streetEdgeP2 = coords[bestEdgeIndex + 1] as [number, number];
+      if (
+        streetEdgeP1[0] > streetEdgeP2[0] ||
+        (streetEdgeP1[0] === streetEdgeP2[0] && streetEdgeP1[1] > streetEdgeP2[1])
+      ) {
+        [streetEdgeP1, streetEdgeP2] = [streetEdgeP2, streetEdgeP1];
+      }
 
       // Order addresses along the street edge
-      const edgeVec = [streetEdgeP2[0] - streetEdgeP1[0], streetEdgeP2[1] - streetEdgeP1[1]];
-      const edgeLen = Math.sqrt(edgeVec[0] * edgeVec[0] + edgeVec[1] * edgeVec[1]);
-      const edgeUnit = [edgeVec[0] / edgeLen, edgeVec[1] / edgeLen];
-      
-      let orderedAddrs = [...addresses].sort((a, b) => {
-        const da = (a.lon - streetEdgeP1[0]) * edgeUnit[0] + (a.lat - streetEdgeP1[1]) * edgeUnit[1];
-        const db = (b.lon - streetEdgeP1[0]) * edgeUnit[0] + (b.lat - streetEdgeP1[1]) * edgeUnit[1];
-        return da - db;
-      });
+      let orderedAddrs = orderTownhouseAddressesAlongAxis(
+        addresses,
+        streetEdgeP1,
+        streetEdgeP2
+      );
       if (override.reverse_order === true) {
         orderedAddrs = orderedAddrs.reverse();
       }
@@ -967,7 +986,7 @@ export class TownhouseSplitterService {
       
       for (let i = 0; i < nUnits; i++) {
         const unitGeometry = createUnitPolygon(
-          building.geometry,
+          canonicalGeometry,
           orderedAddrs,
           i,
           streetEdgeP1,
@@ -999,6 +1018,7 @@ export class TownhouseSplitterService {
           address_id: addr.id,
           unit_geometry: unitGeometry,
           unit_number: addr.house_number || String(i + 1),
+          unit_index: i,
           validation,
           area_sqm: area,
         });
@@ -1021,6 +1041,12 @@ export class TownhouseSplitterService {
         units,
         parent_type: analysis.classification === 'townhouse' ? 'townhouse' : 'small_multifamily',
         split_method: 'obb_linear',
+        split_signature: townhouseSplitSignature({
+          parentBuildingId: building_id,
+          ring: coords,
+          orderedAddresses: orderedAddrs,
+          splitMethod: `obb_linear:${override.split_axis_mode ?? 'auto'}:${override.reverse_order === true}`,
+        }),
       };
 
     } catch (error) {
@@ -1096,13 +1122,17 @@ export class TownhouseSplitterService {
 
     const centroid = this.calculateCentroid(building.geometry.coordinates[0]);
     
-    const units: SplitUnit[] = addresses.map((addr, i) => {
+    const orderedAddresses = [...addresses].sort((a, b) =>
+      canonicalAddressIdentity(a).localeCompare(canonicalAddressIdentity(b))
+    );
+    const units: SplitUnit[] = orderedAddresses.map((addr, i) => {
       const circle = this.createCirclePolygon([addr.lon, addr.lat], 2);
       
       return {
         address_id: addr.id,
         unit_geometry: circle,
         unit_number: addr.house_number || `Unit ${i + 1}`,
+        unit_index: i,
         validation: 'passed',
         area_sqm: Math.PI * 2 * 2,
       };
@@ -1114,6 +1144,12 @@ export class TownhouseSplitterService {
       units,
       parent_type: 'apartment',
       split_method: 'apartment_placeholder',
+      split_signature: townhouseSplitSignature({
+        parentBuildingId: building_id,
+        ring: canonicalizePolygonRing(building.geometry.coordinates[0]),
+        orderedAddresses,
+        splitMethod: 'apartment_placeholder',
+      }),
     };
 
     await this.saveUnits(campaignId, result, overtureRelease);
@@ -1179,33 +1215,41 @@ export class TownhouseSplitterService {
   private async saveUnits(
     campaignId: string,
     result: SplitResult,
-    overtureRelease: string
+    _overtureRelease: string
   ): Promise<boolean> {
     if (!result.units || result.units.length === 0) return false;
 
-    const records = result.units.map(u => ({
+    const records = result.units.map((u) => ({
+      id: deterministicTownhouseUnitId({
+        campaignId,
+        parentBuildingId: result.building_id,
+        unitIndex: u.unit_index,
+      }),
       campaign_id: campaignId,
       parent_building_id: result.building_id,
       address_id: u.address_id,
       unit_number: u.unit_number,
+      unit_index: u.unit_index,
+      stable_key: townhouseUnitStableKey({
+        parentBuildingId: result.building_id,
+        unitIndex: u.unit_index,
+      }),
+      split_version: TOWNHOUSE_SPLIT_VERSION,
+      split_signature: result.split_signature,
+      lifecycle_state: 'active',
+      superseded_at: null,
       unit_geometry: u.unit_geometry,
+      parent_building_area: u.area_sqm,
       split_method: result.split_method,
       parent_type: result.parent_type,
       validation_status: u.validation,
     }));
 
-    const { error: deleteError } = await this.supabase
-      .from('building_units')
-      .delete()
-      .eq('campaign_id', campaignId)
-      .eq('parent_building_id', result.building_id);
-
-    if (deleteError) {
-      console.error('[TownhouseSplitter] Error clearing existing units:', deleteError.message);
-      return false;
-    }
-
-    const { error } = await this.supabase.from('building_units').insert(records);
+    const { error } = await this.supabase.rpc('upsert_building_units_deterministic', {
+      p_campaign_id: campaignId,
+      p_parent_building_id: result.building_id,
+      p_units: records,
+    });
 
     if (error) {
       console.error('[TownhouseSplitter] Error saving units:', error.message);

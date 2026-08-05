@@ -699,7 +699,7 @@ Android should mirror `SessionSafetyBeaconService`.
 5. Build public URL:
 
 ```text
-https://www.flyrpro.app/beacon/<raw token>
+https://wolfgrid.app/beacon/<raw token>
 ```
 
 Insert:

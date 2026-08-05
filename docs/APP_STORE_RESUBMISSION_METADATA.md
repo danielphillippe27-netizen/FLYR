@@ -24,7 +24,7 @@ If you instead use a **custom EULA**, upload it in App Store Connect (App Inform
 
 ## Privacy Policy
 
-Confirm the **Privacy Policy URL** field in App Store Connect matches a live page (e.g. `https://www.flyrpro.app/privacy`). The in-app paywall includes a **Privacy Policy** button.
+Confirm the **Privacy Policy URL** field in App Store Connect matches a live page (e.g. `https://wolfgrid.app/privacy`). The in-app paywall includes a **Privacy Policy** button.
 
 ## App Review Information
 

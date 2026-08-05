@@ -3,7 +3,7 @@
 ## What happens when you create a campaign
 
 1. **iOS** creates the campaign, sets `territory_boundary`, then calls **POST /api/campaigns/provision**.
-2. **Provision backend** (the service that implements that route, e.g. flyrpro.app) should:
+2. **Provision backend** (the service that implements that route, e.g. wolfgrid.app) should:
    - Load polygon from Supabase, call Tile Lambda.
    - Lambda reads S3 parquet (Overture), clips by polygon, writes GeoJSON to S3 snapshot bucket.
    - Backend writes **addresses** into `campaign_addresses`, and **snapshot metadata** (bucket, keys) into `campaign_snapshots`. Building geometry stays in **S3**.
@@ -16,9 +16,9 @@ So “not working” usually means one of these:
 
 ## 1. POST /api/campaigns/provision is not in this repo
 
-The **provision** endpoint is not implemented in `backend-api-routes/` in this repo. The app calls whatever base URL is configured (e.g. `FLYR_PRO_API_URL` → flyrpro.app). So:
+The **provision** endpoint is not implemented in `backend-api-routes/` in this repo. The app calls whatever base URL is configured (e.g. `FLYR_PRO_API_URL` → wolfgrid.app). So:
 
-- If the **main backend** (flyrpro.app or your deployed API) does not implement **POST /api/campaigns/provision**, provision never runs and no snapshot is created.
+- If the **main backend** (wolfgrid.app or your deployed API) does not implement **POST /api/campaigns/provision**, provision never runs and no snapshot is created.
 - If it does implement it but **does not write** to `campaign_snapshots` (and S3) after Lambda runs, then GET buildings has nothing to serve.
 
 **Check:** After creating a campaign, in Supabase run:
@@ -46,7 +46,7 @@ This repo **now** has **GET /api/campaigns/[campaignId]/buildings** in `backend-
 So:
 
 - If your **deployed API** is **this** repo’s backend: the route exists and returns valid JSON, but always with 0 features until you add S3 fetch (or another source) in that route.
-- If your deployed API is **another** backend (e.g. flyrpro.app): that backend must implement GET buildings by reading `campaign_snapshots` and returning the building GeoJSON from S3. If it doesn’t, or if it returns empty, you get 0 buildings.
+- If your deployed API is **another** backend (e.g. wolfgrid.app): that backend must implement GET buildings by reading `campaign_snapshots` and returning the building GeoJSON from S3. If it doesn’t, or if it returns empty, you get 0 buildings.
 
 ---
 

@@ -378,7 +378,7 @@ export default function StatsPage() {
               description="Leads per conversation"
             />
             <SuccessMetricBar
-              title="FLYR™ QR Code Scan"
+              title="WolfGrid™ QR Code Scan"
               value={ratePercent(stats.qr_code_scan_rate)}
               icon="📱"
               color="#ef4444"

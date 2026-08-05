@@ -1,0 +1,157 @@
+import SwiftUI
+
+/// Card view for displaying a CRM integration with connect/disconnect functionality.
+/// For FUB, pass crmConnection from CRMConnectionStore; for others use integration from user_integrations.
+struct IntegrationCardView: View {
+    let provider: IntegrationProvider
+    let integration: UserIntegration?
+    /// Secure providers like FUB and BoldTrail read status from crm_connections.
+    let crmConnection: CRMConnection?
+    var connectedOverride: Bool? = nil
+    let onConnect: () -> Void
+    let onDisconnect: () -> Void
+    
+    @State private var isConnecting = false
+    
+    private var isConnected: Bool {
+        connectedOverride ?? crmConnection?.isConnected ?? integration?.isConnected ?? false
+    }
+
+    private var connectionStatusText: String {
+        if crmConnection?.isConnected == true { return "Connected ●" }
+        return integration?.connectionStatusText ?? "Connected"
+    }
+
+    private var actionTitle: String {
+        if [.fub, .boldtrail, .monday].contains(provider), isConnected {
+            return "Manage"
+        }
+        return isConnected ? "Disconnect" : "Connect"
+    }
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            // Header: Logo + Name + Description + Button
+            HStack(alignment: .center, spacing: 14) {
+                // CRM Logo
+                Image(provider.logoName)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 28, height: 28)
+                    .padding(.leading, 4)
+                
+                // Name and Description
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(provider.displayName)
+                        .font(.flyrHeadline)
+                        .foregroundColor(.text)
+                    
+                    Text(provider.description)
+                        .font(.flyrSubheadline)
+                        .foregroundColor(.secondary)
+                }
+                
+                Spacer()
+                
+                // Connect/Disconnect Button
+                Button(action: {
+                    if isConnected && ![.fub, .boldtrail, .monday].contains(provider) {
+                        onDisconnect()
+                    } else {
+                        onConnect()
+                    }
+                }) {
+                    Text(actionTitle)
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundColor(isConnected && ![.fub, .boldtrail, .monday].contains(provider) ? .error : .white)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(isConnected && ![.fub, .boldtrail, .monday].contains(provider) ? Color.error.opacity(0.1) : Color.info)
+                        )
+                }
+                .disabled(isConnecting)
+            }
+            
+            // Connection status (if connected)
+            if isConnected {
+                Divider()
+                
+                HStack(spacing: 6) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 12))
+                        .foregroundColor(.success)
+                    
+                    Text(connectionStatusText)
+                        .font(.system(size: 13))
+                        .foregroundColor(.muted)
+                    
+                    if provider == .monday, let boardLabel = integration?.mondayBoardLabel {
+                        Text("•")
+                            .foregroundColor(.muted)
+                        Text(boardLabel)
+                            .font(.system(size: 13))
+                            .foregroundColor(.muted)
+                    }
+
+                    if provider == .boldtrail, let tokenHint = crmConnection?.metadata?.tokenHint {
+                        Text("•")
+                            .foregroundColor(.muted)
+                        Text(tokenHint)
+                            .font(.system(size: 13))
+                            .foregroundColor(.muted)
+                    }
+
+                    if provider.connectionType == .oauth, let expiresAt = integration?.expiresAt, integration?.isTokenExpired != true {
+                        Text("•")
+                            .foregroundColor(.muted)
+                        Text("Expires \(formatExpirationDate(expiresAt))")
+                            .font(.system(size: 13))
+                            .foregroundColor(.muted)
+                    }
+                }
+            }
+        }
+        .padding(16)
+        .background(Color.bgSecondary)
+        .cornerRadius(20)
+        .shadow(color: Color.black.opacity(0.05), radius: 8, x: 0, y: 2)
+    }
+    
+    private func formatExpirationDate(_ timestamp: Int) -> String {
+        let date = Date(timeIntervalSince1970: TimeInterval(timestamp))
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .abbreviated
+        return formatter.localizedString(for: date, relativeTo: Date())
+    }
+}
+
+// MARK: - Preview
+
+#Preview {
+    VStack(spacing: 16) {
+        IntegrationCardView(
+            provider: .hubspot,
+            integration: UserIntegration(
+                userId: UUID(),
+                provider: .hubspot,
+                accessToken: "token123",
+                expiresAt: Int(Date().addingTimeInterval(86400).timeIntervalSince1970)
+            ),
+            crmConnection: nil,
+            onConnect: {},
+            onDisconnect: {}
+        )
+        
+        IntegrationCardView(
+            provider: .fub,
+            integration: nil,
+            crmConnection: nil,
+            onConnect: {},
+            onDisconnect: {}
+        )
+    }
+    .padding()
+    .background(Color.bg)
+}
