@@ -1766,9 +1766,7 @@ final class MapFeaturesService: ObservableObject {
         let optimizing = reconciliation?.isOptimizing
             ?? Self.linksStatusMeansBackendOptimizing(linksStatus)
         isMapDataOptimizing = optimizing
-        let shouldProbeReconciliation =
-            reconciliation?.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "not_started"
-            || reconciliation == nil
+        let shouldProbeReconciliation = reconciliation?.needsPolling ?? true
         if optimizing || shouldProbeReconciliation {
             scheduleBackendOptimizationRefresh(campaignId: campaignId, requestId: requestId)
         } else if backendOptimizationRefreshCampaignIdLower == campaignId.lowercased() {
@@ -1788,12 +1786,16 @@ final class MapFeaturesService: ObservableObject {
         backendOptimizationRefreshTask?.cancel()
         backendOptimizationRefreshCampaignIdLower = campaignKey
         backendOptimizationRefreshTask = Task { [weak self] in
-            let retryDelaysSeconds: [Double] = [
-                2, 2, 3, 5, 8, 13, 21,
-                30, 30, 30, 30, 30, 30, 30, 30
-            ]
+            let initialRetryDelaysSeconds: [Double] = [2, 2, 3, 5, 8, 13, 21]
+            var attempt = 0
 
-            for (attempt, delaySeconds) in retryDelaysSeconds.enumerated() {
+            // The reconciliation worker can remain queued for longer than the old five-minute
+            // retry window. Keep this lightweight ETag-backed poll alive for the active campaign;
+            // changing campaigns or reaching a terminal status cancels it.
+            while !Task.isCancelled {
+                let delaySeconds = attempt < initialRetryDelaysSeconds.count
+                    ? initialRetryDelaysSeconds[attempt]
+                    : 30
                 do {
                     try await Task.sleep(for: .seconds(delaySeconds))
                 } catch {
@@ -1804,19 +1806,17 @@ final class MapFeaturesService: ObservableObject {
                 guard await MainActor.run(body: {
                     self.isActiveCampaignRequest(campaignId: campaignId, requestId: requestId)
                         && (
-                            self.isMapDataOptimizing ||
-                            self.reconciliationStatus?.status
-                                .trimmingCharacters(in: .whitespacesAndNewlines)
-                                .lowercased() == "not_started" ||
-                            self.reconciliationStatus == nil
+                            self.reconciliationStatus?.needsPolling ?? true
                         )
                 }) else {
                     return
                 }
 
+                attempt += 1
+
                 print(
                     "🧪 [MAP_DEBUG] canonical_map_bundle_optimization_poll campaign=\(campaignId) " +
-                    "attempt=\(attempt + 1)"
+                    "attempt=\(attempt)"
                 )
                 do {
                     guard let status = try await BuildingLinkService.shared
@@ -1833,25 +1833,20 @@ final class MapFeaturesService: ObservableObject {
                 } catch {
                     print(
                         "⚠️ [MAP_DEBUG] reconciliation_status_poll_failed campaign=\(campaignId) " +
-                        "attempt=\(attempt + 1) error=\(error.localizedDescription)"
+                        "attempt=\(attempt) error=\(error.localizedDescription)"
                     )
                 }
                 guard !Task.isCancelled else { return }
                 let shouldContinue = await MainActor.run(body: {
                     self.isActiveCampaignRequest(campaignId: campaignId, requestId: requestId)
-                        && self.isMapDataOptimizing
+                        && (self.reconciliationStatus?.needsPolling ?? true)
                 })
-                if !shouldContinue { return }
-            }
-
-            await MainActor.run {
-                if self?.backendOptimizationRefreshCampaignIdLower == campaignKey {
-                    self?.backendOptimizationRefreshTask = nil
-                    self?.backendOptimizationRefreshCampaignIdLower = nil
-                    print(
-                        "🧪 [MAP_DEBUG] canonical_map_bundle_optimization_poll_exhausted campaign=\(campaignId) " +
-                        "attempts=\(retryDelaysSeconds.count)"
-                    )
+                if !shouldContinue {
+                    if self.backendOptimizationRefreshCampaignIdLower == campaignKey {
+                        self.backendOptimizationRefreshTask = nil
+                        self.backendOptimizationRefreshCampaignIdLower = nil
+                    }
+                    return
                 }
             }
         }

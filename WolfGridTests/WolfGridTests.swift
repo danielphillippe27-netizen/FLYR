@@ -11,6 +11,52 @@ import Testing
 
 struct WolfGridTests {
 
+    @Test func canonicalMapBundleDecodesStructuredOrphanRecords() throws {
+        let json = """
+        {
+          "campaign_id": "f23de1f2-13fd-4721-91a2-4c869347a609",
+          "asset_signature": "test-signature",
+          "source_version": "test-source",
+          "links_status": "ready",
+          "addresses": { "type": "FeatureCollection", "features": [] },
+          "buildings": { "type": "FeatureCollection", "features": [] },
+          "parcels": { "type": "FeatureCollection", "features": [] },
+          "roads": { "type": "FeatureCollection", "features": [] },
+          "links": [],
+          "address_orphans": [],
+          "building_orphans": [
+            {
+              "status": "pending",
+              "building_id": "overture:building:test",
+              "evidence": ["unlinked", { "source": "reverse_geocode" }]
+            }
+          ],
+          "building_units": [],
+          "reconciliation": { "status": "not_started" },
+          "reconciliation_report": {},
+          "counts": {
+            "addresses": 45,
+            "buildings": 47,
+            "parcels": 61,
+            "roads": 0,
+            "links": 45
+          }
+        }
+        """
+
+        let bundle = try JSONDecoder().decode(
+            CanonicalCampaignMapBundle.self,
+            from: Data(json.utf8)
+        )
+
+        #expect(bundle.linksStatus == "ready")
+        #expect(bundle.buildingOrphans?.count == 1)
+        let orphan = try #require(bundle.buildingOrphans?.first?.value as? [String: AnyCodable])
+        #expect(orphan["status"]?.value as? String == "pending")
+        let evidence = try #require(orphan["evidence"]?.value as? [AnyCodable])
+        #expect(evidence.count == 2)
+    }
+
     @Test func reconciliationReportDecodesCurrentServerMetrics() throws {
         let json = """
         {
@@ -60,6 +106,44 @@ struct WolfGridTests {
         #expect(report.checkedBuildingCount == 9)
         #expect(report.matchedBuildingCount == 6)
         #expect(report.remainingBuildingCount == 3)
+    }
+
+    @Test func mapQualityPipelineStageDistinguishesProvisioningFromReconciliation() throws {
+        let provisioned = try JSONDecoder().decode(
+            CanonicalMapReconciliation.self,
+            from: Data(#"{"status":"not_started"}"#.utf8)
+        )
+        let running = try JSONDecoder().decode(
+            CanonicalMapReconciliation.self,
+            from: Data(#"{"status":"geocoding"}"#.utf8)
+        )
+        let completed = try JSONDecoder().decode(
+            CanonicalMapReconciliation.self,
+            from: Data(#"{"status":"completed","run_id":"phase-2"}"#.utf8)
+        )
+
+        #expect(MapQualityPipelineStage.resolve(provisioned) == .provisionedOnly)
+        #expect(MapQualityPipelineStage.resolve(running) == .reconciling)
+        #expect(MapQualityPipelineStage.resolve(completed) == .reconciled)
+        #expect(MapQualityPipelineStage.resolve(nil) == .provisionedOnly)
+    }
+
+    @Test func reconciliationPollingContinuesUntilTerminalStatus() throws {
+        for statusValue in ["not_started", "queued", "matching", "geocoding", "applying"] {
+            let status = try JSONDecoder().decode(
+                CanonicalMapReconciliation.self,
+                from: Data(#"{"status":"\#(statusValue)"}"#.utf8)
+            )
+            #expect(status.needsPolling)
+        }
+
+        for statusValue in ["completed", "review_needed", "failed"] {
+            let status = try JSONDecoder().decode(
+                CanonicalMapReconciliation.self,
+                from: Data(#"{"status":"\#(statusValue)"}"#.utf8)
+            )
+            #expect(!status.needsPolling)
+        }
     }
 
     @Test func campaignHouseCountUsesAggregateBeforeAddressHydration() throws {
