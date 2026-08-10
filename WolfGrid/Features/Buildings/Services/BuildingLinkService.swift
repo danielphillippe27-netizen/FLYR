@@ -144,7 +144,13 @@ struct CanonicalMapReconciliation: Codable, Sendable {
     }
 
     var isOptimizing: Bool {
-        ["queued", "matching", "geocoding", "applying"].contains(status.lowercased())
+        ["queued", "matching", "geocoding", "applying"]
+            .contains(status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+    }
+
+    var needsPolling: Bool {
+        ["not_started", "queued", "matching", "geocoding", "applying"]
+            .contains(status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
     }
 }
 
@@ -216,6 +222,65 @@ struct CachedMapQualityReport: Codable, Identifiable {
     let report: CanonicalMapReconciliationReport
 
     var id: String { runId }
+}
+
+enum MapQualityPipelineStage: Equatable {
+    case provisionedOnly
+    case reconciling
+    case reconciled
+    case reconciliationFailed
+
+    static func resolve(_ reconciliation: CanonicalMapReconciliation?) -> Self {
+        switch reconciliation?.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "queued", "matching", "geocoding", "applying":
+            return .reconciling
+        case "completed", "review_needed":
+            return .reconciled
+        case "failed":
+            return .reconciliationFailed
+        default:
+            return .provisionedOnly
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .provisionedOnly:
+            return "Initial provisioning complete"
+        case .reconciling:
+            return "Phase 2 reconciliation running"
+        case .reconciled:
+            return "Phase 2 reconciliation completed"
+        case .reconciliationFailed:
+            return "Initial provisioning complete"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .provisionedOnly:
+            return "Phase 2 reconciliation has not run yet."
+        case .reconciling:
+            return "The initial map is ready while Phase 2 checks and improves the data."
+        case .reconciled:
+            return "The map includes initial provisioning and the Phase 2 data cleanup."
+        case .reconciliationFailed:
+            return "Phase 2 reconciliation did not finish. The provisioned map remains available."
+        }
+    }
+
+    var badge: String {
+        switch self {
+        case .provisionedOnly:
+            return "Provisioned"
+        case .reconciling:
+            return "Optimizing"
+        case .reconciled:
+            return "Phase 2"
+        case .reconciliationFailed:
+            return "Retry"
+        }
+    }
 }
 
 enum MapQualityReportHistoryStore {
@@ -659,7 +724,16 @@ final class BuildingLinkService {
             throw BuildingLinkError.fetchFailed
         }
 
-        let bundle = try JSONDecoder().decode(CanonicalCampaignMapBundle.self, from: data)
+        let bundle: CanonicalCampaignMapBundle
+        do {
+            bundle = try JSONDecoder().decode(CanonicalCampaignMapBundle.self, from: data)
+        } catch {
+            print(
+                "❌ [BuildingLinkService] map-bundle decode failed campaign=\(campaignId) " +
+                "error=\(String(reflecting: error))"
+            )
+            throw error
+        }
         print(
             "🧪 [MAP_DEBUG] canonical_map_bundle_loaded campaign=\(campaignId) " +
             "buildings=\(bundle.buildings.features.count) addresses=\(bundle.addresses.features.count) " +

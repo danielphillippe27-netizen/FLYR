@@ -1676,6 +1676,10 @@ struct CampaignMapView: View {
     @StateObject private var offlineSyncCoordinator = OfflineSyncCoordinator.shared
     @State private var presentedSyncConflict: CampaignMutationConflict?
     @State private var dismissedMapQualityRunId: String?
+    @State private var lastAutoAdoptedReconciliationRunId: String?
+    @State private var presentedOptimizationCompletionRunId: String?
+    @State private var showMapOptimizationCompletedTag = false
+    @State private var mapOptimizationCompletedTagTask: Task<Void, Never>?
     @State private var showMapQualityDetails = false
     @State private var syncConflictActionError: String?
     @StateObject private var campaignDownloadService = CampaignDownloadService.shared
@@ -2291,14 +2295,13 @@ struct CampaignMapView: View {
             }
             .sheet(isPresented: $showTargetsSheet) { nextTargetsSheetContent }
             .sheet(isPresented: $showMapQualityDetails) {
-                if let report = featuresService.mapQualityReport {
-                    MapQualityReportView(
-                        report: report,
-                        previousReports: MapQualityReportHistoryStore
-                            .reports(campaignId: campaignId)
-                            .filter { $0.runId != featuresService.mapQualityReportRunId }
-                    )
-                }
+                MapQualityReportView(
+                    report: featuresService.mapQualityReport,
+                    reconciliation: featuresService.reconciliationStatus,
+                    previousReports: MapQualityReportHistoryStore
+                        .reports(campaignId: campaignId)
+                        .filter { $0.runId != featuresService.mapQualityReportRunId }
+                )
             }
             .sheet(isPresented: $showLeadCaptureSheet, onDismiss: { selectedBuilding = nil }) {
                 leadCaptureSheetContent
@@ -2561,6 +2564,11 @@ struct CampaignMapView: View {
                 ensureCampaignVoiceScope()
             }
             .onChange(of: campaignId) { _, _ in
+                lastAutoAdoptedReconciliationRunId = nil
+                presentedOptimizationCompletionRunId = nil
+                showMapOptimizationCompletedTag = false
+                mapOptimizationCompletedTagTask?.cancel()
+                mapOptimizationCompletedTagTask = nil
                 configureUnlinkedTargetResolver()
                 stopWalkMode()
                 stopFixedDemoCameraOrbit()
@@ -2632,7 +2640,13 @@ struct CampaignMapView: View {
                 )
                 if !isOnline {
                     loadCampaignData(force: false)
+                } else {
+                    adoptCompletedReconciliationIfSafe()
                 }
+            }
+            .onChange(of: featuresService.reconciliationStatus?.status) { _, _ in
+                adoptCompletedReconciliationIfSafe()
+                presentOptimizationCompletionTagIfNeeded()
             }
             .onChange(of: preSessionTrayExpanded) { _, isExpanded in
                 guard isExpanded, sessionManager.sessionId == nil else { return }
@@ -2657,6 +2671,8 @@ struct CampaignMapView: View {
                 initialMapReadyCompletionScheduled = false
                 mapDataUpdateTask?.cancel()
                 postLinkCampaignDataRefreshTask?.cancel()
+                mapOptimizationCompletedTagTask?.cancel()
+                mapOptimizationCompletedTagTask = nil
                 addBuildingHintDismissTask?.cancel()
                 manualPinReverseGeocodeTasks.values.forEach { $0.cancel() }
                 manualPinReverseGeocodeTasks.removeAll()
@@ -3192,7 +3208,6 @@ struct CampaignMapView: View {
                 .animation(.easeInOut(duration: 0.24), value: featuresService.clientLinkingProgress.percent)
                 .animation(.easeInOut(duration: 0.24), value: featuresService.isMapDataOptimizing)
             mapQualityCompletionCard
-            mapQualityAccessButton
             buildingRenderPendingOverlay
                 .animation(.easeInOut(duration: 0.24), value: showBuildingRenderPendingOverlay)
         }
@@ -4569,6 +4584,21 @@ struct CampaignMapView: View {
                     ) {
                         HapticManager.light()
                         showBeaconSheet = true
+                    }
+
+                    Divider()
+                        .overlay(preSessionTrayDividerColor)
+                        .padding(.horizontal, 10)
+
+                    preSessionActionRow(
+                        title: "Map Quality",
+                        subtitle: mapQualityPipelineStage.title,
+                        systemImage: "checkmark.seal",
+                        tint: mapQualityPipelineStage == .reconciliationFailed ? .orange : preSessionTrayIconTint,
+                        trailingText: mapQualityPipelineStage.badge
+                    ) {
+                        HapticManager.light()
+                        showMapQualityDetails = true
                     }
 
                     Divider()
@@ -6118,40 +6148,24 @@ struct CampaignMapView: View {
     private var mapOptimizingOverlay: some View {
         let progress = featuresService.clientLinkingProgress
         let backendOptimizing = featuresService.isMapDataOptimizing
-        if (progress.isOptimizing || backendOptimizing) && !quickStartEnabled {
+        let isOptimizing = progress.isOptimizing || backendOptimizing
+        if (isOptimizing || showMapOptimizationCompletedTag) && !quickStartEnabled {
             HStack {
                 Spacer()
                 HStack(spacing: 10) {
-                    if backendOptimizing && !networkMonitor.isOnline {
-                        Image(systemName: "wifi.slash")
+                    if showMapOptimizationCompletedTag && !isOptimizing {
+                        Image(systemName: "checkmark.circle.fill")
                             .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(.white.opacity(0.86))
+                            .foregroundStyle(.green)
                     } else {
                         ProgressView()
                             .tint(.white)
                             .scaleEffect(0.72)
                     }
 
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(
-                            backendOptimizing
-                                ? (networkMonitor.isOnline
-                                    ? "Optimizing map • Current map ready"
-                                    : "Offline — using saved map")
-                                : "Map is optimizing"
-                        )
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(.white)
-                        if backendOptimizing && !networkMonitor.isOnline {
-                            Text("Optimization status will update when connected.")
-                                .font(.system(size: 10, weight: .medium))
-                                .foregroundStyle(.white.opacity(0.72))
-                        } else if !backendOptimizing {
-                            Text("\(progress.percent)% linked")
-                                .font(.system(size: 10, weight: .medium))
-                                .foregroundStyle(.white.opacity(0.72))
-                        }
-                    }
+                    Text(showMapOptimizationCompletedTag && !isOptimizing ? "Completed" : "Optimizing map")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.white)
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
@@ -6170,6 +6184,67 @@ struct CampaignMapView: View {
     private var mapQualityAcknowledgementKey: String? {
         guard let runId = featuresService.reconciliationStatus?.runId else { return nil }
         return "wolfgrid.map-quality.\(campaignId.lowercased()).\(runId.lowercased())"
+    }
+
+    private var mapQualityPipelineStage: MapQualityPipelineStage {
+        MapQualityPipelineStage.resolve(featuresService.reconciliationStatus)
+    }
+
+    private func adoptCompletedReconciliationIfSafe() {
+        guard networkMonitor.isOnline,
+              sessionManager.sessionId == nil,
+              let reconciliation = featuresService.reconciliationStatus,
+              ["completed", "review_needed"].contains(
+                reconciliation.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+              ),
+              let runId = reconciliation.runId,
+              lastAutoAdoptedReconciliationRunId != runId else {
+            return
+        }
+
+        // Mark before starting asynchronous work so a SwiftUI refresh cannot enqueue the same
+        // adoption twice. Offline/user mutations always reach the server before the optimized
+        // bundle is downloaded, and active sessions retain their original map snapshot.
+        lastAutoAdoptedReconciliationRunId = runId
+        Task {
+            await offlineSyncCoordinator.processOutbox()
+            await MainActor.run {
+                guard networkMonitor.isOnline,
+                      sessionManager.sessionId == nil,
+                      featuresService.reconciliationStatus?.runId == runId else {
+                    return
+                }
+                lastLoadedDataKey = nil
+                loadCampaignData(force: true)
+            }
+        }
+    }
+
+    private func presentOptimizationCompletionTagIfNeeded() {
+        guard let reconciliation = featuresService.reconciliationStatus,
+              ["completed", "review_needed"].contains(
+                reconciliation.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+              ),
+              let runId = reconciliation.runId,
+              presentedOptimizationCompletionRunId != runId else {
+            return
+        }
+
+        presentedOptimizationCompletionRunId = runId
+        mapOptimizationCompletedTagTask?.cancel()
+        withAnimation(.easeInOut(duration: 0.2)) {
+            showMapOptimizationCompletedTag = true
+        }
+        mapOptimizationCompletedTagTask = Task {
+            try? await Task.sleep(for: .seconds(4))
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                withAnimation(.easeOut(duration: 0.2)) {
+                    showMapOptimizationCompletedTag = false
+                }
+                mapOptimizationCompletedTagTask = nil
+            }
+        }
     }
 
     @ViewBuilder
@@ -6222,30 +6297,6 @@ struct CampaignMapView: View {
             }
             .allowsHitTesting(true)
             .transition(.move(edge: .bottom).combined(with: .opacity))
-        }
-    }
-
-    @ViewBuilder
-    private var mapQualityAccessButton: some View {
-        if featuresService.mapQualityReport != nil {
-            VStack {
-                HStack {
-                    Button {
-                        showMapQualityDetails = true
-                    } label: {
-                        Label("Map Quality", systemImage: "checkmark.seal")
-                            .font(.system(size: 11, weight: .semibold))
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 7)
-                            .background(.ultraThinMaterial, in: Capsule())
-                    }
-                    .buttonStyle(.plain)
-                    Spacer()
-                }
-                Spacer()
-            }
-            .padding(.leading, 12)
-            .padding(.top, 58)
         }
     }
 
@@ -19108,12 +19159,14 @@ struct LocationCardView: View {
 // MARK: - Manual Map Shape Sheets
 
 private struct MapQualityReportView: View {
-    let report: CanonicalMapReconciliationReport
+    let report: CanonicalMapReconciliationReport?
+    let reconciliation: CanonicalMapReconciliation?
     let previousReports: [CachedMapQualityReport]
     @Environment(\.dismiss) private var dismiss
 
     private var rows: [(String, String)] {
-        [
+        guard let report else { return [] }
+        return [
             ("Unlinked buildings checked", "\(report.checkedBuildingCount)"),
             ("Reverse geocodes matched", "\(report.matchedBuildingCount)"),
             ("Existing addresses reused", "\(report.matchedExistingAddressCount)"),
@@ -19142,21 +19195,40 @@ private struct MapQualityReportView: View {
     }
 
     var body: some View {
+        let stage = MapQualityPipelineStage.resolve(reconciliation)
         NavigationStack {
             List {
-                Section {
-                    ForEach(rows, id: \.0) { row in
-                        HStack {
-                            Text(row.0)
-                            Spacer()
-                            Text(row.1)
-                                .foregroundStyle(.secondary)
-                        }
+                Section("Data pipeline") {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Label(stage.title, systemImage: stage == .reconciled ? "checkmark.seal.fill" : "map.fill")
+                            .font(.headline)
+                        Text(stage.detail)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
                     }
-                } header: {
-                    Text("Latest downloaded report")
-                } footer: {
-                    Text("Coordinate corrections and hidden footprints remain auditable and can be reviewed from the founder console.")
+                }
+                if report != nil {
+                    Section {
+                        ForEach(rows, id: \.0) { row in
+                            HStack {
+                                Text(row.0)
+                                Spacer()
+                                Text(row.1)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    } header: {
+                        Text("Latest Phase 2 report")
+                    } footer: {
+                        Text("Coordinate corrections and hidden footprints remain auditable and can be reviewed from the founder console.")
+                    }
+                } else {
+                    Section {
+                        Text("A detailed report will appear after Phase 2 reconciliation completes and the optimized bundle is downloaded.")
+                            .foregroundStyle(.secondary)
+                    } header: {
+                        Text("Phase 2 report")
+                    }
                 }
                 if !previousReports.isEmpty {
                     Section("Previous downloaded reports") {
