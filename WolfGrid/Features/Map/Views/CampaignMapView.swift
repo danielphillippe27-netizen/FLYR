@@ -5660,7 +5660,8 @@ struct CampaignMapView: View {
                 buildings: shouldShowDiamondBuildings,
                 addresses: hasDiamondAddresses && editModeShowsBuildingsAndAddresses,
                 addressNumbers: shouldShowAddressNumbers,
-                parcels: shouldShowParcels && (shouldShowDiamondBuildings || (hasDiamondAddresses && editModeShowsBuildingsAndAddresses))
+                // Occupied campaign parcels are rendered from the filtered GeoJSON bundle.
+                parcels: false
             )
             if hasParcelsFillLayer {
                 try? map.updateLayer(withId: MapLayerManager.parcelsFillLayerId, type: FillLayer.self) {
@@ -5720,7 +5721,8 @@ struct CampaignMapView: View {
                 buildings: false,
                 addresses: hasDiamondAddresses,
                 addressNumbers: shouldShowAddressNumbers,
-                parcels: shouldShowParcels && hasDiamondAddresses
+                // Do not let the unfiltered regional PMTiles layer restore empty parcels.
+                parcels: false
             )
             if hasParcelsFillLayer {
                 try? map.updateLayer(withId: MapLayerManager.parcelsFillLayerId, type: FillLayer.self) {

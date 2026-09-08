@@ -383,6 +383,114 @@ struct ParcelProperties: Codable {
 typealias ParcelFeature = MapFeatureGeoJSONFeature<ParcelProperties>
 typealias ParcelFeatureCollection = MapFeatureGeoJSONFeatureCollection<ParcelProperties>
 
+enum ParcelOccupancyFilter {
+    static func filter(
+        parcels: ParcelFeatureCollection,
+        addresses: AddressFeatureCollection,
+        buildings: BuildingFeatureCollection
+    ) -> ParcelFeatureCollection {
+        guard !parcels.features.isEmpty else { return parcels }
+
+        let occupantCoordinates = addresses.features.compactMap { pointCoordinate($0.geometry) }
+            + buildings.features.compactMap { representativeCoordinate($0.geometry) }
+        let features = parcels.features.filter { parcel in
+            if parcel.properties.addressId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ||
+                parcel.properties.addressIds?.contains(where: {
+                    !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                }) == true {
+                return true
+            }
+
+            return occupantCoordinates.contains { contains($0, in: parcel.geometry) }
+        }
+
+        return features.count == parcels.features.count
+            ? parcels
+            : ParcelFeatureCollection(type: parcels.type, features: features)
+    }
+
+    private static func pointCoordinate(_ geometry: MapFeatureGeoJSONGeometry) -> [Double]? {
+        guard let point = geometry.asPoint,
+              point.count >= 2,
+              point[0].isFinite,
+              point[1].isFinite else {
+            return nil
+        }
+        return [point[0], point[1]]
+    }
+
+    private static func representativeCoordinate(_ geometry: MapFeatureGeoJSONGeometry) -> [Double]? {
+        if let point = pointCoordinate(geometry) { return point }
+        if let polygon = geometry.asPolygon { return representativeCoordinate(polygon) }
+        if let multiPolygon = geometry.asMultiPolygon {
+            return multiPolygon.lazy.compactMap(representativeCoordinate).first
+        }
+        return nil
+    }
+
+    private static func representativeCoordinate(_ polygon: [[[Double]]]) -> [Double]? {
+        guard let outer = polygon.first else { return nil }
+        let points = outer.filter { $0.count >= 2 && $0[0].isFinite && $0[1].isFinite }
+        guard !points.isEmpty else { return nil }
+        let uniquePoints = points.count > 1 && points.first == points.last ? Array(points.dropLast()) : points
+        guard !uniquePoints.isEmpty else { return nil }
+        let candidate = [
+            uniquePoints.reduce(0) { $0 + $1[0] } / Double(uniquePoints.count),
+            uniquePoints.reduce(0) { $0 + $1[1] } / Double(uniquePoints.count),
+        ]
+        return contains(candidate, in: polygon) ? candidate : uniquePoints[0]
+    }
+
+    private static func contains(_ point: [Double], in geometry: MapFeatureGeoJSONGeometry) -> Bool {
+        if let polygon = geometry.asPolygon { return contains(point, in: polygon) }
+        if let multiPolygon = geometry.asMultiPolygon {
+            return multiPolygon.contains { contains(point, in: $0) }
+        }
+        return false
+    }
+
+    private static func contains(_ point: [Double], in polygon: [[[Double]]]) -> Bool {
+        guard let outer = polygon.first, contains(point, in: outer) else { return false }
+        return !polygon.dropFirst().contains { contains(point, in: $0) }
+    }
+
+    private static func contains(_ point: [Double], in ring: [[Double]]) -> Bool {
+        guard point.count >= 2, ring.count >= 3 else { return false }
+        let x = point[0]
+        let y = point[1]
+        var inside = false
+        var previousIndex = ring.count - 1
+
+        for currentIndex in ring.indices {
+            let current = ring[currentIndex]
+            let previous = ring[previousIndex]
+            guard current.count >= 2, previous.count >= 2 else {
+                previousIndex = currentIndex
+                continue
+            }
+            if pointIsOnSegment(point, current, previous) { return true }
+            if (current[1] > y) != (previous[1] > y) {
+                let intersectionX = (previous[0] - current[0]) * (y - current[1]) /
+                    (previous[1] - current[1]) + current[0]
+                if x < intersectionX { inside.toggle() }
+            }
+            previousIndex = currentIndex
+        }
+        return inside
+    }
+
+    private static func pointIsOnSegment(_ point: [Double], _ start: [Double], _ end: [Double]) -> Bool {
+        let epsilon = 1e-12
+        let cross = (end[0] - start[0]) * (point[1] - start[1]) -
+            (end[1] - start[1]) * (point[0] - start[0])
+        guard abs(cross) <= epsilon else { return false }
+        return point[0] >= min(start[0], end[0]) - epsilon &&
+            point[0] <= max(start[0], end[0]) + epsilon &&
+            point[1] >= min(start[1], end[1]) - epsilon &&
+            point[1] <= max(start[1], end[1]) + epsilon
+    }
+}
+
 typealias RoadFeature = MapFeatureGeoJSONFeature<RoadProperties>
 typealias RoadFeatureCollection = MapFeatureGeoJSONFeatureCollection<RoadProperties>
 
@@ -1066,9 +1174,14 @@ final class MapFeaturesService: ObservableObject {
 
         if let cachedBundle = await campaignRepository.getCampaignMapBundle(campaignId: campaignId),
            isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) {
-            self.buildings = filteredRenderableBuildingCollection(cachedBundle.buildings)
+            let cachedBuildings = filteredRenderableBuildingCollection(cachedBundle.buildings)
+            self.buildings = cachedBuildings
             self.addresses = cachedBundle.addresses
-            self.parcels = cachedBundle.parcels
+            self.parcels = ParcelOccupancyFilter.filter(
+                parcels: cachedBundle.parcels,
+                addresses: cachedBundle.addresses,
+                buildings: cachedBuildings
+            )
             self.roads = cachedBundle.roads
             self.displayModeHint = cachedBundle.metadata?.displayModeHint
             self.currentCanonicalBundleLinksStatus = cachedBundle.metadata?.linksStatus
@@ -1624,9 +1737,15 @@ final class MapFeaturesService: ObservableObject {
         )
         guard isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else { return }
 
-        self.buildings = filteredRenderableBuildingCollection(mergedBuildings)
+        let filteredBuildings = filteredRenderableBuildingCollection(mergedBuildings)
+        let filteredParcels = ParcelOccupancyFilter.filter(
+            parcels: bundle.parcels,
+            addresses: bundle.addresses,
+            buildings: filteredBuildings
+        )
+        self.buildings = filteredBuildings
         self.addresses = bundle.addresses
-        self.parcels = bundle.parcels
+        self.parcels = filteredParcels
         self.roads = bundle.roads
         self.displayModeHint = bundle.displayModeHint
         self.currentCanonicalBundleLinksStatus = bundle.linksStatus
@@ -1876,20 +1995,25 @@ final class MapFeaturesService: ObservableObject {
                 into: bundle.buildings
             )
             let filteredBuildings = filteredRenderableBuildingCollection(mergedBuildings)
+            let filteredParcels = ParcelOccupancyFilter.filter(
+                parcels: bundle.parcels,
+                addresses: bundle.addresses,
+                buildings: filteredBuildings
+            )
             self.buildings = filteredBuildings
             self.addresses = bundle.addresses
-            self.parcels = bundle.parcels
+            self.parcels = filteredParcels
             self.roads = bundle.roads
             storeCurrentFeatureSnapshot(campaignId: campaignId)
             guard isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else { return false }
 
             await campaignRepository.upsertAddresses(campaignId: campaignId, features: bundle.addresses.features)
-            await campaignRepository.upsertParcels(campaignId: campaignId, features: bundle.parcels.features)
+            await campaignRepository.upsertParcels(campaignId: campaignId, features: filteredParcels.features)
 
             print(
                 "🧪 [MAP_DEBUG] map_bundle_loaded campaign=\(campaignId) ms=\(Int(Date().timeIntervalSince(debugStartedAt) * 1000)) " +
                 "phase=\(bundle.phase ?? "unknown") source=\(bundle.source ?? "unknown") " +
-                "addresses=\(bundle.addresses.features.count) buildings=\(filteredBuildings.features.count) parcels=\(bundle.parcels.features.count) roads=\(bundle.roads.features.count)"
+                "addresses=\(bundle.addresses.features.count) buildings=\(filteredBuildings.features.count) parcels=\(filteredParcels.features.count) roads=\(bundle.roads.features.count)"
             )
             return true
         } catch {

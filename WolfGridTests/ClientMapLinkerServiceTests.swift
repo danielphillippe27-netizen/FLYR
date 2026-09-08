@@ -44,6 +44,28 @@ final class ClientMapLinkerServiceTests: XCTestCase {
         XCTAssertEqual(summary.links.first?.matchType, "parcel_verified")
     }
 
+    func testParcelOccupancyFilterKeepsAddressAndBuildingParcelsAndRemovesEmptyParcel() {
+        let parcels = ParcelFeatureCollection(type: "FeatureCollection", features: [
+            parcel(id: "address-parcel", ring: square(lon: -79.003, lat: 43.0, size: 0.001)),
+            parcel(id: "building-parcel", ring: square(lon: -79.001, lat: 43.0, size: 0.001)),
+            parcel(id: "empty-parcel", ring: square(lon: -78.999, lat: 43.0, size: 0.001)),
+        ])
+        let addresses = AddressFeatureCollection(type: "FeatureCollection", features: [
+            address(id: "address-only", lon: -79.003, lat: 43.0, street: "Test Street", house: "1")
+        ])
+        let buildings = BuildingFeatureCollection(type: "FeatureCollection", features: [
+            building(id: "building-only", ring: square(lon: -79.001, lat: 43.0, size: 0.0002), street: "Test Street", house: "2")
+        ])
+
+        let filtered = ParcelOccupancyFilter.filter(
+            parcels: parcels,
+            addresses: addresses,
+            buildings: buildings
+        )
+
+        XCTAssertEqual(filtered.features.compactMap(\.id), ["address-parcel", "building-parcel"])
+    }
+
     func testSemanticProximityLinksMatchingStreetAndHouseNumber() async throws {
         let buildings = BuildingFeatureCollection(type: "FeatureCollection", features: [
             building(id: "building-4", ring: square(lon: -79.00005, lat: 43.00005, size: 0.00004), street: "Queen Street", house: "44")
