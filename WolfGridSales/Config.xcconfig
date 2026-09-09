@@ -1,7 +1,9 @@
 // Supabase Configuration
 // The empty expansion preserves //, which xcconfig would otherwise parse as a comment.
-SUPABASE_URL = https:/$()/kfnsnwqylsdsbgnwgxva.supabase.co
-SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtmbnNud3F5bHNkc2JnbndneHZhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA5MjY3MzEsImV4cCI6MjA3NjUwMjczMX0.k2TZKPi3VxAVpEGggLiROYvfVu2nV_oSqBt2GM4jX-Y
+SUPABASE_URL = https:/$()/yxxuazvosddtajwitlxu.supabase.co
+SUPABASE_ANON_KEY = sb_publishable_x6k5tSCkEPtdksdLun-qeQ_7qfF67q5
+WOLFGRID_API_URL = https:/$()/sales.wolfgrid.app
+WOLFGRID_INVITES_API_URL = https:/$()/sales.wolfgrid.app
 MONDAY_CLIENT_ID = YOUR_MONDAY_CLIENT_ID
 WOLFGRID_PASSWORD_RECOVERY_PRODUCTION_URL =
 WOLFGRID_PASSWORD_RECOVERY_DEV_CALLBACK_URL =

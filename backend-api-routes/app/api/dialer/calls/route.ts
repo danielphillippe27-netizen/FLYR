@@ -1,3 +1,4 @@
+import { communicationNumberOwner } from '@/lib/sales-pro/communication-owner';
 import { NextResponse, type NextRequest } from "next/server";
 import { createAdminClient } from "@/lib/supabase/server";
 import { findContactForInbound, normalizePhone } from "@/lib/dialer/telnyx-messaging";
@@ -55,8 +56,12 @@ export async function POST(request: NextRequest) {
     }
 
     const admin = createAdminClient();
+    const numberOwner = await communicationNumberOwner(admin, direction === "inbound" ? to : from);
+    if (numberOwner?.workspaceId !== workspaceId || numberOwner?.userId !== context!.user.id) {
+      return NextResponse.json({ error: "Call number is not assigned to you." }, { status: 403 });
+    }
     const contact = direction === "inbound" && from
-      ? await findContactForInbound(admin, workspaceId, from)
+      ? await findContactForInbound(admin, workspaceId, from, context!.user.id)
       : null;
 
     const row = {
@@ -77,11 +82,16 @@ export async function POST(request: NextRequest) {
       raw_payload: body,
     };
 
-    const { data, error } = await admin
-      .from("dialer_calls")
-      .upsert(row, { onConflict: "provider,provider_call_id", ignoreDuplicates: false })
-      .select("*")
-      .single();
+    // Ignore a conflicting provider ID before updating through the owner scope.
+    // A client-supplied call ID must never let a user take over someone else's row.
+    const inserted = await admin.from("dialer_calls")
+      .upsert(row, { onConflict: "provider,provider_call_id", ignoreDuplicates: true })
+      .select("*").maybeSingle();
+    if (inserted.error) throw inserted.error;
+    const { data, error } = inserted.data ? inserted : await admin.from("dialer_calls")
+      .update(row).eq("workspace_id", workspaceId).eq("user_id", context!.user.id)
+      .eq("provider", "telnyx").eq("provider_call_id", providerCallId).select("*").maybeSingle();
+    if (!error && !data) return NextResponse.json({ error: "Call not found." }, { status: 404 });
 
     if (error) throw error;
 
@@ -89,6 +99,7 @@ export async function POST(request: NextRequest) {
       await admin
         .from("contact_activities")
         .insert({
+          communication_owner_user_id: context!.user.id,
           contact_id: contact.id,
           type: "call",
           note: `Missed call from ${from}`,

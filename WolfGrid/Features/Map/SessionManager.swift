@@ -311,6 +311,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
     var autoCompleteMaxSpeedMPS: Double = 2.5
     var autoCompleteRequiredAccuracyMeters: Double = 25.0
     private var dwellTracker: [String: DwellState] = [:]
+    private var autoCompleteDwellTask: Task<Void, Never>?
     private var lastAutoCompleteTime: Date?
     private let autoCompleteDebounceSeconds: Double = 3.0
 
@@ -1336,7 +1337,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         sessionEndError = nil
         isDemoSession = true
         buildingCentroids = centroids.mapValues { CLLocation(latitude: $0.latitude, longitude: $0.longitude) }
-        dwellTracker = [:]
+        resetAutoCompleteDwell()
         lastAutoCompleteTime = nil
         startTime = Date()
         pathCoordinates = []
@@ -1461,7 +1462,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         sessionEndError = nil
         isDemoSession = false
         buildingCentroids = [:]
-        dwellTracker = [:]
+        resetAutoCompleteDwell()
         lastAutoCompleteTime = nil
         startTime = sessionStartedAt
         pathCoordinates = []
@@ -1630,7 +1631,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         sessionEndError = nil
         isDemoSession = false
         buildingCentroids = centroids.mapValues { CLLocation(latitude: $0.latitude, longitude: $0.longitude) }
-        dwellTracker = [:]
+        resetAutoCompleteDwell()
         lastAutoCompleteTime = nil
         startTime = sessionStartedAt
         pathCoordinates = []
@@ -2680,6 +2681,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         activeSecondsAccumulator = currentActiveElapsedTime()
         activeSegmentStartTime = nil
         isPaused = true
+        resetAutoCompleteDwell()
         pauseStartTime = Date()
         elapsedTime = activeSecondsAccumulator
         locationManager.stopUpdatingLocation()
@@ -2740,7 +2742,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
     func setGPSProximityEnabled(_ enabled: Bool) async {
         guard autoCompleteEnabled != enabled else { return }
         autoCompleteEnabled = enabled
-        dwellTracker = [:]
+        resetAutoCompleteDwell()
         lastAutoCompleteTime = nil
 
         guard !isDemoSession, let sid = sessionId else { return }
@@ -2772,6 +2774,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         }
 
         locationManager.stopUpdatingLocation()
+        resetAutoCompleteDwell()
         headingManager.stop(reset: true)
         timer?.invalidate()
         timer = nil
@@ -3074,13 +3077,13 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         }
         guard location.horizontalAccuracy >= 0,
               location.horizontalAccuracy <= autoCompleteRequiredAccuracyMeters else {
-            dwellTracker = [:]
+            resetAutoCompleteDwell()
             return
         }
         // Invalid speed (< 0) is common when stationary; treat as slow so dwell can complete.
         let speedMPS = location.speed >= 0 ? location.speed : 0
         guard speedMPS < autoCompleteMaxSpeedMPS else {
-            dwellTracker = [:]
+            resetAutoCompleteDwell()
             return
         }
 
@@ -3095,13 +3098,13 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         }
 
         guard let nearest = findNearestIncompleteBuilding(from: location) else {
-            dwellTracker = [:]
+            resetAutoCompleteDwell()
             return
         }
         let distance = location.distance(from: nearest.centroid)
         let thresholdMeters = adaptiveAutoCompleteThresholdMeters(for: location)
         guard distance <= thresholdMeters else {
-            dwellTracker = [:]
+            resetAutoCompleteDwell()
             return
         }
         await processAutoCompleteDwell(
@@ -3136,13 +3139,13 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         let now = Date()
         if let activeDwell = dwellTracker.values.first,
            activeDwell.buildingId != targetId {
-            dwellTracker = [:]
+            resetAutoCompleteDwell()
         }
         if let dwellState = dwellTracker[targetId] {
             let dwellTime = now.timeIntervalSince(dwellState.enteredAt)
             if dwellTime >= autoCompleteDwellSeconds {
                 lastAutoCompleteTime = now
-                dwellTracker = [:]
+                resetAutoCompleteDwell()
                 dwellCompletionCount += 1
                 await queueCandidateCompletion(
                     targetId: targetId,
@@ -3159,7 +3162,29 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
                     location: location
                 )
             ]
+            scheduleAutoCompleteDwellCheck(targetId: targetId, fallbackLocation: location)
         }
+    }
+
+    /// Core Location may not emit another sample while the user is standing still at a door
+    /// because `distanceFilter` is non-zero. Recheck at the dwell deadline so a stationary
+    /// visit can complete without requiring GPS drift or artificial movement.
+    private func scheduleAutoCompleteDwellCheck(targetId: String, fallbackLocation: CLLocation) {
+        autoCompleteDwellTask?.cancel()
+        let delay = max(autoCompleteDwellSeconds, 0)
+        autoCompleteDwellTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled,
+                  let self,
+                  self.dwellTracker[targetId] != nil else { return }
+            await self.checkAutoComplete(location: self.currentLocation ?? fallbackLocation)
+        }
+    }
+
+    private func resetAutoCompleteDwell() {
+        autoCompleteDwellTask?.cancel()
+        autoCompleteDwellTask = nil
+        dwellTracker = [:]
     }
 
     private func adaptiveAutoCompleteThresholdMeters(for location: CLLocation) -> Double {

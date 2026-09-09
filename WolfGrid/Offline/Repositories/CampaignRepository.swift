@@ -750,9 +750,11 @@ final class CampaignRepository {
 
     func upsertCampaignMetadataRows(
         _ rows: [CampaignDBRow],
-        addressCounts: [UUID: Int]
+        addressCounts: [UUID: Int],
+        workspaceId: UUID
     ) async {
         let updatedAt = OfflineDateCodec.string(from: Date())
+        let workspaceIdString = workspaceId.uuidString.lowercased()
         try? await dbQueue.write { db in
             for row in rows {
                 let existing = try CachedCampaignRecord.fetchOne(db, key: row.id.uuidString)
@@ -768,6 +770,10 @@ final class CampaignRepository {
                     updatedAt: updatedAt
                 )
                 try record.save(db)
+                try db.execute(
+                    sql: "UPDATE cached_campaigns SET workspace_id = ? WHERE id = ?",
+                    arguments: [workspaceIdString, row.id.uuidString]
+                )
             }
         }
     }
@@ -798,9 +804,11 @@ final class CampaignRepository {
         }
     }
 
-    func getCachedCampaigns() async -> [CampaignV2] {
-        (try? await dbQueue.read { db in
+    func getCachedCampaigns(workspaceId: UUID) async -> [CampaignV2] {
+        let workspaceIdString = workspaceId.uuidString.lowercased()
+        return (try? await dbQueue.read { db in
             let campaignRecords = try CachedCampaignRecord
+                .filter(Column("workspace_id") == workspaceIdString)
                 .order(Column("updated_at").desc)
                 .fetchAll(db)
             let addressCounts = try Self.cachedAddressCounts(db)
@@ -821,6 +829,26 @@ final class CampaignRepository {
                 return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
             }
         }) ?? []
+    }
+
+    func getCachedCampaignAddressCounts(campaignIds: Set<UUID>) async -> [UUID: Int] {
+        guard !campaignIds.isEmpty else { return [:] }
+        let idStrings = Set(campaignIds.map { $0.uuidString.lowercased() })
+        return (try? await dbQueue.read { db in
+            let records = try CachedCampaignRecord.fetchAll(db)
+            let cachedAddressCounts = try Self.cachedAddressCounts(db)
+            return Dictionary(uniqueKeysWithValues: records.compactMap { record in
+                guard idStrings.contains(record.id.lowercased()),
+                      let campaignId = UUID(uuidString: record.id) else { return nil }
+                let campaign = Self.cachedCampaign(
+                    campaignId: campaignId,
+                    record: record,
+                    addressRecords: [],
+                    cachedAddressCount: cachedAddressCounts[record.id]
+                )
+                return (campaignId, campaign.houseCount)
+            })
+        }) ?? [:]
     }
 
     func getRecentlyUpdatedCampaignIds(since cutoff: Date) async -> [UUID] {

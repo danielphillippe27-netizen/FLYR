@@ -66,6 +66,22 @@ final class CampaignV2Store: ObservableObject {
         }
     }
 
+    func updateAddressCounts(_ counts: [UUID: Int]) {
+        guard !counts.isEmpty else { return }
+        var updatedCampaigns = campaigns
+        var changedCount = 0
+        for index in updatedCampaigns.indices {
+            guard let count = counts[updatedCampaigns[index].id],
+                  updatedCampaigns[index].totalFlyers != count else { continue }
+            updatedCampaigns[index].totalFlyers = count
+            changedCount += 1
+        }
+        guard changedCount > 0 else { return }
+        campaigns = updatedCampaigns
+        lastHydratedAt = Date()
+        print("📦 [STORE DEBUG] Refreshed address counts for \(changedCount) campaign(s)")
+    }
+
     func hasFreshData(maxAge: TimeInterval) -> Bool {
         guard !campaigns.isEmpty, let lastHydratedAt else { return false }
         return Date().timeIntervalSince(lastHydratedAt) < maxAge

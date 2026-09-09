@@ -344,7 +344,7 @@ private struct QRCardActionButton: View {
         QRCard(
             qr: QRCode(
                 id: UUID(),
-                qrUrl: "https://wolfgrid.app/address/test",
+                qrUrl: "https://sales.wolfgrid.app/address/test",
                 metadata: QRCodeMetadata(
                     entityName: "Test Campaign",
                     name: "123 Main Street"
@@ -361,7 +361,7 @@ private struct QRCardActionButton: View {
                 id: UUID(),
                 landingPageId: UUID(),
                 qrVariant: "A",
-                qrUrl: "https://wolfgrid.app/address/test",
+                qrUrl: "https://sales.wolfgrid.app/address/test",
                 metadata: QRCodeMetadata(
                     entityName: "Winter Campaign",
                     name: "456 Oak Avenue"

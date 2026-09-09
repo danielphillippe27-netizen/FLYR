@@ -4,6 +4,7 @@ import UIKit
 struct CalendarTabView: View {
     @EnvironmentObject private var uiState: AppUIState
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.openURL) private var openURL
     @Namespace private var zoomNamespace
 
     @StateObject private var nowTicker = CalendarNowDisplayLink()
@@ -659,6 +660,10 @@ struct CalendarTabView: View {
     }
 
     private func openCalendarItem(_ item: CalendarItem) {
+        if let joinURL = item.conferenceJoinURL {
+            openURL(joinURL)
+            return
+        }
         switch item.kind {
         case .session:
             openSessionItem(item)
@@ -1657,6 +1662,15 @@ private struct AgendaRow: View {
                     .lineLimit(1)
             }
             Spacer()
+            if item.conferenceJoinURL != nil {
+                Label("Join", systemImage: "video.fill")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 11)
+                    .frame(height: 32)
+                    .background(calendarRed, in: Capsule())
+                    .accessibilityLabel("Join Zoom meeting")
+            }
         }
         .padding(.vertical, 10)
         .accessibilityElement(children: .combine)

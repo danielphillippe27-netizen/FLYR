@@ -98,7 +98,7 @@ enum Config {
     }
 
     static var productionAppURL: URL {
-        urlValue(for: "WOLFGRID_API_URL") ?? URL(string: "https://wolfgrid.app")!
+        urlValue(for: "WOLFGRID_API_URL") ?? URL(string: "https://sales.wolfgrid.app")!
     }
 
     static var backendAPIURL: URL {
@@ -111,7 +111,7 @@ enum Config {
         return fallbackBackendAPIURL
     }
 
-    private static let canonicalAppBackendAPIURL = URL(string: "https://wolfgrid.app")!
+    private static let canonicalAppBackendAPIURL = URL(string: "https://sales.wolfgrid.app")!
     private static let fallbackBackendAPIURL = canonicalAppBackendAPIURL
 
     private static func normalizedBackendAPIURL(_ url: URL) -> URL {
@@ -119,7 +119,7 @@ enum Config {
             return url
         }
 
-        if host == "wolfgrid.app" {
+        if host == "sales.wolfgrid.app" {
             return canonicalAppBackendAPIURL
         }
 
@@ -156,14 +156,14 @@ enum Config {
     }
 
     static var legacyPasswordRecoveryProductionURL: URL {
-        URL(string: "https://wolfgrid.app/auth/reset-password")!
+        URL(string: "https://sales.wolfgrid.app/auth/reset-password")!
     }
 
     static var passwordRecoveryProductionURL: URL {
         if let configured = urlValue(for: "WOLFGRID_PASSWORD_RECOVERY_PRODUCTION_URL") {
             return configured
         }
-        return URL(string: "https://wolfgrid.app/password/reset")!
+        return URL(string: "https://sales.wolfgrid.app/password/reset")!
     }
 
     static var passwordRecoveryLocalCallbackURL: URL {
@@ -248,10 +248,10 @@ enum Config {
             hostVariants = ["flyr.software", "www.flyr.software"]
         case "www.flyr.software":
             hostVariants = ["www.flyr.software", "flyr.software"]
-        case "wolfgrid.app":
-            hostVariants = ["wolfgrid.app", "www.wolfgrid.app"]
+        case "sales.wolfgrid.app":
+            hostVariants = ["sales.wolfgrid.app", "www.wolfgrid.app"]
         case "www.wolfgrid.app":
-            hostVariants = ["www.wolfgrid.app", "wolfgrid.app"]
+            hostVariants = ["www.wolfgrid.app", "sales.wolfgrid.app"]
         case "flyrpro.app":
             hostVariants = ["flyrpro.app", "www.flyrpro.app"]
         case "www.flyrpro.app":
@@ -276,7 +276,7 @@ enum Config {
     private static func isPasswordRecoveryRootFallback(_ url: URL) -> Bool {
         guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
               let host = components.host?.lowercased(),
-              ["wolfgrid.app", "www.wolfgrid.app", "flyrpro.app", "www.flyrpro.app", "flyr.software", "www.flyr.software"].contains(host),
+              ["sales.wolfgrid.app", "www.wolfgrid.app", "flyrpro.app", "www.flyrpro.app", "flyr.software", "www.flyr.software"].contains(host),
               normalizedPath(components.path) == "/" else {
             return false
         }

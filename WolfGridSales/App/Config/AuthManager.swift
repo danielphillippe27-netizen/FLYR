@@ -16,7 +16,7 @@ final class AuthManager: ObservableObject {
     private let client = SupabaseManager.shared.client
     private var passwordRecoveryRestoreSession: (accessToken: String, refreshToken: String)?
     private var passwordRecoveryRestoreUser: AppUser?
-    private var isUsingPasswordRecoverySession = false
+    private(set) var isUsingPasswordRecoverySession = false
     
     private struct ProfileSnapshot: Decodable {
         let fullName: String?
@@ -102,6 +102,9 @@ final class AuthManager: ObservableObject {
     }
 
     func signOut() async {
+        user = nil
+        syncWorkspaceContext(for: nil)
+        await PushRegistrationService.shared.unregisterBeforeSignOut()
         KeychainAuthStorage.clearAll()
         do { try await client.auth.signOut() } catch {}
         WorkspaceContext.shared.clear()
@@ -328,6 +331,8 @@ final class AuthManager: ObservableObject {
         }
 
         capturePasswordRecoveryRestoreStateIfNeeded()
+        isUsingPasswordRecoverySession = true
+        await PushRegistrationService.shared.unregisterBeforeSignOut()
 
         do {
             if let code = authCallbackValue(named: "code", in: url) {
@@ -364,9 +369,11 @@ final class AuthManager: ObservableObject {
                 return session.user.email
             }
         } catch {
+            await finishPasswordRecoveryFlow()
             throw AuthError.passwordRecoveryLinkInvalid(message: error.localizedDescription)
         }
 
+        await finishPasswordRecoveryFlow()
         throw AuthError.passwordRecoveryLinkInvalid(
             message: "This reset link is missing recovery details. Request a new email and try again."
         )
@@ -386,6 +393,7 @@ final class AuthManager: ObservableObject {
 
     func finishPasswordRecoveryFlow() async {
         guard isUsingPasswordRecoverySession else { return }
+        await PushRegistrationService.shared.unregisterBeforeSignOut()
 
         do {
             try await client.auth.signOut()
@@ -423,6 +431,7 @@ final class AuthManager: ObservableObject {
         passwordRecoveryRestoreUser = nil
         hasPasswordRecoveryRestoreSession = false
         isUsingPasswordRecoverySession = false
+        await PushRegistrationService.shared.uploadPendingTokenIfPossible()
     }
 
     private func randomNonceString(length: Int = 32) throws -> String {

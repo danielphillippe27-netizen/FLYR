@@ -7,8 +7,6 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		C8A100000000000000000002 /* WhiteWolfSales.icon in Resources */ = {isa = PBXBuildFile; fileRef = C8A100000000000000000001 /* WhiteWolfSales.icon */; };
-		B8A100000000000000000002 /* SalespersonMainTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8A100000000000000000001 /* SalespersonMainTabView.swift */; };
 		1CACC434BF75CC566159355F /* PostgREST in Frameworks */ = {isa = PBXBuildFile; productRef = 30A4A5E52EA70F3500FA72B1 /* PostgREST */; };
 		20C2A5368BEFBBC4F41A064B /* telnyx-webrtc-ios in Frameworks */ = {isa = PBXBuildFile; productRef = 4D9F102B2F94000100A1F1A1 /* telnyx-webrtc-ios */; };
 		256A6DB64C951F7679B03285 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 79E245EF5F24004170C35541 /* Foundation.framework */; };
@@ -23,7 +21,6 @@
 		30A4A6182EA71CB500FA72B1 /* GoogleSignIn in Frameworks */ = {isa = PBXBuildFile; productRef = 30A4A6192EA71CB500FA72B1 /* GoogleSignIn */; };
 		30A4A6222EA71CC000FA72B1 /* Lottie in Frameworks */ = {isa = PBXBuildFile; productRef = 30A4A6212EA71CC000FA72B1 /* Lottie */; };
 		30DC41E02F35A3A5003EBA4A /* GoogleSignInSwift in Frameworks */ = {isa = PBXBuildFile; productRef = 30DC41DF2F35A3A5003EBA4A /* GoogleSignInSwift */; };
-		3131E301951249468DCE60E1 /* LiveKit in Frameworks */ = {isa = PBXBuildFile; productRef = 7B3EAA062F50A001003EBA4A /* LiveKit */; };
 		34028A72351DD9A11F0A5E8C /* GoogleMaps in Frameworks */ = {isa = PBXBuildFile; productRef = 9A1B2C3D4E5F60718293A4B7 /* GoogleMaps */; };
 		3FC2BD30BB5656455623A5CB /* MapboxMaps in Frameworks */ = {isa = PBXBuildFile; productRef = 30A4A6152EA71CA500FA72B1 /* MapboxMaps */; };
 		4D9F102C2F94000100A1F1A1 /* telnyx-webrtc-ios in Frameworks */ = {isa = PBXBuildFile; productRef = 4D9F102B2F94000100A1F1A1 /* telnyx-webrtc-ios */; };
@@ -31,10 +28,11 @@
 		6E6070619E28865FB84BCA38 /* SessionLiveActivityWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5194BCD47B2F8D7EAA1E888C /* SessionLiveActivityWidget.swift */; };
 		6F7425C6E149E560D59BFFDC /* GoogleSignInSwift in Frameworks */ = {isa = PBXBuildFile; productRef = 30DC41DF2F35A3A5003EBA4A /* GoogleSignInSwift */; };
 		7418DC3C0E3864D424C22B74 /* Functions in Frameworks */ = {isa = PBXBuildFile; productRef = 30A4A5E32EA70F3500FA72B1 /* Functions */; };
-		7B3EAA072F50A001003EBA4A /* LiveKit in Frameworks */ = {isa = PBXBuildFile; productRef = 7B3EAA062F50A001003EBA4A /* LiveKit */; };
 		9A1B2C3D4E5F60718293A4B5 /* GoogleMaps in Frameworks */ = {isa = PBXBuildFile; productRef = 9A1B2C3D4E5F60718293A4B7 /* GoogleMaps */; };
 		9A53263F101C0745DAA278FD /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = A1B2C3D4E5F60718293A4B5C /* GRDB */; };
 		B666D9B179DB98D0135C86D4 /* SessionLiveActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1F739542582267E77AA500C4 /* SessionLiveActivityAttributes.swift */; };
+		B8A100000000000000000002 /* WolfGridSales/SalespersonMainTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8A100000000000000000001 /* WolfGridSales/SalespersonMainTabView.swift */; };
+		C8A100000000000000000002 /* WolfGridSales/WhiteWolfSales.icon in Resources */ = {isa = PBXBuildFile; fileRef = C8A100000000000000000001 /* WolfGridSales/WhiteWolfSales.icon */; };
 		D4C78D0AA4117F21B8EF129D /* Lottie in Frameworks */ = {isa = PBXBuildFile; productRef = 30A4A6212EA71CC000FA72B1 /* Lottie */; };
 		DF68D92A586821CAB5327679 /* Realtime in Frameworks */ = {isa = PBXBuildFile; productRef = 30A4A5E72EA70F3500FA72B1 /* Realtime */; };
 		E26E0150653C05C6BEF265BD /* Storage in Frameworks */ = {isa = PBXBuildFile; productRef = 30A4A5E92EA70F3500FA72B1 /* Storage */; };
@@ -85,8 +83,6 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
-		C8A100000000000000000001 /* WhiteWolfSales.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = WolfGridSales/WhiteWolfSales.icon; sourceTree = SOURCE_ROOT; };
-		B8A100000000000000000001 /* SalespersonMainTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WolfGridSales/SalespersonMainTabView.swift; sourceTree = SOURCE_ROOT; };
 		05030697214A2D9EDD508F34 /* Info.plist */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		0AD261E306FAE62EF87A9A36 /* WolfGridSales.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = WolfGridSales.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		1F739542582267E77AA500C4 /* SessionLiveActivityAttributes.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SessionLiveActivityAttributes.swift; path = WolfGrid/Shared/LiveActivity/SessionLiveActivityAttributes.swift; sourceTree = "<group>"; };
@@ -99,17 +95,462 @@
 		79E245EF5F24004170C35541 /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS18.0.sdk/System/Library/Frameworks/Foundation.framework; sourceTree = DEVELOPER_DIR; };
 		91CCBD85356FC43A6E8767FE /* WolfGridSessionActivityBundle.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = WolfGridSessionActivityBundle.swift; sourceTree = "<group>"; };
 		AA7395B8BD595392DE025A5C /* Assets.xcassets */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = folder.assetcatalog; name = Assets.xcassets; path = WolfGrid/Assets.xcassets; sourceTree = "<group>"; };
+		B8A100000000000000000001 /* WolfGridSales/SalespersonMainTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WolfGridSales/SalespersonMainTabView.swift; sourceTree = SOURCE_ROOT; };
+		C8A100000000000000000001 /* WolfGridSales/WhiteWolfSales.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = WolfGridSales/WhiteWolfSales.icon; sourceTree = SOURCE_ROOT; };
+		C8A200000000000000000001 /* WolfGridSales/Config.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = WolfGridSales/Config.xcconfig; sourceTree = SOURCE_ROOT; };
 		E1679E8381A2ED5D165B57D9 /* WolfGridSales.entitlements */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.entitlements; path = WolfGridSales.entitlements; sourceTree = "<group>"; };
 		EA8FCBA9368E8DCE17DB6292 /* WolfGridSales-Info.plist */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.xml; path = "WolfGridSales-Info.plist"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
-		C0DE00000000000000000001 /* Exceptions for "WolfGridUITests" folder in "WolfGridUITests" target */ = {
+		C9A100000000000000000002 /* Exceptions for "WolfGridSalesApp" folder in "WolfGrid Sales" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
-				Info.plist,
+				CampaignLoading/Black.mp4,
+				CampaignLoading/White.mp4,
+				Config/HealthKitManager.swift,
+				Config/MapboxManager.swift,
+				ContentView.swift,
+				Features/Addresses/API/AddressesAPI.swift,
+				Features/Billing/BillingModels.swift,
+				Features/Billing/EntitlementsService.swift,
+				Features/Billing/PaywallView.swift,
+				Features/Billing/StoreKitManager.swift,
+				Features/Buildings/API/BuildingDetailsAPI.swift,
+				Features/Buildings/API/MapboxBuildingsAPI.swift,
+				Features/Buildings/Models/BuildingLinkModels.swift,
+				Features/Buildings/Models/GeoJSON.swift,
+				Features/Buildings/Services/BuildingLinkService.swift,
+				Features/Buildings/Services/ClientMapLinkerService.swift,
+				Features/Buildings/Services/UnlinkedHomeAddressResolver.swift,
+				Features/Buildings/ViewControllers/BuildingLinkMapViewController.swift,
+				Features/Buildings/Views/BuildingPopupView.swift,
+				Features/Calendar/Models/FlyrCalendarEvent.swift,
+				Features/Calendar/Services/AppleCalendarService.swift,
+				Features/Calendar/Services/CalendarDateHelpers.swift,
+				Features/Calendar/Services/CalendarEventLayout.swift,
+				Features/Calendar/Services/CalendarEventRepository.swift,
+				Features/Calendar/Services/CalendarNowDisplayLink.swift,
+				Features/Calendar/Services/CalendarService.swift,
+				Features/Calendar/Views/CalendarTabView.swift,
+				Features/Campaigns/API/VisitsAPI.swift,
+				Features/Campaigns/Components/CampaignRoadSettingsView.swift,
+				Features/Campaigns/Hooks/UseCampaignBuildings.swift,
+				Features/Campaigns/Views/CampaignDetailMap.swift,
+				Features/Campaigns/Views/CampaignDetailMapView.swift,
+				Features/Campaigns/Views/StatusPickerSheet.swift,
+				Features/Challenges/Models/Challenge.swift,
+				Features/Challenges/Services/ChallengeService.swift,
+				Features/Challenges/ViewModels/ChallengeDetailViewModel.swift,
+				Features/Challenges/ViewModels/ChallengesViewModel.swift,
+				Features/Challenges/Views/ChallengeDetailView.swift,
+				Features/Challenges/Views/ChallengeInviteView.swift,
+				Features/Challenges/Views/ChallengesHomeView.swift,
+				Features/Contacts/Components/ContactFiltersView.swift,
+				Features/Contacts/Models/ContactActivity.swift,
+				Features/Contacts/Services/ContactsService.swift,
+				Features/Contacts/ViewModels/ContactsViewModel.swift,
+				Features/Contacts/Views/ContactCardView.swift,
+				Features/Contacts/Views/ContactDetailSheet.swift,
+				Features/Contacts/Views/ContactsHubView.swift,
+				Features/Contacts/Views/ContactsView.swift,
+				Features/Demo/DemoSessionSupport.swift,
+				Features/Farm/Models/Farm.swift,
+				Features/Farm/Models/FarmAddress.swift,
+				Features/Farm/Models/FarmCycle.swift,
+				Features/Farm/Models/FarmExecutionContext.swift,
+				Features/Farm/Models/FarmLead.swift,
+				Features/Farm/Models/FarmPhase.swift,
+				Features/Farm/Models/FarmTouch.swift,
+				Features/Farm/Services/FarmCycleService.swift,
+				Features/Farm/Services/FarmExecutionService.swift,
+				Features/Farm/Services/FarmLeadService.swift,
+				Features/Farm/Services/FarmPhaseService.swift,
+				Features/Farm/Services/FarmService.swift,
+				Features/Farm/Services/FarmTouchService.swift,
+				Features/Farm/Utils/FarmAnalyticsCalculator.swift,
+				Features/Farm/Utils/FarmCycleResolver.swift,
+				Features/Farm/Utils/FarmIntegrationHelper.swift,
+				Features/Farm/Utils/PhaseCalculator.swift,
+				Features/Farm/Utils/RecommendationsEngine.swift,
+				Features/Farm/ViewModels/CreateFarmViewModel.swift,
+				Features/Farm/ViewModels/FarmAnalyticsViewModel.swift,
+				Features/Farm/ViewModels/FarmDetailViewModel.swift,
+				Features/Farm/ViewModels/FarmTouchPlannerViewModel.swift,
+				Features/Farm/ViewModels/FarmViewModel.swift,
+				Features/Farm/Views/CreateFarmView.swift,
+				Features/Farm/Views/FarmAnalyticsView.swift,
+				Features/Farm/Views/FarmCalendarView.swift,
+				Features/Farm/Views/FarmDetailView.swift,
+				Features/Farm/Views/FarmListView.swift,
+				Features/Farm/Views/FarmMapView.swift,
+				Features/Farm/Views/FarmPolygonSelectorView.swift,
+				Features/Farm/Views/FarmRowView.swift,
+				Features/Farm/Views/FarmsView.swift,
+				Features/Farm/Views/FarmTouchPlannerView.swift,
+				Features/Farm/Views/PhaseDetailView.swift,
+				Features/Integrations/Services/BoldTrailPushLeadAPI.swift,
+				Features/Integrations/Services/FUBPushLeadAPI.swift,
+				Features/Integrations/Services/HubSpotPushLeadAPI.swift,
+				Features/Integrations/Services/LeadSyncManager.swift,
+				Features/Leads/Components/CRMConnectCard.swift,
+				Features/Leads/Models/FieldLead.swift,
+				Features/Leads/Services/FieldLeadsService.swift,
+				Features/Leads/Services/LeadsExportManager.swift,
+				Features/Leads/ViewModels/LeadsViewModel.swift,
+				Features/Leads/Views/LeadCaptureSheet.swift,
+				Features/Leads/Views/LeadDetailView.swift,
+				Features/Leads/Views/LeadRowView.swift,
+				Features/Leads/Views/SyncSettingsView.swift,
+				Features/Map/API/SessionEventsAPI.swift,
+				Features/Map/API/SessionEventType.swift,
+				Features/Map/API/VoiceNoteAPI.swift,
+				Features/Map/Components/BottomActionBar.swift,
+				Features/Map/Components/NextTargetsSheet.swift,
+				Features/Map/Components/StatsCardView.swift,
+				Features/Map/Components/TeamSessionPanel.swift,
+				Features/Map/Controllers/CampaignPolygonHelper.swift,
+				Features/Map/Controllers/MapController.swift,
+				Features/Map/FlyerModeManager.swift,
+				Features/Map/GPSNormalization/CorridorContext.swift,
+				Features/Map/GPSNormalization/CorridorProjectionService.swift,
+				Features/Map/GPSNormalization/GeospatialUtilities.swift,
+				Features/Map/GPSNormalization/GPSNormalizationConfig.swift,
+				Features/Map/GPSNormalization/GPSNormalizationDebugView.swift,
+				Features/Map/GPSNormalization/LocationAcceptanceFilter.swift,
+				Features/Map/GPSNormalization/ProgressConstraint.swift,
+				Features/Map/GPSNormalization/ScoredVisitEngine.swift,
+				Features/Map/GPSNormalization/SessionTrailNormalizer.swift,
+				Features/Map/GPSNormalization/SideOfStreetInference.swift,
+				Features/Map/GPSNormalization/StreetCorridor.swift,
+				Features/Map/GPSNormalization/StreetCoverageVisitEngine.swift,
+				Features/Map/GPSNormalization/TrackPointModels.swift,
+				Features/Map/GPSNormalization/TrailSmoothing.swift,
+				Features/Map/MapMarkersManager.swift,
+				Features/Map/Models/BuildingDataModels.swift,
+				Features/Map/Models/GoalType.swift,
+				Features/Map/Models/MapMode.swift,
+				Features/Map/Models/MapStyle.swift,
+				Features/Map/Models/MapTheme.swift,
+				Features/Map/Models/OptimizedRoute.swift,
+				Features/Map/Models/RoadGraph.swift,
+				Features/Map/Models/SessionRecord.swift,
+				Features/Map/Models/SharedLiveCanvassingModels.swift,
+				"Features/Map/Notification+Session.swift",
+				Features/Map/Services/BuildingDataService.swift,
+				Features/Map/Services/BuildingStatsSubscriber.swift,
+				Features/Map/Services/CampaignMapCameraPolicy.swift,
+				Features/Map/Services/LiveCampaignMapSnapshotStore.swift,
+				Features/Map/Services/MapHeadingManager.swift,
+				Features/Map/Services/MapHeadingPresentation.swift,
+				Features/Map/Services/RouteOptimizationService.swift,
+				Features/Map/Services/SessionParticipantsService.swift,
+				Features/Map/Services/SessionSafetyBeaconService.swift,
+				Features/Map/Services/SessionsAPI.swift,
+				Features/Map/Services/SharedLiveCanvassingService.swift,
+				Features/Map/Services/VoiceRecorderManager.swift,
+				Features/Map/Services/WalkModeManager.swift,
+				Features/Map/SessionLiveActivityManager.swift,
+				Features/Map/SessionManager.swift,
+				Features/Map/SessionMapboxViewRepresentable.swift,
+				Features/Map/Views/BeaconContactPickerSheet.swift,
+				Features/Map/Views/BeaconControlSheet.swift,
+				Features/Map/Views/BeaconMessageComposer.swift,
+				Features/Map/Views/CampaignMapView.swift,
+				Features/Map/Views/CheckeredBackground.swift,
+				Features/Map/Views/EndSessionButton.swift,
+				Features/Map/Views/EndSessionSummaryView.swift,
+				Features/Map/Views/FlyrMapView.swift,
+				Features/Map/Views/LocationCardSchedulingSheets.swift,
+				Features/Map/Views/MapCameraPitchBearingControl.swift,
+				Features/Map/Views/MapCampaignDetailSheet.swift,
+				Features/Map/Views/MapGestureInfoSheet.swift,
+				Features/Map/Views/MapLoadingOverlay.swift,
+				Features/Map/Views/MapModeToggle.swift,
+				Features/Map/Views/MapPitchBearingControl.swift,
+				Features/Map/Views/MapSearchBar.swift,
+				Features/Map/Views/MapStyleToggleButton.swift,
+				Features/Map/Views/NetworkingShareCardView.swift,
+				Features/Map/Views/NextTargetsBottomSheet.swift,
+				Features/Map/Views/RecordHomeView.swift,
+				Features/Map/Views/RouteMiniMapView.swift,
+				Features/Map/Views/RoutePreviewView.swift,
+				Features/Map/Views/SessionHomesShareCardView.swift,
+				Features/Map/Views/SessionHUDCard.swift,
+				Features/Map/Views/SessionMapView.swift,
+				Features/Map/Views/SessionRouteReplayScreen.swift,
+				Features/Map/Views/SessionShareCardView.swift,
+				Features/Map/Views/SessionStartView.swift,
+				Features/Map/Views/SessionStatsView.swift,
+				Features/Map/Views/ShareCardGenerator.swift,
+				Features/Map/Views/StaleActiveSessionResolutionView.swift,
+				Features/Map/Views/StandardCampaignGoogleMapView.swift,
+				Features/Map/Views/UserHeadingIndicator.swift,
+				Features/Maps/BuildingLayers.swift,
+				Features/Maps/MapboxBridge.swift,
+				Features/Maps/MapboxViewContainer.swift,
+				Features/OnboardingDemo/Models/OnboardingDemoModels.swift,
+				Features/OnboardingDemo/Services/OnboardingDemoAPI.swift,
+				Features/OnboardingDemo/ViewModels/OnboardingDemoViewModel.swift,
+				Features/OnboardingDemo/Views/OnboardingDemoPanel.swift,
+				Features/QRCodes/Components/AddressFilter.swift,
+				Features/QRCodes/Components/AddressSelector.swift,
+				Features/QRCodes/Components/BatchCardView.swift,
+				Features/QRCodes/Components/CampaignPickerSheet.swift,
+				Features/QRCodes/Components/CampaignSelector.swift,
+				Features/QRCodes/Components/CustomUrlInput.swift,
+				Features/QRCodes/Components/ExportFormatPicker.swift,
+				Features/QRCodes/Components/FarmPickerSheet.swift,
+				Features/QRCodes/Components/QRAnalyticsCard.swift,
+				Features/QRCodes/Components/QRCapsuleSelector.swift,
+				Features/QRCodes/Components/QRCard.swift,
+				Features/QRCodes/Components/QRCardView.swift,
+				Features/QRCodes/Components/QRCodeCard.swift,
+				Features/QRCodes/Components/QRCodeDetailView.swift,
+				Features/QRCodes/Components/QRCodeList.swift,
+				Features/QRCodes/Components/QREmptyState.swift,
+				Features/QRCodes/Components/QRHubSquare.swift,
+				Features/QRCodes/Components/QRScanItem.swift,
+				Features/QRCodes/Components/QRSetCardView.swift,
+				Features/QRCodes/Components/QRSourcePicker.swift,
+				Features/QRCodes/Components/QRTypeSelector.swift,
+				Features/QRCodes/Models/AddressContent.swift,
+				Features/QRCodes/Models/Batch.swift,
+				Features/QRCodes/Models/ExportFormat.swift,
+				Features/QRCodes/Models/FarmListItem.swift,
+				Features/QRCodes/Models/QRCode.swift,
+				Features/QRCodes/Models/QRCodeAddress.swift,
+				Features/QRCodes/Models/QRCodeBatch.swift,
+				Features/QRCodes/Models/QRCodeTypes.swift,
+				Features/QRCodes/Models/QRDestinationType.swift,
+				Features/QRCodes/Models/QRSet.swift,
+				Features/QRCodes/Models/QRType.swift,
+				Features/QRCodes/QRCodeGenerator.swift,
+				Features/QRCodes/QRCodeGeneratorView.swift,
+				Features/QRCodes/QRCodeGeneratorViewModel.swift,
+				Features/QRCodes/Services/BatchRepository.swift,
+				Features/QRCodes/Services/QRCodeAPI.swift,
+				Features/QRCodes/Services/QRRepository.swift,
+				Features/QRCodes/Utils/BatchQRGenerator.swift,
+				Features/QRCodes/Utils/BatchURLResolver.swift,
+				Features/QRCodes/Utils/QRSlugGenerator.swift,
+				Features/QRCodes/ViewModels/UseQRCodeAnalytics.swift,
+				Features/QRCodes/ViewModels/UseQRCodeCreate.swift,
+				Features/QRCodes/ViewModels/UseQRCodeHub.swift,
+				Features/QRCodes/ViewModels/UseQRCodeManage.swift,
+				Features/QRCodes/ViewModels/UseQRPrintV2.swift,
+				Features/QRCodes/Views/CreateBatchView.swift,
+				Features/QRCodes/Views/QRCodeAnalyticsView.swift,
+				Features/QRCodes/Views/QRCodeCreateView.swift,
+				Features/QRCodes/Views/QRCodeHubView.swift,
+				Features/QRCodes/Views/QRCodeManageView.swift,
+				Features/QRCodes/Views/QRCodeMapView.swift,
+				Features/QRCodes/Views/QRCodePrintView.swift,
+				Features/QRCodes/Views/QRPrintViewV2.swift,
+				Features/QRCodes/Views/QRWorkflow/CreateQRView.swift,
+				Features/QRCodes/Views/QRWorkflow/MoreToolsView.swift,
+				Features/QRCodes/Views/QRWorkflow/PrintQRView.swift,
+				Features/QRCodes/Views/QRWorkflow/QRWorkflowView.swift,
+				Features/QRDashboard/MoreToolsSheet.swift,
+				Features/QRDashboard/QRHomeView.swift,
+				Features/QRExport/Models/ExportError.swift,
+				Features/QRExport/Models/ExportMode.swift,
+				Features/QRExport/Models/ExportResult.swift,
+				Features/QRExport/QRCSVBuilder.swift,
+				Features/QRExport/QRExportManager.swift,
+				Features/QRExport/QRPDFGenerator.swift,
+				Features/QRExport/QRPNGGenerator.swift,
+				Features/QRExport/QRZipExporter.swift,
+				Features/QRExport/Services/CSVExportService.swift,
+				Features/QRExport/Services/ExportManager.swift,
+				Features/QRExport/Services/PDFGridRenderer.swift,
+				Features/QRExport/Services/PDFSingleRenderer.swift,
+				Features/QRExport/Services/PNGExportService.swift,
+				Features/QRExport/Services/SupabaseUploadService.swift,
+				Features/QRExport/Services/ZIPArchiveService.swift,
+				Features/QRExport/Utils/StringSlugifier.swift,
+				Features/QRExport/ViewModels/UseExport.swift,
+				Features/QRExport/Views/ExportModalView.swift,
+				Features/QRExport/Views/ExportSuccessView.swift,
+				Features/QRExport/Views/QRExportOptionsSheet.swift,
+				Features/QuickStart/HomesService.swift,
+				Features/QuickStart/QuickStartBottomBar.swift,
+				Features/QuickStart/QuickStartContactBookView.swift,
+				Features/QuickStart/QuickStartMapView.swift,
+				Features/Routes/Models/RoutePlanModels.swift,
+				Features/Routes/Models/RouteWorkContext.swift,
+				Features/Routes/Services/RouteAssignmentsAPI.swift,
+				Features/Routes/Services/RoutePlansAPI.swift,
+				Features/Routes/Services/RouteTransitionEligibility.swift,
+				Features/Routes/Views/RouteAssignmentDetailView.swift,
+				Features/Routes/Views/RouteAssignmentMapRepresentable.swift,
+				Features/Routes/Views/RouteAssignmentMapViewController.swift,
+				Features/Routes/Views/RoutePlanDetailView.swift,
+				Features/Routes/Views/RoutesListView.swift,
+				Features/Stats/Models/LeaderboardEntry.swift,
+				Features/Stats/Models/LeaderboardUser.swift,
+				Features/Stats/Models/MetricSnapshot.swift,
+				Features/Stats/Models/UserStats.swift,
+				Features/Stats/Services/LeaderboardService.swift,
+				Features/Stats/Services/StatsService.swift,
+				Features/Stats/ViewModels/LeaderboardViewModel.swift,
+				Features/Stats/ViewModels/StatsViewModel.swift,
+				Features/Stats/Views/Components/CompactStatRow.swift,
+				Features/Stats/Views/Components/StatCard.swift,
+				Features/Stats/Views/Components/SuccessMetricBar.swift,
+				Features/Stats/Views/GradientProgressRing.swift,
+				Features/Stats/Views/LeaderboardContentView.swift,
+				Features/Stats/Views/LeaderboardDebugView.swift,
+				Features/Stats/Views/LeaderboardErrorView.swift,
+				Features/Stats/Views/LeaderboardHeaderView.swift,
+				Features/Stats/Views/LeaderboardMetricSelector.swift,
+				Features/Stats/Views/LeaderboardRow.swift,
+				Features/Stats/Views/LeaderboardRowCard.swift,
+				Features/Stats/Views/LeaderboardTimeSelector.swift,
+				Features/Stats/Views/LeaderboardView.swift,
+				Features/Stats/Views/MetricPickerView.swift,
+				Features/Stats/Views/ModeSegmentedPicker.swift,
+				Features/Stats/Views/ProfileSheetView.swift,
+				Features/Stats/Views/StatsPageView.swift,
+				Features/Stats/Views/StatsSettingsView.swift,
+				Features/Stats/Views/StatsView.swift,
+				Features/Stats/Views/TimeFilterPicker.swift,
+				Features/Stats/Views/YouStickyCard.swift,
+				Features/Support/Models/SupportMessage.swift,
+				Features/Support/Models/SupportThread.swift,
+				Features/Support/SupportChatView.swift,
+				Features/Support/SupportService.swift,
+				Features/ThermalPrinting/ThermalLabelGenerator.swift,
+				Features/ThermalPrinting/ThermalLabelSize.swift,
+				Features/ThermalPrinting/ThermalPrintManager.swift,
+				Features/ThermalPrinting/ThermalPrintView.swift,
+				Features/Transcription/Models/TranscriptionModels.swift,
+				Features/Transcription/Services/IdentityTokenProvider.swift,
+				Features/Transcription/Services/TranscriptionService.swift,
+				Features/Transcription/Views/TranscriptionView.swift,
+				Feautures/Addresses/AddressRepository.swift,
+				Feautures/Addresses/AddressService.swift,
+				"Feautures/Addresses/AddressService+RepositoryAdapter.swift",
+				Feautures/Addresses/AddressServiceHealth.swift,
+				Feautures/Addresses/GeoStreetAdapter.swift,
+				Feautures/Addresses/Hooks/UseAddresses.swift,
+				Feautures/Addresses/Providers/AddressProvider.swift,
+				Feautures/Addresses/Providers/MapboxProvider.swift,
+				Feautures/Addresses/Providers/OvertureAddressProvider.swift,
+				Feautures/Campaigns/API/BuildingsAPI.swift,
+				Feautures/Campaigns/API/CampaignCreatePayloadV2.swift,
+				Feautures/Campaigns/API/DiamondManifestAPI.swift,
+				Feautures/Campaigns/API/GeoAPI.swift,
+				"Feautures/Campaigns/API/GeoAPI+Autocomplete.swift",
+				"Feautures/Campaigns/API/GeoAPI+Reverse.swift",
+				"Feautures/Campaigns/API/GeoAPI+Street.swift",
+				"Feautures/Campaigns/Campaigns-README.md",
+				Feautures/Campaigns/CampaignsAPI.swift,
+				Feautures/Campaigns/CampaignsHooks.swift,
+				Feautures/Campaigns/CampaignsListView.swift,
+				Feautures/Campaigns/CampaignsV2Hooks.swift,
+				Feautures/Campaigns/Components/CampaignTypeLabel.swift,
+				Feautures/Campaigns/Components/FieldSection.swift,
+				Feautures/Campaigns/Components/PrimaryButton.swift,
+				Feautures/Campaigns/Components/ProgressBar.swift,
+				Feautures/Campaigns/Components/SegmentedPicker.swift,
+				Feautures/Campaigns/Components/SourceSegment.swift,
+				Feautures/Campaigns/Components/TypeChips.swift,
+				Feautures/Campaigns/Hooks/UseAddressAutocomplete.swift,
+				Feautures/Campaigns/Hooks/UseBuildingOutlines.swift,
+				Feautures/Campaigns/Hooks/UseCampaignMap.swift,
+				Feautures/Campaigns/Hooks/UseCreateCampaign.swift,
+				Feautures/Campaigns/Hooks/UseMapSnapshot.swift,
+				Feautures/Campaigns/Hooks/UseNearestAddresses.swift,
+				Feautures/Campaigns/Hooks/UseStreetAddresses.swift,
+				Feautures/Campaigns/Map/BuildingGeometryHelpers.swift,
+				Feautures/Campaigns/Map/DiamondGeometryProvider.swift,
+				Feautures/Campaigns/Map/LightMapView.swift,
+				Feautures/Campaigns/Map/MapboxFillLayer.swift,
+				Feautures/Campaigns/Models/AddressCache.swift,
+				Feautures/Campaigns/Models/AddressCountOption.swift,
+				Feautures/Campaigns/Models/AddressSuggestion.swift,
+				Feautures/Campaigns/Models/CampaignDBModels.swift,
+				Feautures/Campaigns/Models/CampaignV2.swift,
+				Feautures/Campaigns/Models/DiamondManifest.swift,
+				Feautures/Campaigns/Models/GeoModels.swift,
+				Feautures/Campaigns/OldCampaignDetailView.swift,
+				Feautures/Campaigns/Store/CampaignStore.swift,
+				Feautures/Campaigns/Store/CampaignV2Store.swift,
+				Feautures/Campaigns/Views/CampaignCreatingOverlayView.swift,
+				Feautures/Campaigns/Views/CampaignRowView.swift,
+				Feautures/Campaigns/Views/CampaignV2Card.swift,
+				Feautures/Campaigns/Views/LegacyCampaignMapView.swift,
+				Feautures/Campaigns/Views/LocationMarkerImage.swift,
+				Feautures/Campaigns/Views/MapDrawingMapRepresentable.swift,
+				Feautures/Campaigns/Views/MapDrawingView.swift,
+				Feautures/Campaigns/Views/MapSeedPickerView.swift,
+				Feautures/Campaigns/Views/NewCampaignDetailView.swift,
+				Feautures/Campaigns/Views/NewCampaignScreen.swift,
+				Feautures/Campaigns/Views/TerritoryPreviewMapView.swift,
+				Feautures/Create/CreateHubView.swift,
+				Feautures/Farm/FarmAPI.swift,
+				Feautures/Farm/FarmCreateView.swift,
+				Feautures/Farm/FarmHomeView.swift,
+				Feautures/Farm/UseFarmCreate.swift,
+				Feautures/Goals/GoalsAPI.swift,
+				Feautures/Goals/GoalsCreateView.swift,
+				Feautures/Goals/GoalsHomeView.swift,
+				Feautures/Goals/UseGoalsCreate.swift,
+				Feautures/Home/CampaignsView.swift,
+				Feautures/Home/Components/CampaignHeroCard.swift,
+				Feautures/Home/Components/FLYRProfileCard.swift,
+				Feautures/Home/Components/QuickStatButton.swift,
+				Feautures/Home/Components/SessionActivityFeed.swift,
+				"Feautures/Home/Home-README.md",
+				Feautures/Home/HomeAPI.swift,
+				Feautures/Home/HomeHooks.swift,
+				Feautures/Home/HomeSections.swift,
+				Feautures/Home/HomeView.swift,
+				Feautures/Home/Services/ActivityFeedService.swift,
+				Feautures/Home/Services/DailyContentService.swift,
+				Feautures/Home/Services/PerformanceReportsService.swift,
+				Feautures/Home/Views/ActivityView.swift,
+				Feautures/Home/Views/IndividualPerformanceReportModal.swift,
+				Feautures/Home/Views/RoutesPlaceholderView.swift,
+				Feautures/Map/BuildingHighlightService.swift,
+				"Feautures/Map/Map-README.md",
+				Feautures/Map/MapCampaignPickerSheet.swift,
+				Feautures/Map/MapCampaignPickerViewModel.swift,
+				Feautures/Map/MapView.swift,
+				"Feautures/Network/Network-README.md",
+				Feautures/Network/NetworkView.swift,
+				"Feautures/QRCodes/QR-README.md",
+				Feautures/QRCodes/QRScannerView.swift,
+				"Feautures/You/Profile-README.md",
+				MainTabView.swift,
+				Offline/OfflineDatabase.swift,
+				Offline/OfflineMigrations.swift,
+				Offline/Repositories/CampaignRepository.swift,
+				Offline/Repositories/ContactRepository.swift,
+				Offline/Repositories/FarmOfflineRepository.swift,
+				Offline/Repositories/OutboxRepository.swift,
+				Offline/Repositories/SessionRepository.swift,
+				Offline/Repositories/SessionStartCacheRepository.swift,
+				Offline/Services/CampaignDownloadService.swift,
+				Offline/Services/OfflineSyncCoordinator.swift,
+				Resources/MapAssets/PushPin.glb,
+				Resources/MapAssets/PushPinBase.glb,
+				Resources/MapAssets/PushPinTop.glb,
+				Services/CampaignRoadDeviceCache.swift,
+				Services/CampaignRoadService.swift,
+				Services/MapFeaturesService.swift,
+				Services/MapLayerManager.swift,
+				Services/Notifications/CampaignNotificationRouter.swift,
+				Services/Notifications/CampaignProvisionMonitor.swift,
+				Services/OvertureAddressService.swift,
+				Shared/Models/LeadModel.swift,
+				Shared/UI/Components/AddressSearchField.swift,
+				Shared/UI/Components/MapSnapshotView.swift,
+				Shared/Utils/AppIconGeneratorPreview.swift,
+				Shared/Utils/CRMLeadEnrichment.swift,
 			);
-			target = 30A4A5942EA6CD9900FA72B1 /* WolfGridUITests */;
+			target = 624B0C90D44E88D1B294A1BF /* WolfGrid Sales */;
 		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
@@ -126,14 +567,14 @@
 		};
 		30A4A5982EA6CD9900FA72B1 /* WolfGridUITests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			exceptions = (
-				C0DE00000000000000000001 /* Exceptions for "WolfGridUITests" folder in "WolfGridUITests" target */,
-			);
 			path = WolfGridUITests;
 			sourceTree = "<group>";
 		};
 		C9A100000000000000000001 /* WolfGridSalesApp */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				C9A100000000000000000002 /* Exceptions for "WolfGridSalesApp" folder in "WolfGrid Sales" target */,
+			);
 			name = WolfGridSalesApp;
 			path = WolfGridSales/App;
 			sourceTree = "<group>";
@@ -146,7 +587,6 @@
 			buildActionMask = 2147483647;
 			files = (
 				30A113B02F9C567D00F50F88 /* GRDB in Frameworks */,
-				7B3EAA072F50A001003EBA4A /* LiveKit in Frameworks */,
 				30DC41E02F35A3A5003EBA4A /* GoogleSignInSwift in Frameworks */,
 				30A4A5E62EA70F3500FA72B1 /* PostgREST in Frameworks */,
 				30A4A5E42EA70F3500FA72B1 /* Functions in Frameworks */,
@@ -201,7 +641,6 @@
 				D4C78D0AA4117F21B8EF129D /* Lottie in Frameworks */,
 				20C2A5368BEFBBC4F41A064B /* telnyx-webrtc-ios in Frameworks */,
 				34028A72351DD9A11F0A5E8C /* GoogleMaps in Frameworks */,
-				3131E301951249468DCE60E1 /* LiveKit in Frameworks */,
 				9A53263F101C0745DAA278FD /* GRDB in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -267,8 +706,9 @@
 		F0516957BB93BD02C534C91B /* WolfGridSales */ = {
 			isa = PBXGroup;
 			children = (
-				C8A100000000000000000001 /* WhiteWolfSales.icon */,
-				B8A100000000000000000001 /* SalespersonMainTabView.swift */,
+				C8A100000000000000000001 /* WolfGridSales/WhiteWolfSales.icon */,
+				C8A200000000000000000001 /* WolfGridSales/Config.xcconfig */,
+				B8A100000000000000000001 /* WolfGridSales/SalespersonMainTabView.swift */,
 				EA8FCBA9368E8DCE17DB6292 /* WolfGridSales-Info.plist */,
 				E1679E8381A2ED5D165B57D9 /* WolfGridSales.entitlements */,
 			);
@@ -316,7 +756,6 @@
 				30A4A6212EA71CC000FA72B1 /* Lottie */,
 				4D9F102B2F94000100A1F1A1 /* telnyx-webrtc-ios */,
 				9A1B2C3D4E5F60718293A4B7 /* GoogleMaps */,
-				7B3EAA062F50A001003EBA4A /* LiveKit */,
 				A1B2C3D4E5F60718293A4B5C /* GRDB */,
 			);
 			productName = WolfGrid;
@@ -411,7 +850,6 @@
 				30A4A6212EA71CC000FA72B1 /* Lottie */,
 				4D9F102B2F94000100A1F1A1 /* telnyx-webrtc-ios */,
 				9A1B2C3D4E5F60718293A4B7 /* GoogleMaps */,
-				7B3EAA062F50A001003EBA4A /* LiveKit */,
 				A1B2C3D4E5F60718293A4B5C /* GRDB */,
 			);
 			productName = WolfGridSales;
@@ -463,7 +901,6 @@
 				30A4A6202EA71CC000FA72B1 /* XCRemoteSwiftPackageReference "lottie-ios" */,
 				4D9F102A2F94000100A1F1A1 /* XCRemoteSwiftPackageReference "telnyx-webrtc-ios" */,
 				9A1B2C3D4E5F60718293A4B6 /* XCRemoteSwiftPackageReference "ios-maps-sdk" */,
-				7B3EAA052F50A001003EBA4A /* XCRemoteSwiftPackageReference "client-sdk-swift" */,
 				A1B2C3D4E5F60718293A4B5B /* XCRemoteSwiftPackageReference "GRDB.swift" */,
 			);
 			preferredProjectObjectVersion = 77;
@@ -514,7 +951,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				C8A100000000000000000002 /* WhiteWolfSales.icon in Resources */,
+				C8A100000000000000000002 /* WolfGridSales/WhiteWolfSales.icon in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -568,7 +1005,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				B8A100000000000000000002 /* SalespersonMainTabView.swift in Sources */,
+				B8A100000000000000000002 /* WolfGridSales/SalespersonMainTabView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -759,7 +1196,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = WolfGrid/WolfGrid.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 13;
+				CURRENT_PROJECT_VERSION = 14;
 				DEVELOPMENT_TEAM = 2AR5T8ZYAS;
 				ENABLE_DEBUG_DYLIB = NO;
 				ENABLE_PREVIEWS = YES;
@@ -799,7 +1236,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = WolfGrid/WolfGrid.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 13;
+				CURRENT_PROJECT_VERSION = 14;
 				DEVELOPMENT_TEAM = 2AR5T8ZYAS;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -835,7 +1272,7 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 13;
+				CURRENT_PROJECT_VERSION = 14;
 				DEVELOPMENT_TEAM = 2AR5T8ZYAS;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -857,7 +1294,7 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 13;
+				CURRENT_PROJECT_VERSION = 14;
 				DEVELOPMENT_TEAM = 2AR5T8ZYAS;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -878,7 +1315,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 13;
+				CURRENT_PROJECT_VERSION = 14;
 				DEVELOPMENT_TEAM = 2AR5T8ZYAS;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = WolfGridUITests/Info.plist;
@@ -904,7 +1341,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 13;
+				CURRENT_PROJECT_VERSION = 14;
 				DEVELOPMENT_TEAM = 2AR5T8ZYAS;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = WolfGridUITests/Info.plist;
@@ -928,13 +1365,14 @@
 		};
 		3BC4967DC059EFB5D025EB2D /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = C8A200000000000000000001 /* WolfGridSales/Config.xcconfig */;
 			buildSettings = {
 				APS_ENVIRONMENT = production;
 				ASSETCATALOG_COMPILER_APPICON_NAME = WhiteWolfSales;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = WolfGridSales/WolfGridSales.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 14;
 				DEVELOPMENT_TEAM = 2AR5T8ZYAS;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -972,7 +1410,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CLANG_ENABLE_OBJC_WEAK = NO;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 13;
+				CURRENT_PROJECT_VERSION = 14;
 				DEVELOPMENT_TEAM = 2AR5T8ZYAS;
 				ENABLE_DEBUG_DYLIB = NO;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -1004,13 +1442,14 @@
 		};
 		83DAAAE04165CA6FA945ABE1 /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = C8A200000000000000000001 /* WolfGridSales/Config.xcconfig */;
 			buildSettings = {
 				APS_ENVIRONMENT = development;
 				ASSETCATALOG_COMPILER_APPICON_NAME = WhiteWolfSales;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = WolfGridSales/WolfGridSales.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 14;
 				DEVELOPMENT_TEAM = 2AR5T8ZYAS;
 				ENABLE_DEBUG_DYLIB = NO;
 				ENABLE_PREVIEWS = YES;
@@ -1049,7 +1488,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CLANG_ENABLE_OBJC_WEAK = NO;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 13;
+				CURRENT_PROJECT_VERSION = 14;
 				DEVELOPMENT_TEAM = 2AR5T8ZYAS;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = WolfGridSessionActivityExtension/Info.plist;
@@ -1177,14 +1616,6 @@
 				kind = branch;
 			};
 		};
-		7B3EAA052F50A001003EBA4A /* XCRemoteSwiftPackageReference "client-sdk-swift" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/livekit/client-sdk-swift.git";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 2.11.0;
-			};
-		};
 		9A1B2C3D4E5F60718293A4B6 /* XCRemoteSwiftPackageReference "ios-maps-sdk" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/googlemaps/ios-maps-sdk";
@@ -1288,11 +1719,6 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 4D9F102A2F94000100A1F1A1 /* XCRemoteSwiftPackageReference "telnyx-webrtc-ios" */;
 			productName = "telnyx-webrtc-ios";
-		};
-		7B3EAA062F50A001003EBA4A /* LiveKit */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 7B3EAA052F50A001003EBA4A /* XCRemoteSwiftPackageReference "client-sdk-swift" */;
-			productName = LiveKit;
 		};
 		9A1B2C3D4E5F60718293A4B7 /* GoogleMaps */ = {
 			isa = XCSwiftPackageProductDependency;

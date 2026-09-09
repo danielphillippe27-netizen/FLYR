@@ -35,8 +35,8 @@ struct StoredCoordinate: Codable {
     }
 
     init(_ coordinate: CLLocationCoordinate2D) {
-        self.latitude = coordinate.latitude
-        self.longitude = coordinate.longitude
+        latitude = coordinate.latitude
+        longitude = coordinate.longitude
     }
 
     var clLocationCoordinate: CLLocationCoordinate2D {
@@ -146,9 +146,7 @@ final class LocalStorage {
 
     func loadLiveSessionCode(for sessionId: UUID) -> (code: String, expiresAt: Date)? {
         var storedCodes = liveSessionCodes
-        guard let stored = storedCodes[sessionId.uuidString] else {
-            return nil
-        }
+        guard let stored = storedCodes[sessionId.uuidString] else { return nil }
 
         if stored.expiresAt <= Date() {
             storedCodes.removeValue(forKey: sessionId.uuidString)
@@ -208,14 +206,14 @@ final class LocalStorage {
 
     // MARK: - Beacon draft
 
-    func saveBeaconRecipients(_ recipients: [BeaconContactRecipient]) {
+    func saveBeaconRecipients<Recipient: Encodable>(_ recipients: [Recipient]) {
         guard let encoded = try? JSONEncoder().encode(recipients) else { return }
         UserDefaults.standard.set(encoded, forKey: beaconRecipientsKey)
     }
 
-    func loadBeaconRecipients() -> [BeaconContactRecipient] {
+    func loadBeaconRecipients<Recipient: Decodable>() -> [Recipient] {
         guard let data = UserDefaults.standard.data(forKey: beaconRecipientsKey),
-              let decoded = try? JSONDecoder().decode([BeaconContactRecipient].self, from: data) else {
+              let decoded = try? JSONDecoder().decode([Recipient].self, from: data) else {
             return []
         }
         return decoded

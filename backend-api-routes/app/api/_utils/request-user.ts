@@ -59,6 +59,9 @@ export async function resolveUserFromRequest(
   const supabaseUrl = getSupabaseUrl();
   const supabaseAnonKey = getSupabaseAnonKey();
   const token = getBearerToken(request, options);
+  // An explicit native/API identity must never fall through to another account's
+  // browser cookie when its credentials are missing, malformed or rejected.
+  if (request.headers.has('authorization') && !token) return null;
 
   if (token) {
     const bearerClient = createClient(supabaseUrl, supabaseAnonKey, {
@@ -91,6 +94,7 @@ export async function resolveUserFromRequest(
     if (!serviceError && serviceUser) {
       return { id: serviceUser.id, email: serviceUser.email ?? null };
     }
+    return null;
   }
 
   const cookieStore = await cookies();

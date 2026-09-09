@@ -22,6 +22,8 @@ struct FlyrCalendarEvent: Codable, Identifiable, Equatable, Sendable {
     var sourceId: UUID?
     var notes: String?
     var location: String?
+    var conferenceProvider: String?
+    var conferenceJoinURL: URL?
     var colorKey: String
     var createdAt: Date
     var updatedAt: Date
@@ -47,6 +49,8 @@ struct FlyrCalendarEvent: Codable, Identifiable, Equatable, Sendable {
         case sourceId = "source_id"
         case notes
         case location
+        case conferenceProvider = "conference_provider"
+        case conferenceJoinURL = "conference_join_url"
         case colorKey = "color_key"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
@@ -74,6 +78,8 @@ struct FlyrCalendarEvent: Codable, Identifiable, Equatable, Sendable {
         sourceId = try container.decodeIfPresent(UUID.self, forKey: .sourceId)
         notes = try container.decodeIfPresent(String.self, forKey: .notes)
         location = try container.decodeIfPresent(String.self, forKey: .location)
+        conferenceProvider = try container.decodeIfPresent(String.self, forKey: .conferenceProvider)
+        conferenceJoinURL = try container.decodeIfPresent(URL.self, forKey: .conferenceJoinURL)
         colorKey = try container.decodeIfPresent(String.self, forKey: .colorKey) ?? "red"
         createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
         updatedAt = try container.decodeIfPresent(Date.self, forKey: .updatedAt) ?? Date()
@@ -100,6 +106,8 @@ struct FlyrCalendarEvent: Codable, Identifiable, Equatable, Sendable {
         sourceId: UUID? = nil,
         notes: String? = nil,
         location: String? = nil,
+        conferenceProvider: String? = nil,
+        conferenceJoinURL: URL? = nil,
         colorKey: String = "red",
         createdAt: Date = Date(),
         updatedAt: Date = Date(),
@@ -124,6 +132,8 @@ struct FlyrCalendarEvent: Codable, Identifiable, Equatable, Sendable {
         self.sourceId = sourceId
         self.notes = notes
         self.location = location
+        self.conferenceProvider = conferenceProvider
+        self.conferenceJoinURL = conferenceJoinURL
         self.colorKey = colorKey
         self.createdAt = createdAt
         self.updatedAt = updatedAt
@@ -272,6 +282,7 @@ struct CalendarItem: Identifiable, Equatable, Sendable {
     let campaignName: String?
     let campaignId: UUID?
     let address: String?
+    let conferenceJoinURL: URL?
 
     init(
         id: String,
@@ -289,7 +300,8 @@ struct CalendarItem: Identifiable, Equatable, Sendable {
         contactId: UUID?,
         campaignName: String? = nil,
         campaignId: UUID? = nil,
-        address: String?
+        address: String?,
+        conferenceJoinURL: URL? = nil
     ) {
         self.id = id
         self.sourceId = sourceId
@@ -307,6 +319,7 @@ struct CalendarItem: Identifiable, Equatable, Sendable {
         self.campaignName = campaignName
         self.campaignId = campaignId
         self.address = address
+        self.conferenceJoinURL = conferenceJoinURL
     }
 
     var searchHaystack: String {
@@ -356,7 +369,8 @@ extension CalendarItem {
             contactId: event.contactId,
             campaignName: event.campaignName,
             campaignId: event.campaignId,
-            address: event.contactAddress ?? event.location
+            address: event.contactAddress ?? event.location,
+            conferenceJoinURL: event.conferenceJoinURL
         )
     }
 

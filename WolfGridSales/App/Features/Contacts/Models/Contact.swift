@@ -61,6 +61,7 @@ struct Contact: Codable, Identifiable, Equatable {
     var fullName: String
     var phone: String?
     var email: String?
+    var company: String?
     var address: String
     var campaignId: UUID?
     var farmId: UUID?
@@ -84,6 +85,7 @@ struct Contact: Codable, Identifiable, Equatable {
         case fullName = "full_name"
         case phone
         case email
+        case company
         case address
         case campaignId = "campaign_id"
         case farmId = "farm_id"
@@ -106,6 +108,7 @@ struct Contact: Codable, Identifiable, Equatable {
         fullName: String,
         phone: String? = nil,
         email: String? = nil,
+        company: String? = nil,
         address: String,
         campaignId: UUID? = nil,
         farmId: UUID? = nil,
@@ -126,6 +129,7 @@ struct Contact: Codable, Identifiable, Equatable {
         self.fullName = fullName
         self.phone = phone
         self.email = email
+        self.company = company
         self.address = address
         self.campaignId = campaignId
         self.farmId = farmId

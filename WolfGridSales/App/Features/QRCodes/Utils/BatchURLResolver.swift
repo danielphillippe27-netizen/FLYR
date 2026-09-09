@@ -17,12 +17,12 @@ public struct BatchURLResolver {
         
         switch batch.qrType {
         case .map:
-            baseURL = "https://wolfgrid.app/map/\(batch.id.uuidString)"
+            baseURL = "https://sales.wolfgrid.app/map/\(batch.id.uuidString)"
             
         case .customURL:
             guard let customURL = batch.customURL, !customURL.isEmpty else {
                 // Fallback if custom URL is missing
-                return "https://wolfgrid.app"
+                return "https://sales.wolfgrid.app"
             }
             baseURL = customURL
             
@@ -31,7 +31,7 @@ public struct BatchURLResolver {
             if let website = userDefaultWebsite, !website.isEmpty {
                 baseURL = website
             } else {
-                baseURL = "https://wolfgrid.app"
+                baseURL = "https://sales.wolfgrid.app"
             }
         }
         

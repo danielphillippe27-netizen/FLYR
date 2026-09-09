@@ -109,6 +109,7 @@ final class MapLayerManager {
     /// Minimum rendered building height, reduced by 35% from the previous 8 m floor.
     static let defaultBuildingExtrusionHeight: Double = 5.2
     static let maximumBuildingExtrusionHeight: Double = 14.0
+    private static let buildingExtrusionHeightScale: Double = 0.5
     private static let selectedBuildingHeightScale: Double = 1.0
     private static let townhomeOverlayHeightLift: Double = 0.08
     private static let townhomeOverlayPlateThickness: Double = 0.045
@@ -151,32 +152,38 @@ final class MapLayerManager {
     }
 
     static var buildingExtrusionHeightExpression: Exp {
-        Exp(.min) {
-            Exp(.max) {
-                Exp(.toNumber) {
-                    Exp(.coalesce) {
-                        Exp(.get) { "render_height" }
-                        Exp(.get) { "height_m" }
-                        Exp(.get) { "height" }
-                        Exp(.get) { "min_height" }
-                        Self.defaultBuildingExtrusionHeight
+        Exp(.product) {
+            Exp(.min) {
+                Exp(.max) {
+                    Exp(.toNumber) {
+                        Exp(.coalesce) {
+                            Exp(.get) { "render_height" }
+                            Exp(.get) { "height_m" }
+                            Exp(.get) { "height" }
+                            Exp(.get) { "min_height" }
+                            Self.defaultBuildingExtrusionHeight
+                        }
                     }
+                    Self.defaultBuildingExtrusionHeight
                 }
-                Self.defaultBuildingExtrusionHeight
+                Self.maximumBuildingExtrusionHeight
             }
-            Self.maximumBuildingExtrusionHeight
+            Self.buildingExtrusionHeightScale
         }
     }
 
     static var buildingExtrusionMinHeightExpression: Exp {
-        Exp(.max) {
-            Exp(.toNumber) {
-                Exp(.coalesce) {
-                    Exp(.get) { "min_height" }
-                    0.0
+        Exp(.product) {
+            Exp(.max) {
+                Exp(.toNumber) {
+                    Exp(.coalesce) {
+                        Exp(.get) { "min_height" }
+                        0.0
+                    }
                 }
+                0.0
             }
-            0.0
+            Self.buildingExtrusionHeightScale
         }
     }
 
@@ -2971,8 +2978,14 @@ final class MapLayerManager {
             let height = max(
                 building.properties.heightM ?? building.properties.height,
                 Self.defaultBuildingExtrusionHeight
+            ) * Self.buildingExtrusionHeightScale
+            let base = max(
+                0,
+                min(
+                    building.properties.minHeight * Self.buildingExtrusionHeightScale,
+                    height - 0.01
+                )
             )
-            let base = max(0, min(building.properties.minHeight, height - 0.01))
             let roofOverlayBase = height + Self.townhomeOverlayHeightLift
             let overlayHeight = roofOverlayBase + Self.townhomeOverlayPlateThickness
             let dividerHeight = overlayHeight + Self.townhomeDividerLineLift
@@ -3660,7 +3673,10 @@ final class MapLayerManager {
             buildingByAddressId: buildingByAddressId,
             requireHouseNumberLabel: true,
             requireCurrentBuildingLink: true,
-            keepSingleAddressCoordinate: true
+            // Canonical address points commonly describe a road/driveway entrance. Once the
+            // backend has linked an address to a footprint, render the label on that footprint
+            // so a valid parcel link cannot leave the visible marker bunched in the road.
+            keepSingleAddressCoordinate: false
         )
 
         let existingAddressFeatureIds = Set(addressPointFeatures.compactMap { feature -> String? in
@@ -3736,7 +3752,9 @@ final class MapLayerManager {
             buildingByAddressId: buildingByAddressId,
             requireHouseNumberLabel: false,
             requireCurrentBuildingLink: false,
-            keepSingleAddressCoordinate: true
+            // Use the same linked-footprint placement as the number label. Keeping the raw
+            // source coordinate here made the marker and its building disagree visually.
+            keepSingleAddressCoordinate: false
         )
 
         return try stableJSONData(withJSONObject: [
@@ -3980,7 +3998,7 @@ final class MapLayerManager {
                 labelZOffset = max(
                     properties.heightM ?? properties.height,
                     Self.defaultBuildingExtrusionHeight
-                ) + Self.addressNumberRoofClearance
+                ) * Self.buildingExtrusionHeightScale + Self.addressNumberRoofClearance
             } else {
                 return nil
             }
@@ -4162,7 +4180,7 @@ final class MapLayerManager {
                 height: max(
                     building.properties.heightM ?? building.properties.height,
                     Self.defaultBuildingExtrusionHeight
-                ),
+                ) * Self.buildingExtrusionHeightScale,
                 usesExplicitAddressIds: explicitAddressIds != nil
             )
         }

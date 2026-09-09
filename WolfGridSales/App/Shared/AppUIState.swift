@@ -22,6 +22,16 @@ struct PendingSalespersonDiallerListSelection: Identifiable, Equatable {
     let listTitle: String?
 }
 
+enum SalespersonCommunicationFilter: String, CaseIterable, Identifiable {
+    case inbox
+    case messages
+    case email
+    case phone
+
+    var id: String { rawValue }
+    var title: String { rawValue.uppercased() }
+}
+
 @MainActor
 final class AppUIState: ObservableObject {
     @Published var showTabBar: Bool = true
@@ -29,7 +39,6 @@ final class AppUIState: ObservableObject {
     @Published var colorScheme: ColorScheme? = nil // nil = system default
     /// Selected main-tab index. Each app target maps the index to its own tab set.
     @Published var selectedTabIndex: Int = 0
-    /// Campaign selected for the Session tab; the tab can show a filled icon and open this campaign.
     @Published var selectedMapCampaignId: UUID?
     @Published var selectedMapCampaignName: String?
     @Published var selectedMapCampaignBoundaryCoordinates: [CLLocationCoordinate2D] = []
@@ -38,6 +47,7 @@ final class AppUIState: ObservableObject {
     @Published var pendingLiveInviteHandoff: PendingLiveInviteHandoff?
     @Published var pendingSalespersonLeadListSelection: PendingSalespersonLeadListSelection?
     @Published var pendingSalespersonDiallerListSelection: PendingSalespersonDiallerListSelection?
+    @Published var salespersonCommunicationFilter: SalespersonCommunicationFilter = .inbox
     @Published private(set) var campaignCreationPresentationDepth: Int = 0
 
     var isCampaignCreationFlowPresented: Bool {
@@ -191,7 +201,7 @@ final class AppUIState: ObservableObject {
             listId: cleanId?.isEmpty == false ? cleanId : nil,
             listTitle: cleanTitle?.isEmpty == false ? cleanTitle : nil
         )
-        selectedTabIndex = 5
+        selectedTabIndex = 2
     }
 
     func openSalespersonDiallerList(id: String?, title: String?) {
@@ -201,7 +211,7 @@ final class AppUIState: ObservableObject {
             listId: cleanId?.isEmpty == false ? cleanId : nil,
             listTitle: cleanTitle?.isEmpty == false ? cleanTitle : nil
         )
-        selectedTabIndex = 1
+        selectedTabIndex = 3
     }
 
     func beginCalendarTabPresentation() {
@@ -239,4 +249,5 @@ final class AppUIState: ObservableObject {
             boundaryCoordinates: selectedMapCampaignBoundaryCoordinates
         )
     }
+
 }

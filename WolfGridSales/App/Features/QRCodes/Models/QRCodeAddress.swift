@@ -8,7 +8,7 @@ public struct QRCodeAddress: Identifiable, Codable, Equatable {
     public let formatted: String
     public let coordinate: CLLocationCoordinate2D?
     public let qrCodeImage: Data? // Cached QR code image data
-    public let webURL: String // https://wolfgrid.app/address/{id}
+    public let webURL: String // https://sales.wolfgrid.app/address/{id}
     public let deepLinkURL: String // wolfgrid://address/{id}
     public let createdAt: Date
     
@@ -34,7 +34,7 @@ public struct QRCodeAddress: Identifiable, Codable, Equatable {
     
     /// Generate URLs for this address
     static func generateURLs(for addressId: UUID) -> (webURL: String, deepLinkURL: String) {
-        let webURL = "https://wolfgrid.app/address/\(addressId.uuidString)"
+        let webURL = "https://sales.wolfgrid.app/address/\(addressId.uuidString)"
         let deepLinkURL = "wolfgrid://address/\(addressId.uuidString)"
         return (webURL, deepLinkURL)
     }

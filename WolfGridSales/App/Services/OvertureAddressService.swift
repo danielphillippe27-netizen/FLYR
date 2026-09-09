@@ -138,17 +138,17 @@ final class OvertureAddressService {
         let code: String
     }
 
-    /// Backend base URL (e.g. https://wolfgrid.app).
+    /// Backend base URL (e.g. https://sales.wolfgrid.app).
     private var baseURL: String {
-        (Bundle.main.object(forInfoDictionaryKey: "WOLFGRID_API_URL") as? String)?.trimmingCharacters(in: CharacterSet(charactersIn: "/")) ?? "https://wolfgrid.app"
+        (Bundle.main.object(forInfoDictionaryKey: "WOLFGRID_API_URL") as? String)?.trimmingCharacters(in: CharacterSet(charactersIn: "/")) ?? "https://sales.wolfgrid.app"
     }
 
     /// Base URL used for authenticated requests. Uses `www` when host is apex to avoid redirects stripping Authorization.
     private var requestBaseURL: String {
-        guard let components = URLComponents(string: baseURL), components.host == "wolfgrid.app" else {
+        guard let components = URLComponents(string: baseURL), components.host == "sales.wolfgrid.app" else {
             return baseURL
         }
-        return "https://wolfgrid.app"
+        return "https://sales.wolfgrid.app"
     }
 
     /// Whether base URL came from Info.plist (true) or default (false). For diagnostics.

@@ -1,0 +1,33 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "crons": [
+    {
+      "path": "/api/cron/company-research",
+      "schedule": "* * * * *"
+    },
+    {
+      "path": "/api/cron/social-publish",
+      "schedule": "* * * * *"
+    },
+    {
+      "path": "/api/cron/social-sync",
+      "schedule": "* * * * *"
+    },
+    {
+      "path": "/api/cron/salesperson-revenue-snapshots",
+      "schedule": "5 * * * *"
+    },
+    {
+      "path": "/api/cron/sales-automations",
+      "schedule": "* * * * *"
+    },
+    {
+      "path": "/api/cron/booking-reminders",
+      "schedule": "* * * * *"
+    },
+    {
+      "path": "/api/cron/email-sync",
+      "schedule": "* * * * *"
+    }
+  ]
+}

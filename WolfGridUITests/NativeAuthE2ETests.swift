@@ -58,4 +58,54 @@ final class NativeAuthE2ETests: XCTestCase {
             XCTFail("Presence publish did not complete: \(errorMessage)")
         }
     }
+
+    @MainActor
+    func testActualFieldRoutePublishesEveryMetric() throws {
+        let environment = ProcessInfo.processInfo.environment
+        let testBundle = Bundle(for: Self.self)
+        func setting(_ name: String) -> String? {
+            environment[name] ?? testBundle.object(forInfoDictionaryKey: name) as? String
+        }
+        let supabaseURL = try XCTUnwrap(setting("QA_SUPABASE_URL"))
+        let anonKey = try XCTUnwrap(setting("QA_SUPABASE_ANON_KEY"))
+        let email = try XCTUnwrap(setting("QA_IOS_EMAIL"))
+        let password = try XCTUnwrap(setting("QA_IOS_PASSWORD"))
+        let workspaceID = try XCTUnwrap(setting("QA_WORKSPACE_ID"))
+        let campaignID = try XCTUnwrap(setting("QA_CAMPAIGN_ID"))
+        let sessionID = try XCTUnwrap(setting("QA_SESSION_ID"))
+        let addressIDs = try XCTUnwrap(setting("QA_ADDRESS_IDS"))
+        XCTAssertEqual(addressIDs.split(separator: ",").count, 5)
+        XCTAssertTrue(["127.0.0.1", "localhost", "::1"].contains(URL(string: supabaseURL)?.host ?? ""))
+
+        let app = XCUIApplication()
+        app.launchEnvironment = [
+            "WOLFGRID_E2E": "1",
+            "WOLFGRID_E2E_FIELD_ROUTE": "1",
+            "WOLFGRID_E2E_SUPABASE_URL": supabaseURL,
+            "WOLFGRID_E2E_SUPABASE_ANON_KEY": anonKey,
+            "WOLFGRID_E2E_WORKSPACE_ID": workspaceID,
+            "WOLFGRID_E2E_CAMPAIGN_ID": campaignID,
+            "WOLFGRID_E2E_SESSION_ID": sessionID,
+            "WOLFGRID_E2E_ADDRESS_IDS": addressIDs,
+        ]
+        app.launch()
+
+        let emailField = app.textFields["auth.email"]
+        XCTAssertTrue(emailField.waitForExistence(timeout: 20))
+        emailField.tap()
+        emailField.typeText(email)
+        let passwordField = app.secureTextFields["auth.password"]
+        passwordField.tap()
+        passwordField.typeText(password)
+        app.buttons["auth.continue"].tap()
+
+        XCTAssertTrue(app.otherElements["route.dashboard"].waitForExistence(timeout: 30))
+        let runRoute = app.buttons["e2e.run.field-route"]
+        XCTAssertTrue(runRoute.waitForExistence(timeout: 10))
+        runRoute.tap()
+        if !app.staticTexts["e2e.field-route.completed"].waitForExistence(timeout: 60) {
+            let error = app.staticTexts["e2e.field-route.error"]
+            XCTFail("Field route did not complete: \(error.exists ? error.label : "no in-app error was reported")")
+        }
+    }
 }

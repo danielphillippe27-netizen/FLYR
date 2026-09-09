@@ -278,6 +278,7 @@ struct MapDrawingView: View {
             closed.append(first)
         }
         polygonVertices = closed
+        HapticManager.success()
         onPolygonDone(closed)
         if dismissOnPolygonDone {
             dismiss()
@@ -291,6 +292,7 @@ struct MapDrawingView: View {
         if closed.first != closed.last, let first = closed.first {
             closed.append(first)
         }
+        HapticManager.medium()
         trigger(closed)
         if dismissOnCreateCampaign {
             dismiss()

@@ -154,6 +154,8 @@ final class CalendarEventRepository {
             sourceId: event.sourceId,
             notes: event.notes,
             location: event.location,
+            conferenceProvider: event.conferenceProvider,
+            conferenceJoinURL: event.conferenceJoinURL,
             colorKey: event.colorKey,
             createdAt: event.createdAt,
             updatedAt: Date(),

@@ -2,6 +2,55 @@ import XCTest
 @testable import WolfGrid
 
 final class CampaignMapModeResolutionTests: XCTestCase {
+    func testCampaignRendererWaitsForResolvedBuildingData() {
+        XCTAssertNil(CampaignMapRendererDecision.resolve(
+            dataResolved: false,
+            hasRenderableBuildings: false,
+            activeSession: false,
+            sessionUses2D: false,
+            mapboxAvailable: true,
+            googleAvailable: true
+        ))
+    }
+
+    func testCampaignRendererUsesBuildingAvailabilityOutsideSessions() {
+        XCTAssertEqual(CampaignMapRendererDecision.resolve(
+            dataResolved: true,
+            hasRenderableBuildings: false,
+            activeSession: false,
+            sessionUses2D: false,
+            mapboxAvailable: true,
+            googleAvailable: true
+        ), .google2D)
+        XCTAssertEqual(CampaignMapRendererDecision.resolve(
+            dataResolved: true,
+            hasRenderableBuildings: true,
+            activeSession: false,
+            sessionUses2D: false,
+            mapboxAvailable: true,
+            googleAvailable: true
+        ), .mapbox3D)
+    }
+
+    func testActiveSessionDefaultsTo3DAndHonors2DOverride() {
+        XCTAssertEqual(CampaignMapRendererDecision.resolve(
+            dataResolved: true,
+            hasRenderableBuildings: false,
+            activeSession: true,
+            sessionUses2D: false,
+            mapboxAvailable: true,
+            googleAvailable: true
+        ), .mapbox3D)
+        XCTAssertEqual(CampaignMapRendererDecision.resolve(
+            dataResolved: true,
+            hasRenderableBuildings: true,
+            activeSession: true,
+            sessionUses2D: true,
+            mapboxAvailable: true,
+            googleAvailable: true
+        ), .google2D)
+    }
+
     func testExplicitMapModeWins() {
         XCTAssertEqual(
             CampaignMapMode.resolved(

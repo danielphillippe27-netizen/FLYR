@@ -480,7 +480,7 @@ struct IntegrationsView: View {
         isFUBActionInProgress = true
         Task {
             do {
-                let res = try await FUBPushLeadAPI.shared.testConnection()
+                let res = try await FUBConnectionTestAPI.shared.testConnection()
                 await MainActor.run {
                     isFUBActionInProgress = false
                     fubActionSuccess = true
@@ -501,7 +501,7 @@ struct IntegrationsView: View {
         isFUBActionInProgress = true
         Task {
             do {
-                let res = try await FUBPushLeadAPI.shared.syncCRM()
+                let res = try await FUBConnectionTestAPI.shared.syncCRM()
                 await MainActor.run {
                     isFUBActionInProgress = false
                     fubActionSuccess = true

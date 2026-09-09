@@ -652,6 +652,53 @@ enum OfflineMigrations {
             }
         }
 
+        migrator.registerMigration("cached_campaigns_workspace_scope_v1") { db in
+            let existingColumns = Set(try db.columns(in: "cached_campaigns").map(\.name))
+            if !existingColumns.contains("workspace_id") {
+                try db.alter(table: "cached_campaigns") { table in
+                    table.add(column: "workspace_id", .text)
+                }
+            }
+            try db.create(
+                index: "idx_cached_campaigns_workspace_id",
+                on: "cached_campaigns",
+                columns: ["workspace_id"],
+                ifNotExists: true
+            )
+        }
+
+        migrator.registerMigration("session_chat_cache_v1") { db in
+            try db.create(table: "cached_session_chat_rooms", ifNotExists: true) { table in
+                table.column("session_id", .text).primaryKey()
+                table.column("payload_json", .text).notNull()
+                table.column("updated_at", .text).notNull()
+            }
+            try db.create(table: "cached_session_chat_messages", ifNotExists: true) { table in
+                table.column("local_id", .text).primaryKey()
+                table.column("server_id", .text).unique()
+                table.column("session_id", .text).notNull()
+                table.column("client_message_id", .text).notNull().unique()
+                table.column("payload_json", .text).notNull()
+                table.column("delivery_state", .text).notNull()
+                table.column("local_audio_path", .text)
+                table.column("error_message", .text)
+                table.column("created_at", .text).notNull()
+                table.column("updated_at", .text).notNull()
+            }
+            try db.create(
+                index: "idx_cached_session_chat_messages_room_created",
+                on: "cached_session_chat_messages",
+                columns: ["session_id", "created_at"],
+                ifNotExists: true
+            )
+            try db.create(
+                index: "idx_cached_session_chat_messages_delivery",
+                on: "cached_session_chat_messages",
+                columns: ["delivery_state", "created_at"],
+                ifNotExists: true
+            )
+        }
+
         return migrator
     }
 }

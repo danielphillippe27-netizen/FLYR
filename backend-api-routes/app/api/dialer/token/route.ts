@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { resolveUserFromRequest } from '@/app/api/_utils/request-user';
 import {
   cleanTelnyxToken,
   decodeTelnyxJwt,
@@ -7,7 +6,8 @@ import {
   telnyxIdentifierMisconfiguration,
   validateTelnyxAccessTokenPayload,
 } from '@/lib/dialer/telnyx-token';
-import { createAdminClient } from '@/lib/supabase/server';
+import { getDialerRequestContext } from '@/lib/dialer/server';
+import { getSalespersonDialerSettings } from '@/lib/dialer/salesperson-settings';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -15,58 +15,6 @@ export const dynamic = 'force-dynamic';
 function envValue(name: string): string | null {
   const value = process.env[name]?.trim();
   return value ? value : null;
-}
-
-function envList(name: string): string[] {
-  return (process.env[name] ?? '')
-    .split(/[\n,]/)
-    .map((value) => value.trim())
-    .filter(Boolean);
-}
-
-function normalizeEmail(email: string | null): string | null {
-  return email?.trim().toLowerCase() || null;
-}
-
-function isAllowedForDialer(workspaceId: string, email: string | null): boolean {
-  const allowedWorkspaces = new Set(envList('DIALER_ENABLED_WORKSPACE_IDS'));
-  const allowedEmails = new Set(envList('DIALER_ENABLED_EMAILS').map((value) => value.toLowerCase()));
-
-  if (allowedWorkspaces.size === 0 && allowedEmails.size === 0) {
-    return true;
-  }
-
-  return allowedWorkspaces.has(workspaceId) || (email ? allowedEmails.has(email) : false);
-}
-
-async function userCanAccessWorkspace(userId: string, workspaceId: string): Promise<boolean> {
-  const supabase = createAdminClient();
-
-  const { data: ownedWorkspace, error: ownedError } = await supabase
-    .from('workspaces')
-    .select('id')
-    .eq('id', workspaceId)
-    .eq('owner_id', userId)
-    .maybeSingle();
-
-  if (ownedError) {
-    throw ownedError;
-  }
-
-  if (ownedWorkspace?.id) return true;
-
-  const { data: membership, error: membershipError } = await supabase
-    .from('workspace_members')
-    .select('workspace_id')
-    .eq('workspace_id', workspaceId)
-    .eq('user_id', userId)
-    .maybeSingle();
-
-  if (membershipError) {
-    throw membershipError;
-  }
-
-  return !!membership?.workspace_id;
 }
 
 async function createTelnyxAccessToken(
@@ -114,38 +62,36 @@ async function createTelnyxAccessToken(
 
 export async function GET(request: NextRequest) {
   try {
-    const user = await resolveUserFromRequest(request);
-    if (!user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
-
-    const workspaceId = request.nextUrl.searchParams.get('workspaceId')?.trim();
-    if (!workspaceId) {
+    const requestedWorkspaceId = request.nextUrl.searchParams.get('workspaceId')?.trim();
+    if (!requestedWorkspaceId) {
       return NextResponse.json({ error: 'workspaceId is required.' }, { status: 400 });
     }
+    // Use the same access rules as every other dialler endpoint. In particular,
+    // active salesperson accounts receive the salesperson override instead of
+    // being rejected by the legacy environment-only iOS token allowlist.
+    const context = await getDialerRequestContext(request, requestedWorkspaceId);
+    if (context instanceof NextResponse) return context;
 
-    const email = normalizeEmail(user.email);
-    if (!isAllowedForDialer(workspaceId, email)) {
-      return NextResponse.json({ error: 'Dialer is not enabled for this workspace.' }, { status: 403 });
-    }
-
-    const canAccessWorkspace = await userCanAccessWorkspace(user.id, workspaceId);
-    if (!canAccessWorkspace) {
-      return NextResponse.json({ error: 'You are not authorized for this workspace.' }, { status: 403 });
-    }
-
-    const credentialId =
-      envValue('TELNYX_IOS_TELEPHONY_CREDENTIAL_ID') ??
-      envValue('TELNYX_TELEPHONY_CREDENTIAL_ID');
+    const assignment = await getSalespersonDialerSettings(context.admin, context.salesperson?.id);
+    const voice = assignment?.number_status === 'active' && assignment.workspace_id === context.workspaceId
+      ? assignment.provisioning_metadata
+      : null;
+    const assignedCredentialId = typeof voice?.telnyx_telephony_credential_id === 'string'
+      ? voice.telnyx_telephony_credential_id.trim() : null;
+    // A shared SDK credential can deliver another user's incoming calls even
+    // when the response says incomingAllowed=false. Never issue one to a user.
+    const credentialId = assignedCredentialId;
     if (!credentialId) {
       return NextResponse.json(
-        { error: 'Telnyx telephony credential is not configured.' },
-        { status: 503 }
+        { error: 'A personal phone number and voice credential must be assigned before calling.' },
+        { status: 409 }
       );
     }
 
     const { token, payload } = await createTelnyxAccessToken(credentialId);
     const expiresAt = payload?.exp ? new Date(payload.exp * 1000).toISOString() : null;
+    const fromNumber = context.settings.defaultFromNumber;
+    const smsFromNumber = context.settings.defaultSmsFromNumber;
 
     return NextResponse.json({
       provider: 'telnyx',
@@ -153,11 +99,15 @@ export async function GET(request: NextRequest) {
       token,
       identity: payload?.sub ?? credentialId,
       expiresAt,
-      incomingAllowed: false,
-      voipPushConfigured: !!envValue('TELNYX_IOS_PUSH_CREDENTIAL_ID'),
+      incomingAllowed: Boolean(assignedCredentialId && voice?.telnyx_inbound_configured === true),
+      voipPushConfigured: assignedCredentialId
+        ? voice?.telnyx_ios_push_configured === true
+        : !!envValue('TELNYX_IOS_PUSH_CREDENTIAL_ID'),
       telnyxTelephonyCredentialId: credentialId,
       requiresTelnyxVoiceSdk: true,
-      fromNumber: envValue('TELNYX_FROM_NUMBER'),
+      fromNumber,
+      smsFromNumber,
+      allowSmsFollowup: context.settings.allowSmsFollowup && !!smsFromNumber,
     });
   } catch (error) {
     console.error('[dialer/token]', error);

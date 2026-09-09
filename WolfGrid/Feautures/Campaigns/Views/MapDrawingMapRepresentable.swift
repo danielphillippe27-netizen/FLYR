@@ -457,7 +457,16 @@ struct MapDrawingMapRepresentable: UIViewRepresentable {
                   let mapView = mapView ?? sender.view as? MapView,
                   let map = mapView.mapboxMap else { return }
             let point = sender.location(in: mapView)
-            if vertexIndexNear(point: point, in: mapView) != nil { return }
+            if let vertexIndex = vertexIndexNear(point: point, in: mapView) {
+                // Tapping the first marker closes a valid polygon. Other marker taps
+                // remain no-ops so they do not accidentally add overlapping points.
+                if vertexIndex == 0,
+                   polygonVertices.count >= 3,
+                   let firstVertex = polygonVertices.first {
+                    onTap?(firstVertex)
+                }
+                return
+            }
             let coordinate = map.coordinate(for: point)
             onTap?(CLLocationCoordinate2D(latitude: coordinate.latitude, longitude: coordinate.longitude))
         }
@@ -471,6 +480,7 @@ struct MapDrawingMapRepresentable: UIViewRepresentable {
             case .began:
                 if let index = vertexIndexNear(point: point, in: mapView) {
                     draggingVertexIndex = index
+                    HapticManager.light()
                 }
             case .changed:
                 if let index = draggingVertexIndex {
@@ -478,6 +488,9 @@ struct MapDrawingMapRepresentable: UIViewRepresentable {
                     onMoveVertex?(index, CLLocationCoordinate2D(latitude: coordinate.latitude, longitude: coordinate.longitude))
                 }
             case .ended, .cancelled:
+                if draggingVertexIndex != nil {
+                    HapticManager.soft()
+                }
                 draggingVertexIndex = nil
             default:
                 break

@@ -355,12 +355,12 @@ final class CampaignDownloadService: ObservableObject {
 
     func computeMapAssetReadiness(campaignId: String) async -> CampaignMapAssetReadiness {
         let assetCounts = await campaignRepository.getOfflineAssetCounts(campaignId: campaignId)
-        let bundle = await campaignRepository.getCampaignMapBundle(campaignId: campaignId)
-        let hasCanonicalBundle = bundle?.metadata != nil
-        let buildingsCount = bundle?.buildings.features.count ?? assetCounts.buildings
-        let addressesCount = bundle?.addresses.features.count ?? assetCounts.addresses
-        let roadsCount = bundle?.roads.features.count ?? assetCounts.roads
-        let hasLinkedAddressIdentity = Self.hasLinkedAddressIdentity(bundle: bundle)
+        let bundleMetadata = await campaignRepository.getCampaignMapBundleMetadata(campaignId: campaignId)
+        let hasCanonicalBundle = bundleMetadata != nil
+        let buildingsCount = assetCounts.buildings
+        let addressesCount = assetCounts.addresses
+        let roadsCount = assetCounts.roads
+        let hasLinkedAddressIdentity = assetCounts.buildingLinks > 0 || (bundleMetadata?.cachedLinkCount ?? 0) > 0
 
         var missing: [String] = []
         if !hasCanonicalBundle { missing.append("map bundle") }
@@ -387,25 +387,6 @@ final class CampaignDownloadService: ObservableObject {
             hasLinkedAddressIdentity: hasLinkedAddressIdentity,
             progressPercent: progressPercent
         )
-    }
-
-    private static func hasLinkedAddressIdentity(bundle: OfflineCampaignMapBundle?) -> Bool {
-        guard let bundle else { return false }
-
-        if bundle.addresses.features.contains(where: { feature in
-            let buildingId = feature.properties.buildingGersId?
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            return buildingId?.isEmpty == false
-        }) {
-            return true
-        }
-
-        return bundle.buildings.features.contains(where: { feature in
-            if feature.properties.isLinked == true { return true }
-            let addressId = feature.properties.addressId?
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            return addressId?.isEmpty == false
-        })
     }
 
     func makeAvailableOffline(campaignId: String) async {

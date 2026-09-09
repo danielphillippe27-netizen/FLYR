@@ -714,6 +714,8 @@ struct V2CampaignsListSection: View {
     }
 
     private func buildingProgressPercent(for campaign: CampaignV2) -> Int? {
+        guard needsMapReadiness(for: campaign) else { return nil }
+
         if campaignDownloadService.mapReadiness(for: campaign.id.uuidString)?.isMapReady == true {
             return nil
         }
@@ -730,6 +732,17 @@ struct V2CampaignsListSection: View {
             status: campaign.provisionStatus,
             phase: campaign.provisionPhase
         )
+    }
+
+    private func needsMapReadiness(for campaign: CampaignV2) -> Bool {
+        if let tracked = provisionMonitor.tracked,
+           tracked.campaignId == campaign.id,
+           tracked.state == .queued || tracked.state == .preparingMap || tracked.state == .optimizing {
+            return true
+        }
+
+        guard campaign.status != .completed && campaign.status != .archived else { return false }
+        return campaign.provisionStatus == .pending || campaign.provisionPhase == .created
     }
 
     private func archiveCampaign(_ campaign: CampaignV2) {
@@ -775,6 +788,7 @@ struct V2CampaignsListSection: View {
                             }
                         }
                         .task(id: campaign.id) {
+                            guard needsMapReadiness(for: campaign) else { return }
                             guard campaignDownloadService.mapReadiness(for: campaign.id.uuidString) == nil else { return }
                             await campaignDownloadService.refreshMapAssetReadiness(campaignId: campaign.id.uuidString)
                         }

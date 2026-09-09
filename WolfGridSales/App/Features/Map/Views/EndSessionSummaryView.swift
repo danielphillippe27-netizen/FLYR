@@ -450,6 +450,7 @@ struct ShareActivityGateView: View {
     var onDismiss: () -> Void
     @Environment(\.colorScheme) private var colorScheme
     @State private var images: [UIImage] = []
+    @State private var showTeamChat = false
 
     var body: some View {
         Group {
@@ -463,6 +464,32 @@ struct ShareActivityGateView: View {
                     }
             } else {
                 ShareActivitySheet(images: images, onDismiss: onDismiss)
+            }
+        }
+        .safeAreaInset(edge: .bottom) {
+            if let sessionID {
+                Button {
+                    showTeamChat = true
+                } label: {
+                    Label("Open Team Chat", systemImage: "bubble.left.and.bubble.right.fill")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 18)
+                        .frame(height: 46)
+                        .background(Color.red)
+                        .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .padding(.bottom, 8)
+                .sheet(isPresented: $showTeamChat) {
+                    if let room = SessionChatStore.shared.rooms.first(where: { $0.sessionId == sessionID }) {
+                        NavigationStack {
+                            SessionChatRoomView(sessionId: sessionID, campaignId: room.campaignId)
+                        }
+                    } else {
+                        NavigationStack { TeamChatListView() }
+                    }
+                }
             }
         }
     }

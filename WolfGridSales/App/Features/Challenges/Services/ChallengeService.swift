@@ -523,7 +523,7 @@ actor ChallengeService {
     }
 
     nonisolated func inviteShareMessage(for challenge: Challenge) -> String {
-        let acceptLink = inviteURL(for: challenge)?.absoluteString ?? "https://wolfgrid.app/challenges"
+        let acceptLink = inviteURL(for: challenge)?.absoluteString ?? "https://sales.wolfgrid.app/challenges"
         let sender = challenge.creatorName?.trimmingCharacters(in: .whitespacesAndNewlines)
         let senderLine = (sender?.isEmpty == false)
             ? "\(sender!) opened a WolfGrid challenge."
@@ -546,21 +546,21 @@ actor ChallengeService {
 
     nonisolated func inviteURL(for challenge: Challenge) -> URL? {
         guard let token = challenge.inviteToken, !token.isEmpty else { return nil }
-        var components = URLComponents(string: "https://wolfgrid.app/challenges/join")
+        var components = URLComponents(string: "https://sales.wolfgrid.app/challenges/join")
         components?.queryItems = [URLQueryItem(name: "token", value: token)]
         return components?.url
     }
 
     nonisolated private var baseURL: String {
         (Bundle.main.object(forInfoDictionaryKey: "WOLFGRID_API_URL") as? String)?
-            .trimmingCharacters(in: CharacterSet(charactersIn: "/")) ?? "https://wolfgrid.app"
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/")) ?? "https://sales.wolfgrid.app"
     }
 
     nonisolated private var requestBaseURL: String {
-        guard let components = URLComponents(string: baseURL), components.host == "wolfgrid.app" else {
+        guard let components = URLComponents(string: baseURL), components.host == "sales.wolfgrid.app" else {
             return baseURL
         }
-        return "https://wolfgrid.app"
+        return "https://sales.wolfgrid.app"
     }
 
     private func fetchChallenges(column: String, matching userID: UUID) async throws -> [Challenge] {

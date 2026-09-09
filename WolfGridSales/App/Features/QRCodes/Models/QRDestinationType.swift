@@ -39,7 +39,7 @@ public enum QRDestinationType: String, CaseIterable, Identifiable, CustomStringC
     ) -> String {
         switch self {
         case .directLink:
-            return value ?? "https://wolfgrid.app"
+            return value ?? "https://sales.wolfgrid.app"
         }
     }
     

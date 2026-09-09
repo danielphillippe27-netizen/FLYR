@@ -38,6 +38,38 @@ actor AppleCalendarService {
         }
     }
 
+    func addMeeting(
+        title: String,
+        startAt: Date,
+        endAt: Date,
+        notes: String?,
+        joinURL: URL
+    ) async throws {
+        let access = try await requestWriteAccess()
+        guard access == .fullAccess || access == .writeOnly else {
+            throw AppleCalendarWriteError.accessDenied
+        }
+        guard let calendar = eventStore.defaultCalendarForNewEvents else {
+            throw AppleCalendarWriteError.noWritableCalendar
+        }
+
+        let event = EKEvent(eventStore: eventStore)
+        event.calendar = calendar
+        event.title = title
+        event.startDate = startAt
+        event.endDate = max(endAt, startAt.addingTimeInterval(60))
+        event.location = "Zoom"
+        event.url = joinURL
+        event.notes = [notes?.trimmingCharacters(in: .whitespacesAndNewlines), "Join Zoom: \(joinURL.absoluteString)"]
+            .compactMap { value in
+                guard let value, !value.isEmpty else { return nil }
+                return value
+            }
+            .joined(separator: "\n\n")
+        event.addAlarm(EKAlarm(relativeOffset: -10 * 60))
+        try eventStore.save(event, span: .thisEvent, commit: true)
+    }
+
     func fetchItems(start: Date, end: Date) async -> [CalendarItem] {
         guard currentAccessState() == .fullAccess else { return [] }
 
@@ -63,6 +95,27 @@ actor AppleCalendarService {
                 }
                 continuation.resume(returning: granted)
             }
+        }
+    }
+
+    private func requestWriteAccess() async throws -> AppleCalendarAccessState {
+        let current = accessState(for: EKEventStore.authorizationStatus(for: .event))
+        switch current {
+        case .fullAccess, .writeOnly:
+            return current
+        case .notDetermined:
+            let granted: Bool = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Bool, Error>) in
+                eventStore.requestWriteOnlyAccessToEvents { granted, error in
+                    if let error {
+                        continuation.resume(throwing: error)
+                    } else {
+                        continuation.resume(returning: granted)
+                    }
+                }
+            }
+            return granted ? .writeOnly : accessState(for: EKEventStore.authorizationStatus(for: .event))
+        case .denied, .restricted, .unavailable:
+            return current
         }
     }
 
@@ -108,6 +161,20 @@ actor AppleCalendarService {
             return .writeOnly
         @unknown default:
             return .unavailable
+        }
+    }
+}
+
+private enum AppleCalendarWriteError: LocalizedError {
+    case accessDenied
+    case noWritableCalendar
+
+    var errorDescription: String? {
+        switch self {
+        case .accessDenied:
+            return "Allow WolfGrid to add events in Settings to use Apple Calendar."
+        case .noWritableCalendar:
+            return "No writable Apple Calendar is available on this device."
         }
     }
 }

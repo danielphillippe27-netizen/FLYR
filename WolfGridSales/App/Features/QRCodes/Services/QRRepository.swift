@@ -31,9 +31,9 @@ actor QRRepository {
         
         let qrUrl: String
         if let campaignId = campaignId {
-            qrUrl = "https://wolfgrid.app/address/\(addressId.uuidString)?device=\(deviceUUID)&campaign=\(campaignId.uuidString)"
+            qrUrl = "https://sales.wolfgrid.app/address/\(addressId.uuidString)?device=\(deviceUUID)&campaign=\(campaignId.uuidString)"
         } else {
-            qrUrl = "https://wolfgrid.app/address/\(addressId.uuidString)?device=\(deviceUUID)"
+            qrUrl = "https://sales.wolfgrid.app/address/\(addressId.uuidString)?device=\(deviceUUID)"
         }
         
         // Check for existing QR code for this address
@@ -158,9 +158,9 @@ actor QRRepository {
         let qrUUID = UUID().uuidString
         let qrUrl: String
         if let campaignId = campaignId {
-            qrUrl = "https://wolfgrid.app/qr/\(campaignId.uuidString)/\(qrUUID)?device=\(deviceUUID)"
+            qrUrl = "https://sales.wolfgrid.app/qr/\(campaignId.uuidString)/\(qrUUID)?device=\(deviceUUID)"
         } else {
-            qrUrl = "https://wolfgrid.app/qr/farm/\(farmId!.uuidString)/\(qrUUID)?device=\(deviceUUID)"
+            qrUrl = "https://sales.wolfgrid.app/qr/farm/\(farmId!.uuidString)/\(qrUUID)?device=\(deviceUUID)"
         }
         
         // Check for duplicate first

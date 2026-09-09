@@ -123,6 +123,8 @@ actor FlyrCalendarService {
             sourceId: existing?.sourceId,
             notes: normalizedNotes,
             location: trimmedLocation ?? existing?.location ?? item.location,
+            conferenceProvider: existing?.conferenceProvider,
+            conferenceJoinURL: existing?.conferenceJoinURL ?? item.conferenceJoinURL,
             colorKey: existing?.colorKey ?? item.colorKey,
             createdAt: existing?.createdAt ?? Date(),
             updatedAt: Date(),
