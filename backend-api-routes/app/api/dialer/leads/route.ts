@@ -86,7 +86,7 @@ export async function GET(request: NextRequest) {
       .limit(2000);
     query = scopeQuery(query, context);
     query = focusedIds.length > 0
-      ? query.in('id', focusedIds)
+      ? query.in('id', focusedIds).neq('lead_state', 'archived')
       : query.in('lead_state', ACTIVE_QUEUE_STATES);
 
     const { data, error } = await query;
@@ -259,9 +259,36 @@ export async function DELETE(request: NextRequest) {
   if (context instanceof NextResponse) return context;
 
   const id = clean(body.id);
-  if (!id) return NextResponse.json({ error: 'Lead id is required.' }, { status: 400 });
+  const deleteAll = body.deleteAll === true;
+  if (!deleteAll && !id) {
+    return NextResponse.json({ error: 'Lead id is required.' }, { status: 400 });
+  }
+
+  // An explicit selection must never fall back to clearing the entire queue.
+  const hasSelection = 'ids' in body;
+  if (deleteAll && hasSelection && (!Array.isArray(body.ids) || body.ids.some(
+    (value) => typeof value !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value.trim())
+  ))) {
+    return NextResponse.json({ error: 'Choose valid lead IDs to remove.' }, { status: 400 });
+  }
 
   try {
+    if (deleteAll) {
+      const ids = Array.isArray(body.ids)
+        ? Array.from(new Set((body.ids as string[]).map((value) => value.trim())))
+        : [];
+      if (hasSelection && ids.length === 0) return NextResponse.json({ deletedCount: 0 });
+
+      let query = scopeQuery(context.admin
+        .from('sales_leads')
+        .update({ lead_state: 'archived', updated_at: new Date().toISOString() }, { count: 'exact' })
+        .eq('workspace_id', context.workspaceId), context);
+      query = hasSelection ? query.in('id', ids) : query.in('lead_state', ACTIVE_QUEUE_STATES);
+      const { count, error } = await query;
+      if (error) throw error;
+      return NextResponse.json({ deletedCount: count ?? 0 });
+    }
+
     const existing = await loadLead(context, id);
     if (!existing) return NextResponse.json({ deletedCount: 0 });
     const { error } = await context.admin
