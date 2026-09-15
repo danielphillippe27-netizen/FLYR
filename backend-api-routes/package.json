@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test": "tsx --test lib/meetings/*.test.ts && tsx --test app/lib/crm-sparse-enrich.test.ts && tsx --test lib/company-research/__tests__/*.test.ts && tsx --test lib/dialer/__tests__/*.test.ts && tsx --test lib/geo/__tests__/*.test.ts && tsx --test lib/scraper/__tests__/*.test.ts && tsx --test lib/services/__tests__/AddressLabelQuality.test.ts && tsx --test lib/services/__tests__/AddressDisplayIdentity.test.ts && tsx lib/services/__tests__/CampaignLinkQualityService.test.ts && tsx lib/services/__tests__/CampaignProvisionQuality.test.ts && tsx lib/services/__tests__/CampaignProvisionPostProcessing.test.ts && tsx lib/services/__tests__/ProvisionPerformance.test.ts && tsx lib/services/__tests__/CampaignParcelFeatureService.test.ts && tsx lib/services/__tests__/AddressCandidateTrustService.test.ts && tsx lib/services/__tests__/ReverseGeocodeService.test.ts && tsx lib/services/__tests__/TownhouseUnitIdentity.test.ts",
+    "test": "tsx --test lib/meetings/*.test.ts && tsx --test app/lib/crm-sparse-enrich.test.ts && tsx --test lib/company-research/__tests__/*.test.ts && tsx --test lib/dialer/__tests__/*.test.ts && tsx --test lib/geo/__tests__/*.test.ts && tsx --test lib/scraper/__tests__/*.test.ts && tsx --test lib/services/__tests__/AddressLabelQuality.test.ts && tsx --test lib/services/__tests__/AddressDisplayIdentity.test.ts && tsx lib/services/__tests__/CampaignLinkQualityService.test.ts && tsx lib/services/__tests__/CampaignProvisionQuality.test.ts && tsx lib/services/__tests__/CampaignProvisionPostProcessing.test.ts && tsx lib/services/__tests__/ProvisionPerformance.test.ts && tsx lib/services/__tests__/CampaignParcelFeatureService.test.ts && tsx lib/services/__tests__/AddressCandidateTrustService.test.ts && tsx lib/services/__tests__/ReverseGeocodeService.test.ts && tsx lib/services/__tests__/TownhouseUnitIdentity.test.ts && npm run test:hiring",
     "test:dialer": "tsx --test lib/dialer/__tests__/*.test.ts",
     "test:social": "tsx --test lib/social/__tests__/*.test.ts",
     "test:scraper": "tsx --test lib/scraper/__tests__/*.test.ts",
@@ -16,7 +16,8 @@
     "test:provision-performance": "tsx lib/services/__tests__/ProvisionPerformance.test.ts",
     "test:stable-linker": "tsx lib/services/__tests__/StableLinkerService.test.ts",
     "test:address-candidate-trust": "tsx lib/services/__tests__/AddressCandidateTrustService.test.ts",
-    "test:reverse-geocode": "tsx lib/services/__tests__/ReverseGeocodeService.test.ts"
+    "test:reverse-geocode": "tsx lib/services/__tests__/ReverseGeocodeService.test.ts",
+    "test:hiring": "tsx --test lib/hiring/__tests__/*.test.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.758.0",

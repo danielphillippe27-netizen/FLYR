@@ -5294,6 +5294,22 @@ struct SalespersonLeadsView: View {
         NavigationStack {
             VStack(spacing: 0) {
                 scraperDialerBanner
+                NavigationLink {
+                    HiringLeadsView()
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: "briefcase.fill").foregroundStyle(.red)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Hiring Leads").font(.subheadline.weight(.semibold))
+                            Text("New employer postings · Canada + USA")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 16).padding(.vertical, 12)
+                }
+                .buttonStyle(.plain)
                 contactsListsSwitcher
                 if isSearchVisible {
                     salespersonListSearchBar
