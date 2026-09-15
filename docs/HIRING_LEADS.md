@@ -81,5 +81,13 @@ Backend deployment `dpl_5nZaRHvyHq1xxVNszKYpLRQbouFZ` is live at
 https://sales.wolfgrid.app. Unauthorized feed/cron requests return 401; unsigned
 webhooks return 403; signed validation-only CA/USA requests return 200 without writes.
 Ten backend tests, TypeScript, PostgreSQL migration/behavior checks passed.
-Device build/install and source activation are still pending. No paid source subscription has been purchased. Source activation is pending
+Signed iOS device build passed. Installed and launched on Daniel’s iPhone 16 Pro
+(bundle `com.danielphillippe.wolfgrid.sales`, process 7478). The transient developer
+disk-image mount issue cleared on the install attempt. Automatic source activation
+is pending. Authenticated in-app interaction has not been visually verified.
+Two already-revealed Leaf Home jobs were manually seeded from TheirStack pages:
+Ontario `842740793` and Kansas `842807932`, with company website and posting links.
+Neither supplied a hiring contact. No API credits were used. Signed manual replay
+of the real Ontario job through the production receiver returned 200 without duplication.
+The actual Swift models also decoded the SQL enrichment contract successfully. No paid source subscription has been purchased. Source activation is pending
 explicit persistent-API-key/trial-credit confirmation in the task.
