@@ -5,6 +5,7 @@ import Storage
 import Supabase
 
 private enum HomeRoute: Hashable {
+    case calendar
     case campaigns
     case campaign(UUID)
     case activity
@@ -48,6 +49,8 @@ struct HomeView: View {
                 .toolbar(.hidden, for: .navigationBar)
                 .navigationDestination(item: $selectedRoute) { route in
                     switch route {
+                    case .calendar:
+                        CalendarTabView(showsMoreBackButton: true)
                     case .campaigns:
                         CampaignsView()
                     case .campaign(let campaignID):
@@ -278,6 +281,9 @@ struct HomeView: View {
                         ],
                         spacing: 16
                     ) {
+                        HomeGridTile(title: "Calendar", icon: .system("calendar")) {
+                            selectedRoute = .calendar
+                        }
                         HomeGridTile(title: "Campaign", icon: .system("scope")) {
                             selectedRoute = .campaigns
                         }

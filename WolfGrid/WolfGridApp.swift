@@ -67,7 +67,15 @@ struct WolfGridApp: App {
 
     var body: some Scene {
         WindowGroup {
-            AuthGate(routeState: routeState)
+            Group {
+                #if DEBUG
+                if ProcessInfo.processInfo.arguments.contains("--wolfy-lab") {
+                    WolfyLaboratoryEntryView()
+                } else { AuthGate(routeState: routeState) }
+                #else
+                AuthGate(routeState: routeState)
+                #endif
+            }
                 .environmentObject(uiState)
                 .environmentObject(entitlementsService)
                 .environmentObject(routeState)
