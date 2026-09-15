@@ -113,3 +113,6 @@ automatic trial delivery is now configured.
   both passed. No automatic top-up or paid subscription was enabled.
 - The setup API token is not committed or needed in the receiving backend. The
   independent webhook signing secret is stored as a sensitive production variable.
+
+Activation deployment `dpl_CydSSgpsMnUPJZ4ptuCH35pDLjJJ` is live at sales.wolfgrid.app;
+final signed validation-only check returned 200. The temporary setup API token was removed.
