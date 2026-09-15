@@ -3852,7 +3852,17 @@ final class MapLayerManager {
             var labelPriority: Double
             var labelZOffset = Self.addressMarkerExtrusionHeight + Self.addressNumberRoofClearance
 
-            if let linkedBuilding {
+            let usesCanonicalPlacement = ["parcel_center", "building_centroid", "building_parcel_centroid"]
+                .contains(feature.properties.pinPlacement ?? "")
+            if usesCanonicalPlacement {
+                // Server placement includes townhouse/parcel intersections. A
+                // whole-building center would collapse neighboring unit pins.
+                resolvedCoordinate = baseCoordinate
+                labelPriority = feature.properties.labelPriority ?? 90
+                if let linkedBuilding {
+                    labelZOffset = linkedBuilding.height + Self.addressNumberRoofClearance
+                }
+            } else if let linkedBuilding {
                 let totalAddresses = linkedAddressCount(for: linkedBuilding)
                 let addressIndex = addressUUID.flatMap { uuid in
                     linkedBuilding.orderedAddressIds.firstIndex(of: uuid)
