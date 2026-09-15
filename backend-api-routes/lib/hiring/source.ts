@@ -7,7 +7,7 @@ export function hiringSource() {
       name: 'TheirStack', configured: theirStackConfigured(), mode: 'webhook',
       attributionURL: 'https://theirstack.com',
       coverage: 'TheirStack aggregates job boards and company career sites. Coverage and hiring-contact availability vary; this is not every posting on every site.',
-      collectionDescription: 'Door-to-door, canvassing, field sales and outside sales in Canada and the USA. New postings arrive automatically from the connected search.',
+      collectionDescription: ['Door-to-door, canvassing, field sales and outside sales in Canada and the USA. New postings arrive automatically from the connected search.', process.env.HIRING_THEIRSTACK_NOTICE].filter(Boolean).join(' '),
     };
   }
   return {

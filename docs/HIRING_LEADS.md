@@ -84,10 +84,32 @@ Ten backend tests, TypeScript, PostgreSQL migration/behavior checks passed.
 Signed iOS device build passed. Installed and launched on Daniel’s iPhone 16 Pro
 (bundle `com.danielphillippe.wolfgrid.sales`, process 7478). The transient developer
 disk-image mount issue cleared on the install attempt. Automatic source activation
-is pending. Authenticated in-app interaction has not been visually verified.
+is now active as described below. Authenticated in-app interaction has not been visually verified.
 Two already-revealed Leaf Home jobs were manually seeded from TheirStack pages:
 Ontario `842740793` and Kansas `842807932`, with company website and posting links.
 Neither supplied a hiring contact. No API credits were used. Signed manual replay
 of the real Ontario job through the production receiver returned 200 without duplication.
-The actual Swift models also decoded the SQL enrichment contract successfully. No paid source subscription has been purchased. Source activation is pending
-explicit persistent-API-key/trial-credit confirmation in the task.
+The actual Swift models also decoded the SQL enrichment contract successfully. No paid source subscription has been purchased. The user supplied the setup API key;
+automatic trial delivery is now configured.
+
+
+## Source activation — 2026-09-15
+
+- TheirStack webhook `6130` is active, uses the saved search `66398`, signs deliveries,
+  and scans hourly from activation (`2026-09-15T13:58:17Z`). It subscribes to `job_new`.
+- Trial limit is **50 new postings per UTC day**, all postings rather than one per company.
+  Extra matches are dropped, not queued. Volume estimate: 364 new postings/day.
+- `HIRING_THEIRSTACK_ENABLED=true` and `HIRING_THEIRSTACK_NOTICE` expose the trial
+  limit in the app's coverage details. Exhausted source credits stop further delivery.
+- The provider's own signed webhook test returned 200 using validation-only mode.
+- Initial API retrieval fetched 5 CA and 5 US jobs from the last 7 days with
+  `property_exists_and: ["hiring_team"]`. All 10 records validated and imported via
+  the live receiver. The ongoing webhook keeps all matching jobs, including those
+  without hiring contacts; the initial contact filter does not narrow daily coverage.
+- Trial API credits: 10 used, 190 remaining at verification. The 2 original manual
+  records remain. Initial imports are distinct from the first scheduled webhook batch.
+- The provider reported zero scheduled delivery events at activation verification;
+  the first hourly batch remains to be observed. API import and signed provider test
+  both passed. No automatic top-up or paid subscription was enabled.
+- The setup API token is not committed or needed in the receiving backend. The
+  independent webhook signing secret is stored as a sensitive production variable.
