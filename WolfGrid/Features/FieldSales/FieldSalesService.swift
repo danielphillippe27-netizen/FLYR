@@ -10,6 +10,9 @@ struct FieldSalesSnapshot: Decodable {
     var currency: String?
     var timezone: String?
     var team_revenue_visible: Bool?
+    var pro_sales_version: Int?
+    var capabilities: [String: Bool]?
+    var verification_required: Bool?
     var today: String?
     var month: String?
     var as_of: String?
@@ -54,7 +57,7 @@ struct FieldSalesSnapshot: Decodable {
     struct Lead: Decodable, Identifiable { let id: UUID; let name: String; let campaign_id: UUID? }
     struct Appointment: Decodable, Identifiable { let id: UUID; let contact_id: UUID; let scheduled_at: String }
     struct CampaignOption: Decodable, Identifiable { let id: UUID; let name: String }
-    var manager: Bool { role == "owner" || role == "admin" }
+    var manager: Bool { role == "owner" || role == "admin" || role == "manager" }
 }
 
 extension Notification.Name { static let fieldSalesChanged = Notification.Name("fieldSalesChanged") }
@@ -69,8 +72,8 @@ enum FieldSalesService {
         var p_status: String?
     }
     struct HistoryEvent: Decodable, Identifiable {
-        let id: UUID; let action: String; let actor: String; let created_at: String; let status: String
-        let value_minor: String; let currency: String; let sold_on: String; let version: Int; let reason: String?
+        let id: UUID; let action: String; let actor: String; let created_at: String; let status: String?
+        let value_minor: String?; let currency: String?; let sold_on: String?; let version: Int?; let reason: String?
     }
     static func history(_ workspace: UUID, sale: UUID) async throws -> [HistoryEvent] {
         struct Params: Encodable { let p_workspace: UUID; let p_sale: UUID }
@@ -89,12 +92,14 @@ enum FieldSalesService {
         await MainActor.run { NotificationCenter.default.post(name: .fieldSalesChanged, object: nil) }
     }
     static func money(_ value: String?, currency: String?) -> String {
-        guard let value, value.range(of: #"^[0-9]+$"#, options: .regularExpression) != nil else { return "Private" }
+        guard let value, value.range(of: #"^-?[0-9]+$"#, options: .regularExpression) != nil else { return "Private" }
+        let negative = value.hasPrefix("-")
+        let magnitude = negative ? String(value.dropFirst()) : value
         let code = currency ?? "CAD"
-        let amount = editableMoney(value, currency: code).split(separator: ".")
+        let amount = editableMoney(magnitude, currency: code).split(separator: ".")
         let digits = Array(String(amount[0]).reversed())
         let grouped = stride(from: 0, to: digits.count, by: 3).map { String(digits[$0..<min($0 + 3, digits.count)].reversed()) }.reversed().joined(separator: ",")
-        return "\(code) \(grouped)" + (amount.count > 1 ? ".\(amount[1])" : "")
+        return "\(code) \(negative ? "−" : "")\(grouped)" + (amount.count > 1 ? ".\(amount[1])" : "")
     }
     static func editableMoney(_ value: String?, currency: String?) -> String {
         guard let value else { return "" }
@@ -111,7 +116,27 @@ enum FieldSalesService {
         guard minor > 0, minor <= Decimal(9_000_000_000_000_000 as Int64) else { throw validation("Contract value is outside the supported range.") }
         return NSDecimalNumber(decimal: minor).stringValue
     }
+    static func commissionMinorUnits(value: String, percentage: String, currency: String) throws -> String {
+        let text = percentage.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard text.range(of: #"^[0-9]+(?:\.[0-9]{1,2})?$"#, options: .regularExpression) != nil,
+              let rate = Decimal(string: text, locale: Locale(identifier: "en_US_POSIX")), rate >= 0, rate <= 100 else {
+            throw validation("Enter a commission percentage from 0 to 100, with up to two decimal places.")
+        }
+        let minor = try minorUnits(value, currency: currency)
+        var calculated = Decimal(string: minor)! * rate / 100
+        var rounded = Decimal()
+        NSDecimalRound(&rounded, &calculated, 0, .plain)
+        return NSDecimalNumber(decimal: rounded).stringValue
+    }
     static func validation(_ message: String) -> NSError { NSError(domain: "FieldSales", code: 1, userInfo: [NSLocalizedDescriptionKey: message]) }
+    static func timestamp(_ value: String, timezone: String) -> String {
+        let parser = ISO8601DateFormatter(); parser.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        var date = parser.date(from: value)
+        if date == nil { parser.formatOptions = [.withInternetDateTime]; date = parser.date(from: value) }
+        guard let date else { return value }
+        let formatter = DateFormatter(); formatter.dateStyle = .medium; formatter.timeStyle = .short; formatter.timeZone = TimeZone(identifier: timezone)
+        return formatter.string(from: date)
+    }
 }
 
 @MainActor final class FieldSalesModel: ObservableObject {
@@ -119,6 +144,7 @@ enum FieldSalesService {
     @Published var error: String?
     @Published var loading = false
     private var generation = UUID()
+    func cancelPending() { generation = UUID(); loading = false }
     func clear() { generation = UUID(); data = nil; error = nil; loading = false }
     func load(_ filter: FieldSalesService.Filter) async {
         let ticket = UUID(); generation = ticket; loading = true

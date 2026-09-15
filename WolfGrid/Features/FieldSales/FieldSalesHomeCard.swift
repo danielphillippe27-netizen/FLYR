@@ -29,14 +29,17 @@ struct FieldSalesHomeCard: View {
 struct FieldSalesEntryLink: View {
     var leadID: UUID? = nil
     var leaderboard = false
+    var appointmentID: UUID? = nil
+    var campaignID: UUID? = nil
+    var propertyKey: String? = nil
     @ObservedObject private var auth = AuthManager.shared
     @ObservedObject private var workspace = WorkspaceContext.shared
     @State private var enabledScope: String?
     private var scope: String { "\(auth.user?.id.uuidString ?? ""):\(workspace.workspaceId?.uuidString ?? "")" }
     var body: some View {
         Group {
-            if enabledScope == scope {
-                NavigationLink(leaderboard ? "Sales & Revenue leaderboard · Beta" : "Record Sale · Beta") { FieldSalesRootView(leadID: leadID, leaderboardOnly: leaderboard) }
+            if enabledScope == scope, leaderboard || appointmentID != nil {
+                NavigationLink(leaderboard ? "Sales & Revenue leaderboard · Beta" : "Convert to sale") { FieldSalesRootView(leadID: leadID, leaderboardOnly: leaderboard, appointmentID: appointmentID, propertyKey: propertyKey, campaignID: campaignID) }
             }
         }.task(id: scope) {
             enabledScope = nil
@@ -45,4 +48,37 @@ struct FieldSalesEntryLink: View {
             if let data = try? await FieldSalesService.bootstrap(space), data.enabled, !Task.isCancelled, key == scope { enabledScope = key }
         }
     }
+}
+
+// Standalone entry for Home variants that do not use the Wolfy Home summary model.
+struct FieldSalesHomeModule: View {
+    @ObservedObject private var auth = AuthManager.shared
+    @ObservedObject private var context = WorkspaceContext.shared
+    var body: some View {
+        if let user = auth.user?.id, let workspace = context.workspaceId {
+            FieldSalesHomeModuleContent(workspace: workspace).id("\(user):\(workspace)")
+        }
+    }
+}
+private struct FieldSalesHomeModuleContent: View {
+    let workspace: UUID
+    @StateObject private var model = FieldSalesModel()
+    @Environment(\.scenePhase) private var scene
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if let data = model.data, data.enabled {
+                VStack(alignment: .leading, spacing: 10) {
+                    if data.pro_sales_version != nil { FieldSalesProHomeView(refreshToken: data.as_of) }
+                    else {
+                        FieldSalesHomeCard(data: data)
+                        if let coaching = data.coaching { Text("Wolfy: \(coaching)").font(.subheadline) }
+                    }
+                }
+            }
+        }.task { await reload() }
+        .onReceive(NotificationCenter.default.publisher(for: .fieldSalesChanged)) { _ in Task { await reload() } }
+        .onChange(of: scene) { _, value in if value == .active { Task { await reload() } } }
+        .onDisappear { model.cancelPending() }
+    }
+    private func reload() async { await model.load(.init(p_workspace: workspace)) }
 }

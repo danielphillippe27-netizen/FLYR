@@ -250,6 +250,7 @@ struct HomeView: View {
     private var homeGrid: some View {
         ScrollView {
             VStack(spacing: 0) {
+                FieldSalesHomeModule().padding(.horizontal, 24).padding(.bottom, 16)
                 QuoteOfTheDaySection(
                     quote: dailyContent.quote,
                     isLoading: dailyContent.isLoading

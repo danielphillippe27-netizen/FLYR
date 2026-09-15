@@ -3,16 +3,63 @@ import SwiftUI
 struct FieldSalesRootView: View {
     var leadID: UUID? = nil
     var leaderboardOnly = false
+    var appointmentID: UUID? = nil
+    var opportunityID: UUID? = nil
+    var propertyKey: String? = nil
+    var campaignID: UUID? = nil
     @ObservedObject private var auth = AuthManager.shared
     @ObservedObject private var workspace = WorkspaceContext.shared
+    private var appointmentContext: [String:String] {
+        guard let appointmentID else { return [:] }
+        var context = ["appointment_id": appointmentID.uuidString]
+        if let leadID { context["contact_id"] = leadID.uuidString }
+        return context
+    }
     var body: some View {
         Group {
             if let user = auth.user?.id, let space = workspace.workspaceId {
-                FieldSalesScreen(workspace: space, user: user, leadID: leadID, leaderboardOnly: leaderboardOnly)
+                FieldSalesGate(workspace: space, user: user, leadID: leadID, leaderboardOnly: leaderboardOnly, initial: appointmentContext)
                     .id("\(user):\(space)")
             } else { ContentUnavailableView("Sales · Beta", systemImage: "chart.line.uptrend.xyaxis", description: Text("Sign in and select a workspace.")) }
         }
+        .navigationTitle("Sales")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.visible, for: .navigationBar)
     }
+}
+
+private struct FieldSalesGate: View {
+    let workspace: UUID; let user: UUID; let leadID: UUID?; let leaderboardOnly: Bool; let initial: [String:String]
+    @State private var data: FieldSalesSnapshot?
+    @State private var error: String?
+    var body: some View {
+        Group {
+            if let d = data {
+                if !d.enabled {
+                    ContentUnavailableView {
+                        Label("Sales isn’t enabled", systemImage: "chart.line.uptrend.xyaxis")
+                    } description: {
+                        Text("Sales hasn’t been activated for this workspace yet. Once enabled, you can set its currency and timezone, then record and review sales here.")
+                    } actions: {
+                        Button("Check again") { Task { await reload() } }
+                    }
+                } else if d.pro_sales_version != nil && d.currency != nil && d.timezone != nil && d.needs_setup != true {
+                    if leaderboardOnly { FieldSalesLeaderboardView() }
+                    else { FieldSalesProDashboard(workspace: workspace, data: d, initial: initial) }
+                } else { FieldSalesScreen(workspace:workspace,user:user,leadID:leadID,leaderboardOnly:leaderboardOnly) }
+            } else if let error {
+                ContentUnavailableView {
+                    Label("Sales couldn’t load", systemImage: "wifi.exclamationmark")
+                } description: {
+                    Text(error)
+                } actions: {
+                    Button("Retry") { Task { await reload() } }
+                }
+            } else { ProgressView("Loading Sales…").frame(maxWidth: .infinity, maxHeight: .infinity) }
+        }.task { await reload() }
+        .onReceive(NotificationCenter.default.publisher(for: .fieldSalesChanged)) { _ in Task { await reload() } }
+    }
+    private func reload() async { do { let next = try await FieldSalesService.bootstrap(workspace); guard !Task.isCancelled else { return }; data = next; error = nil } catch { if !Task.isCancelled { self.error = error.localizedDescription } } }
 }
 
 private struct FieldSalesScreen: View {
@@ -39,23 +86,14 @@ private struct FieldSalesScreen: View {
         .init(p_workspace: workspace, p_period: period, p_team: team, p_rep: team ? rep : nil, p_campaign: campaign, p_status: status.isEmpty ? nil : status)
     }
     var body: some View {
-        List {
-            if let error = model.error { Section { Text(error).foregroundStyle(.red); Button("Retry") { Task { await reload() } } } }
-            if let d = model.data, d.enabled {
-                if d.needs_setup == true {
-                    if d.role == "owner" { FieldSalesSettings(data: d, workspace: workspace) }
-                    else { Text("An owner must select the reporting currency and timezone.") }
-                } else {
-                    Section { NavigationLink("Pipeline & follow-ups · Beta") { FieldSalesPipelineRootView() } }
-                    content(d)
-                }
-            } else if model.loading { ProgressView("Loading Sales…") }
-            else if model.error == nil { Text("Sales is not enabled for this workspace.") }
+        Group {
+            if leaderboardOnly && model.data?.pro_sales_version != nil { FieldSalesLeaderboardView() }
+            else { salesList }
         }
         .navigationTitle(leaderboardOnly ? "Sales leaderboard · Beta" : "Sales · Beta")
         .task(id: filter) { await reload() }
         .onAppear { if leadID != nil { recording = true } }
-        .onDisappear { model.clear() }
+        .onDisappear { model.cancelPending() }
         .refreshable { await reload() }
         .onChange(of: scene) { _, phase in if phase == .active { Task { await reload() } } }
         .onReceive(NotificationCenter.default.publisher(for: .fieldSalesChanged)) { _ in Task { await reload() } }
@@ -69,6 +107,22 @@ private struct FieldSalesScreen: View {
             Button("Cancel sale", role: .destructive) { if let sale = cancelling { Task { await review("cancel", sale, reason: reason) } } }
             Button("Keep sale", role: .cancel) { cancelling = nil }
         } message: { Text("The record and its history will remain. Verified totals will be adjusted.") }
+    }
+    private var salesList: some View {
+        List {
+            if let error = model.error { Section { Text(error).foregroundStyle(.red); Button("Retry") { Task { await reload() } } } }
+            if let d = model.data, d.enabled {
+                if d.needs_setup == true {
+                    if d.role == "owner" || d.role == "admin" { FieldSalesSettings(data: d, workspace: workspace) }
+                    else { Text("An owner must select the reporting currency and timezone.") }
+                } else {
+                    Section { NavigationLink("Pipeline & follow-ups · Beta") { FieldSalesPipelineRootView() } }
+                    if d.pro_sales_version != nil { Section { NavigationLink("Performance reports") { FieldSalesReportView() }; NavigationLink("Goals & pace") { FieldSalesGoalsView() } } }
+                    content(d)
+                }
+            } else if model.loading { ProgressView("Loading Sales…") }
+            else if model.error == nil { Text("Sales is not enabled for this workspace.") }
+        }
     }
     @ViewBuilder private func content(_ d: FieldSalesSnapshot) -> some View {
         let rankRevenue = revenueRank && d.ranking?.contains(where: { $0.revenue_minor != nil }) == true
@@ -104,7 +158,7 @@ private struct FieldSalesScreen: View {
             }
             FieldSalesGoal(data: d, workspace: workspace, rep: team ? rep : user).id("\(team):\(String(describing: rep)):\(d.goal?.target ?? 0)")
             Section(status == "pending" ? "Pending verification" : "Recent sales") {
-                Button("Record Sale · Beta") { editing = nil; replacement = false; recording = true }
+                Button("Convert appointment · Beta") { editing = nil; replacement = false; recording = true }
                 if let actionError { Text(actionError).foregroundStyle(.red) }
                 if d.sales?.isEmpty != false { Text("No sales match these filters.").foregroundStyle(.secondary) }
                 ForEach(d.sales ?? []) { sale in
@@ -114,6 +168,7 @@ private struct FieldSalesScreen: View {
                         if let cid = sale.campaign_id { Text(d.options?.campaigns.first { $0.id == cid }?.name ?? "Campaign").font(.caption) }
                         if let notes = sale.notes, !notes.isEmpty { Text(notes).font(.subheadline) }
                         if let reason = sale.cancellation_reason { Text("Reason: \(reason)").font(.caption) }
+                        if d.pro_sales_version != nil { NavigationLink("Sale details & payments") { FieldSalesRecordView(sale: sale.id) } }
                         HStack {
                             if d.manager || sale.contact_id != nil { NavigationLink("History · Beta") { FieldSaleHistoryView(workspace: workspace, sale: sale.id) } }
                             if sale.can_edit { Button("Edit") { editing = sale; replacement = false; recording = true } }
@@ -126,11 +181,15 @@ private struct FieldSalesScreen: View {
                 if d.sales?.count == 200 { Text("Showing the latest 200 sales. Narrow filters to find older records.").font(.caption) }
             }
         }
+        if d.pro_sales_version != nil {
+            Section { NavigationLink("Team leaderboards") { FieldSalesLeaderboardView() } }
+        } else {
         Section("Team leaderboard") {
             if d.ranking?.contains(where: { $0.revenue_minor != nil }) == true { Toggle("Rank by revenue", isOn: $revenueRank) }
             ForEach((d.ranking ?? []).sorted { rankRevenue ? (Decimal(string: $0.revenue_minor ?? "0") ?? 0) > (Decimal(string: $1.revenue_minor ?? "0") ?? 0) : $0.sales > $1.sales }) { row in
                 LabeledContent(row.rep_name, value: rankRevenue ? FieldSalesService.money(row.revenue_minor, currency: d.currency) : "\(row.sales) sales")
             }
+        }
         }
         if !leaderboardOnly {
             Section("Recent team wins") { ForEach(d.feed ?? []) { win in
@@ -170,14 +229,14 @@ private struct FieldSaleEditor: View {
             Picker("Existing lead", selection: Binding(get: { contact }, set: { contact = $0; appointment = "" })) { Text("Select lead").tag(""); ForEach(data.options?.leads ?? []) { Text($0.name).tag($0.id.uuidString) } }
             Text("Campaign and territory follow the selected lead’s campaign.").font(.caption)
             Picker("Representative", selection: $rep) { ForEach(data.ranking ?? []) { Text($0.rep_name).tag($0.rep_id.uuidString) } }.disabled(!data.manager)
-            Picker("Appointment", selection: $appointment) { Text("None linked").tag(""); ForEach((data.options?.appointments ?? []).filter { $0.contact_id.uuidString == contact }) { Text($0.scheduled_at).tag($0.id.uuidString) } }
+            Picker("Appointment (required)", selection: $appointment) { Text("Select appointment").tag(""); ForEach((data.options?.appointments ?? []).filter { $0.contact_id.uuidString == contact }) { Text($0.scheduled_at).tag($0.id.uuidString) } }
             TextField("Contract value (\(data.currency ?? ""))", text: $amount).keyboardType(.decimalPad)
             TextField("Sale date (YYYY-MM-DD)", text: $soldOn).keyboardType(.numbersAndPunctuation)
             TextField("Notes", text: $notes, axis: .vertical).lineLimit(3...6)
             Text("Pending until verified by an authorized manager.").font(.caption)
             if let error { Text(error).foregroundStyle(.red) }
-            Button("Save sale") { Task { await save() } }.disabled(busy || contact.isEmpty)
-        }.navigationTitle(initial != nil && !replacement ? "Edit sale" : "Record Sale · Beta")
+            Button("Save sale") { Task { await save() } }.disabled(busy || contact.isEmpty || appointment.isEmpty)
+        }.navigationTitle(initial != nil && !replacement ? "Edit sale" : "Convert appointment · Beta")
         .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() }.disabled(busy) } }
         .onAppear {
             contact = (initial?.contact_id ?? leadID)?.uuidString ?? ""; rep = (initial?.rep_id ?? data.user_id)?.uuidString ?? ""
@@ -198,7 +257,7 @@ private struct FieldSaleEditor: View {
     }
 }
 
-private struct FieldSalesSettings: View {
+struct FieldSalesSettings: View {
     let data: FieldSalesSnapshot; let workspace: UUID
     @State private var currency = ""; @State private var timezone = ""; @State private var visible = false
     @State private var error: String?; @State private var busy = false
@@ -251,9 +310,9 @@ private struct FieldSaleHistoryView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("\(event.actor) · \(event.action)").font(.headline)
                     Text(event.created_at).font(.caption)
-                    Text("Version \(event.version) · \(event.status)")
-                    Text(FieldSalesService.money(event.value_minor, currency: event.currency))
-                    Text("Sale date: \(event.sold_on)")
+                    if let version = event.version, let status = event.status { Text("Version \(version) · \(status)") }
+                    if let value = event.value_minor { Text(FieldSalesService.money(value, currency: event.currency)) }
+                    if let date = event.sold_on { Text("Sale date: \(date)") }
                     if let reason = event.reason { Text(reason) }
                 }
             }
