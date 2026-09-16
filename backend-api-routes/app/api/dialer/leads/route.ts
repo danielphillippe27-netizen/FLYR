@@ -1,3 +1,4 @@
+import { normalizePhoneNumber, phoneMarketFromCountryCode } from '@/lib/dialer/phone';
 import { NextRequest, NextResponse } from 'next/server';
 import { getDialerRequestContext, type DialerRequestContext } from '@/lib/dialer/server';
 import { ensureSalespersonLeadMaster } from '@/lib/sales-leads/master-list';
@@ -92,8 +93,23 @@ export async function GET(request: NextRequest) {
     const { data, error } = await query;
     if (error) throw error;
 
+    const rows = (data ?? []) as SalesLead[];
+    const phoneFor = (row: SalesLead) => normalizePhoneNumber(
+      row.phone_e164 || row.phone, phoneMarketFromCountryCode(row.phone_country_code)
+    ).e164;
+    const phones = [...new Set(rows.map(phoneFor).filter((phone): phone is string => Boolean(phone)))];
+    const { data: history, error: historyError } = phones.length
+      ? await context.admin.rpc('shared_lead_call_history', { p_workspace_id: context.workspaceId, p_phones: phones })
+      : { data: [], error: null };
+    if (historyError) throw historyError;
+    const byPhone = new Map<string, { last_called_at: string; last_called_by: string }>(
+      (history ?? []).map((entry: any) => [entry.phone, {
+        last_called_at: entry.last_called_at,
+        last_called_by: entry.last_called_by_user_id === context.requestUser.id ? 'You' : entry.last_called_by,
+      }])
+    );
     return NextResponse.json({
-      leads: ((data ?? []) as SalesLead[]).map(shapeLead),
+      leads: rows.map(row => ({ ...shapeLead(row), shared_call_history: byPhone.get(phoneFor(row) ?? '') ?? null })),
       focusedLeadIds: focusedIds,
       resolvedWorkspaceId: context.workspaceId,
       workspaceId: context.workspaceId,

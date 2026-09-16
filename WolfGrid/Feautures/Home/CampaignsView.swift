@@ -12,65 +12,77 @@ struct CampaignsView: View {
     @StateObject private var storeV2 = CampaignV2Store.shared
     @EnvironmentObject private var uiState: AppUIState
 
-    var body: some View {
-        NavigationStack {
-            VStack(spacing: 0) {
-                listContent
-            }
-            .navigationTitle("Campaign")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    HStack(spacing: 12) {
-                        Menu {
-                            ForEach(CampaignFilter.allCases) { filterOption in
-                                Button(filterOption.rawValue) {
-                                    campaignFilter = filterOption
-                                }
-                            }
-                        } label: {
-                            HStack(spacing: 4) {
-                                Text(campaignFilter.rawValue)
-                                    .font(.system(size: 15, weight: .medium))
-                                Image(systemName: "chevron.down")
-                                    .font(.system(size: 12))
-                            }
-                            .foregroundColor(.primary)
-                        }
+    /// Reuse the full campaign screen inside an existing navigation stack.
+    var usesOwnNavigationStack: Bool = true
 
-                        if canViewConfidenceDiagnostics {
-                            Button {
-                                showingConfidenceDiagnostics = true
-                            } label: {
-                                Image(systemName: "chart.bar.xaxis")
-                                    .font(.system(size: 16, weight: .semibold))
-                                    .foregroundColor(.primary)
-                                    .frame(width: 34, height: 34)
-                                    .background(Color.bgSecondary)
-                                    .clipShape(Circle())
+    @ViewBuilder
+    var body: some View {
+        if usesOwnNavigationStack {
+            NavigationStack {
+                campaignContent
+            }
+        } else {
+            campaignContent
+        }
+    }
+
+    private var campaignContent: some View {
+        VStack(spacing: 0) {
+            listContent
+        }
+        .navigationTitle("Campaign")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                HStack(spacing: 12) {
+                    Menu {
+                        ForEach(CampaignFilter.allCases) { filterOption in
+                            Button(filterOption.rawValue) {
+                                campaignFilter = filterOption
                             }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel("Open confidence diagnostics")
                         }
-                    }
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        createCampaignTapped()
                     } label: {
-                        Image(systemName: "plus")
-                            .font(.system(size: 18, weight: .semibold))
-                            .foregroundColor(.white)
-                            .frame(width: 36, height: 36)
-                            .background(Color.red)
-                            .clipShape(Circle())
+                        HStack(spacing: 4) {
+                            Text(campaignFilter.rawValue)
+                                .font(.system(size: 15, weight: .medium))
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: 12))
+                        }
+                        .foregroundColor(.primary)
                     }
-                    .buttonStyle(.plain)
+
+                    if canViewConfidenceDiagnostics {
+                        Button {
+                            showingConfidenceDiagnostics = true
+                        } label: {
+                            Image(systemName: "chart.bar.xaxis")
+                                .font(.system(size: 16, weight: .semibold))
+                                .foregroundColor(.primary)
+                                .frame(width: 34, height: 34)
+                                .background(Color.bgSecondary)
+                                .clipShape(Circle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Open confidence diagnostics")
+                    }
                 }
             }
-            .navigationDestination(item: $selectedCampaignID) { campaignID in
-                NewCampaignDetailView(campaignID: campaignID, store: storeV2)
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    createCampaignTapped()
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundColor(.white)
+                        .frame(width: 36, height: 36)
+                        .background(Color.red)
+                        .clipShape(Circle())
+                }
+                .buttonStyle(.plain)
             }
+        }
+        .navigationDestination(item: $selectedCampaignID) { campaignID in
+            NewCampaignDetailView(campaignID: campaignID, store: storeV2)
         }
         .sheet(isPresented: $showingConfidenceDiagnostics) {
             NavigationStack {

@@ -1,0 +1,96 @@
+{
+  "version": 2,
+  "stage": "Alpha",
+  "prototype": true,
+  "vertices": 6758,
+  "indices": 40080,
+  "bones": [
+    "root",
+    "body",
+    "neck",
+    "head",
+    "ear_l",
+    "ear_r",
+    "tail",
+    "front_l",
+    "front_l_lower",
+    "rear_l",
+    "rear_l_lower",
+    "front_r",
+    "front_r_lower",
+    "rear_r",
+    "rear_r_lower"
+  ],
+  "mesh": "alpha-mesh.bin",
+  "clips": {
+    "idle": {
+      "file": "alpha-idle.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "walk": {
+      "file": "alpha-walk.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "trot": {
+      "file": "alpha-trot.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "run": {
+      "file": "alpha-run.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "sit": {
+      "file": "alpha-sit.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "look_around": {
+      "file": "alpha-look_around.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "celebrate": {
+      "file": "alpha-celebrate.bin",
+      "duration": 2,
+      "frames": 48
+    }
+  },
+  "files": {
+    "alpha-idle.bin": {
+      "bytes": 46080,
+      "sha256": "f1fd99bae1a431712168e14b14fe0ef67731180cb91dbd7286adcd89075b50d5"
+    },
+    "alpha-celebrate.bin": {
+      "bytes": 46080,
+      "sha256": "b937313aa1d871534a0d06bd021dd7de939fc9d2df652c0282b294969a62b87c"
+    },
+    "alpha-trot.bin": {
+      "bytes": 46080,
+      "sha256": "118be2c7f3fc28f5b4d0902815a18adab24e04ba49c3f70ec1fc9325fe907c06"
+    },
+    "alpha-mesh.bin": {
+      "bytes": 592832,
+      "sha256": "6d04b99a936ed54459d7837317ab5224d29c91dc46468135cee6e8a2adde4171"
+    },
+    "alpha-look_around.bin": {
+      "bytes": 46080,
+      "sha256": "874e577408b37f1da313653405cef1ee5fa8fc31925a2d9e9a1b816c350f9084"
+    },
+    "alpha-run.bin": {
+      "bytes": 46080,
+      "sha256": "b2ee0691fa942830231bb59bc0e7873ded8742a26e9324f7e9a23e07c9b02723"
+    },
+    "alpha-walk.bin": {
+      "bytes": 46080,
+      "sha256": "ef3d5ada8cde6def3b5a82eb2416d73e92ac9942ff139cae19360067f6116957"
+    },
+    "alpha-sit.bin": {
+      "bytes": 46080,
+      "sha256": "5420007ce3ee6f051f90b8887405d902157e3ee902ff512a74f7d625a0e6e1c7"
+    }
+  }
+}

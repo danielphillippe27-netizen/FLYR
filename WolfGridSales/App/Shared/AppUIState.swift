@@ -42,8 +42,10 @@ final class AppUIState: ObservableObject {
     @Published var selectedMapCampaignId: UUID?
     @Published var selectedMapCampaignName: String?
     @Published var selectedMapCampaignBoundaryCoordinates: [CLLocationCoordinate2D] = []
+    #if !WOLFGRID_SALES
     @Published var selectedRouteWorkContext: RouteWorkContext?
     @Published var plannedFarmExecution: FarmExecutionContext?
+    #endif
     @Published var pendingLiveInviteHandoff: PendingLiveInviteHandoff?
     @Published var pendingSalespersonLeadListSelection: PendingSalespersonLeadListSelection?
     @Published var pendingSalespersonDiallerListSelection: PendingSalespersonDiallerListSelection?
@@ -133,7 +135,9 @@ final class AppUIState: ObservableObject {
         } else if previousCampaignId != id {
             selectedMapCampaignBoundaryCoordinates = []
         }
+        #if !WOLFGRID_SALES
         selectedRouteWorkContext = nil
+        #endif
         persistMapSelection()
         if preservePendingLiveInviteHandoff,
            pendingLiveInviteHandoff?.campaignId == id {
@@ -142,6 +146,7 @@ final class AppUIState: ObservableObject {
         pendingLiveInviteHandoff = nil
     }
 
+    #if !WOLFGRID_SALES
     func selectRoute(_ context: RouteWorkContext) {
         selectedMapCampaignId = context.campaignId
         selectedMapCampaignName = context.routeName
@@ -151,15 +156,20 @@ final class AppUIState: ObservableObject {
         pendingLiveInviteHandoff = nil
     }
 
+    #endif
+
     func clearMapSelection() {
         selectedMapCampaignId = nil
         selectedMapCampaignName = nil
         selectedMapCampaignBoundaryCoordinates = []
+        #if !WOLFGRID_SALES
         selectedRouteWorkContext = nil
+        #endif
         localStorage.clearMapSelection()
         pendingLiveInviteHandoff = nil
     }
 
+    #if !WOLFGRID_SALES
     func beginPlannedFarmExecution(_ context: FarmExecutionContext) {
         plannedFarmExecution = context
         selectedMapCampaignId = context.campaignId
@@ -174,12 +184,16 @@ final class AppUIState: ObservableObject {
         plannedFarmExecution = nil
     }
 
+    #endif
+
     func beginLiveInviteHandoff(campaignId: UUID, name: String?, sourceSessionId: UUID?) {
         selectedTabIndex = 1
         selectedMapCampaignId = campaignId
         selectedMapCampaignName = name
         selectedMapCampaignBoundaryCoordinates = []
+        #if !WOLFGRID_SALES
         selectedRouteWorkContext = nil
+        #endif
         persistMapSelection()
         pendingLiveInviteHandoff = PendingLiveInviteHandoff(
             campaignId: campaignId,

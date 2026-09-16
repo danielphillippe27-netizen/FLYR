@@ -319,6 +319,7 @@ export function useDialerDevice() {
 
   const [setupState, setSetupState] = useState<DeviceSetupState>('idle');
   const [callPhase, setCallPhase] = useState<CallPhase>('idle');
+  const [callIdentity, setCallIdentity] = useState<{ id: string; phone: string | null; name: string | null } | null>(null);
   const [isMuted, setIsMuted] = useState(false);
   const [microphoneGranted, setMicrophoneGranted] = useState(false);
   const [deviceError, setDeviceError] = useState<string | null>(null);
@@ -336,6 +337,9 @@ export function useDialerDevice() {
   const [micTrackState, setMicTrackState] = useState<MicTrackState>('idle');
 
   const updateIncomingCall = (nextIncomingCall: IncomingCallInfo | null) => {
+    if (nextIncomingCall) {
+      setCallIdentity({ id: crypto.randomUUID(), phone: nextIncomingCall.number ?? null, name: nextIncomingCall.name ?? null });
+    }
     incomingCallRef.current = nextIncomingCall;
     setIncomingCall(nextIncomingCall);
   };
@@ -931,6 +935,7 @@ export function useDialerDevice() {
   };
 
   const startCall = async (callRequestId: string, options: StartCallOptions = {}) => {
+    setCallIdentity({ id: callRequestId, phone: options.toNumber?.trim() || null, name: null });
     if (providerRef.current === 'telnyx') {
       if (!telnyxClientRef.current) {
         throw new Error('Initialize the Telnyx browser softphone before placing a call.');
@@ -1120,6 +1125,7 @@ export function useDialerDevice() {
   return {
     setupState,
     callPhase,
+    callIdentity,
     isMuted,
     microphoneGranted,
     selectedMicrophone,

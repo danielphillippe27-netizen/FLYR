@@ -5,6 +5,7 @@ import Storage
 import Supabase
 
 private enum HomeRoute: Hashable {
+    case calendar
     case campaigns
     case campaign(UUID)
     case activity
@@ -15,6 +16,7 @@ private enum HomeRoute: Hashable {
     case routes
     case assignments
     case support
+    case sales
 }
 
 private enum HomeGridTileIcon {
@@ -23,16 +25,12 @@ private enum HomeGridTileIcon {
 
 struct HomeView: View {
     @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject private var uiState: AppUIState
-    @ObservedObject private var workspace = WorkspaceContext.shared
     @State private var selectedRoute: HomeRoute?
-    @StateObject private var auth = AuthManager.shared
-    @StateObject private var profileImageLoader = HomeProfileImageLoader()
+    @ObservedObject private var auth = AuthManager.shared
     @StateObject private var onboardingDemo = OnboardingDemoViewModel.shared
     @StateObject private var campaignStore = CampaignV2Store.shared
     @StateObject private var assignmentBell = AssignmentBellStore.shared
-    @State private var dailyContent = DailyContentService.shared
     @State private var showingNewCampaign = false
 
     private let headerLogoName = "WolfGridHeader"
@@ -48,6 +46,8 @@ struct HomeView: View {
                 .toolbar(.hidden, for: .navigationBar)
                 .navigationDestination(item: $selectedRoute) { route in
                     switch route {
+                    case .calendar:
+                        CalendarTabView(showsMoreBackButton: true)
                     case .campaigns:
                         CampaignsView()
                     case .campaign(let campaignID):
@@ -78,6 +78,8 @@ struct HomeView: View {
                         RoutesListView()
                     case .assignments:
                         CampaignAssignmentInboxView(assignmentBell: assignmentBell)
+                    case .sales:
+                        FieldSalesRootView()
                     case .support:
                         SupportChatView()
                             .transition(.asymmetric(
@@ -103,158 +105,26 @@ struct HomeView: View {
             selectedRoute = nil
         }
         .task(id: auth.user?.id) {
-            await profileImageLoader.load(for: auth.user?.id)
             await onboardingDemo.load()
-        }
-        .task(id: "\(auth.user?.id.uuidString ?? "signed-out")|\(workspace.workspaceId?.uuidString ?? "no-workspace")") {
-            await monitorAssignedCampaigns()
-        }
-        .onChange(of: scenePhase) { _, phase in
-            guard phase == .active else { return }
-            Task { await refreshAssignmentBell() }
         }
     }
 
     private var homeHeader: some View {
-        HStack(alignment: .center, spacing: 8) {
-            Image(headerLogoName)
-                .resizable()
-                .scaledToFit()
-                .frame(maxWidth: 290, maxHeight: 88, alignment: .leading)
-                .accessibilityLabel("WolfGrid")
-
-            Spacer(minLength: 0)
-
-            Button {
-                HapticManager.light()
-                selectedRoute = .assignments
-            } label: {
-                ZStack(alignment: .topTrailing) {
-                    Image(systemName: "bell.fill")
-                        .font(.system(size: 20, weight: .semibold))
-                        .foregroundStyle(colorScheme == .dark ? Color.black : Color.white)
-                        .frame(width: 40, height: 40)
-
-                    if assignmentBell.badgeCount > 0 {
-                        Text("1")
-                            .font(.system(size: 10, weight: .bold, design: .rounded))
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 4)
-                            .frame(minWidth: 18, minHeight: 18)
-                            .background(Color.red)
-                            .clipShape(Capsule())
-                            .overlay(Capsule().stroke(Color.white, lineWidth: 1.5))
-                            .offset(x: 2, y: 1)
-                    }
-                }
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Assigned campaigns")
-            .accessibilityValue(assignmentBell.hasUnreadAssignment ? "1 new assignment" : "No new assignments")
-
-            Button {
-                HapticManager.light()
-                uiState.selectedTabIndex = 4
-            } label: {
-                profileToolbarIcon
-            }
-            .buttonStyle(.plain)
-        }
-        .padding(.horizontal, 16)
-        .padding(.top, 2)
-        .padding(.bottom, 2)
-        .offset(y: -24)
-        .padding(.bottom, -24)
-    }
-
-    @MainActor
-    private func monitorAssignedCampaigns() async {
-        await refreshAssignmentBell()
-
-        while !Task.isCancelled {
-            do {
-                try await Task.sleep(for: .seconds(30))
-            } catch {
-                return
-            }
-            await refreshAssignmentBell()
-        }
-    }
-
-    @MainActor
-    private func refreshAssignmentBell() async {
-        guard let userID = auth.user?.id else {
-            assignmentBell.deactivate()
-            return
-        }
-
-        guard let workspaceId = await RoutePlansAPI.shared.resolveWorkspaceId(
-            preferred: WorkspaceContext.shared.workspaceId
-        ) else {
-            assignmentBell.deactivate()
-            return
-        }
-
-        let scope = AssignmentBellScope(userID: userID, workspaceID: workspaceId)
-        assignmentBell.activate(scope)
-
-        do {
-            let response = try await CampaignAssignmentsAPI.shared.fetchAssignments(workspaceId: workspaceId)
-            guard auth.user?.id == userID else { return }
-            let pendingIDs = Set(response.assignments.compactMap { assignment -> UUID? in
-                guard assignment.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "assigned",
-                      assignment.assignedToUserId == userID else {
-                    return nil
-                }
-                return assignment.id
-            })
-            assignmentBell.recordPendingAssignments(pendingIDs, for: scope)
-        } catch {
-            print("⚠️ [Home] Could not refresh campaign assignment badge: \(error.localizedDescription)")
-        }
-    }
-
-    @ViewBuilder
-    private var profileToolbarIcon: some View {
-        if let image = profileImageLoader.image {
-            Image(uiImage: image)
-                .resizable()
-                .scaledToFill()
-                .frame(width: 36, height: 36)
-                .clipShape(Circle())
-                .overlay(
-                    Circle()
-                        .stroke(colorScheme == .dark ? Color.white.opacity(0.35) : Color.black.opacity(0.12), lineWidth: 1)
-                )
-        } else if let user = auth.user {
-            ProfileAvatarView(
-                avatarUrl: user.photoURL?.absoluteString,
-                name: user.displayName ?? user.email,
-                size: 36
-            )
-            .overlay(
-                Circle()
-                    .stroke(colorScheme == .dark ? Color.white.opacity(0.35) : Color.black.opacity(0.12), lineWidth: 1)
-            )
-        } else {
-            Image(systemName: "person.crop.circle.fill")
-                .font(.system(size: 30, weight: .semibold))
-                .foregroundColor(colorScheme == .dark ? .white : .black)
-                .frame(width: 36, height: 36)
-        }
+        Image(headerLogoName)
+            .resizable()
+            .scaledToFit()
+            .frame(maxWidth: 290, maxHeight: 88)
+            .frame(maxWidth: .infinity, alignment: .center)
+            .accessibilityLabel("WolfGrid")
+            .padding(.horizontal, 16)
+            .padding(.vertical, 2)
+            .offset(y: -12)
+            .padding(.bottom, -24)
     }
 
     private var homeGrid: some View {
         ScrollView {
             VStack(spacing: 0) {
-                QuoteOfTheDaySection(
-                    quote: dailyContent.quote,
-                    isLoading: dailyContent.isLoading
-                )
-                .padding(.top, 8)
-                .padding(.horizontal, 24)
-                .padding(.bottom, onboardingDemo.shouldShowPanel ? 16 : 28)
-
                 if onboardingDemo.shouldShowPanel, let state = onboardingDemo.state {
                     OnboardingDemoPanel(
                         state: state,
@@ -270,6 +140,10 @@ struct HomeView: View {
                     .padding(.bottom, 24)
                 }
 
+                FieldSalesHomeModule()
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 24)
+
                 VStack(spacing: 0) {
                     LazyVGrid(
                         columns: [
@@ -284,6 +158,9 @@ struct HomeView: View {
                         HomeGridTile(title: "Activity", icon: .system("figure.walk")) {
                             selectedRoute = .activity
                         }
+                        HomeGridTile(title: "Calendar", icon: .system("calendar")) {
+                            selectedRoute = .calendar
+                        }
                         HomeGridTile(title: "Follow Up", icon: .system("arrow.uturn.right.circle.fill")) {
                             selectedRoute = .followUp
                         }
@@ -292,6 +169,9 @@ struct HomeView: View {
                         }
                         HomeGridTile(title: "Stats", icon: .system("chart.bar.fill")) {
                             selectedRoute = .stats
+                        }
+                        HomeGridTile(title: "Sales", icon: .system("dollarsign.circle.fill")) {
+                            selectedRoute = .sales
                         }
                         HomeGridTile(title: "Leaderboard", icon: .system("trophy.fill")) {
                             selectedRoute = .leaderboard
@@ -305,9 +185,6 @@ struct HomeView: View {
             .frame(maxWidth: .infinity)
         }
         .background(HomeGradientBackground())
-        .task(id: "dailyContent") {
-            await dailyContent.fetch()
-        }
     }
 
     private func handleDemoChecklistTap(_ item: OnboardingDemoChecklistItem) {
@@ -513,6 +390,152 @@ private struct CampaignAssignmentInboxView: View {
     }
 }
 
+// Account actions live on the Home tab; More keeps its centered brand header.
+struct HomeAccountControls: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.scenePhase) private var scenePhase
+    @EnvironmentObject private var uiState: AppUIState
+    @ObservedObject private var workspace = WorkspaceContext.shared
+    @ObservedObject private var auth = AuthManager.shared
+    @StateObject private var profileImageLoader = HomeProfileImageLoader()
+    @ObservedObject private var assignmentBell = AssignmentBellStore.shared
+    @State private var showingNotifications = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Button {
+                HapticManager.light()
+                showingNotifications = true
+            } label: {
+                ZStack(alignment: .topTrailing) {
+                    Image(systemName: "bell.fill")
+                        .font(.system(size: 20, weight: .semibold))
+                        .foregroundStyle(colorScheme == .dark ? Color.white : Color.black)
+                        .frame(width: 44, height: 44)
+
+                    if assignmentBell.badgeCount > 0 {
+                        Text("1")
+                            .font(.system(size: 10, weight: .bold, design: .rounded))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 4)
+                            .frame(minWidth: 18, minHeight: 18)
+                            .background(Color.red)
+                            .clipShape(Capsule())
+                            .overlay(Capsule().stroke(Color.white, lineWidth: 1.5))
+                            .offset(x: 2, y: 1)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Notifications")
+            .accessibilityValue(assignmentBell.hasUnreadAssignment ? "1 new assignment" : "No new assignments")
+
+            Button {
+                HapticManager.light()
+                uiState.selectedTabIndex = 4
+            } label: {
+                profileToolbarIcon.frame(width: 44, height: 44)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Profile and settings")
+        }
+        .fixedSize()
+        .accessibilityElement(children: .contain)
+        .navigationDestination(isPresented: $showingNotifications) {
+            CampaignAssignmentInboxView(assignmentBell: assignmentBell)
+                .toolbar(.visible, for: .navigationBar)
+        }
+        .task(id: auth.user?.id) {
+            await profileImageLoader.load(for: auth.user?.id)
+        }
+        .task(id: "\(auth.user?.id.uuidString ?? "signed-out")|\(workspace.workspaceId?.uuidString ?? "no-workspace")") {
+            await monitorAssignedCampaigns()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            guard phase == .active else { return }
+            Task { await refreshAssignmentBell() }
+        }
+    }
+
+    @MainActor
+    private func monitorAssignedCampaigns() async {
+        await refreshAssignmentBell()
+
+        while !Task.isCancelled {
+            do {
+                try await Task.sleep(for: .seconds(30))
+            } catch {
+                return
+            }
+            await refreshAssignmentBell()
+        }
+    }
+
+    @MainActor
+    private func refreshAssignmentBell() async {
+        guard let userID = auth.user?.id else {
+            assignmentBell.deactivate()
+            return
+        }
+
+        guard let workspaceId = await RoutePlansAPI.shared.resolveWorkspaceId(
+            preferred: WorkspaceContext.shared.workspaceId
+        ) else {
+            assignmentBell.deactivate()
+            return
+        }
+
+        let scope = AssignmentBellScope(userID: userID, workspaceID: workspaceId)
+        assignmentBell.activate(scope)
+
+        do {
+            let response = try await CampaignAssignmentsAPI.shared.fetchAssignments(workspaceId: workspaceId)
+            guard auth.user?.id == userID else { return }
+            let pendingIDs = Set(response.assignments.compactMap { assignment -> UUID? in
+                guard assignment.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "assigned",
+                      assignment.assignedToUserId == userID else {
+                    return nil
+                }
+                return assignment.id
+            })
+            assignmentBell.recordPendingAssignments(pendingIDs, for: scope)
+        } catch {
+            print("⚠️ [Home] Could not refresh campaign assignment badge: \(error.localizedDescription)")
+        }
+    }
+
+    @ViewBuilder
+    private var profileToolbarIcon: some View {
+        if let image = profileImageLoader.image {
+            Image(uiImage: image)
+                .resizable()
+                .scaledToFill()
+                .frame(width: 36, height: 36)
+                .clipShape(Circle())
+                .overlay(
+                    Circle()
+                        .stroke(colorScheme == .dark ? Color.white.opacity(0.35) : Color.black.opacity(0.12), lineWidth: 1)
+                )
+        } else if let user = auth.user {
+            ProfileAvatarView(
+                avatarUrl: user.photoURL?.absoluteString,
+                name: user.displayName ?? user.email,
+                size: 36
+            )
+            .overlay(
+                Circle()
+                    .stroke(colorScheme == .dark ? Color.white.opacity(0.35) : Color.black.opacity(0.12), lineWidth: 1)
+            )
+        } else {
+            Image(systemName: "person.crop.circle.fill")
+                .font(.system(size: 30, weight: .semibold))
+                .foregroundColor(colorScheme == .dark ? .white : .black)
+                .frame(width: 36, height: 36)
+        }
+    }
+
+}
+
 @MainActor
 private final class HomeProfileImageLoader: ObservableObject {
     @Published var image: UIImage?
@@ -559,48 +582,6 @@ private struct HomeGradientBackground: View {
             endPoint: .bottom
         )
         .ignoresSafeArea()
-    }
-}
-
-// MARK: - Quote of the Day (no card, bolder; white dark / black light)
-private struct QuoteOfTheDaySection: View {
-    @Environment(\.colorScheme) private var colorScheme
-    let quote: DailyQuote?
-    let isLoading: Bool
-
-    private var textColor: Color {
-        colorScheme == .dark ? .white : .black
-    }
-
-    var body: some View {
-        Group {
-            if isLoading && quote == nil {
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("Quote of the Day")
-                        .font(.system(size: 16, weight: .bold))
-                        .foregroundStyle(textColor)
-                    Text("Loading…")
-                        .font(.system(size: 22, weight: .bold))
-                        .foregroundStyle(textColor)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            } else if let quote = quote {
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("Quote of the Day")
-                        .font(.system(size: 16, weight: .bold))
-                        .foregroundStyle(textColor)
-                    Text(quote.text)
-                        .font(.system(size: 22, weight: .bold))
-                        .foregroundStyle(textColor)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Text("— \(quote.author)")
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundStyle(textColor)
-                        .frame(maxWidth: .infinity, alignment: .trailing)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        }
     }
 }
 

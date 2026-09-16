@@ -255,7 +255,7 @@ struct BuildingProperties: Codable {
         source = try? c.decodeIfPresent(String.self, forKey: .source)
         addressCount = try? c.decodeIfPresent(Int.self, forKey: .addressCount)
         areaSqm = (try? c.decodeIfPresent(Double.self, forKey: .areaSqm)) ?? (try? c.decodeIfPresent(Int.self, forKey: .areaSqm)).map(Double.init)
-        buildingType = try? c.decodeIfPresent(String.self, forKey: .buildingType)
+        buildingType = Self.decodeTrimmedString(from: raw, keys: ["building_type", "building", "subtype", "class"])
         qrScanned = try? c.decodeIfPresent(Bool.self, forKey: .qrScanned)
         isLinked = try? c.decodeIfPresent(Bool.self, forKey: .isLinked)
     }

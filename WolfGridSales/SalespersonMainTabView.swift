@@ -20,6 +20,7 @@ struct SalespersonMainTabView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            SharedActiveCallBanner()
             Group {
                 switch uiState.selectedTabIndex {
                 case Tab.home.rawValue:

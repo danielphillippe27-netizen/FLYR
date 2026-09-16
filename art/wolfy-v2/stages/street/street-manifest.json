@@ -1,0 +1,96 @@
+{
+  "version": 2,
+  "stage": "Street Wolf",
+  "prototype": true,
+  "vertices": 6758,
+  "indices": 40080,
+  "bones": [
+    "root",
+    "body",
+    "neck",
+    "head",
+    "ear_l",
+    "ear_r",
+    "tail",
+    "front_l",
+    "front_l_lower",
+    "rear_l",
+    "rear_l_lower",
+    "front_r",
+    "front_r_lower",
+    "rear_r",
+    "rear_r_lower"
+  ],
+  "mesh": "street-mesh.bin",
+  "clips": {
+    "idle": {
+      "file": "street-idle.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "walk": {
+      "file": "street-walk.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "trot": {
+      "file": "street-trot.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "run": {
+      "file": "street-run.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "sit": {
+      "file": "street-sit.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "look_around": {
+      "file": "street-look_around.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "celebrate": {
+      "file": "street-celebrate.bin",
+      "duration": 2,
+      "frames": 48
+    }
+  },
+  "files": {
+    "street-celebrate.bin": {
+      "bytes": 46080,
+      "sha256": "04ab8ea656a367f53a623a6b3dda9b534c67069cabdbdff0a9bfccf6c10c294e"
+    },
+    "street-idle.bin": {
+      "bytes": 46080,
+      "sha256": "702ca22e1454e9ab94f9269c9ae8a104ce64ff28b4c379b0d691f5ceef747a2a"
+    },
+    "street-run.bin": {
+      "bytes": 46080,
+      "sha256": "15958978e6e0d0c52f1aa8c8f0000762598583f671c608790a0681a6a77bcbc4"
+    },
+    "street-sit.bin": {
+      "bytes": 46080,
+      "sha256": "9387564199b0bb3192cd6b920ffe7ef02aa8789d07ac59a6ac3f5ca3a812ae55"
+    },
+    "street-walk.bin": {
+      "bytes": 46080,
+      "sha256": "39ecc432105d177bcb4400b3ab295c0065d3c2b89828665835b0cffddd8f3da8"
+    },
+    "street-trot.bin": {
+      "bytes": 46080,
+      "sha256": "35abcb8ff8449ccf06696f6afbc382df1a0e588b7effd3e28626570c313fe145"
+    },
+    "street-mesh.bin": {
+      "bytes": 592832,
+      "sha256": "fdc7b67909bfffc26cf32c2f8b0e3670f1fe8458c687286c76d7a2ae53bac164"
+    },
+    "street-look_around.bin": {
+      "bytes": 46080,
+      "sha256": "2df9aa3d33d6fedda0e8b1381c193a7746f63b47aa9e43caf3517d09e4c2804b"
+    }
+  }
+}

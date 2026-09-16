@@ -1,0 +1,138 @@
+{
+  "version": 2,
+  "prototype": true,
+  "revision": "wolfy-character-3",
+  "skinning": "two-bone",
+  "stage": "Street Wolf",
+  "vertices": 13314,
+  "indices": 79644,
+  "bones": [
+    "root",
+    "body",
+    "neck",
+    "head",
+    "ear_l",
+    "ear_r",
+    "tail",
+    "front_l",
+    "front_l_lower",
+    "front_l_paw",
+    "rear_l",
+    "rear_l_lower",
+    "rear_l_paw",
+    "front_r",
+    "front_r_lower",
+    "front_r_paw",
+    "rear_r",
+    "rear_r_lower",
+    "rear_r_paw"
+  ],
+  "mesh": "street-mesh.bin",
+  "clips": {
+    "idle": {
+      "file": "street-idle.bin",
+      "duration": 24,
+      "frames": 576
+    },
+    "walk": {
+      "file": "street-walk.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "trot": {
+      "file": "street-trot.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "run": {
+      "file": "street-run.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "sit": {
+      "file": "street-sit.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "look_around": {
+      "file": "street-look_around.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "celebrate": {
+      "file": "street-celebrate.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "sniff": {
+      "file": "street-sniff.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "scratch": {
+      "file": "street-scratch.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "lie_down": {
+      "file": "street-lie_down.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "get_up": {
+      "file": "street-get_up.bin",
+      "duration": 2,
+      "frames": 48
+    }
+  },
+  "files": {
+    "street-sniff.bin": {
+      "bytes": 58368,
+      "sha256": "55f94d5e60f3469d080166ed20dd9f9660fdcc4e66a80c48e8a6737752e5b777"
+    },
+    "street-celebrate.bin": {
+      "bytes": 58368,
+      "sha256": "b8ece1e6411bd18c903a808ab1f0fa9ef9b3dbea06f904809d2efbdbee39e8ee"
+    },
+    "street-scratch.bin": {
+      "bytes": 58368,
+      "sha256": "20390660d850e9fa88639a6d0530652587d05f1a7c6e2fde97668b8487d40afe"
+    },
+    "street-idle.bin": {
+      "bytes": 700416,
+      "sha256": "eabdc1a174ed726c9d627c2839d2946ca54a80d323d39843794010b7bc2fb132"
+    },
+    "street-get_up.bin": {
+      "bytes": 58368,
+      "sha256": "68be13ef566be20d9a6c46a33078ba20a23c911294fe9a87ba16f72ec75305a9"
+    },
+    "street-run.bin": {
+      "bytes": 58368,
+      "sha256": "f805ffb9406067a06f2d90e343a9bd420d1385f482a766241d645fe529f7b7e2"
+    },
+    "street-sit.bin": {
+      "bytes": 58368,
+      "sha256": "e576a0bec3d2b2abdaaf64f592eb0439de88646b1e6595d4601550e08d040d6f"
+    },
+    "street-walk.bin": {
+      "bytes": 58368,
+      "sha256": "f805ffb9406067a06f2d90e343a9bd420d1385f482a766241d645fe529f7b7e2"
+    },
+    "street-lie_down.bin": {
+      "bytes": 58368,
+      "sha256": "ec1a064192e48916124450f47faa452afaae7bec040853aa1b06c4ea61e8f794"
+    },
+    "street-trot.bin": {
+      "bytes": 58368,
+      "sha256": "f805ffb9406067a06f2d90e343a9bd420d1385f482a766241d645fe529f7b7e2"
+    },
+    "street-mesh.bin": {
+      "bytes": 1170672,
+      "sha256": "f592cbaa6c27dd85ada9da5703b0b13ff68c7fdb8e88d64ed2039005dd0ab416"
+    },
+    "street-look_around.bin": {
+      "bytes": 58368,
+      "sha256": "b738a7d79d5d90701ec8dc2d3406d5ef81c3eacfb0f9f226255edec572314a92"
+    }
+  }
+}

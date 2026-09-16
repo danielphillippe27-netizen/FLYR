@@ -946,12 +946,6 @@ private struct LocationCardActionRow: View {
                 )
 
                 LocationCardActionButton(
-                    icon: "note.text",
-                    label: notesLabel,
-                    action: onNotes
-                )
-
-                LocationCardActionButton(
                     icon: "wrench.and.screwdriver.fill",
                     label: "Edit",
                     action: onEdit
@@ -986,9 +980,9 @@ private struct LocationCardActionRow: View {
                 )
 
                 LocationCardActionButton(
-                    icon: "note.text",
-                    label: "Notes",
-                    action: onNotes
+                    icon: "person.crop.circle",
+                    label: "Lead",
+                    action: onLead
                 )
             }
         }
@@ -1975,7 +1969,8 @@ struct CampaignMapView: View {
             activeSession: sessionManager.sessionId != nil,
             sessionUses2D: sessionUsesGoogle2D,
             mapboxAvailable: !Config.mapboxAccessToken.isEmpty,
-            googleAvailable: !Config.googleMapsAPIKey.isEmpty
+            googleAvailable: !Config.googleMapsAPIKey.isEmpty,
+            standardMode: quickStartEnabled
         )
     }
 
@@ -2006,7 +2001,7 @@ struct CampaignMapView: View {
     }
 
     private var campaignMapUnavailable: Bool {
-        (sessionManager.sessionId != nil || campaignBuildingBundleResolved)
+        (quickStartEnabled || sessionManager.sessionId != nil || campaignBuildingBundleResolved)
             && campaignMapRendererDecision == nil
     }
 
@@ -3288,7 +3283,7 @@ struct CampaignMapView: View {
                         isExpanded: $sessionToolsExpanded,
                         satelliteMapEnabled: $satelliteMapEnabled,
                         hideParcels: $hideParcels,
-                        use2DMap: session2DMapBinding
+                        use2DMap: quickStartEnabled ? nil : session2DMapBinding
                     )
                     .padding(.bottom, 8)
                 }
@@ -8320,6 +8315,12 @@ struct CampaignMapView: View {
             return
         }
 
+        guard let mapCampaignID = UUID(uuidString: campaignId), sessionManager.campaignId == mapCampaignID else { return }
+        let coordinates = targets.reduce(into: [String: CLLocationCoordinate2D]()) { result, target in
+            result[target.id] = target.coordinate
+        }
+        sessionManager.configureAutoCompleteCoordinates(coordinates)
+
         switch sessionManager.sessionMode {
         case .doorKnocking:
             let parcelTargets = linkedParcelTargets(
@@ -11598,6 +11599,7 @@ struct CampaignMapView: View {
                     hasBuildingLink: properties.hasBuildingLink,
                     hasParcelLink: properties.hasParcelLink,
                     labelVisibilityMode: properties.labelVisibilityMode,
+                    pinPlacement: properties.pinPlacement,
                     labelAnchorLon: properties.labelAnchorLon ?? coordinate.longitude,
                     labelAnchorLat: properties.labelAnchorLat ?? coordinate.latitude,
                     labelGroupKey: properties.labelGroupKey,
@@ -12432,6 +12434,7 @@ struct CampaignMapView: View {
                     hasBuildingLink: true,
                     hasParcelLink: feature.properties.hasParcelLink,
                     labelVisibilityMode: "all_modes",
+                    pinPlacement: feature.properties.pinPlacement,
                     labelAnchorLon: feature.properties.labelAnchorLon,
                     labelAnchorLat: feature.properties.labelAnchorLat,
                     labelGroupKey: feature.properties.labelGroupKey,
@@ -13536,6 +13539,7 @@ struct CampaignMapView: View {
                     hasBuildingLink: properties.hasBuildingLink,
                     hasParcelLink: false,
                     labelVisibilityMode: properties.labelVisibilityMode,
+                    pinPlacement: properties.pinPlacement,
                     labelAnchorLon: properties.labelAnchorLon,
                     labelAnchorLat: properties.labelAnchorLat,
                     labelGroupKey: properties.labelGroupKey,
@@ -13579,6 +13583,7 @@ struct CampaignMapView: View {
                     hasBuildingLink: false,
                     hasParcelLink: properties.hasParcelLink,
                     labelVisibilityMode: properties.labelVisibilityMode,
+                    pinPlacement: properties.pinPlacement,
                     labelAnchorLon: properties.labelAnchorLon,
                     labelAnchorLat: properties.labelAnchorLat,
                     labelGroupKey: properties.labelGroupKey,
@@ -14159,7 +14164,8 @@ struct CampaignMapView: View {
 
     /// Restore clears `SessionManager.buildingCentroids`; repopulate from loaded GeoJSON so GPS visit scoring can run again.
     private func rehydrateSessionVisitInferenceIfNeeded() {
-        guard sessionManager.sessionId != nil else { return }
+        guard sessionManager.sessionId != nil, let mapCampaignID = UUID(uuidString: campaignId),
+              sessionManager.campaignId == mapCampaignID else { return }
         var seen = Set<String>()
         var merged: [ResolvedCampaignTarget] = []
         for t in buildingSessionTargets {
@@ -14731,6 +14737,10 @@ struct CampaignMapboxMapViewRepresentable: UIViewRepresentable {
         }
     }
 
+    static func dismantleUIView(_ uiView: CampaignMapboxContainerView, coordinator: Coordinator) {
+        coordinator.stopWolfLocationMarker()
+    }
+
     private func styleSignature(useStandardStyle: Bool, useDarkStyle: Bool, useSatelliteStyle: Bool, preferOfflineStylePacks: Bool) -> String {
         "\(useStandardStyle)-\(useDarkStyle)-\(useSatelliteStyle)-\(preferOfflineStylePacks)"
     }
@@ -14775,7 +14785,7 @@ struct CampaignMapboxMapViewRepresentable: UIViewRepresentable {
         var onTripleTap: () -> Void
         var onUserMapInteraction: () -> Void
         var isMovePanEnabled: Bool
-        private var lastPuckSnapshot: PuckSnapshot?
+        private var wolfLocationMarker: CampaignWolfLocationMarker?
 
         init(
             onTap: @escaping (CGPoint) -> Void,
@@ -14801,20 +14811,17 @@ struct CampaignMapboxMapViewRepresentable: UIViewRepresentable {
             self.isMovePanEnabled = isMovePanEnabled
         }
 
-        func updateSessionPuck(location: CLLocation?, headingState _: MapHeadingPresentationState, show: Bool) {
-            guard let map = mapView?.mapboxMap else { return }
-            guard map.sourceExists(withId: CampaignSessionMapLayerIds.puckSource) else { return }
-            let snapshot = PuckSnapshot(location: location?.coordinate, show: show)
-            guard lastPuckSnapshot != snapshot else { return }
-            lastPuckSnapshot = snapshot
-            let emptyCollection = FeatureCollection(features: [])
-
-            if show, let loc = location {
-                let feature = Feature(geometry: .point(Point(loc.coordinate)))
-                map.updateGeoJSONSource(withId: CampaignSessionMapLayerIds.puckSource, geoJSON: .feature(feature))
-            } else {
-                map.updateGeoJSONSource(withId: CampaignSessionMapLayerIds.puckSource, geoJSON: .featureCollection(emptyCollection))
+        func updateSessionPuck(location: CLLocation?, headingState: MapHeadingPresentationState, show: Bool) {
+            guard let mapView else { return }
+            if wolfLocationMarker == nil {
+                wolfLocationMarker = CampaignWolfLocationMarker(mapView: mapView, sourceID: CampaignSessionMapLayerIds.puckSource)
             }
+            wolfLocationMarker?.update(location: location, heading: headingState.heading, show: show)
+        }
+
+        func stopWolfLocationMarker() {
+            wolfLocationMarker?.stop()
+            wolfLocationMarker = nil
         }
 
         @objc func handleTap(_ gesture: UITapGestureRecognizer) {
@@ -14876,18 +14883,6 @@ struct CampaignMapboxMapViewRepresentable: UIViewRepresentable {
         ) -> Bool {
             userInteractionGestures.contains { $0 === gestureRecognizer || $0 === otherGestureRecognizer }
         }
-    }
-}
-
-private struct PuckSnapshot: Equatable {
-    let latitude: Double?
-    let longitude: Double?
-    let show: Bool
-
-    init(location: CLLocationCoordinate2D?, show: Bool) {
-        latitude = location?.latitude
-        longitude = location?.longitude
-        self.show = show
     }
 }
 
@@ -15549,6 +15544,8 @@ struct LocationCardView: View {
     @State private var isUploadingVoiceNote = false
     @State private var voiceNoteError: String?
     @State private var showContactBlock = false
+    @State private var showLeadScreen = false
+    @State private var isReturningToMap = false
     @State private var showNotesBlock = false
     @State private var showDoNotKnockConfirmation = false
     @State private var showDeleteBuildingConfirmation = false
@@ -15944,7 +15941,7 @@ struct LocationCardView: View {
     }
 
     private var needsScroll: Bool {
-        showContactBlock || showNotesBlock || dataService.buildingData.error != nil
+        dataService.buildingData.error != nil
     }
 
     @ViewBuilder
@@ -16244,6 +16241,9 @@ struct LocationCardView: View {
 
             cardViewWithPresentation
         }
+        .fullScreenCover(isPresented: $showLeadScreen) {
+            leadScreen
+        }
         .animation(.spring(response: 0.24, dampingFraction: 0.9), value: showToolsSheet)
         .animation(.spring(response: 0.24, dampingFraction: 0.9), value: showAddressEditCard)
     }
@@ -16374,8 +16374,17 @@ struct LocationCardView: View {
         }
     }
 
+    @ViewBuilder
     private var cardViewWithAlerts: some View {
-        cardViewWithPrimarySheets
+        if showLeadScreen {
+            cardViewWithPrimarySheets
+        } else {
+            withCardAlerts(cardViewWithPrimarySheets)
+        }
+    }
+
+    private func withCardAlerts<Content: View>(_ content: Content) -> some View {
+        content
             .alert("Voice note", isPresented: .init(get: { voiceNoteError != nil }, set: { if !$0 { voiceNoteError = nil } })) {
                 Button("OK", role: .cancel) { voiceNoteError = nil }
             } message: {
@@ -16415,8 +16424,17 @@ struct LocationCardView: View {
             }
     }
 
+    @ViewBuilder
     private var cardViewWithPresentation: some View {
-        cardViewWithAlerts
+        if showLeadScreen {
+            cardViewWithAlerts
+        } else {
+            withCardPresentation(cardViewWithAlerts)
+        }
+    }
+
+    private func withCardPresentation<Content: View>(_ content: Content) -> some View {
+        content
             .sheet(isPresented: $showVoiceLogPreviewSheet) {
                 if let result = voiceLogPreviewResult {
                     VoiceLogPreviewSheet(
@@ -16488,6 +16506,70 @@ struct LocationCardView: View {
                         : nil
                 )
             }
+    }
+
+    private var leadScreen: some View {
+        withCardPresentation(withCardAlerts(
+            NavigationStack {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 20) {
+                        Text(editableAddress?.displayFull ?? headerPlaceholder)
+                            .font(.title3.weight(.semibold))
+                            .foregroundColor(cardText)
+                        farmAddressHistoryPreviewView
+                        homeActivitySummary
+                        contactDetailsFields
+                        notesFieldsBlock
+                        notesVoiceControls(address: editableAddress)
+                    }
+                    .padding(20)
+                    .frame(maxWidth: 640, alignment: .leading)
+                    .frame(maxWidth: .infinity)
+                }
+                .scrollDismissesKeyboard(.interactively)
+                .background(cardBackground.ignoresSafeArea())
+                .navigationTitle("Lead")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button {
+                            returnToMap()
+                        } label: {
+                            Label("Back", systemImage: "chevron.left")
+                        }
+                        .disabled(isReturningToMap || isSavingForm)
+                        .accessibilityLabel("Save and return to map")
+                    }
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button(isReturningToMap ? "Saving…" : "Save") {
+                            returnToMap()
+                        }
+                        .disabled(isReturningToMap || isSavingForm)
+                    }
+                    keyboardToolbarContent
+                }
+                .tint(.red)
+            }
+        ))
+        .interactiveDismissDisabled()
+    }
+
+    private func returnToMap() {
+        guard !isReturningToMap else { return }
+        isReturningToMap = true
+        focusedInputField = nil
+        dismissKeyboard()
+        Task { @MainActor in
+            defer { isReturningToMap = false }
+            if voiceRecorder.isRecording {
+                stopAndProcessVoiceLog(address: editableAddress)
+            }
+            while isTranscribing {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+            guard voiceNoteError == nil else { return }
+            await onSaveForm(returnToMap: true)
+        }
     }
 
     private var baseCardView: some View {
@@ -17160,12 +17242,6 @@ struct LocationCardView: View {
                         .foregroundColor(cardPlaceholder)
                 }
             }
-            if showContactBlock {
-                contactDetailsFields
-            }
-            if showNotesBlock && !showContactBlock {
-                notesOnlyDetailsFields
-            }
             actionButtons(address: editableAddress)
             Button("Retry") {
                 Task {
@@ -17187,12 +17263,6 @@ struct LocationCardView: View {
     private var unlinkedBuildingView: some View {
         VStack(alignment: .leading, spacing: 14) {
             farmAddressHistoryPreviewView
-            if showContactBlock {
-                contactDetailsFields
-            }
-            if showNotesBlock && !showContactBlock {
-                notesOnlyDetailsFields
-            }
             if shouldShowAddBuildingShapeAction {
                 addBuildingShapePrompt
             }
@@ -17208,12 +17278,6 @@ struct LocationCardView: View {
         VStack(alignment: .leading, spacing: 14) {
             farmAddressHistoryPreviewView
             homeActivitySummary
-            if showContactBlock {
-                contactDetailsFields
-            }
-            if showNotesBlock && !showContactBlock {
-                notesOnlyDetailsFields
-            }
             if shouldShowAddBuildingShapeAction {
                 addBuildingShapePrompt
             }
@@ -17808,21 +17872,13 @@ struct LocationCardView: View {
         switch intent {
         case .noAnswer:
             showContactBlock = false
-        case .contact:
-            showContactBlock = true
-            DispatchQueue.main.async {
-                focusedInputField = .firstName
-            }
-        case .lead:
-            showContactBlock = true
-            DispatchQueue.main.async {
-                focusedInputField = .firstName
-            }
+        case .contact, .lead:
+            toggleLeadCard(address: editableAddress)
         case .followUp:
-            showContactBlock = true
+            toggleLeadCard(address: editableAddress)
             showFollowUpDetails = true
         case .appointment:
-            showContactBlock = true
+            toggleLeadCard(address: editableAddress)
             showAppointmentDetails = true
         case .editAddress:
             showContactBlock = false
@@ -17926,12 +17982,6 @@ struct LocationCardView: View {
             }
             farmAddressHistoryPreviewView
             homeActivitySummary
-            if showContactBlock {
-                contactDetailsFields
-            }
-            if showNotesBlock && !showContactBlock {
-                notesOnlyDetailsFields
-            }
             if shouldShowAddBuildingShapeAction {
                 addBuildingShapePrompt
             }
@@ -18041,8 +18091,8 @@ struct LocationCardView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Auto-record")
                         .font(.system(size: 13, weight: .medium))
-                        .foregroundColor(.white)
-                    Text("Start recording when Notes opens")
+                        .foregroundColor(cardText)
+                    Text("Start recording when Lead opens")
                         .font(.system(size: 11))
                         .foregroundColor(cardPlaceholder)
                 }
@@ -18058,7 +18108,7 @@ struct LocationCardView: View {
         flyrEventIdForRecording = UUID()
         focusedInputField = nil
         dismissKeyboard()
-        showContactBlock = false
+        showContactBlock = true
         showNotesBlock = true
         resetExtractedChipFlags()
         Task {
@@ -18131,7 +18181,7 @@ struct LocationCardView: View {
     }
 
     private func applyStructuredVoiceLog(_ result: VoiceLogResponse, for address: ResolvedAddress) {
-        showContactBlock = false
+        showContactBlock = true
         showNotesBlock = true
         transcribedNoteText = result.transcript
         resetExtractedChipFlags()
@@ -18195,7 +18245,7 @@ struct LocationCardView: View {
     }
 
     private func applyFallbackTranscript(_ transcript: String) {
-        showContactBlock = false
+        showContactBlock = true
         showNotesBlock = true
         transcribedNoteText = transcript
         mergeTranscriptIntoNotes(transcript)
@@ -18515,42 +18565,20 @@ struct LocationCardView: View {
     }
 
     private func toggleLeadCard(address: ResolvedAddress?) {
-        guard !isDetailAccessLocked else { return }
+        guard !isDetailAccessLocked, address != nil else { return }
         focusedInputField = nil
-        guard address != nil else { return }
-
-        if showContactBlock {
-            showContactBlock = false
-            showNotesBlock = false
-            return
-        }
-
+        dismissKeyboard()
+        hydrateContactFieldsIfNeeded()
         showContactBlock = true
-        showNotesBlock = false
-        DispatchQueue.main.async {
-            focusedInputField = .firstName
+        showNotesBlock = true
+        showLeadScreen = true
+        if notesAutoRecordEnabled && !voiceRecorder.isRecording && !isTranscribing {
+            startVoiceCapture()
         }
     }
 
     private func toggleNotesCard(address: ResolvedAddress?) {
-        guard !isDetailAccessLocked else { return }
-        let isEnteringNotesMode = !showNotesBlock || showContactBlock
-        let shouldAutoRecord = isEnteringNotesMode &&
-            notesAutoRecordEnabled &&
-            address != nil &&
-            !voiceRecorder.isRecording &&
-            !isTranscribing
-        showNotesBlock = true
-        showContactBlock = false
-        if shouldAutoRecord {
-            focusedInputField = nil
-        } else {
-            DispatchQueue.main.async {
-                focusedInputField = .notes
-            }
-        }
-        guard shouldAutoRecord else { return }
-        startVoiceCapture()
+        toggleLeadCard(address: address)
     }
 
     private func deleteHouse(_ address: ResolvedAddress) {
@@ -18758,7 +18786,7 @@ struct LocationCardView: View {
     }
 
     /// Save form and close. If we have an address context, persist notes/status then close.
-    private func onSaveForm() async {
+    private func onSaveForm(returnToMap: Bool = false) async {
         guard !isDetailAccessLocked else { return }
         guard !isSavingForm else { return }
         focusedInputField = nil
@@ -18789,7 +18817,11 @@ struct LocationCardView: View {
             return
         }
         clearAutosavedDraftForCurrentContext()
-        onClose()
+        if returnToMap {
+            showLeadScreen = false
+        } else {
+            onClose()
+        }
     }
 
     private func saveContactDetailsIfNeeded(for address: ResolvedAddress) async {

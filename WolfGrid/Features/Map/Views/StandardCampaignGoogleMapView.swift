@@ -13,8 +13,11 @@ enum CampaignMapRendererDecision: Equatable {
         activeSession: Bool,
         sessionUses2D: Bool,
         mapboxAvailable: Bool,
-        googleAvailable: Bool
+        googleAvailable: Bool,
+        standardMode: Bool = false
     ) -> CampaignMapRendererDecision? {
+        // Standard can render immediately and stays in Google 2D throughout a session.
+        if standardMode { return googleAvailable ? .google2D : nil }
         guard dataResolved else { return nil }
         if activeSession {
             if (sessionUses2D || !mapboxAvailable) && googleAvailable { return .google2D }

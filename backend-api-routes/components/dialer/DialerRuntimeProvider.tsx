@@ -11,6 +11,7 @@ import { formatPhoneDisplay, normalizePhoneNumber } from '@/lib/dialer/phone';
 import { getDialerCallRecordingSummary } from '@/lib/dialer/recordings';
 import { useWorkspace } from '@/lib/workspace-context';
 import type { DialerCall, DiallerLead } from '@/types/database';
+import { SharedActiveCallBar } from './SharedActiveCallBar';
 
 type DialerDevice = ReturnType<typeof useDialerDevice>;
 
@@ -402,6 +403,7 @@ export function DialerRuntimeProvider({ children }: { children: ReactNode }) {
     <DialerRuntimeContext.Provider value={value}>
       {children}
       <PersistentDialerBar />
+      <SharedActiveCallBar />
     </DialerRuntimeContext.Provider>
   );
 }

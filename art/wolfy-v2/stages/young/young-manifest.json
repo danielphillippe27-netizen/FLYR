@@ -1,0 +1,96 @@
+{
+  "version": 2,
+  "stage": "Young Wolf",
+  "prototype": true,
+  "vertices": 6758,
+  "indices": 40080,
+  "bones": [
+    "root",
+    "body",
+    "neck",
+    "head",
+    "ear_l",
+    "ear_r",
+    "tail",
+    "front_l",
+    "front_l_lower",
+    "rear_l",
+    "rear_l_lower",
+    "front_r",
+    "front_r_lower",
+    "rear_r",
+    "rear_r_lower"
+  ],
+  "mesh": "young-mesh.bin",
+  "clips": {
+    "idle": {
+      "file": "young-idle.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "walk": {
+      "file": "young-walk.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "trot": {
+      "file": "young-trot.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "run": {
+      "file": "young-run.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "sit": {
+      "file": "young-sit.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "look_around": {
+      "file": "young-look_around.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "celebrate": {
+      "file": "young-celebrate.bin",
+      "duration": 2,
+      "frames": 48
+    }
+  },
+  "files": {
+    "young-idle.bin": {
+      "bytes": 46080,
+      "sha256": "ec238e80a9c575b21e2707808ab7e66c504b91514bd7d8fc826e4787bb4ab043"
+    },
+    "young-look_around.bin": {
+      "bytes": 46080,
+      "sha256": "2e7a9414e845205407fff3c7b0f78e2b54800c329af33889fdbdf459783dfc99"
+    },
+    "young-celebrate.bin": {
+      "bytes": 46080,
+      "sha256": "746ad000e651761268840c69914a6047778f66d1715c7a585406d26e87a29c81"
+    },
+    "young-trot.bin": {
+      "bytes": 46080,
+      "sha256": "a1989b1f2dca8213050036a6da213275fac89197355aefa50a85e873eca70475"
+    },
+    "young-mesh.bin": {
+      "bytes": 592832,
+      "sha256": "343136526d963f8e141af915410f597d4ecfd49819acb9ff7a39bde573ec857f"
+    },
+    "young-sit.bin": {
+      "bytes": 46080,
+      "sha256": "bab82f657202229abb6050acb07eb1defa00aa093b28d0ffc7df218ccfc38789"
+    },
+    "young-run.bin": {
+      "bytes": 46080,
+      "sha256": "5d0a33d8ce84adc15743bde9368c763bc164ea1c25dd7ff3c784c66506869b05"
+    },
+    "young-walk.bin": {
+      "bytes": 46080,
+      "sha256": "c11baaab898c0566be09903885eb3675fc49ceb598d3f43750f27a2fe6fc00e5"
+    }
+  }
+}

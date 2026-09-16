@@ -22,6 +22,7 @@ struct LeaderboardView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            FieldSalesEntryLink(leaderboard: true).padding(.horizontal)
             if onboardingDemo.shouldShowPanel, onboardingDemo.state?.rolePath == .teamOwner {
                 teamDemoNudge
             }

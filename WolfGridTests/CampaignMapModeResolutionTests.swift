@@ -2,6 +2,36 @@ import XCTest
 @testable import WolfGrid
 
 final class CampaignMapModeResolutionTests: XCTestCase {
+    func testStandardAlwaysUsesGoogleBeforeAndDuringSessions() {
+        for dataResolved in [false, true] {
+            for hasBuildings in [false, true] {
+                for activeSession in [false, true] {
+                    XCTAssertEqual(CampaignMapRendererDecision.resolve(
+                        dataResolved: dataResolved,
+                        hasRenderableBuildings: hasBuildings,
+                        activeSession: activeSession,
+                        sessionUses2D: false,
+                        mapboxAvailable: true,
+                        googleAvailable: true,
+                        standardMode: true
+                    ), .google2D)
+                }
+            }
+        }
+    }
+
+    func testStandardWithoutGoogleDoesNotFallBackToMapbox() {
+        XCTAssertNil(CampaignMapRendererDecision.resolve(
+            dataResolved: false,
+            hasRenderableBuildings: true,
+            activeSession: true,
+            sessionUses2D: false,
+            mapboxAvailable: true,
+            googleAvailable: false,
+            standardMode: true
+        ))
+    }
+
     func testCampaignRendererWaitsForResolvedBuildingData() {
         XCTAssertNil(CampaignMapRendererDecision.resolve(
             dataResolved: false,

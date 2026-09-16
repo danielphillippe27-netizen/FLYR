@@ -1,0 +1,15 @@
+import assert from 'node:assert/strict';
+import {readFile} from 'node:fs/promises';
+import {createSalesFixture} from './field_sales_fixture.mjs';
+const {db,id}=await createSalesFixture();
+await db.exec(await readFile(new URL('../migrations/20260915233000_field_sales_beta_rollout.sql',import.meta.url),'utf8'));
+assert.equal((await db.query('select count(*)::integer n from field_sales_settings where enabled')).rows[0].n,2);
+await db.exec(`INSERT INTO workspaces(id,timezone) VALUES('${id(90)}','America/Toronto');`);
+assert.equal((await db.query('select timezone from field_sales_settings where workspace_id=$1',[id(90)])).rows[0].timezone,'America/Toronto');
+await db.exec(`DELETE FROM workspaces WHERE id='${id(90)}';`);
+assert.equal((await db.query('select count(*)::integer n from field_sales_settings where workspace_id=$1',[id(90)])).rows[0].n,0);
+await db.exec(`SET ROLE authenticated;SELECT set_config('request.jwt.claim.sub','${id(2)}',false);`);
+await assert.rejects(db.query('update field_sales_settings set enabled=false'));
+const d=(await db.query('select field_sales_dashboard($1) d',[id(10)])).rows[0].d;
+assert.equal(d.needs_setup,true);
+await db.close();console.log('PASS: Beta initialization, explicit owner setup, protected flags and empty workspace cleanup');

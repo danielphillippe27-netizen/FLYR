@@ -1,3 +1,4 @@
+import { duplicateCallConflict } from '@/lib/dialer/duplicate-call';
 import { NextRequest, NextResponse } from 'next/server';
 import type { DialerCall, DialerSession, DialerSessionLead, DiallerLead } from '@/types/database';
 import { getDialerRequestContext, type DialerRequestContext } from '@/lib/dialer/server';
@@ -169,6 +170,12 @@ export async function POST(request: NextRequest) {
     .single();
 
   if (callError || !call) {
+    // These rows belong solely to this unsuccessful request; keep blocked calls
+    // out of the active queue and metrics.
+    await context.admin.from('dialer_session_leads').delete().eq('id', sessionLead.id);
+    await context.admin.from('dialer_sessions').delete().eq('id', session.id);
+    const conflict = duplicateCallConflict(callError, context.requestUser.id);
+    if (conflict) return NextResponse.json(conflict, { status: 409 });
     console.error('[dialer/leads/call] failed to create call', callError);
     return NextResponse.json({ error: 'Failed to start outbound call.' }, { status: 500 });
   }

@@ -40,6 +40,10 @@ struct WolfGridApp: App {
         _ = CampaignDownloadService.shared
         _ = OfflinePreloadCoordinator.shared
         #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--enable-campaign-gps-proximity") {
+            UserDefaults.standard.set(true, forKey: "pre_session_gps_proximity_enabled")
+            print("Campaign GPS proximity preference enabled")
+        }
         Self.verifyInterFonts()
         #endif
     }
@@ -67,7 +71,19 @@ struct WolfGridApp: App {
 
     var body: some Scene {
         WindowGroup {
-            AuthGate(routeState: routeState)
+            Group {
+                #if DEBUG
+                if ProcessInfo.processInfo.arguments.contains("--wolfy-pack-prototype") {
+                    WolfyPackPrototypeEntryView()
+                } else if ProcessInfo.processInfo.arguments.contains("--wolfy-map-prototype") {
+                    WolfyMapPrototypeEntryView()
+                } else if ProcessInfo.processInfo.arguments.contains("--wolfy-lab") {
+                    WolfyLaboratoryEntryView()
+                } else { AuthGate(routeState: routeState) }
+                #else
+                AuthGate(routeState: routeState)
+                #endif
+            }
                 .environmentObject(uiState)
                 .environmentObject(entitlementsService)
                 .environmentObject(routeState)

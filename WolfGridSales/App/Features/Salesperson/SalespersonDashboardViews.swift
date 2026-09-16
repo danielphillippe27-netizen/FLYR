@@ -56,6 +56,15 @@ private extension KeyedDecodingContainer where Key == FlexibleCodingKey {
     }
 }
 
+private struct SharedLeadCallHistory: Codable, Equatable {
+    let lastCalledAt: Date
+    let lastCalledBy: String
+    enum CodingKeys: String, CodingKey {
+        case lastCalledAt = "last_called_at"
+        case lastCalledBy = "last_called_by"
+    }
+}
+
 private struct SalespersonDiallerLead: Identifiable, Codable, Equatable {
     let id: UUID
     var salesContactId: String?
@@ -77,6 +86,7 @@ private struct SalespersonDiallerLead: Identifiable, Codable, Equatable {
     var isStarred: Bool?
     var disposition: String?
     var notes: String?
+    var sharedCallHistory: SharedLeadCallHistory?
     var calledAt: Date?
     var lastContactedAt: Date?
     var createdAt: Date?
@@ -102,6 +112,7 @@ private struct SalespersonDiallerLead: Identifiable, Codable, Equatable {
         case isStarred = "is_starred"
         case disposition
         case notes
+        case sharedCallHistory = "shared_call_history"
         case calledAt = "called_at"
         case lastContactedAt = "last_contacted_at"
         case createdAt = "created_at"
@@ -2308,21 +2319,7 @@ private actor SalespersonMobileAPI {
         )
         let body = try encoder.encode(payload)
         let request = try await request(path: "api/dialer/leads/call", method: "POST", body: body)
-        do {
-            return try decoder.decode(SalespersonDiallerCallResponse.self, from: try await data(for: request)).call
-        } catch {
-            guard isDiallerBackendUnavailable(error) else { throw error }
-            let callId = UUID()
-            return SalespersonDiallerCall(
-                id: callId,
-                callRequestId: callId.uuidString,
-                toNumber: lead.phone,
-                fromNumber: nil,
-                status: "started",
-                disposition: nil,
-                statusPayload: nil
-            )
-        }
+        return try decoder.decode(SalespersonDiallerCallResponse.self, from: try await data(for: request)).call
     }
 
     func startManualDiallerCall(phone: String) async throws -> SalespersonDiallerCall {
@@ -2342,21 +2339,7 @@ private actor SalespersonMobileAPI {
         )
         let body = try encoder.encode(payload)
         let request = try await request(path: "api/dialer/leads/call", method: "POST", body: body)
-        do {
-            return try decoder.decode(SalespersonDiallerCallResponse.self, from: try await data(for: request)).call
-        } catch {
-            guard isDiallerBackendUnavailable(error) else { throw error }
-            let callId = UUID()
-            return SalespersonDiallerCall(
-                id: callId,
-                callRequestId: callId.uuidString,
-                toNumber: trimmedPhone,
-                fromNumber: nil,
-                status: "started",
-                disposition: nil,
-                statusPayload: nil
-            )
-        }
+        return try decoder.decode(SalespersonDiallerCallResponse.self, from: try await data(for: request)).call
     }
 
     func setCallContentSaved(callId: UUID, saved: Bool) async throws -> SalespersonDiallerCall {
@@ -3706,7 +3689,7 @@ private final class SalespersonDiallerViewModel: ObservableObject {
         }
     }
 
-    func scheduleFollowUp(name: String, at date: Date) async {
+    func scheduleFollowUp(name: String, at date: Date, followUpNotes: String) async {
         guard let selectedLead else { return }
         isSaving = true
         errorMessage = nil
@@ -3717,7 +3700,8 @@ private final class SalespersonDiallerViewModel: ObservableObject {
             let followUpNote = "Follow up: \(followUpName) | When: \(date.formatted(date: .abbreviated, time: .shortened))"
             let nextNotes = [
                 notes.trimmingCharacters(in: .whitespacesAndNewlines),
-                followUpNote
+                followUpNote,
+                followUpNotes.trimmingCharacters(in: .whitespacesAndNewlines)
             ].filter { !$0.isEmpty }.joined(separator: "\n")
 
             if let activeCall {
@@ -3761,6 +3745,9 @@ private final class SalespersonDiallerViewModel: ObservableObject {
             SalespersonVoiceCallService.shared.endActiveCall()
             discardConversationIfNeeded(activeCall)
             let call = try await SalespersonMobileAPI.shared.startDiallerCall(lead: lead)
+            var attemptedLead = lead
+            attemptedLead.sharedCallHistory = SharedLeadCallHistory(lastCalledAt: Date(), lastCalledBy: "You")
+            replaceLead(attemptedLead)
             activeCall = call
             manualCallNumber = nil
             let label = lead.displayBusinessName
@@ -5294,6 +5281,22 @@ struct SalespersonLeadsView: View {
         NavigationStack {
             VStack(spacing: 0) {
                 scraperDialerBanner
+                NavigationLink {
+                    HiringLeadsView()
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: "briefcase.fill").foregroundStyle(.red)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Hiring Leads").font(.subheadline.weight(.semibold))
+                            Text("New employer postings · Canada + USA")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 16).padding(.vertical, 12)
+                }
+                .buttonStyle(.plain)
                 contactsListsSwitcher
                 if isSearchVisible {
                     salespersonListSearchBar
@@ -6100,6 +6103,12 @@ private struct SalespersonDiallerQueueRow: View {
                     .foregroundColor(.text)
                     .lineLimit(1)
 
+                if let history = lead.sharedCallHistory {
+                    Text("Last attempted by \(history.lastCalledBy) · \(history.lastCalledAt.formatted(date: .abbreviated, time: .shortened))")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
                 HStack(spacing: 4) {
                     Text(detailLine)
                         .font(.system(size: 13))
@@ -6224,6 +6233,54 @@ private enum SalespersonDemoEmailTemplate {
     static func matches(subject: String, body: String, recipientName: String?) -> Bool {
         subject.trimmingCharacters(in: .whitespacesAndNewlines) == self.subject
             && body.trimmingCharacters(in: .whitespacesAndNewlines) == self.body(recipientName: recipientName)
+    }
+}
+
+private enum SalespersonDemoTextTemplate {
+    static let title = SalespersonDemoEmailTemplate.title
+
+    static func body(recipientName: String?) -> String {
+        let name = recipientName?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+        return """
+        Hi \(name ?? "there"), here’s the WolfGrid demo! See how you can plan your territory, organize leads, and keep your team’s follow-up in one place:
+        \(SalespersonDemoLink.url.absoluteString)
+
+        Have a question? Just text me back — I’m happy to help.
+        """
+    }
+}
+
+private struct SalespersonTextTemplateMenu: View {
+    @Binding var message: String
+    let recipientName: String?
+
+    var body: some View {
+        Menu {
+            Button {
+                message = SalespersonDemoTextTemplate.body(recipientName: recipientName)
+            } label: {
+                Label(SalespersonDemoTextTemplate.title, systemImage: "play.rectangle")
+            }
+            Divider()
+            Button {
+                applyTemplate(.individualAgent)
+            } label: {
+                Label(SalespersonOutreachTemplate.individualAgent.title, systemImage: "person.crop.circle")
+            }
+            Button {
+                applyTemplate(.realEstateTeam)
+            } label: {
+                Label(SalespersonOutreachTemplate.realEstateTeam.title, systemImage: "person.3")
+            }
+        } label: {
+            Label("Templates", systemImage: "doc.on.doc")
+        }
+        .accessibilityLabel("Text templates")
+    }
+
+    private func applyTemplate(_ template: SalespersonOutreachTemplate) {
+        let senderName = AuthManager.shared.user?.displayName?.nilIfEmpty ?? "Daniel"
+        message = template.smsBody(recipientName: recipientName, senderName: senderName)
     }
 }
 
@@ -7207,20 +7264,8 @@ private struct SalespersonContactComposerSheet: View {
                         Button("Cancel") { dismiss() }
                     }
                     ToolbarItem(placement: .topBarTrailing) {
-                        Menu {
-                            Button {
-                                applyTextTemplate(.individualAgent)
-                            } label: {
-                                Label(SalespersonOutreachTemplate.individualAgent.title, systemImage: "person.crop.circle")
-                            }
-                            Button {
-                                applyTextTemplate(.realEstateTeam)
-                            } label: {
-                                Label(SalespersonOutreachTemplate.realEstateTeam.title, systemImage: "person.3")
-                            }
-                        } label: {
-                            Label("Templates", systemImage: "doc.on.doc")
-                        }
+                        SalespersonTextTemplateMenu(message: $message, recipientName: recipientName)
+                            .disabled(isSending)
                     }
                 }
                 .alert(channel.title, isPresented: Binding(
@@ -7235,11 +7280,6 @@ private struct SalespersonContactComposerSheet: View {
         !recipient.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
         !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
         (channel == .sms || !subject.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-    }
-
-    private func applyTextTemplate(_ template: SalespersonOutreachTemplate) {
-        let senderName = AuthManager.shared.user?.displayName?.nilIfEmpty ?? "Daniel"
-        message = template.smsBody(recipientName: recipientName, senderName: senderName)
     }
 
     private func send() async {
@@ -8927,9 +8967,9 @@ struct SalespersonDiallerView: View {
                 }
                 .sheet(isPresented: $isFollowUpSheetPresented) {
                     if let lead = viewModel.selectedLead {
-                        SalespersonDiallerFollowUpSheet(lead: lead) { title, date in
+                        SalespersonDiallerFollowUpSheet(lead: lead) { title, date, notes in
                             Task {
-                                await viewModel.scheduleFollowUp(name: title, at: date)
+                                await viewModel.scheduleFollowUp(name: title, at: date, followUpNotes: notes)
                                 isFollowUpSheetPresented = false
                             }
                         }
@@ -9214,6 +9254,12 @@ struct SalespersonDiallerView: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityHint("Opens the complete contact profile")
+
+                    if let history = lead.sharedCallHistory {
+                        Text("Last attempted by \(history.lastCalledBy) · \(history.lastCalledAt.formatted(date: .abbreviated, time: .shortened))")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
 
                     if let companyAndRole = lead.companyAndRoleLine {
                         Text(companyAndRole)
@@ -10300,6 +10346,10 @@ private struct SalespersonDiallerTextSheet: View {
             .navigationTitle("New Message")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    SalespersonTextTemplateMenu(message: $draft, recipientName: viewModel.selectedLead?.name)
+                        .disabled(viewModel.isSendingCallbackText)
+                }
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
                 }
@@ -11122,13 +11172,14 @@ private enum SalespersonFollowUpChoice: String, CaseIterable, Identifiable {
 
 private struct SalespersonDiallerFollowUpSheet: View {
     let lead: SalespersonDiallerLead
-    let onSave: (String, Date) -> Void
+    let onSave: (String, Date, String) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var choice: SalespersonFollowUpChoice = .today
     @State private var title: String
     @State private var customDate: Date
+    @State private var notes = ""
 
-    init(lead: SalespersonDiallerLead, onSave: @escaping (String, Date) -> Void) {
+    init(lead: SalespersonDiallerLead, onSave: @escaping (String, Date, String) -> Void) {
         self.lead = lead
         self.onSave = onSave
         _title = State(initialValue: "Follow up with \(lead.displayBusinessName)")
@@ -11157,6 +11208,11 @@ private struct SalespersonDiallerFollowUpSheet: View {
                         displayedComponents: [.date, .hourAndMinute]
                     )
                 }
+                Section("Notes") {
+                    TextField("Add notes (optional)", text: $notes, axis: .vertical)
+                        .lineLimit(4...8)
+                        .accessibilityLabel("Follow-up notes")
+                }
             }
             .navigationTitle("Follow Up")
             .navigationBarTitleDisplayMode(.inline)
@@ -11166,7 +11222,7 @@ private struct SalespersonDiallerFollowUpSheet: View {
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Add") {
-                        onSave(title, customDate)
+                        onSave(title, customDate, notes)
                     }
                 }
             }
@@ -11910,6 +11966,10 @@ private struct SalespersonNewMessageSheet: View {
             .navigationTitle("New Message")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    SalespersonTextTemplateMenu(message: $messageBody, recipientName: nil)
+                        .disabled(viewModel.isSending)
+                }
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
                         .disabled(viewModel.isSending)

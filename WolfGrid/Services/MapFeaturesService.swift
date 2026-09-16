@@ -235,6 +235,7 @@ struct AddressProperties: Codable {
     let hasBuildingLink: Bool?
     let hasParcelLink: Bool?
     let labelVisibilityMode: String?
+    let pinPlacement: String?
     let labelAnchorLon: Double?
     let labelAnchorLat: Double?
     let labelGroupKey: String?
@@ -260,6 +261,7 @@ struct AddressProperties: Codable {
         hasBuildingLink: Bool? = nil,
         hasParcelLink: Bool? = nil,
         labelVisibilityMode: String? = nil,
+        pinPlacement: String? = nil,
         labelAnchorLon: Double? = nil,
         labelAnchorLat: Double? = nil,
         labelGroupKey: String? = nil,
@@ -284,6 +286,7 @@ struct AddressProperties: Codable {
         self.hasBuildingLink = hasBuildingLink
         self.hasParcelLink = hasParcelLink
         self.labelVisibilityMode = labelVisibilityMode
+        self.pinPlacement = pinPlacement
         self.labelAnchorLon = labelAnchorLon
         self.labelAnchorLat = labelAnchorLat
         self.labelGroupKey = labelGroupKey
@@ -310,6 +313,7 @@ struct AddressProperties: Codable {
         case hasBuildingLink = "has_building_link"
         case hasParcelLink = "has_parcel_link"
         case labelVisibilityMode = "label_visibility_mode"
+        case pinPlacement = "pin_placement"
         case labelAnchorLon = "label_anchor_lon"
         case labelAnchorLat = "label_anchor_lat"
         case labelGroupKey = "label_group_key"

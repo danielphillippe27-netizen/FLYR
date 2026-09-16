@@ -45,7 +45,8 @@ final class ActivityFeedService {
         workspaceId: UUID?,
         includeMembers: Bool,
         filter: ActivityFeedFilter,
-        limit: Int = 150
+        limit: Int = 150,
+        strictRemote: Bool = false
     ) async throws -> [ActivityFeedItem] {
         switch filter {
         case .activity:
@@ -60,21 +61,25 @@ final class ActivityFeedService {
                 userId: userId,
                 workspaceId: workspaceId,
                 includeMembers: includeMembers,
-                limit: limit
+                limit: limit,
+                strictRemote: strictRemote
             )
             async let contactsTask = fetchContactRows(
                 userId: userId,
                 workspaceId: workspaceId,
                 includeMembers: includeMembers,
-                limit: limit
+                limit: limit,
+                strictRemote: strictRemote
             )
             let contacts = try await contactsTask
             let localActivities = await fetchLocalAppointmentRows(
                 contacts: contacts,
                 limit: limit
             )
-            let remoteActivities = (try? await appointmentActivities) ?? []
-            let activities = mergeAppointmentRows(localActivities + remoteActivities, limit: limit)
+            let remoteActivities: [AppointmentActivityRow]
+            if strictRemote { remoteActivities = try await appointmentActivities }
+            else { remoteActivities = (try? await appointmentActivities) ?? [] }
+            let activities = mergeAppointmentRows((strictRemote ? [] : localActivities) + remoteActivities, limit: strictRemote ? Int.max : limit)
             let contactIdsWithMeeting = Set(activities.map(\.contact.id))
 
             let activityItems = activities.map { row in
@@ -121,7 +126,8 @@ final class ActivityFeedService {
                 userId: userId,
                 workspaceId: workspaceId,
                 includeMembers: includeMembers,
-                limit: limit
+                limit: limit,
+                strictRemote: strictRemote
             )
             return contacts
                 .filter { needsFollowUp($0) }
@@ -330,9 +336,10 @@ final class ActivityFeedService {
         userId: UUID,
         workspaceId: UUID?,
         includeMembers: Bool,
-        limit: Int
+        limit: Int,
+        strictRemote: Bool = false
     ) async throws -> [ContactFeedRow] {
-        let localRows = await fetchLocalContactRows(
+        let localRows = strictRemote ? [] : await fetchLocalContactRows(
             userId: userId,
             workspaceId: workspaceId,
             includeMembers: includeMembers
@@ -346,6 +353,16 @@ final class ActivityFeedService {
             if let workspaceId {
                 query = query.eq("workspace_id", value: workspaceId.uuidString)
             }
+            if strictRemote {
+                var all: [ContactFeedRow] = []
+                while true {
+                    try Task.checkCancellation()
+                    let response = try await query.order("id").range(from: all.count, to: all.count + 999).execute()
+                    let page = try decoder.decode([ContactFeedRow].self, from: response.data)
+                    all.append(contentsOf: page)
+                    if page.count < 1000 { return all }
+                }
+            }
             let response = try await query
                 .order("updated_at", ascending: false)
                 .limit(limit)
@@ -356,6 +373,7 @@ final class ActivityFeedService {
                 return mergedContacts
             }
         } catch {
+            if strictRemote { throw error }
             if !localRows.isEmpty {
                 return mergeContactRows(localRows, limit: limit)
             }
@@ -466,7 +484,8 @@ final class ActivityFeedService {
         userId: UUID,
         workspaceId: UUID?,
         includeMembers: Bool,
-        limit: Int
+        limit: Int,
+        strictRemote: Bool = false
     ) async throws -> [AppointmentActivityRow] {
         var query = client
             .from("contact_activities")
@@ -478,6 +497,16 @@ final class ActivityFeedService {
             query = query.eq("contacts.workspace_id", value: workspaceId.uuidString)
         }
 
+        if strictRemote {
+            var all: [AppointmentActivityRow] = []
+            while true {
+                try Task.checkCancellation()
+                let response = try await query.order("id").range(from: all.count, to: all.count + 999).execute()
+                let page = try JSONDecoder.supabaseDates.decode([AppointmentActivityRow].self, from: response.data)
+                all.append(contentsOf: page)
+                if page.count < 1000 { return all }
+            }
+        }
         let response = try await query
             .order("timestamp", ascending: false)
             .limit(limit)

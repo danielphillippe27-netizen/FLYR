@@ -1,0 +1,41 @@
+{
+  "armatures": 0,
+  "actions": 0,
+  "linked_libraries": 0,
+  "resolution": [
+    2048,
+    2048
+  ],
+  "packed_coat_texture": true,
+  "stage": "UNRIGGED QUADRUPED DESIGN REVIEW \u2014 no runtime export",
+  "renders": {
+    "front": {
+      "dimensions": [
+        2048,
+        2048
+      ],
+      "bytes": 4105934
+    },
+    "side": {
+      "dimensions": [
+        2048,
+        2048
+      ],
+      "bytes": 4125563
+    },
+    "three-quarter": {
+      "dimensions": [
+        2048,
+        2048
+      ],
+      "bytes": 4182130
+    },
+    "iphone-size": {
+      "dimensions": [
+        390,
+        390
+      ],
+      "bytes": 176592
+    }
+  }
+}

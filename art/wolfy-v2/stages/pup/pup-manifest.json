@@ -1,0 +1,96 @@
+{
+  "version": 2,
+  "stage": "Wolf Pup",
+  "prototype": true,
+  "vertices": 6758,
+  "indices": 40080,
+  "bones": [
+    "root",
+    "body",
+    "neck",
+    "head",
+    "ear_l",
+    "ear_r",
+    "tail",
+    "front_l",
+    "front_l_lower",
+    "rear_l",
+    "rear_l_lower",
+    "front_r",
+    "front_r_lower",
+    "rear_r",
+    "rear_r_lower"
+  ],
+  "mesh": "pup-mesh.bin",
+  "clips": {
+    "idle": {
+      "file": "pup-idle.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "walk": {
+      "file": "pup-walk.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "trot": {
+      "file": "pup-trot.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "run": {
+      "file": "pup-run.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "sit": {
+      "file": "pup-sit.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "look_around": {
+      "file": "pup-look_around.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "celebrate": {
+      "file": "pup-celebrate.bin",
+      "duration": 2,
+      "frames": 48
+    }
+  },
+  "files": {
+    "pup-idle.bin": {
+      "bytes": 46080,
+      "sha256": "e3643c8a1bf1eb44b414400b24dee163c58c10e9efc7114ce983aa1a1c527165"
+    },
+    "pup-look_around.bin": {
+      "bytes": 46080,
+      "sha256": "25626f026c9c30e3a112290528f4f3e13550b0922d78c7e9aa8e7fbe3decbd48"
+    },
+    "pup-trot.bin": {
+      "bytes": 46080,
+      "sha256": "d9cab0ae98922ee45d983b544ad6ff58bcba24ebe7905703bd5e04b6da8429f2"
+    },
+    "pup-sit.bin": {
+      "bytes": 46080,
+      "sha256": "76291925943c4e1483d1cba4d96aecbffab3343fdff86c304576b8f4d8b63bdb"
+    },
+    "pup-mesh.bin": {
+      "bytes": 592832,
+      "sha256": "c5e886d993fbb352fe0267e4fdb25a217835e55f428847ec18cce313ea612bc6"
+    },
+    "pup-run.bin": {
+      "bytes": 46080,
+      "sha256": "02174cd62f95dc2235b7f5d30d490afede3752535c384327cfb1091762efa982"
+    },
+    "pup-celebrate.bin": {
+      "bytes": 46080,
+      "sha256": "0f69b56b44cb7b1411cb5199d98db259e95f6d8916503c430a5dc1b946cd2505"
+    },
+    "pup-walk.bin": {
+      "bytes": 46080,
+      "sha256": "f3962ccbd55056015ce8734ef2f74ad16cec9c0e5c4e1586dd4ea5a3f394fd6d"
+    }
+  }
+}

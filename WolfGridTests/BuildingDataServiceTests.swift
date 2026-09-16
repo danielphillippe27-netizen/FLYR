@@ -138,7 +138,8 @@ final class BuildingDataServiceTests: XCTestCase {
         houseNumber: String,
         streetName: String = "Richfield Square",
         formatted: String,
-        coordinate: [Double] = [-79.0, 43.0]
+        coordinate: [Double] = [-79.0, 43.0],
+        pinPlacement: String = ""
     ) throws -> AddressFeature {
         let payload: [String: Any] = [
             "type": "Feature",
@@ -150,6 +151,7 @@ final class BuildingDataServiceTests: XCTestCase {
             "properties": [
                 "id": id.uuidString,
                 "building_gers_id": buildingGersId,
+                "pin_placement": pinPlacement,
                 "house_number": houseNumber,
                 "street_name": streetName,
                 "formatted": formatted
@@ -724,6 +726,27 @@ final class BuildingDataServiceTests: XCTestCase {
 
         XCTAssertEqual(deduped.count, 1)
         XCTAssertEqual(deduped.first?.id, requestedId)
+    }
+
+    func testCanonicalTownhousePinSurvivesBuildingLabelPlacement() throws {
+        let building = try makeBuildingFeature(gersId: "row-home", unitsCount: 2, addressCount: 2)
+        let firstId = UUID()
+        let secondId = UUID()
+        let first = try makeAddressFeature(id: firstId, buildingGersId: "row-home", houseNumber: "10",
+            formatted: "10 Main Street", coordinate: [-78.9998, 43.0002], pinPlacement: "building_parcel_centroid")
+        let second = try makeAddressFeature(id: secondId, buildingGersId: "row-home", houseNumber: "12",
+            formatted: "12 Main Street", coordinate: [-78.9982, 43.0002], pinPlacement: "building_parcel_centroid")
+        // Round-trip through the same Codable contract used by offline bundles.
+        let reloaded = try JSONDecoder().decode([AddressFeature].self, from: JSONEncoder().encode([first, second]))
+        XCTAssertEqual(reloaded.first?.properties.pinPlacement, "building_parcel_centroid")
+        let data = try MapLayerManager.buildAddressNumberLabelPointGeoJSON(addresses: reloaded,
+            buildings: [building], orderedAddressIdsByBuilding: ["row-home": [firstId, secondId]])
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let features = try XCTUnwrap(object["features"] as? [[String: Any]])
+        XCTAssertEqual(features.count, 2)
+        let coordinates = try features.map { try pointCoordinates(from: $0) }
+        XCTAssertTrue(coordinates.contains { abs($0.longitude - (-78.9998)) < 0.0000001 })
+        XCTAssertTrue(coordinates.contains { abs($0.longitude - (-78.9982)) < 0.0000001 })
     }
 
     func testAddressNumberLabelUsesBuildingPlacementForSingleLinkedHome() throws {

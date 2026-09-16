@@ -2,6 +2,8 @@ import SwiftUI
 import UIKit
 
 struct CalendarTabView: View {
+    var showsMoreBackButton = false
+    @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var uiState: AppUIState
     @Environment(\.colorScheme) private var colorScheme
     @Namespace private var zoomNamespace
@@ -37,6 +39,16 @@ struct CalendarTabView: View {
                 Color(uiColor: .systemBackground).ignoresSafeArea()
 
                 VStack(spacing: 0) {
+                    if showsMoreBackButton {
+                        HStack {
+                            Button { dismiss() } label: {
+                                Label("More", systemImage: "chevron.left")
+                                    .frame(minHeight: 44)
+                            }
+                            .accessibilityLabel("Back to More")
+                            Spacer()
+                        }.padding(.horizontal, 20)
+                    }
                     header
                     searchStrip
                     content

@@ -1,0 +1,138 @@
+{
+  "version": 2,
+  "prototype": true,
+  "revision": "wolfy-character-3",
+  "skinning": "two-bone",
+  "stage": "Wolf Pup",
+  "vertices": 13314,
+  "indices": 79644,
+  "bones": [
+    "root",
+    "body",
+    "neck",
+    "head",
+    "ear_l",
+    "ear_r",
+    "tail",
+    "front_l",
+    "front_l_lower",
+    "front_l_paw",
+    "rear_l",
+    "rear_l_lower",
+    "rear_l_paw",
+    "front_r",
+    "front_r_lower",
+    "front_r_paw",
+    "rear_r",
+    "rear_r_lower",
+    "rear_r_paw"
+  ],
+  "mesh": "pup-mesh.bin",
+  "clips": {
+    "idle": {
+      "file": "pup-idle.bin",
+      "duration": 24,
+      "frames": 576
+    },
+    "walk": {
+      "file": "pup-walk.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "trot": {
+      "file": "pup-trot.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "run": {
+      "file": "pup-run.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "sit": {
+      "file": "pup-sit.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "look_around": {
+      "file": "pup-look_around.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "celebrate": {
+      "file": "pup-celebrate.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "sniff": {
+      "file": "pup-sniff.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "scratch": {
+      "file": "pup-scratch.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "lie_down": {
+      "file": "pup-lie_down.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "get_up": {
+      "file": "pup-get_up.bin",
+      "duration": 2,
+      "frames": 48
+    }
+  },
+  "files": {
+    "pup-idle.bin": {
+      "bytes": 700416,
+      "sha256": "3194e478b6a22fdf07fc1e0b5cd5e4952bdaa96a1e561274ff2d1bfe08d7295e"
+    },
+    "pup-look_around.bin": {
+      "bytes": 58368,
+      "sha256": "5e0606dd090cfaf82adab2084c357c240457d6e635cfd19cd7599505933fefaf"
+    },
+    "pup-sniff.bin": {
+      "bytes": 58368,
+      "sha256": "fe6000c97513d770e669ccf5f39ed27d1c106ed137044f1449546ebed2443958"
+    },
+    "pup-trot.bin": {
+      "bytes": 58368,
+      "sha256": "3c5c8213cd351c8f64e8a91bb92586b1ee03ee780aee169949c2126fdd62ce30"
+    },
+    "pup-sit.bin": {
+      "bytes": 58368,
+      "sha256": "18963c4547784518149405ddb1c03d100e00813bd18c2d78680fea207d8f0c48"
+    },
+    "pup-mesh.bin": {
+      "bytes": 1170672,
+      "sha256": "5fda2c0adddc0959fad216a7fc4050812019e311be0eca5fd72a108b94b1387b"
+    },
+    "pup-run.bin": {
+      "bytes": 58368,
+      "sha256": "3c5c8213cd351c8f64e8a91bb92586b1ee03ee780aee169949c2126fdd62ce30"
+    },
+    "pup-scratch.bin": {
+      "bytes": 58368,
+      "sha256": "f449d9ab5e477cfc5ea386134d46a748a63b65aeeba1ff0650ba15086c5a7c41"
+    },
+    "pup-celebrate.bin": {
+      "bytes": 58368,
+      "sha256": "cfd215a3139c571bf2bcea039326cd28b59ddca8e7779532a3074485de45ccec"
+    },
+    "pup-get_up.bin": {
+      "bytes": 58368,
+      "sha256": "a53aa3f73317b9daf4835b75c8ec127a3a4e8676fbb7024b24b58dd25feaa09f"
+    },
+    "pup-walk.bin": {
+      "bytes": 58368,
+      "sha256": "3c5c8213cd351c8f64e8a91bb92586b1ee03ee780aee169949c2126fdd62ce30"
+    },
+    "pup-lie_down.bin": {
+      "bytes": 58368,
+      "sha256": "4cc06daa6e258bf468188504cc4f446a29b619c3db3d53a4d45d70963da0903d"
+    }
+  }
+}

@@ -109,7 +109,7 @@ final class MapLayerManager {
     /// Minimum rendered building height, reduced by 35% from the previous 8 m floor.
     static let defaultBuildingExtrusionHeight: Double = 5.2
     static let maximumBuildingExtrusionHeight: Double = 14.0
-    private static let buildingExtrusionHeightScale: Double = 0.5
+    private static let buildingExtrusionHeightScale: Double = 0.6
     private static let selectedBuildingHeightScale: Double = 1.0
     private static let townhomeOverlayHeightLift: Double = 0.08
     private static let townhomeOverlayPlateThickness: Double = 0.045
@@ -3852,7 +3852,17 @@ final class MapLayerManager {
             var labelPriority: Double
             var labelZOffset = Self.addressMarkerExtrusionHeight + Self.addressNumberRoofClearance
 
-            if let linkedBuilding {
+            let usesCanonicalPlacement = ["parcel_center", "building_centroid", "building_parcel_centroid"]
+                .contains(feature.properties.pinPlacement ?? "")
+            if usesCanonicalPlacement {
+                // Server placement includes townhouse/parcel intersections. A
+                // whole-building center would collapse neighboring unit pins.
+                resolvedCoordinate = baseCoordinate
+                labelPriority = feature.properties.labelPriority ?? 90
+                if let linkedBuilding {
+                    labelZOffset = linkedBuilding.height + Self.addressNumberRoofClearance
+                }
+            } else if let linkedBuilding {
                 let totalAddresses = linkedAddressCount(for: linkedBuilding)
                 let addressIndex = addressUUID.flatMap { uuid in
                     linkedBuilding.orderedAddressIds.firstIndex(of: uuid)

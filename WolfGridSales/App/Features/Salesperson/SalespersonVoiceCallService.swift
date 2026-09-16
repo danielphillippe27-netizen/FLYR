@@ -25,6 +25,24 @@ final class SalespersonVoiceCallService: NSObject, ObservableObject {
     static let shared = SalespersonVoiceCallService()
 
     @Published private(set) var activeCallLabel: String?
+    private var activeCallNumber: String?
+    private var activeCallScope: String?
+
+    var sharedCallSnapshot: SharedCallSnapshot? {
+        guard let id = activeCalls.keys.first,
+              activeCallScope == currentVoiceScope,
+              callPhase == .connecting || callPhase == .connected,
+              let startedAt = callStartedAt else { return nil }
+        let formatter = ISO8601DateFormatter()
+        return SharedCallSnapshot(
+            id: id.uuidString,
+            name: String((activeCallLabel ?? activeCallNumber ?? "Call").prefix(300)),
+            phone: activeCallNumber,
+            phase: callPhase == .connected ? "connected" : "connecting",
+            startedAt: formatter.string(from: startedAt),
+            connectedAt: callConnectedAt.map { formatter.string(from: $0) }
+        )
+    }
     @Published private(set) var registrationError: String?
     @Published private(set) var isRegisteredForIncomingCalls = false
     @Published private(set) var callPhase: VoiceCallPhase = .idle
@@ -108,6 +126,7 @@ final class SalespersonVoiceCallService: NSObject, ObservableObject {
     }
 
     func start() {
+        SharedActiveCallService.shared.start()
         guard pushRegistry == nil else { return }
         let registry = PKPushRegistry(queue: .main)
         registry.delegate = self
@@ -222,6 +241,8 @@ final class SalespersonVoiceCallService: NSObject, ObservableObject {
         try await request(transaction: CXTransaction(action: startAction))
 
         activeCallLabel = label
+        activeCallNumber = destination
+        activeCallScope = currentVoiceScope
         callPhase = .connecting
         callStartedAt = Date()
         callConnectedAt = nil
@@ -724,6 +745,8 @@ final class SalespersonVoiceCallService: NSObject, ObservableObject {
         #endif
         activeCalls[uuid] = call
         activeCallLabel = from
+        activeCallNumber = incomingNumber(for: call)
+        activeCallScope = currentVoiceScope
         hasIncomingCall = true
         callPhase = .connecting
         callStartedAt = Date()
@@ -895,6 +918,7 @@ final class SalespersonVoiceCallService: NSObject, ObservableObject {
         activeCalls.removeValue(forKey: uuid)
         if activeCalls.isEmpty {
             activeCallLabel = nil
+            activeCallNumber = nil
             hasIncomingCall = false
             callPhase = .idle
             callStartedAt = nil
@@ -1196,6 +1220,8 @@ extension SalespersonVoiceCallService: TxClientDelegate {
             if let uuid = call.callInfo?.callId {
                 self.activeCalls[uuid] = call
                 self.activeCallLabel = self.incomingLabel(for: call)
+                self.activeCallNumber = self.incomingNumber(for: call)
+                self.activeCallScope = self.currentVoiceScope
                 self.hasIncomingCall = true
                 self.callPhase = .connecting
                 if self.callStartedAt == nil {
@@ -1215,6 +1241,7 @@ extension SalespersonVoiceCallService: CXProviderDelegate {
         }
         activeCalls.removeAll()
         activeCallLabel = nil
+        activeCallNumber = nil
         hasIncomingCall = false
         callPhase = .idle
         callStartedAt = nil

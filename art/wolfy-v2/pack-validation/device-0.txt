@@ -1,0 +1,1 @@
+frames=331, cpuEncodeP95ms=0.20704166672658175, stages=5, failure=none, visible=50, full=8, simplified=8

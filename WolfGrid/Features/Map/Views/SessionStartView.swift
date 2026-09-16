@@ -4,6 +4,39 @@ private struct SessionRouteAssignmentDetailSheetItem: Identifiable {
     let id: UUID
 }
 
+private struct SessionActionCardStyle: ButtonStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    let tint: Color
+    let gradientTop: Color
+    let gradientBottom: Color
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .background {
+                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    .fill(LinearGradient(
+                        colors: [gradientTop, gradientBottom],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    ))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 24, style: .continuous)
+                            .strokeBorder(.white.opacity(0.7), lineWidth: 1)
+                    }
+                    .shadow(color: .black.opacity(configuration.isPressed ? 0.05 : 0.10),
+                            radius: configuration.isPressed ? 9 : 18,
+                            x: 0, y: configuration.isPressed ? 3 : 8)
+                    .shadow(color: tint.opacity(configuration.isPressed ? 0.04 : 0.08),
+                            radius: configuration.isPressed ? 12 : 24,
+                            x: 0, y: configuration.isPressed ? 4 : 10)
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: configuration.isPressed)
+    }
+}
+
 struct SessionStartView: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var entitlementsService: EntitlementsService
@@ -23,7 +56,7 @@ struct SessionStartView: View {
     @State private var isFetchingData: Bool = false
     @State private var lastFetchTime: Date?
 
-    /// Show at most this many campaigns before the "More" menu.
+    /// Show at most this many campaigns before the full-list link.
     private let maxVisibleCampaignItems = 5
 
     /// Show at most this many route items before the "More" menu.
@@ -128,9 +161,10 @@ struct SessionStartView: View {
         HStack(spacing: 12) {
             quickActionButton(
                 title: "Standard",
-                systemImage: "mappin",
-                assetImage: "StandardPushpin",
-                backgroundColor: .yellow
+                systemImage: "map.fill",
+                tint: Color(red: 0.78, green: 0.60, blue: 0.20),
+                gradientTop: Color(red: 1.00, green: 0.98, blue: 0.93),
+                gradientBottom: Color(red: 0.99, green: 0.94, blue: 0.77)
             ) {
                 HapticManager.light()
                 if entitlementsService.canUsePro {
@@ -142,8 +176,10 @@ struct SessionStartView: View {
 
             quickActionButton(
                 title: "Networking",
-                systemImage: "person.2.circle",
-                backgroundColor: .info
+                systemImage: "person.2.fill",
+                tint: Color(red: 0.28, green: 0.55, blue: 0.83),
+                gradientTop: Color(red: 0.86, green: 0.93, blue: 1.00),
+                gradientBottom: Color(red: 0.95, green: 0.98, blue: 1.00)
             ) {
                 HapticManager.light()
                 showNetworkingSession = true
@@ -151,51 +187,58 @@ struct SessionStartView: View {
 
             quickActionButton(
                 title: "Join Session",
-                systemImage: "person.2.fill",
-                backgroundColor: .success
+                systemImage: "person.badge.plus",
+                tint: Color(red: 0.28, green: 0.65, blue: 0.47),
+                gradientTop: Color(red: 0.86, green: 0.96, blue: 0.91),
+                gradientBottom: Color(red: 0.95, green: 0.99, blue: 0.94)
             ) {
                 HapticManager.light()
                 showJoinSessionCodeSheet = true
             }
         }
         .padding(.horizontal)
+        .padding(.top, 8)
+        .padding(.bottom, 8)
     }
 
     private func quickActionButton(
         title: String,
         systemImage: String,
-        assetImage: String? = nil,
-        backgroundColor: Color,
+        tint: Color,
+        gradientTop: Color,
+        gradientBottom: Color,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
-            VStack(spacing: 10) {
-                if let assetImage {
-                    Image(assetImage)
-                        .resizable()
-                        .scaledToFit()
-                        .frame(width: 42, height: 42)
-                } else {
-                    Image(systemName: systemImage)
-                        .font(.system(size: 24, weight: .semibold))
-                        .foregroundColor(.black)
-                }
+            VStack(spacing: 9) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 20, weight: .semibold))
+                    .frame(width: 40, height: 40)
+                    .background {
+                        Circle()
+                            .fill(.white.opacity(0.65))
+                            .overlay {
+                                Circle().strokeBorder(.white.opacity(0.8), lineWidth: 1)
+                            }
+                            .shadow(color: tint.opacity(0.12), radius: 5, x: 0, y: 2)
+                    }
+                    .accessibilityHidden(true)
 
                 Text(title)
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundColor(.black)
+                    .font(.system(size: 14, weight: .semibold))
                     .multilineTextAlignment(.center)
                     .lineLimit(2)
                     .minimumScaleFactor(0.85)
             }
-            .frame(maxWidth: .infinity, minHeight: 104)
-            .padding(.horizontal, 8)
-            .background(
-                RoundedRectangle(cornerRadius: 12)
-                    .fill(backgroundColor)
-            )
+            .foregroundStyle(Color(red: 0.18, green: 0.20, blue: 0.23))
+            .padding(.horizontal, 6)
+            .frame(maxWidth: .infinity, minHeight: 96)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(SessionActionCardStyle(
+            tint: tint,
+            gradientTop: gradientTop,
+            gradientBottom: gradientBottom
+        ))
     }
 
     private var campaignList: some View {
@@ -227,19 +270,15 @@ struct SessionStartView: View {
                 }
 
                 if !remaining.isEmpty {
-                    Menu {
-                        ForEach(remaining) { campaign in
-                            Button(campaign.name) {
-                                openCampaign(campaign)
-                            }
-                        }
+                    NavigationLink {
+                        CampaignsView(usesOwnNavigationStack: false)
                     } label: {
                         HStack {
                             Text("More (\(remaining.count) more)")
                                 .font(.flyrHeadline)
                                 .foregroundColor(.primary)
                             Spacer()
-                            Image(systemName: "chevron.down")
+                            Image(systemName: "chevron.right")
                                 .font(.flyrCaption)
                                 .foregroundColor(.secondary)
                         }
