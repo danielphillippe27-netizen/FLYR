@@ -58,7 +58,6 @@ struct LeadDetailView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 appleStyleHeaderSection
-                FieldSalesEntryLink(leadID: lead.id)
                 contactRowsSection
                 addressSection
                 fieldNotesMetadataSection

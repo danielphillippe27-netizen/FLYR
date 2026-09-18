@@ -11,9 +11,16 @@ private struct SalesWorkbenchData: Decodable {
     var tasks: [FollowUp]?
     var summary: [Summary]?
     var leads: [Lead]?
+    var task_leads: [Lead]?
+    var scope: String?
+    var money_visible: Bool?
+    var losses: [Loss]?
+    var open_pipeline: OpenPipeline?
+    struct Loss: Decodable { let reason: String; let count: Int; let percent: String }
+    struct OpenPipeline: Decodable { let count: Int; let value_minor: String?; let missing_values: Int; let stalled: Int }
     struct Stage: Decodable, Identifiable { let key: String; let label: String; let position: Int; let probability: Int; let kind: String; var id: String { key } }
     struct Opportunity: Decodable, Identifiable {
-        let contact_id: UUID; let contact_name: String; let stage_key: String; let expected_value_minor: String?; let expected_close: String?; let notes: String; let version: Int
+        let contact_id: UUID; let contact_name: String; let stage_key: String; let expected_value_minor: String?; let expected_close: String?; let notes: String; let version: Int; let loss_reason: String?; let loss_note: String?; let stalled: Bool?
         var id: UUID { contact_id }
     }
     struct FollowUp: Decodable, Identifiable { let id: UUID; let contact_id: UUID; let contact_name: String; let title: String; let kind: String; let due_at: String; let status: String; let version: Int }
@@ -42,13 +49,14 @@ private struct FieldSalesPipelineScreen: View {
     @State private var editing: SalesWorkbenchData.Opportunity?
     @State private var busy = false
     @State private var completed = false
+    @State private var pipelineFilter = "all"
     var body: some View {
         List {
             if let error { Text(error).foregroundStyle(.red) }
             if let d = data, d.enabled, d.needs_setup != true {
                 Section { Text("Expected pipeline value is an estimate. Only separately verified sales earn revenue and leaderboard credit.").font(.caption) }
-                Section("Team pipeline · Beta") {
-                    ForEach(d.summary ?? []) { row in
+                Section(d.scope == "self" ? "My pipeline" : "Workspace pipeline") {
+                    ForEach((d.summary ?? []).filter { $0.count>0 }) { row in
                         VStack(alignment: .leading) {
                             Text("\(row.label): \(row.count) opportunities").font(.headline)
                             if let value = row.value_minor { Text("\(FieldSalesService.money(value, currency: d.currency)) known value"); Text("\(FieldSalesService.money(row.weighted_minor, currency: d.currency)) weighted estimate").font(.caption) }
@@ -56,23 +64,14 @@ private struct FieldSalesPipelineScreen: View {
                         }
                     }
                 }
+                if let pipeline = d.open_pipeline { Section("Open pipeline") { Text("\(pipeline.count) opportunities"); if let value = pipeline.value_minor { Text("\(FieldSalesService.money(value,currency:d.currency)) potential value") }; Text("\(pipeline.stalled) unchanged for 72 hours · \(pipeline.missing_values) missing values").font(.caption) } }
+                if let losses = d.losses, !losses.isEmpty { Section("Current lost opportunities") { ForEach(losses, id: \.reason) { l in Button("\(l.reason.replacingOccurrences(of: "_", with: " ")) · \(l.count) (\(l.percent)%)") { pipelineFilter = "loss:" + l.reason } } } }
+                Section { Picker("Inspect opportunities",selection:$pipelineFilter) { Text("All").tag("all"); Text("Unchanged for 72 hours").tag("stalled"); ForEach(d.losses ?? [],id:\.reason) { Text("Lost: " + $0.reason.replacingOccurrences(of:"_",with:" ")).tag("loss:" + $0.reason) } } }
                 Section {
                     Button("Add opportunity · Beta") { editing = nil; adding = true }
                     Button("Add follow-up · Beta") { tasking = true }
                 }
-                ForEach(d.stages ?? []) { stage in
-                    Section("\(stage.label) · Beta") {
-                        ForEach((d.opportunities ?? []).filter { $0.stage_key == stage.key }) { o in
-                            VStack(alignment: .leading, spacing: 5) {
-                                Text(o.contact_name).font(.headline)
-                                Text(o.expected_value_minor == nil ? "Value unavailable" : FieldSalesService.money(o.expected_value_minor, currency: d.currency))
-                                if let close = o.expected_close { Text("Expected close: \(close)").font(.caption) }
-                                Button("Edit") { editing = o; adding = true }
-                                if stage.kind == "won" { NavigationLink("Record Sale · Beta") { FieldSalesRootView(leadID: o.contact_id) } }
-                            }
-                        }
-                    }
-                }
+                opportunitySections(d)
                 Section("My follow-ups · Beta") {
                     Toggle("Completed in last 30 days", isOn: $completed)
                     ForEach((d.tasks ?? []).filter { $0.status == (completed ? "done" : "pending") }) { t in
@@ -101,6 +100,42 @@ private struct FieldSalesPipelineScreen: View {
         .onReceive(NotificationCenter.default.publisher(for: .fieldSalesChanged)) { _ in Task { await reload() } }
         .sheet(isPresented: $adding) { if let d = data { NavigationStack { SalesOpportunityEditor(workspace: workspace, data: d, initial: editing) } } }
         .sheet(isPresented: $tasking) { if let d = data { NavigationStack { SalesTaskEditor(workspace: workspace, data: d) } } }
+    }
+    private func visibleOpportunities(_ d: SalesWorkbenchData, stage: SalesWorkbenchData.Stage) -> [SalesWorkbenchData.Opportunity] {
+        (d.opportunities ?? []).filter { opportunity in
+            guard opportunity.stage_key == stage.key else { return false }
+            if pipelineFilter == "all" { return true }
+            if pipelineFilter == "stalled" { return opportunity.stalled == true }
+            let lossFilter = "loss:" + (opportunity.loss_reason ?? "unspecified")
+            return stage.kind == "lost" && pipelineFilter == lossFilter
+        }
+    }
+
+    @ViewBuilder private func opportunitySections(_ d: SalesWorkbenchData) -> some View {
+        ForEach(d.stages ?? []) { stage in
+            let opportunities = visibleOpportunities(d, stage: stage)
+            if !opportunities.isEmpty {
+                Section("\(stage.label) · Beta") {
+                    ForEach(opportunities) { opportunity in
+                        opportunityRow(opportunity, stage: stage, currency: d.currency)
+                    }
+                }
+            }
+        }
+    }
+
+    private func opportunityRow(_ opportunity: SalesWorkbenchData.Opportunity, stage: SalesWorkbenchData.Stage, currency: String?) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(opportunity.contact_name).font(.headline)
+            if opportunity.stalled == true { Text("Unchanged for 72 hours").font(.caption) }
+            if let reason = opportunity.loss_reason {
+                Text("Lost: " + reason.replacingOccurrences(of: "_", with: " ")).font(.caption)
+            }
+            Text(opportunity.expected_value_minor == nil ? "Value unavailable" : FieldSalesService.money(opportunity.expected_value_minor, currency: currency))
+            if let close = opportunity.expected_close { Text("Expected close: \(close)").font(.caption) }
+            Button("Edit") { editing = opportunity; adding = true }
+            if stage.kind != "lost" { Text("Create or complete an appointment before recording a sale.").font(.caption).foregroundStyle(.secondary) }
+        }
     }
     private func reload() async {
         generation += 1; let ticket = generation
@@ -131,25 +166,28 @@ private struct SalesOpportunityEditor: View {
     @State private var amount = ""
     @State private var close = ""
     @State private var notes = ""
+    @State private var lossReason = ""
+    @State private var lossNote = ""
     @State private var error: String?
     @State private var busy = false
     var body: some View {
         Form {
             Picker("Lead", selection: $contact) { ForEach(data.leads ?? []) { Text($0.name).tag($0.id.uuidString) } }.disabled(initial != nil)
-            Picker("Stage", selection: $stage) { ForEach(data.stages ?? []) { Text($0.label).tag($0.key) } }
-            TextField("Expected value (\(data.currency ?? ""), optional)", text: $amount).keyboardType(.decimalPad)
+            Picker("Stage", selection: $stage) { ForEach((data.stages ?? []).filter { $0.kind != "won" || $0.key == initial?.stage_key }) { Text($0.label).tag($0.key) } }
+            if data.money_visible != false { TextField("Expected value (\(data.currency ?? ""), optional)", text: $amount).keyboardType(.decimalPad) }
+            if data.stages?.first(where: { $0.key == stage })?.kind == "lost" { Picker("Loss reason",selection:$lossReason) { Text("Select reason").tag(""); ForEach(["price","competitor","no_decision","unable_to_contact","financing","timing","not_qualified","cancelled","other"],id:\.self) { Text($0.replacingOccurrences(of:"_",with:" ")).tag($0) } }; TextField("Loss note (optional)",text:$lossNote,axis:.vertical) }
             TextField("Expected close YYYY-MM-DD (optional)", text: $close)
             TextField("Notes", text: $notes, axis: .vertical)
             if let error { Text(error).foregroundStyle(.red) }
             Button("Save opportunity") { Task { await save() } }.disabled(busy || contact.isEmpty)
         }.navigationTitle("Opportunity · Beta").toolbar { Button("Close") { dismiss() } }
-        .onAppear { contact = initial?.contact_id.uuidString ?? data.leads?.first?.id.uuidString ?? ""; stage = initial?.stage_key ?? data.stages?.first?.key ?? "new"; amount = FieldSalesService.editableMoney(initial?.expected_value_minor, currency: data.currency); close = initial?.expected_close ?? ""; notes = initial?.notes ?? "" }
+        .onAppear { contact = initial?.contact_id.uuidString ?? data.leads?.first?.id.uuidString ?? ""; stage = initial?.stage_key ?? data.stages?.first?.key ?? "new"; amount = FieldSalesService.editableMoney(initial?.expected_value_minor, currency: data.currency); close = initial?.expected_close ?? ""; notes = initial?.notes ?? ""; lossReason = initial?.loss_reason ?? ""; lossNote = initial?.loss_note ?? "" }
     }
     private func save() async {
         busy = true; defer { busy = false }
         do {
             let value = amount.isEmpty ? "" : (Decimal(string: amount) == 0 ? "0" : try FieldSalesService.minorUnits(amount, currency: data.currency ?? "CAD"))
-            var p = ["contact_id": contact, "stage_key": stage, "expected_value_minor": value, "expected_close": close, "notes": notes]
+            var p = ["contact_id": contact, "stage_key": stage, "expected_value_minor": value, "expected_close": close, "notes": notes,"loss_reason":lossReason,"loss_note":lossNote]
             if let initial { p["version"] = String(initial.version) }
             try await pipelineCommand(workspace, "opportunity", p); dismiss()
         } catch { self.error = error.localizedDescription }
@@ -168,7 +206,7 @@ private struct SalesTaskEditor: View {
     @State private var error: String?
     var body: some View {
         Form {
-            Picker("Lead", selection: $contact) { ForEach(data.leads ?? []) { Text($0.name).tag($0.id.uuidString) } }
+            Picker("Lead", selection: $contact) { ForEach(data.task_leads ?? data.leads ?? []) { Text($0.name).tag($0.id.uuidString) } }
             TextField("Task", text: $title)
             Picker("Type", selection: $kind) { ForEach(["call","email","text","visit","task"], id: \.self) { Text($0.capitalized).tag($0) } }
             DatePicker("Due", selection: $due)
@@ -179,7 +217,7 @@ private struct SalesTaskEditor: View {
                 catch { self.error = error.localizedDescription }
             } }.disabled(busy || contact.isEmpty || title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }.navigationTitle("Follow-up · Beta").toolbar { Button("Close") { dismiss() } }
-        .onAppear { contact = data.leads?.first?.id.uuidString ?? "" }
+        .onAppear { contact = (data.task_leads ?? data.leads)?.first?.id.uuidString ?? "" }
     }
 }
 

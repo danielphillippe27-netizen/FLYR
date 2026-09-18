@@ -200,12 +200,12 @@ struct ActivityView: View {
             )
         } else {
             return AnyView(
-                Button {
-                    selectedEditableItem = item
-                } label: {
-                    rowContent
+                VStack(alignment: .leading, spacing: 8) {
+                    Button { selectedEditableItem = item } label: { rowContent }.buttonStyle(.plain)
+                    if item.kind == .appointment, item.timestamp <= Date(), let contact = item.contactId {
+                        FieldSalesEntryLink(leadID: contact, appointmentID: item.activityId).font(.subheadline)
+                    }
                 }
-                .buttonStyle(.plain)
             )
         }
     }

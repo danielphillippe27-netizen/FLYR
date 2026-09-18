@@ -37,7 +37,7 @@
 		</dict>
 	</array>
 	<key>CFBundleVersion</key>
-	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<string>116</string>
 	<key>DIALER_ENABLED_EMAILS</key>
 	<string>$(DIALER_ENABLED_EMAILS)</string>
 	<key>DIALER_ENABLED_WORKSPACE_IDS</key>
