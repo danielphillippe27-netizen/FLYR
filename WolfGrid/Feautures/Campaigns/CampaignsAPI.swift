@@ -122,36 +122,8 @@ final class CampaignsAPI {
     }
 
     private func fetchAssignedCampaignIds(workspaceId: UUID) async -> [UUID] {
-        // Route assignments and direct campaign assignments are independent. Fetching
-        // them serially put two network round trips in front of the campaign list.
-        async let routeCampaignIds = fetchAssignedRouteCampaignIds(workspaceId: workspaceId)
-        async let directlyAssignedCampaignIds = fetchDirectlyAssignedCampaignIds(workspaceId: workspaceId)
-
-        var ids = await routeCampaignIds
-        ids.formUnion(await directlyAssignedCampaignIds)
-        return Array(ids)
-    }
-
-    private func fetchAssignedRouteCampaignIds(workspaceId: UUID) async -> Set<UUID> {
-        if let routes = try? await RouteAssignmentsAPI.shared.fetchAssignments(workspaceId: workspaceId).assignments {
-            return Set(routes.filter(Self.isActiveRouteAssignment).compactMap(\.campaignId))
-        }
-        if let legacyRoutes = try? await RoutePlansAPI.shared.fetchMyAssignedRoutes(workspaceId: workspaceId) {
-            return Set(legacyRoutes.filter(Self.isActiveRouteAssignment).compactMap(\.campaignId))
-        }
-        return []
-    }
-
-    private func fetchDirectlyAssignedCampaignIds(workspaceId: UUID) async -> Set<UUID> {
-        guard let campaignAssignments = try? await CampaignAssignmentsAPI.shared.fetchAssignments(workspaceId: workspaceId) else {
-            return []
-        }
-        return Set(campaignAssignments.assignments.filter(\.isActive).map(\.campaignId))
-    }
-
-    private static func isActiveRouteAssignment(_ assignment: RouteAssignmentSummary) -> Bool {
-        !["completed", "complete", "cancelled", "canceled", "archived", "declined"]
-            .contains(assignment.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+        let snapshot = await CampaignAssignmentSnapshotLoader.live.load(workspaceId: workspaceId)
+        return Array(snapshot.campaignListAssignedIDs)
     }
 
     private func currentUserId() async throws -> UUID {
@@ -510,8 +482,23 @@ final class CampaignsAPI {
     // Fetch Campaigns V2 - REAL SUPABASE INTEGRATION
     // Fetches campaign metadata and address counts so list shows correct house count
     func fetchCampaignsV2(workspaceId: UUID? = nil) async throws -> [CampaignV2] {
+        try await fetchCampaignListV2(workspaceId: workspaceId).campaigns.get()
+    }
+
+    func fetchCampaignListV2(workspaceId: UUID? = nil) async -> CampaignListLoadResult {
         print("🌐 [API DEBUG] Fetching campaigns V2 from Supabase (metadata + address counts)")
-        let resolvedWorkspaceId = try await requireResolvedWorkspaceId(workspaceId)
+        let resolvedWorkspaceId: UUID
+        do {
+            resolvedWorkspaceId = try await requireResolvedWorkspaceId(workspaceId)
+        } catch {
+            return CampaignListLoadResult(campaigns: .failure(error), assignmentSnapshot: .empty)
+        }
+
+        let isOnline = NetworkMonitor.shared.isOnline
+        async let assignmentSnapshot = isOnline
+            ? CampaignAssignmentSnapshotLoader.live.load(workspaceId: resolvedWorkspaceId)
+            : CampaignAssignmentSnapshotLoader.live.loadCached(workspaceId: resolvedWorkspaceId)
+
         if OfflineFirstConfig.isEnabled && !NetworkMonitor.shared.isOnline {
             let cachedCampaigns = await CampaignRepository.shared.getCachedCampaigns(workspaceId: resolvedWorkspaceId)
             if !cachedCampaigns.isEmpty {
@@ -519,7 +506,10 @@ final class CampaignsAPI {
                     "count": cachedCampaigns.count,
                     "online": NetworkMonitor.shared.isOnline
                 ])
-                return cachedCampaigns
+                return await CampaignListLoadResult(
+                    campaigns: .success(cachedCampaigns),
+                    assignmentSnapshot: assignmentSnapshot
+                )
             }
         }
 
@@ -527,7 +517,10 @@ final class CampaignsAPI {
             let cachedCampaigns = await CampaignRepository.shared.getCachedCampaigns(workspaceId: resolvedWorkspaceId)
             if !cachedCampaigns.isEmpty {
                 print("📴 [API DEBUG] Loaded \(cachedCampaigns.count) cached campaigns for offline list")
-                return cachedCampaigns
+                return await CampaignListLoadResult(
+                    campaigns: .success(cachedCampaigns),
+                    assignmentSnapshot: assignmentSnapshot
+                )
             }
         }
 
@@ -535,9 +528,9 @@ final class CampaignsAPI {
             let dbRows: [CampaignDBRow]
             // Neither query depends on the other. Starting both together removes the
             // assignment lookup from the critical path for owned campaign metadata.
-            async let assignedCampaignIds = fetchAssignedCampaignIds(workspaceId: resolvedWorkspaceId)
             async let ownedCampaignRows = fetchOwnedCampaignRows(workspaceId: resolvedWorkspaceId)
-            let (sharedIds, primaryCampaigns) = try await (assignedCampaignIds, ownedCampaignRows)
+            let (snapshot, primaryCampaigns) = try await (assignmentSnapshot, ownedCampaignRows)
+            let sharedIds = snapshot.campaignListAssignedIDs
 
             if sharedIds.isEmpty {
                 dbRows = primaryCampaigns.filter { !Self.isHiddenFromCampaignLists($0) }
@@ -584,14 +577,21 @@ final class CampaignsAPI {
             }
 
             print("✅ [API DEBUG] Converted \(campaigns.count) campaigns to CampaignV2 with house counts")
-            return campaigns
+            return CampaignListLoadResult(
+                campaigns: .success(campaigns),
+                assignmentSnapshot: snapshot
+            )
         } catch {
+            let snapshot = await assignmentSnapshot
             let cachedCampaigns = await CampaignRepository.shared.getCachedCampaigns(workspaceId: resolvedWorkspaceId)
             if !cachedCampaigns.isEmpty {
                 print("⚠️ [API DEBUG] Campaign DB fetch failed, using \(cachedCampaigns.count) cached campaigns: \(error.localizedDescription) debug=\(String(describing: error))")
-                return cachedCampaigns
+                return CampaignListLoadResult(
+                    campaigns: .success(cachedCampaigns),
+                    assignmentSnapshot: snapshot
+                )
             }
-            throw error
+            return CampaignListLoadResult(campaigns: .failure(error), assignmentSnapshot: snapshot)
         }
     }
 
@@ -1749,8 +1749,27 @@ final class CampaignAssignmentsAPI {
 /// Protocol for CampaignV2 API operations
 protocol CampaignsV2APIType {
     func fetchCampaigns(workspaceId: UUID?) async throws -> [CampaignV2]
+    func fetchCampaignList(workspaceId: UUID?) async -> CampaignListLoadResult
+    func fetchAssignmentSnapshot(workspaceId: UUID?) async -> CampaignAssignmentSnapshot
     func fetchCampaign(id: UUID) async throws -> CampaignV2
     func createCampaign(_ draft: CampaignV2Draft, workspaceId: UUID?) async throws -> CampaignV2
+}
+
+extension CampaignsV2APIType {
+    func fetchCampaignList(workspaceId: UUID?) async -> CampaignListLoadResult {
+        do {
+            return CampaignListLoadResult(
+                campaigns: .success(try await fetchCampaigns(workspaceId: workspaceId)),
+                assignmentSnapshot: .empty
+            )
+        } catch {
+            return CampaignListLoadResult(campaigns: .failure(error), assignmentSnapshot: .empty)
+        }
+    }
+
+    func fetchAssignmentSnapshot(workspaceId: UUID?) async -> CampaignAssignmentSnapshot {
+        .empty
+    }
 }
 
 /// Mock implementation for CampaignV2 API
@@ -1794,6 +1813,20 @@ final class CampaignsV2APISupabase: CampaignsV2APIType {
     
     func fetchCampaigns(workspaceId: UUID? = nil) async throws -> [CampaignV2] {
         return try await api.fetchCampaignsV2(workspaceId: workspaceId)
+    }
+
+    func fetchCampaignList(workspaceId: UUID? = nil) async -> CampaignListLoadResult {
+        await api.fetchCampaignListV2(workspaceId: workspaceId)
+    }
+
+    func fetchAssignmentSnapshot(workspaceId: UUID? = nil) async -> CampaignAssignmentSnapshot {
+        guard let resolvedWorkspaceId = await RoutePlansAPI.shared.resolveWorkspaceId(preferred: workspaceId) else {
+            return .empty
+        }
+        if !NetworkMonitor.shared.isOnline {
+            return await CampaignAssignmentSnapshotLoader.live.loadCached(workspaceId: resolvedWorkspaceId)
+        }
+        return await CampaignAssignmentSnapshotLoader.live.load(workspaceId: resolvedWorkspaceId)
     }
     
     func fetchCampaign(id: UUID) async throws -> CampaignV2 {

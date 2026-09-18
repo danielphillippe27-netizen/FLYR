@@ -243,14 +243,14 @@ struct CampaignsListView: View {
                 }
             }
             .task(id: "campaigns") {
-                hooksV2.load(store: storeV2)
-                await loadAssignedCampaignIDs()
+                let assignmentSnapshot = await hooksV2.load(store: storeV2)
+                await applyAssignmentSnapshot(assignmentSnapshot)
                 didPositionListOnInitialLoad = !storeV2.campaigns.isEmpty
                 scrollToTop(proxy)
             }
             .refreshable {
-                hooksV2.load(store: storeV2, force: true)
-                await loadAssignedCampaignIDs()
+                let assignmentSnapshot = await hooksV2.load(store: storeV2, force: true)
+                await applyAssignmentSnapshot(assignmentSnapshot)
                 HapticManager.rigid()
             }
             .sheet(isPresented: $showSessionStartSheet) {
@@ -394,60 +394,20 @@ struct CampaignsListView: View {
     }
 
     @MainActor
-    private func loadAssignedCampaignIDs() async {
-        guard let workspaceId = await RoutePlansAPI.shared.resolveWorkspaceId(preferred: WorkspaceContext.shared.workspaceId) else {
-            assignedCampaignIDs = []
-            assignedRoutesByCampaignID = [:]
-            campaignAssignmentsByCampaignID = [:]
-            return
-        }
-
+    private func applyAssignmentSnapshot(_ snapshot: CampaignAssignmentSnapshot) async {
         var campaignIDs = Set<UUID>()
         var routesByCampaignID: [UUID: RouteAssignmentSummary] = [:]
+        await collectAssignedRouteCampaigns(
+            from: snapshot.activeRouteAssignmentsForPresentation,
+            campaignIDs: &campaignIDs,
+            routesByCampaignID: &routesByCampaignID
+        )
 
-        do {
-            let result = try await RouteAssignmentsAPI.shared.fetchAssignments(workspaceId: workspaceId)
-            let activeAssignments = result.assignments.filter(Self.isActiveAssignment)
-            await SessionStartCacheRepository.shared.upsertRouteAssignments(activeAssignments, workspaceId: workspaceId)
-            await collectAssignedRouteCampaigns(
-                from: activeAssignments,
-                campaignIDs: &campaignIDs,
-                routesByCampaignID: &routesByCampaignID
-            )
-        } catch {
-            print("⚠️ [Campaigns] Failed to load assigned route campaigns: \(error.localizedDescription)")
-            do {
-                let fallbackAssignments = try await RoutePlansAPI.shared.fetchMyAssignedRoutes(workspaceId: workspaceId)
-                    .filter(Self.isActiveAssignment)
-                await SessionStartCacheRepository.shared.upsertRouteAssignments(fallbackAssignments, workspaceId: workspaceId)
-                await collectAssignedRouteCampaigns(
-                    from: fallbackAssignments,
-                    campaignIDs: &campaignIDs,
-                    routesByCampaignID: &routesByCampaignID
-                )
-            } catch {
-                let cachedAssignments = await SessionStartCacheRepository.shared.getCachedRouteAssignments(workspaceId: workspaceId)
-                    .filter(Self.isActiveAssignment)
-                await collectAssignedRouteCampaigns(
-                    from: cachedAssignments,
-                    campaignIDs: &campaignIDs,
-                    routesByCampaignID: &routesByCampaignID
-                )
-            }
-        }
-
-        let campaignAssignmentsByCampaign: [UUID: CampaignAssignmentSummary]
-        do {
-            let result = try await CampaignAssignmentsAPI.shared.fetchAssignments(workspaceId: workspaceId)
-            campaignAssignmentsByCampaign = Dictionary(
-                result.assignments.filter(\.isActive).map { ($0.campaignId, $0) },
-                uniquingKeysWith: { existing, _ in existing }
-            )
-            campaignIDs.formUnion(campaignAssignmentsByCampaign.keys)
-        } catch {
-            print("⚠️ [Campaigns] Failed to load campaign assignments: \(error.localizedDescription)")
-            campaignAssignmentsByCampaign = [:]
-        }
+        let campaignAssignmentsByCampaign = Dictionary(
+            snapshot.activeCampaignAssignments.map { ($0.campaignId, $0) },
+            uniquingKeysWith: { existing, _ in existing }
+        )
+        campaignIDs.formUnion(campaignAssignmentsByCampaign.keys)
 
         assignedCampaignIDs = campaignIDs
         assignedRoutesByCampaignID = routesByCampaignID
@@ -499,15 +459,6 @@ struct CampaignsListView: View {
         return await SessionStartCacheRepository.shared
             .getCachedRoutePlanDetail(routePlanId: assignment.routePlanId)?
             .campaignId
-    }
-
-    private static func isActiveAssignment(_ assignment: RouteAssignmentSummary) -> Bool {
-        switch assignment.status.lowercased() {
-        case "completed", "cancelled", "canceled", "declined":
-            return false
-        default:
-            return true
-        }
     }
 
     private func startBulkSelection(with campaign: CampaignV2) {

@@ -17,19 +17,13 @@ final class UseCampaignsV2: ObservableObject {
         self.api = api ?? sharedV2API
     }
     
-    func load(store: CampaignV2Store, force: Bool = false) {
-        Task {
-            await loadCampaigns(store: store, force: force)
-        }
-    }
-    
-    private func loadCampaigns(store: CampaignV2Store, force: Bool) async {
+    func load(store: CampaignV2Store, force: Bool = false) async -> CampaignAssignmentSnapshot {
         if !force, store.hasFreshData(maxAge: 60) {
             items = store.campaigns
             isLoading = false
             error = nil
             print("📦 [STORE DEBUG] Skipping campaign list refresh; shared store is fresh")
-            return
+            return await api.fetchAssignmentSnapshot(workspaceId: WorkspaceContext.shared.workspaceId)
         }
 
         isLoading = true
@@ -45,19 +39,21 @@ final class UseCampaignsV2: ObservableObject {
             }
         }
 
-        do {
-            let campaigns = try await api.fetchCampaigns(workspaceId: workspaceId)
+        let result = await api.fetchCampaignList(workspaceId: workspaceId)
+        switch result.campaigns {
+        case .success(let campaigns):
             store.set(campaigns)
             items = campaigns
-        } catch {
+        case .failure(let error):
             if (error as NSError).code == NSURLErrorCancelled {
                 isLoading = false
-                return
+                return result.assignmentSnapshot
             }
             self.error = error.localizedDescription
         }
         
         isLoading = false
+        return result.assignmentSnapshot
     }
 }
 
