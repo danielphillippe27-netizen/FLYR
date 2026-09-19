@@ -217,82 +217,67 @@ struct SupabaseClientShim {
         
         return try decoder.decode(T.self, from: response.data)
     }
-    
-    // MARK: - Address Cache Methods
-    
-            /// Get cached addresses for a street/locality
-            func getCachedAddresses(street: String, locality: String?) async throws -> [AddressCandidate] {
-                print("🔷 [SHIM] Getting cached addresses for street: \(street), locality: \(locality ?? "nil")")
-                
-                struct RPCResult: Codable {
-                    let id: UUID
-                    let street: String
-                    let locality: String?
-                    let houseNumber: String
-                    let formattedAddress: String
-                    let lat: Double
-                    let lon: Double
-                    let source: String
-                    let createdAt: Date
-                    
-                    enum CodingKeys: String, CodingKey {
-                        case id, street, locality, source
-                        case houseNumber = "house_number"
-                        case formattedAddress = "formatted_address"
-                        case lat, lon
-                        case createdAt = "created_at"
-                    }
-                }
-                
-                // Call RPC function using our existing method
-                let rows: [RPCResult] = try await callRPC("get_cached_addresses", params: [
-                    "p_street": street.uppercased(),
-                    "p_locality": locality ?? NSNull()
-                ])
-                
-                print("✅ [SHIM] Found \(rows.count) cached addresses")
-                
-                // Convert to AddressCandidate
-                return rows.map { row in
-                    AddressCandidate(
-                        address: row.formattedAddress,
-                        coordinate: CLLocationCoordinate2D(latitude: row.lat, longitude: row.lon),
-                        distanceMeters: 0.0, // Distance not stored in cache, will be recalculated
-                        number: row.houseNumber,
-                        street: row.street,
-                        houseKey: "\(row.houseNumber) \(row.street)".uppercased()
-                    )
-                }
+
+    // MARK: - Address cache
+
+    func getCachedAddresses(street: String, locality: String?) async throws -> [AddressCandidate] {
+        struct RPCResult: Codable {
+            let id: UUID
+            let street: String
+            let locality: String?
+            let houseNumber: String
+            let formattedAddress: String
+            let lat: Double
+            let lon: Double
+            let source: String
+            let createdAt: Date
+
+            enum CodingKeys: String, CodingKey {
+                case id, street, locality, source
+                case houseNumber = "house_number"
+                case formattedAddress = "formatted_address"
+                case lat, lon
+                case createdAt = "created_at"
             }
-    
-            /// Cache addresses for a street/locality
-            func cacheAddresses(_ addresses: [AddressCandidate], street: String, locality: String?, source: String) async throws {
-                print("🔷 [SHIM] Caching \(addresses.count) addresses for street: \(street), locality: \(locality ?? "nil")")
-                
-                // Convert addresses to JSON format for RPC
-                let addressesJSON = addresses.map { candidate -> [String: Any] in
-                    return [
-                        "street": street.uppercased(),
-                        "locality": locality ?? NSNull(),
-                        "house_number": candidate.number,
-                        "formatted_address": candidate.address,
-                        "lat": candidate.coordinate.latitude,
-                        "lon": candidate.coordinate.longitude,
-                        "source": source
-                    ]
-                }
-                
-                // Call RPC function using our existing method
-                let count: Int = try await callRPC("cache_addresses", params: [
-                    "p_addresses": addressesJSON.map { addr in
-                        addr.mapValues { value in
-                            AnyCodable(value)
-                        }
-                    }
-                ])
-                
-                print("✅ [SHIM] Cached \(count) addresses")
-            }
+        }
+
+        let rows: [RPCResult] = try await callRPC("get_cached_addresses", params: [
+            "p_street": street.uppercased(),
+            "p_locality": locality ?? NSNull()
+        ])
+
+        return rows.map { row in
+            AddressCandidate(
+                address: row.formattedAddress,
+                coordinate: CLLocationCoordinate2D(latitude: row.lat, longitude: row.lon),
+                distanceMeters: 0,
+                number: row.houseNumber,
+                street: row.street,
+                houseKey: "\(row.houseNumber) \(row.street)".uppercased()
+            )
+        }
+    }
+
+    func cacheAddresses(
+        _ addresses: [AddressCandidate],
+        street: String,
+        locality: String?,
+        source: String
+    ) async throws {
+        let addressesJSON: [[String: AnyCodable]] = addresses.map { candidate in
+            [
+                "street": AnyCodable(street.uppercased()),
+                "locality": AnyCodable(locality ?? NSNull()),
+                "house_number": AnyCodable(candidate.number),
+                "formatted_address": AnyCodable(candidate.address),
+                "lat": AnyCodable(candidate.coordinate.latitude),
+                "lon": AnyCodable(candidate.coordinate.longitude),
+                "source": AnyCodable(source)
+            ]
+        }
+        let _: Int = try await callRPC("cache_addresses", params: ["p_addresses": addressesJSON])
+    }
+
 }
 
 
@@ -322,9 +307,28 @@ public struct AnyCodable: Codable, Equatable, @unchecked Sendable {
     }
     
     public nonisolated init(from decoder: Decoder) throws {
+        if let keyedContainer = try? decoder.container(keyedBy: DynamicCodingKey.self) {
+            var object: [String: AnyCodable] = [:]
+            for key in keyedContainer.allKeys {
+                object[key.stringValue] = try keyedContainer.decode(AnyCodable.self, forKey: key)
+            }
+            value = object
+            return
+        }
+
+        if var unkeyedContainer = try? decoder.unkeyedContainer() {
+            var array: [AnyCodable] = []
+            while !unkeyedContainer.isAtEnd {
+                array.append(try unkeyedContainer.decode(AnyCodable.self))
+            }
+            value = array
+            return
+        }
+
         let container = try decoder.singleValueContainer()
-        
-        if let bool = try? container.decode(Bool.self) {
+        if container.decodeNil() {
+            value = NSNull()
+        } else if let bool = try? container.decode(Bool.self) {
             value = bool
         } else if let int = try? container.decode(Int.self) {
             value = int
@@ -332,10 +336,11 @@ public struct AnyCodable: Codable, Equatable, @unchecked Sendable {
             value = double
         } else if let string = try? container.decode(String.self) {
             value = string
-        } else if container.decodeNil() {
-            value = NSNull()
         } else {
-            throw DecodingError.dataCorruptedError(in: container, debugDescription: "Unsupported type")
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "Unsupported JSON value"
+            )
         }
     }
     

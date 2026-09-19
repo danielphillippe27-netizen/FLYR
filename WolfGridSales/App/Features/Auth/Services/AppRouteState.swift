@@ -25,9 +25,6 @@ final class AppRouteState: ObservableObject {
 
     /// When true, the next resolveRoute() will keep onboarding and not call the API (avoids overwriting route right after sign-up).
     private var skipNextResolveForOnboarding = false
-    /// When true, the next resolveRoute() will not overwrite .subscribe (so paywall stays visible after onboarding Continue).
-    private var skipNextResolveForSubscribe = false
-
     private let auth = AuthManager.shared
 
     var isPasswordResetActive: Bool {
@@ -38,12 +35,6 @@ final class AppRouteState: ObservableObject {
     func setRouteToOnboardingFromSignUp() {
         route = .onboarding
         skipNextResolveForOnboarding = true
-    }
-
-    /// Set route to subscribe and ignore the next resolve so paywall is not immediately replaced (e.g. after onboarding).
-    func setRouteToSubscribe(memberInactive: Bool) {
-        route = applyAccessOverride(.subscribe(memberInactive: memberInactive))
-        skipNextResolveForSubscribe = true
     }
 
     /// Call after loadSession() and on auth.user change / scenePhase .active. Resolves route via GET /api/access/redirect or pending join.
@@ -79,21 +70,11 @@ final class AppRouteState: ObservableObject {
             return
         }
 
-        if skipNextResolveForSubscribe {
-            skipNextResolveForSubscribe = false
-            return
-        }
-
         do {
             let redirect = try await AccessAPI.shared.getRedirect()
             let state = try? await AccessAPI.shared.getState()
             if let state {
                 WorkspaceContext.shared.update(from: state)
-                // If access state didn't include workspace (e.g. legacy response), recover only an
-                // existing workspace. Route resolution must not create a workspace before onboarding.
-                if WorkspaceContext.shared.workspaceId == nil {
-                    _ = await RoutePlansAPI.shared.existingWorkspaceIdForCurrentUser()
-                }
             }
 
             var resolved = mapRedirectToRoute(redirect)
@@ -102,7 +83,7 @@ final class AppRouteState: ObservableObject {
                 resolved = fallbackRouteForSignedInUser(state: state)
             }
             resolved = await recoverOnboardingRouteForExistingWorkspace(resolved, state: state)
-            route = applyAccessOverride(resolved)
+            route = resolved
             #if DEBUG
             print(
                 "🔍 [AppRouteState] getRedirect → \(redirect.redirect) → route: \(route) " +
@@ -119,30 +100,26 @@ final class AppRouteState: ObservableObject {
                 print("⚠️ [AppRouteState] getRedirect 401 → using signed-in fallback route")
                 #endif
                 let fallback = fallbackRouteForSignedInUser(state: nil)
-                route = applyAccessOverride(await recoverOnboardingRouteForExistingWorkspace(fallback, state: nil))
+                route = await recoverOnboardingRouteForExistingWorkspace(fallback, state: nil)
             } else {
                 #if DEBUG
                 print("⚠️ [AppRouteState] getRedirect failed: \(error)")
                 #endif
                 let fallback = fallbackRouteForSignedInUser(state: nil)
-                route = applyAccessOverride(await recoverOnboardingRouteForExistingWorkspace(fallback, state: nil))
+                route = await recoverOnboardingRouteForExistingWorkspace(fallback, state: nil)
             }
         } catch {
             #if DEBUG
             print("⚠️ [AppRouteState] getRedirect failed: \(error)")
             #endif
             let fallback = fallbackRouteForSignedInUser(state: nil)
-            route = applyAccessOverride(await recoverOnboardingRouteForExistingWorkspace(fallback, state: nil))
+            route = await recoverOnboardingRouteForExistingWorkspace(fallback, state: nil)
         }
     }
 
     /// Fallback when redirect returns "login" while an auth session exists.
     /// Prefer server-backed access state and conservative routing when access APIs are unavailable.
     private func fallbackRouteForSignedInUser(state: AccessStateResponse?) -> AppRoute {
-        // StoreKit / server Pro unlock must win over subscribe redirect (avoids stuck paywall after purchase).
-        if EntitlementsService.sharedInstance?.canUsePro == true {
-            return .dashboard
-        }
         if let state {
             let workspaceId = state.workspaceId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             if workspaceId.isEmpty {
@@ -151,17 +128,13 @@ final class AppRouteState: ObservableObject {
             if state.hasAccess {
                 return .dashboard
             }
-            let reason = state.reason?.lowercased() ?? ""
-            let memberInactive = reason.contains("member") && reason.contains("inactive")
-            return .subscribe(memberInactive: memberInactive)
+            return .dashboard
         }
 
         // Offline field use should trust the last known local workspace context instead of
         // bouncing a signed-in user back into onboarding just because access APIs are unreachable.
         if WorkspaceContext.shared.workspaceId != nil {
-            let cachedReason = WorkspaceContext.shared.accessReason?.lowercased() ?? ""
-            let memberInactive = cachedReason.contains("member") && cachedReason.contains("inactive")
-            return memberInactive ? .subscribe(memberInactive: true) : .dashboard
+            return .dashboard
         }
         return .onboarding
     }
@@ -181,18 +154,6 @@ final class AppRouteState: ObservableObject {
         }
 
         if let state, !state.hasAccess {
-            if EntitlementsService.sharedInstance?.canUsePro == true {
-                return .dashboard
-            }
-            let reason = state.reason?.lowercased() ?? ""
-            let memberInactive = reason.contains("member") && reason.contains("inactive")
-            return .subscribe(memberInactive: memberInactive)
-        }
-
-        if let recoveredWorkspaceId = await RoutePlansAPI.shared.existingWorkspaceIdForCurrentUser() {
-            #if DEBUG
-            print("🔍 [AppRouteState] Recovered existing workspace \(recoveredWorkspaceId) for onboarding redirect")
-            #endif
             return .dashboard
         }
 
@@ -212,9 +173,9 @@ final class AppRouteState: ObservableObject {
             }
             return .login
         case "subscribe":
-            return .subscribe(memberInactive: r.path.contains("reason=member-inactive"))
+            return .dashboard
         case "contact-owner":
-            return .subscribe(memberInactive: true)
+            return .dashboard
         case "dashboard":
             return .dashboard
         default:
@@ -283,13 +244,6 @@ final class AppRouteState: ObservableObject {
 
     /// Set route directly (e.g. after onboarding complete -> subscribe).
     func setRoute(_ newRoute: AppRoute) {
-        route = applyAccessOverride(newRoute)
-    }
-
-    private func applyAccessOverride(_ route: AppRoute) -> AppRoute {
-        if case .subscribe = route, EntitlementsService.sharedInstance?.canUsePro == true {
-            return .dashboard
-        }
-        return route
+        route = newRoute
     }
 }

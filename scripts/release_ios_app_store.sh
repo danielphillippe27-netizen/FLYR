@@ -2,8 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PROJECT_PATH="$ROOT_DIR/FLYR.xcodeproj"
-SCHEME="${SCHEME:-FLYR}"
+PROJECT_PATH="${PROJECT_PATH:-$ROOT_DIR/WolfGrid.xcodeproj}"
+SCHEME="${SCHEME:-WolfGrid}"
 CONFIGURATION="${CONFIGURATION:-Release}"
 ARCHIVE_ROOT="${ARCHIVE_ROOT:-$ROOT_DIR/build/app-store}"
 ARCHIVE_PATH="${ARCHIVE_PATH:-$ARCHIVE_ROOT/${SCHEME}.xcarchive}"
@@ -24,7 +24,7 @@ Usage:
 
 What it does:
   1. Ensures a local Mapbox token is available for archive builds.
-  2. Archives the FLYR iOS app for generic iOS devices.
+  2. Archives the WolfGrid iOS app for generic iOS devices.
   3. Exports an App Store Connect IPA.
   4. Uploads the IPA to App Store Connect unless --skip-upload is passed.
 
@@ -95,6 +95,7 @@ done
 
 require_command xcodebuild
 require_command xcrun
+[[ -d "$PROJECT_PATH" ]] || fail "Xcode project does not exist: $PROJECT_PATH"
 
 mkdir -p "$ARCHIVE_ROOT"
 

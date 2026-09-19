@@ -162,7 +162,7 @@ struct NewCampaignDetailView: View {
         )
     }
     
-    var body: some View {
+    private var campaignContent: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 // Header
@@ -632,6 +632,10 @@ struct NewCampaignDetailView: View {
             }
             .padding()
         }
+    }
+
+    private var campaignNavigation: some View {
+        campaignContent
         .navigationTitle("Campaign Details")
         .navigationBarTitleDisplayMode(.inline)
         .safeAreaInset(edge: .bottom) {
@@ -659,6 +663,10 @@ struct NewCampaignDetailView: View {
             }
             .background(Color.bg)
         }
+    }
+
+    private var campaignPresentations: some View {
+        campaignNavigation
         .fullScreenCover(isPresented: Binding(
             get: { showShareCardView || selectedSessionForShare != nil },
             set: { if !$0 { showShareCardView = false; selectedSessionForShare = nil } }
@@ -719,6 +727,10 @@ struct NewCampaignDetailView: View {
                 )
             }
         }
+    }
+
+    var body: some View {
+        campaignPresentations
         .onAppear {
             print("📱 [DETAIL DEBUG] NewCampaignDetailView appeared for campaign ID: \(campaignID)")
             hook.load(id: campaignID, store: store)

@@ -36,6 +36,10 @@ export async function POST(request: NextRequest) {
 
   const now = new Date().toISOString();
   const supabase = createAdminClient();
+  const { error: previousError } = await supabase.from('user_push_tokens')
+    .update({ enabled: false, updated_at: now }).eq('token', token)
+    .eq('platform', platform).eq('environment', environment).neq('user_id', user.id);
+  if (previousError) return NextResponse.json({ error: 'Unable to switch device registration.' }, { status: 500 });
   const { error } = await supabase
     .from('user_push_tokens')
     .upsert(
@@ -55,5 +59,17 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
+  return NextResponse.json({ success: true });
+}
+
+export async function DELETE(request: NextRequest) {
+  const user = await resolveUserFromRequest(request);
+  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  const body = await request.json().catch(() => ({})) as PushTokenBody;
+  if (!body.token?.trim()) return NextResponse.json({ error: 'Device token required' }, { status: 400 });
+  const { error } = await createAdminClient().from('user_push_tokens')
+    .update({ enabled: false, updated_at: new Date().toISOString() })
+    .eq('user_id', user.id).eq('token', body.token.trim());
+  if (error) return NextResponse.json({ error: 'Unable to unregister device.' }, { status: 500 });
   return NextResponse.json({ success: true });
 }

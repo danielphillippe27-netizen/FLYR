@@ -35,6 +35,16 @@ final class UseCampaignsV2: ObservableObject {
         isLoading = true
         error = nil
         let workspaceId = WorkspaceContext.shared.workspaceId
+
+        if !force, store.campaigns.isEmpty, let workspaceId {
+            let cachedCampaigns = await CampaignRepository.shared.getCachedCampaigns(workspaceId: workspaceId)
+            if !cachedCampaigns.isEmpty {
+                store.set(cachedCampaigns)
+                items = cachedCampaigns
+                print("📦 [STORE DEBUG] Displaying \(cachedCampaigns.count) cached campaigns while refreshing")
+            }
+        }
+
         do {
             let campaigns = try await api.fetchCampaigns(workspaceId: workspaceId)
             store.set(campaigns)

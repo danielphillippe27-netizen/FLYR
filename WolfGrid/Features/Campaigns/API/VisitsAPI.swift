@@ -7,7 +7,8 @@ enum CampaignMutationClientError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .rejected(let code, _): return code
+        case .rejected(let code, _):
+            return code == "WORKSPACE_HOME_ALREADY_VISITED" ? "This home was already visited in another team campaign. Ask your manager to override it." : code
         }
     }
 
@@ -1197,5 +1198,61 @@ final class VisitsAPI {
             await campaignRepository.upsertStatuses(rows: [updatedRow], preserveDirty: false)
         }
         return updatedRow
+    }
+}
+
+// Shared coverage is read separately from campaign-local status and revisions.
+struct WorkspaceCoverageSettings: Codable {
+    let enabled: Bool
+    let canManage: Bool
+}
+
+struct WorkspaceCoverageSnapshot: Decodable {
+    struct Home: Decodable {
+        let address_id: UUID
+        let state: String
+        let campaign_name: String?
+        let rep_name: String?
+        let visited_at: String?
+        var isLocked: Bool { state == "visited_elsewhere" }
+        var message: String {
+            if isLocked {
+                let who = rep_name ?? "a teammate"
+                return "Visited by \(who) in \(campaign_name ?? "another campaign")\(visited_at.map { " on " + String($0.prefix(10)) } ?? "")."
+            }
+            if state == "overlap" { return "Also in \(campaign_name ?? "another active campaign"). Coordinate with your manager before visiting." }
+            return "This home could not be matched to the shared team list."
+        }
+    }
+    struct Summary: Decodable {
+        let total: Int
+        let visited: Int
+        let overlap: Int
+        let available: Int
+        let unmatched: Int
+    }
+    let enabled: Bool
+    let canManage: Bool
+    let homes: [Home]
+    let summary: Summary?
+    private let homesById: [UUID: Home]
+    private enum CodingKeys: String, CodingKey { case enabled, canManage, homes, summary }
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        enabled = try values.decode(Bool.self, forKey: .enabled)
+        canManage = try values.decode(Bool.self, forKey: .canManage)
+        homes = try values.decode([Home].self, forKey: .homes)
+        summary = try values.decodeIfPresent(Summary.self, forKey: .summary)
+        homesById = Dictionary(homes.map { ($0.address_id, $0) }, uniquingKeysWith: { _, latest in latest })
+    }
+    func home(_ id: UUID?) -> Home? {
+        guard enabled, let id else { return nil }
+        return homesById[id]
+    }
+}
+
+extension VisitsAPI {
+    func workspaceCoverage(campaignId: UUID) async throws -> WorkspaceCoverageSnapshot {
+        try await client.rpc("get_campaign_workspace_coverage", params: ["p_campaign_id": campaignId.uuidString]).execute().value
     }
 }

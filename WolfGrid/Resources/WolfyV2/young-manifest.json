@@ -1,0 +1,138 @@
+{
+  "version": 2,
+  "prototype": true,
+  "revision": "wolfy-character-3",
+  "skinning": "two-bone",
+  "stage": "Young Wolf",
+  "vertices": 13314,
+  "indices": 79644,
+  "bones": [
+    "root",
+    "body",
+    "neck",
+    "head",
+    "ear_l",
+    "ear_r",
+    "tail",
+    "front_l",
+    "front_l_lower",
+    "front_l_paw",
+    "rear_l",
+    "rear_l_lower",
+    "rear_l_paw",
+    "front_r",
+    "front_r_lower",
+    "front_r_paw",
+    "rear_r",
+    "rear_r_lower",
+    "rear_r_paw"
+  ],
+  "mesh": "young-mesh.bin",
+  "clips": {
+    "idle": {
+      "file": "young-idle.bin",
+      "duration": 24,
+      "frames": 576
+    },
+    "walk": {
+      "file": "young-walk.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "trot": {
+      "file": "young-trot.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "run": {
+      "file": "young-run.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "sit": {
+      "file": "young-sit.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "look_around": {
+      "file": "young-look_around.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "celebrate": {
+      "file": "young-celebrate.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "sniff": {
+      "file": "young-sniff.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "scratch": {
+      "file": "young-scratch.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "lie_down": {
+      "file": "young-lie_down.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "get_up": {
+      "file": "young-get_up.bin",
+      "duration": 2,
+      "frames": 48
+    }
+  },
+  "files": {
+    "young-idle.bin": {
+      "bytes": 700416,
+      "sha256": "1cef58fde17be5875a6cb14085e2d5f0964f6ef74983ab82175bc505ea96ec1d"
+    },
+    "young-look_around.bin": {
+      "bytes": 58368,
+      "sha256": "b41f5136c50a4b2dbce06c306b6064cea67ed2f10c596a5660f19ab8a3a23372"
+    },
+    "young-celebrate.bin": {
+      "bytes": 58368,
+      "sha256": "037a47a0481ac3aa5479ac36ace85fd3049e3894f163d272c3c70f03bcbfd744"
+    },
+    "young-lie_down.bin": {
+      "bytes": 58368,
+      "sha256": "8911a39112e1abe0965d35c292140cd754d0b2b0354952ed318eb3b96d220759"
+    },
+    "young-sniff.bin": {
+      "bytes": 58368,
+      "sha256": "c2f8a3835838c8a71528ef4527d3e494a3e5691a6dee01d187e55d70e9431ccf"
+    },
+    "young-scratch.bin": {
+      "bytes": 58368,
+      "sha256": "4e6eddede5db3b052bff2687401102f9efad8271456d54887540d16d068ecddf"
+    },
+    "young-trot.bin": {
+      "bytes": 58368,
+      "sha256": "996830c4fcaf14b7374a43916db8f066cd97ab5c14c248cf5435d632ebc52ca4"
+    },
+    "young-mesh.bin": {
+      "bytes": 1170672,
+      "sha256": "d4fb00695075656f4359e7ad079a3947f15df07e6330b5c257d1fb5736eb2eb9"
+    },
+    "young-sit.bin": {
+      "bytes": 58368,
+      "sha256": "a1ccfa096781dbf78e86fa2a2a561ac43957ef137f5ad6eab206e292cf6e3024"
+    },
+    "young-run.bin": {
+      "bytes": 58368,
+      "sha256": "996830c4fcaf14b7374a43916db8f066cd97ab5c14c248cf5435d632ebc52ca4"
+    },
+    "young-walk.bin": {
+      "bytes": 58368,
+      "sha256": "996830c4fcaf14b7374a43916db8f066cd97ab5c14c248cf5435d632ebc52ca4"
+    },
+    "young-get_up.bin": {
+      "bytes": 58368,
+      "sha256": "57eb08353e418e8039695ad60e36423546175d399cf6c624ef48c3322b382fb6"
+    }
+  }
+}

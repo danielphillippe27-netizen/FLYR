@@ -42,7 +42,7 @@
 	<key>DIALER_ENABLED_WORKSPACE_IDS</key>
 	<string>$(DIALER_ENABLED_WORKSPACE_IDS)</string>
 	<key>FacebookAppID</key>
-	<string>1629419134987825</string>
+	<string>27436757259357381</string>
 	<key>GOOGLE_CLIENT_ID</key>
 	<string>309925212737-5ivglrus1o0cmtr57ca7ikt5btjqkch.apps.googleusercontent.com</string>
 	<key>GOOGLE_MAPS_API_KEY</key>
@@ -120,9 +120,9 @@
 		<string>UIInterfaceOrientationPortrait</string>
 	</array>
 	<key>WOLFGRID_API_URL</key>
-	<string>https://wolfgrid.app</string>
+	<string>https://sales.wolfgrid.app</string>
 	<key>WOLFGRID_INVITES_API_URL</key>
-	<string>https://wolfgrid.app</string>
+	<string>https://sales.wolfgrid.app</string>
 	<key>WOLFGRID_PASSWORD_RECOVERY_DEV_CALLBACK_URL</key>
 	<string>$(WOLFGRID_PASSWORD_RECOVERY_DEV_CALLBACK_URL)</string>
 	<key>WOLFGRID_PASSWORD_RECOVERY_PRODUCTION_URL</key>

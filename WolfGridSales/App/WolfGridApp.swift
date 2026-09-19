@@ -1,43 +1,16 @@
 import SwiftUI
 import UIKit
-import MapboxMaps
-import GoogleMaps
 import Supabase
 @main
 struct WolfGridApp: App {
-    @UIApplicationDelegateAdaptor(FLYRAppDelegate.self) private var appDelegate
+    @UIApplicationDelegateAdaptor(SalesAppDelegate.self) private var appDelegate
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var auth = AuthManager.shared
     @StateObject private var uiState = AppUIState()
-    @StateObject private var entitlementsService = EntitlementsService()
     @StateObject private var networkMonitor = NetworkMonitor.shared
-    @StateObject private var offlineSyncCoordinator = OfflineSyncCoordinator.shared
-    @StateObject private var campaignDownloadService = CampaignDownloadService.shared
-    @StateObject private var offlinePreloadCoordinator = OfflinePreloadCoordinator.shared
 
     init() {
-        let mapboxToken = Config.mapboxAccessToken
-        if !mapboxToken.isEmpty {
-            MapboxOptions.accessToken = mapboxToken
-        }
-        let googleMapsAPIKey = Config.googleMapsAPIKey
-        if !googleMapsAPIKey.isEmpty {
-            let didProvideGoogleMapsKey = GMSServices.provideAPIKey(googleMapsAPIKey)
-            #if DEBUG
-            if !didProvideGoogleMapsKey {
-                print("⚠️ [GoogleMaps] Failed to register Google Maps API key for this build.")
-            }
-            #endif
-        } else {
-            #if DEBUG
-            print("⚠️ [GoogleMaps] GOOGLE_MAPS_API_KEY is missing or unresolved in Info.plist.")
-            #endif
-        }
-        _ = OfflineDatabase.shared
         NetworkMonitor.shared.startIfNeeded()
-        _ = OfflineSyncCoordinator.shared
-        _ = CampaignDownloadService.shared
-        _ = OfflinePreloadCoordinator.shared
         #if DEBUG
         Self.verifyInterFonts()
         #endif
@@ -68,33 +41,8 @@ struct WolfGridApp: App {
         WindowGroup {
             AuthGate(routeState: routeState)
                 .environmentObject(uiState)
-                .environmentObject(entitlementsService)
                 .environmentObject(routeState)
                 .environmentObject(networkMonitor)
-                .environmentObject(offlineSyncCoordinator)
-                .environmentObject(campaignDownloadService)
-                .environmentObject(offlinePreloadCoordinator)
-                .task {
-                    // Health check in background with lower priority - don't block UI
-                    Task.detached(priority: .utility) {
-                        #if DEBUG
-                        print("🏥 Initializing address service health check in background...")
-                        #endif
-                        await AddressServiceHealth.shared.checkHealth(lat: 43.987854, lon: -78.622448)
-                    }
-                    offlineSyncCoordinator.scheduleProcessOutbox()
-                    offlinePreloadCoordinator.schedule(reason: "app_task")
-                }
-                .onChange(of: networkMonitor.isOnline) { isOnline in
-                    if isOnline {
-                        offlineSyncCoordinator.scheduleProcessOutbox()
-                        offlinePreloadCoordinator.schedule(reason: "network_online")
-                    }
-                }
-                .onChange(of: scenePhase) { phase in
-                    guard phase == .active else { return }
-                    offlinePreloadCoordinator.schedule(reason: "foreground")
-                }
                 .onOpenURL { url in
                     Task { @MainActor in
                         await handleIncomingURL(url)
@@ -214,13 +162,20 @@ struct WolfGridApp: App {
         let nativeSchemes: Set<String> = ["flyr", "wolfgrid", "wolfgridsales"]
         let scheme = url.scheme?.lowercased() ?? ""
 
+        if scheme == "wolfgridsales", url.host == "social", url.path == "/oauth-complete" {
+            uiState.salespersonCommunicationFilter = .inbox
+            uiState.selectedTabIndex = 1
+            NotificationCenter.default.post(name: .wolfSocialOAuthCompleted, object: url)
+            return
+        }
+
         if nativeSchemes.contains(scheme) && url.host == "oauth" {
             await handleOAuthRedirect(url: url)
             return
         }
 
         if nativeSchemes.contains(scheme), url.host == "salesperson", url.path == "/leads" {
-            uiState.selectedTabIndex = 5
+            uiState.selectedTabIndex = 3
             return
         }
 
@@ -267,7 +222,7 @@ struct WolfGridApp: App {
         }
 
         if (url.scheme == "https" || url.scheme == "http"),
-           ["wolfgrid.app", "www.wolfgrid.app", "flyrpro.app", "www.flyrpro.app", "flyr.software", "www.flyr.software"].contains(url.host?.lowercased() ?? ""),
+           ["sales.wolfgrid.app", "www.wolfgrid.app", "flyrpro.app", "www.flyrpro.app", "flyr.software", "www.flyr.software"].contains(url.host?.lowercased() ?? ""),
            url.path == "/join" {
             return token
         }
@@ -284,7 +239,7 @@ struct WolfGridApp: App {
         }
 
         if (url.scheme == "https" || url.scheme == "http"),
-           ["wolfgrid.app", "www.wolfgrid.app", "flyrpro.app", "www.flyrpro.app", "flyr.software", "www.flyr.software"].contains(url.host?.lowercased() ?? ""),
+           ["sales.wolfgrid.app", "www.wolfgrid.app", "flyrpro.app", "www.flyrpro.app", "flyr.software", "www.flyr.software"].contains(url.host?.lowercased() ?? ""),
            url.path == "/challenges/join" {
             return token
         }
@@ -297,7 +252,6 @@ struct AuthGate: View {
     @ObservedObject var routeState: AppRouteState
     @StateObject private var auth = AuthManager.shared
     @EnvironmentObject var uiState: AppUIState
-    @EnvironmentObject var entitlementsService: EntitlementsService
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
@@ -311,13 +265,8 @@ struct AuthGate: View {
                 WorkspaceOnboardingView()
             case .join(let token):
                 JoinFlowView(token: token)
-            case .challengeInvite(let token):
-                NavigationStack {
-                    ChallengeInviteView(token: token)
-                }
-            case .subscribe(let memberInactive):
-                PaywallView(memberInactive: memberInactive)
-                    .environmentObject(entitlementsService)
+            case .challengeInvite:
+                SalespersonMainTabView()
             case .dashboard:
                 #if WOLFGRID_SALES
                 SalespersonMainTabView()
@@ -342,8 +291,6 @@ struct AuthGate: View {
             if let userId = auth.user?.id {
                 await uiState.loadAppearancePreference(userID: userId)
                 await PushRegistrationService.shared.uploadPendingTokenIfPossible()
-                CampaignNotificationRouter.shared.applyPendingRouteIfPossible()
-                _ = await entitlementsService.fetchEntitlement()
             } else if uiState.colorScheme == nil {
                 uiState.detectSystemAppearance()
             }
@@ -361,8 +308,6 @@ struct AuthGate: View {
                     await routeState.resolveRoute()
                     await uiState.loadAppearancePreference(userID: userId)
                     await PushRegistrationService.shared.uploadPendingTokenIfPossible()
-                    CampaignNotificationRouter.shared.applyPendingRouteIfPossible()
-                    _ = await entitlementsService.fetchEntitlement()
                     #if DEBUG
                     print("🔍 [AuthGate] After sign-in resolveRoute → route: \(routeState.route)")
                     #endif
@@ -377,8 +322,6 @@ struct AuthGate: View {
                 Task {
                     await routeState.resolveRoute()
                     await PushRegistrationService.shared.uploadPendingTokenIfPossible()
-                    CampaignNotificationRouter.shared.applyPendingRouteIfPossible()
-                    _ = await entitlementsService.fetchEntitlement()
                 }
             }
         }

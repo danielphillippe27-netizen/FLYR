@@ -6,17 +6,12 @@ struct SettingsView: View {
     @StateObject private var auth = AuthManager.shared
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject var uiState: AppUIState
-    @EnvironmentObject var entitlementsService: EntitlementsService
-
-    @State private var showPaywall = false
     @State private var followUpBossKey: String = ""
     @State private var excludeWeekends: Bool = false
     @State private var darkMode: Bool = true
     @State private var showDeleteAccountConfirm = false
     @State private var isDeletingAccount = false
     @State private var deleteAccountError: String?
-    @State private var calendarMessage: String?
-    @State private var showMapInfoSheet = false
 
     private var appVersionText: String {
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0"
@@ -34,21 +29,12 @@ struct SettingsView: View {
                     // Integrations Section
                     integrationsSection
 
-                    // Challenges
-                    challengesSection
-
-                    // Calendar
-                    calendarSection
-                    
                     // Streak Settings
                     streakSettingsSection
                     
                     // Appearance
                     appearanceSection
 
-                    // Apple Health
-                    appleHealthSection
-                    
                     // App Info
                     appInfoSection
                 } else {
@@ -69,7 +55,6 @@ struct SettingsView: View {
                         excludeWeekends = settings.exclude_weekends
                         darkMode = settings.dark_mode
                     }
-                    vm.refreshStepsIfEnabled()
                 }
             }
             .onChange(of: vm.settings) { _, newSettings in
@@ -83,12 +68,6 @@ struct SettingsView: View {
                 if let userID = auth.user?.id {
                     Task { await vm.loadProfile(userID: userID) }
                 }
-            }
-            .sheet(isPresented: $showPaywall) {
-                PaywallView()
-            }
-            .sheet(isPresented: $showMapInfoSheet) {
-                MapGestureInfoSheet()
             }
             .confirmationDialog(
                 "Delete Account?",
@@ -112,17 +91,6 @@ struct SettingsView: View {
                 Button("OK", role: .cancel) {}
             } message: {
                 Text(deleteAccountError ?? "")
-            }
-            .alert(
-                "Calendar",
-                isPresented: Binding(
-                    get: { calendarMessage != nil },
-                    set: { if !$0 { calendarMessage = nil } }
-                )
-            ) {
-                Button("OK", role: .cancel) {}
-            } message: {
-                Text(calendarMessage ?? "")
             }
         }
     }
@@ -170,7 +138,7 @@ struct SettingsView: View {
                             .font(.system(size: 17, weight: .semibold))
                             .foregroundColor(.text)
 
-                        Text("WolfGrid™ Pro")
+                        Text("WolfGrid Sales")
                             .font(.system(size: 13))
                             .foregroundColor(.info)
 
@@ -195,17 +163,8 @@ struct SettingsView: View {
     
     private var integrationsSection: some View {
         Section {
-            if entitlementsService.canUsePro {
-                NavigationLink(destination: IntegrationsView()) {
-                    integrationsRowContent
-                }
-            } else {
-                Button {
-                    showPaywall = true
-                } label: {
-                    integrationsRowContent
-                }
-                .foregroundColor(.text)
+            NavigationLink(destination: IntegrationsView()) {
+                integrationsRowContent
             }
         } header: {
             Text("Integrations")
@@ -222,80 +181,6 @@ struct SettingsView: View {
         }
     }
 
-    // MARK: - Challenges Section
-
-    private var challengesSection: some View {
-        Section {
-            NavigationLink(destination: ChallengesHomeView()) {
-                HStack {
-                    Image(systemName: "flag.fill")
-                        .foregroundColor(.info)
-                    Text("Challenges")
-                        .foregroundColor(.text)
-                }
-            }
-        } header: {
-            Text("Challenges")
-        }
-    }
-
-    // MARK: - Calendar Section
-
-    private var calendarSection: some View {
-        Section {
-            Button {
-                openAppleCalendar()
-            } label: {
-                HStack {
-                    Image(systemName: "apple.logo")
-                        .foregroundColor(.text)
-                    Text("Apple Calendar")
-                        .foregroundColor(.text)
-                }
-            }
-
-            Button {
-                openGoogleCalendar()
-            } label: {
-                HStack {
-                    Image(systemName: "calendar")
-                        .foregroundColor(.info)
-                    Text("Google Calendar")
-                        .foregroundColor(.text)
-                }
-            }
-        } header: {
-            Text("Calendar")
-        } footer: {
-            Text("Open your preferred calendar app here instead of from the contact card.")
-        }
-    }
-
-    private func openAppleCalendar() {
-        guard let url = URL(string: "calshow:\(Date().timeIntervalSinceReferenceDate)") else {
-            calendarMessage = "Unable to open Apple Calendar."
-            return
-        }
-        UIApplication.shared.open(url)
-    }
-
-    private func openGoogleCalendar() {
-        let appURL = URL(string: "googlecalendar://")
-        let webURL = URL(string: "https://calendar.google.com/calendar/u/0/r")
-
-        if let appURL, UIApplication.shared.canOpenURL(appURL) {
-            UIApplication.shared.open(appURL)
-            return
-        }
-
-        if let webURL {
-            UIApplication.shared.open(webURL)
-            return
-        }
-
-        calendarMessage = "Unable to open Google Calendar."
-    }
-    
     // MARK: - Streak Settings Section
     
     private var streakSettingsSection: some View {
@@ -328,55 +213,6 @@ struct SettingsView: View {
         }
     }
 
-    // MARK: - Apple Health Section
-
-    private var appleHealthSection: some View {
-        Section {
-            Toggle(isOn: Binding(
-                get: { vm.syncSteps },
-                set: { newValue in
-                    vm.syncSteps = newValue
-                    vm.toggleHealthSync(newValue)
-                }
-            )) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Sync Steps")
-                    Text("Show today's steps in the app.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            if vm.syncSteps {
-                HStack {
-                    Text("Today")
-                    Spacer()
-                    if vm.isLoadingSteps {
-                        ProgressView()
-                    } else if let steps = vm.todaySteps {
-                        Text("\(steps)")
-                            .monospacedDigit()
-                    } else {
-                        Text("—")
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                Button("Refresh Steps") {
-                    vm.refreshStepsIfEnabled()
-                }
-            }
-
-            if let err = vm.healthError {
-                Text(err)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-            }
-        } header: {
-            Text("Apple Health")
-        }
-    }
-    
     // MARK: - App Info Section
     
     private var appInfoSection: some View {
@@ -393,14 +229,8 @@ struct SettingsView: View {
             }
 
             Button("Privacy Policy") {
-                openExternalURL("https://wolfgrid.app/privacy")
+                openExternalURL("https://sales.wolfgrid.app/privacy")
             }
-
-            Button("Info / how to use map") {
-                showMapInfoSheet = true
-            }
-
-            NavigationLink("Feedback", destination: SupportChatView())
 
             Button(role: .destructive) {
                 showDeleteAccountConfirm = true

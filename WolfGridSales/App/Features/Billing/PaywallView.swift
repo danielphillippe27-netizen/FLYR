@@ -289,7 +289,7 @@ struct PaywallView: View {
                 .multilineTextAlignment(.center)
             HStack(spacing: 18) {
                 Button {
-                    openLegalURL("https://wolfgrid.app/terms")
+                    openLegalURL("https://sales.wolfgrid.app/terms")
                 } label: {
                     Text("Terms")
                         .font(.system(size: 13))
@@ -297,7 +297,7 @@ struct PaywallView: View {
                 }
 
                 Button {
-                    openLegalURL("https://wolfgrid.app/privacy")
+                    openLegalURL("https://sales.wolfgrid.app/privacy")
                 } label: {
                     Text("Privacy Policy")
                         .font(.system(size: 13))

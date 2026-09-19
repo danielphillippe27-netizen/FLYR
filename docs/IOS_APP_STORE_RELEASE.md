@@ -24,6 +24,18 @@ MAPBOX_ACCESS_TOKEN = pk....
 
 ## Release command
 
+For local preparation without uploading:
+
+```sh
+./scripts/release_ios_app_store.sh --skip-upload
+```
+
+The default project is `WolfGrid.xcodeproj` and the default scheme is
+`WolfGrid`. `PROJECT_PATH` and `SCHEME` can override these when needed.
+The public app keeps bundle ID `com.danielphillippe.FLYR` for existing installs.
+
+To archive, export, and upload:
+
 ```sh
 export APP_STORE_CONNECT_KEY_ID='YOUR_KEY_ID'
 export APP_STORE_CONNECT_ISSUER_ID='YOUR_ISSUER_ID'
@@ -48,7 +60,7 @@ export MAPBOX_ACCESS_TOKEN='pk....'
 
 ## Output
 
-- Archive: `build/app-store/FLYR.xcarchive`
+- Archive: `build/app-store/WolfGrid.xcarchive`
 - IPA: `build/app-store/export/*.ipa`
 
 ## After upload

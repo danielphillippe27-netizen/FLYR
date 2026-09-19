@@ -67,6 +67,20 @@ struct MapTheme {
                         "show3dTrees": false
                     ]
                 )
+                if !useDarkStyle {
+                    try map.setStyleImportConfigProperties(for: "basemap", configs: [
+                        "colorLand": "#ffffff",
+                        "colorCommercial": "#ffffff",
+                        "colorEducation": "#ffffff",
+                        "colorMedical": "#ffffff",
+                        "colorIndustrial": "#ffffff",
+                        "colorGreenspace": "#ffffff",
+                        "colorRoads": "#e5e5e5",
+                        "colorMotorways": "#e5e5e5",
+                        "colorTrunks": "#e5e5e5"
+                    ])
+                    applyLightModeShadowPolicy(to: map)
+                }
             } catch {
                 print("⚠️ [MapTheme] Failed to configure Standard 3D homes: \(error)")
             }
@@ -122,7 +136,35 @@ struct MapTheme {
             print("⚠️ [MapTheme] Failed to apply blue light sky layer: \(error)")
         }
 
+        applyWhiteLandPalette(to: map)
         applyLightModeShadowPolicy(to: map)
+    }
+
+    /// Override the hosted land palette as well as the background: land-use
+    /// polygons otherwise cover white with cream. Keep campaign/status overlays.
+    private static func applyWhiteLandPalette(to map: MapboxMap) {
+        for layer in map.allLayerIdentifiers {
+            let id = layer.id.lowercased()
+            guard !isAppOwnedLayerId(id), !isBaseMapBuildingLayerId(id) else { continue }
+            let properties = (try? map.layerProperties(for: layer.id)) ?? [:]
+            let source = (properties["source-layer"] as? String ?? "").lowercased()
+            let isWater = id.contains("water") || source.contains("water")
+            let isLand = ["land", "park", "aeroway", "road", "pedestrian"].contains {
+                id.contains($0) || source.contains($0)
+            }
+            do {
+                if layer.type == .fill && (isLand || isWater) {
+                    let color = isWater ? "#eaf2f8" : "#ffffff"
+                    try map.setLayerProperty(for: layer.id, property: "fill-color", value: color)
+                    try map.setLayerProperty(for: layer.id, property: "fill-outline-color", value: color)
+                    try map.setLayerProperty(for: layer.id, property: "fill-pattern", value: NSNull())
+                } else if layer.type == .line && (id.contains("road") || source.contains("road")) {
+                    try map.setLayerProperty(for: layer.id, property: "line-color", value: "#e5e5e5")
+                }
+            } catch {
+                print("⚠️ [MapTheme] Failed to apply white palette to \(layer.id): \(error)")
+            }
+        }
     }
 
     static func applyLightModeShadowPolicy(to map: MapboxMap, pitch: CGFloat? = nil) {
@@ -133,7 +175,7 @@ struct MapTheme {
 
         do {
             let directionalLight = DirectionalLight(id: "flyr-light-directional")
-                .color(UIColor(red: 1.0, green: 0.96, blue: 0.88, alpha: 1.0))
+                .color(.white)
                 .intensity(0.68)
                 .direction(azimuthal: 210.0, polar: 38.0)
                 .directionTransition(StyleTransition(duration: 0.25, delay: 0))
@@ -142,7 +184,7 @@ struct MapTheme {
                 .shadowIntensityTransition(StyleTransition(duration: 0.25, delay: 0))
 
             let ambientLight = AmbientLight(id: "flyr-light-ambient")
-                .color(UIColor(red: 0.96, green: 0.97, blue: 0.99, alpha: 1.0))
+                .color(.white)
                 .intensity(0.46)
                 .intensityTransition(StyleTransition(duration: 0.25, delay: 0))
 
@@ -305,7 +347,7 @@ struct MapTheme {
 
     private static func applyBlueLightBackground(to map: MapboxMap) throws {
         for layer in map.allLayerIdentifiers where layer.type == .background {
-            try map.setLayerProperty(for: layer.id, property: "background-color", value: lightAtmosphereBlueHex)
+            try map.setLayerProperty(for: layer.id, property: "background-color", value: "#ffffff")
             try map.setLayerProperty(for: layer.id, property: "background-opacity", value: 1.0)
         }
 
@@ -314,7 +356,7 @@ struct MapTheme {
             "id": blueLightBackgroundLayerId,
             "type": "background",
             "paint": [
-                "background-color": lightAtmosphereBlueHex,
+                "background-color": "#ffffff",
                 "background-opacity": 1.0
             ]
         ]

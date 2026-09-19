@@ -7,6 +7,5 @@ enum AppRoute: Equatable {
     case onboarding
     case join(token: String)
     case challengeInvite(token: String)
-    case subscribe(memberInactive: Bool)
     case dashboard
 }

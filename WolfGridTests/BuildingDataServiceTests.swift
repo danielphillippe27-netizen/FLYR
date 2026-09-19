@@ -1,3 +1,4 @@
+import CoreLocation
 import XCTest
 import UIKit
 @testable import WolfGrid
@@ -138,7 +139,8 @@ final class BuildingDataServiceTests: XCTestCase {
         houseNumber: String,
         streetName: String = "Richfield Square",
         formatted: String,
-        coordinate: [Double] = [-79.0, 43.0]
+        coordinate: [Double] = [-79.0, 43.0],
+        pinPlacement: String = ""
     ) throws -> AddressFeature {
         let payload: [String: Any] = [
             "type": "Feature",
@@ -150,6 +152,7 @@ final class BuildingDataServiceTests: XCTestCase {
             "properties": [
                 "id": id.uuidString,
                 "building_gers_id": buildingGersId,
+                "pin_placement": pinPlacement,
                 "house_number": houseNumber,
                 "street_name": streetName,
                 "formatted": formatted
@@ -264,6 +267,17 @@ final class BuildingDataServiceTests: XCTestCase {
             properties[MapLayerManager.promotedBuildingIdProperty] as? String,
             "standalone-building-1"
         )
+        let addressID = UUID()
+        let links = MapLayerManager.cardEngagementBuildingLinks(
+            buildings: [feature], addresses: [],
+            orderedAddressIdsByBuilding: ["Standalone-Building-1": [addressID]]
+        )
+        XCTAssertTrue(links[addressID]?.contains("standalone-building-1") == true,
+                      "Engagement must reach the promoted geometry ID even when its server building ID is an address alias")
+        XCTAssertTrue(MapLayerManager.cardEngagementBuildingLinks(
+            buildings: [], addresses: [], orderedAddressIdsByBuilding: [:]
+        ).isEmpty, "Removed geometry must not keep engagement associations")
+
     }
     
     // Note: These tests require a mock Supabase client for full testing
@@ -726,7 +740,69 @@ final class BuildingDataServiceTests: XCTestCase {
         XCTAssertEqual(deduped.first?.id, requestedId)
     }
 
-    func testAddressNumberLabelUsesAddressPointForSingleLinkedHome() throws {
+    func testCourticeTownhouseCentroidStaysInsideSmallRoof() throws {
+        // Real roof slice that previously placed 9 Moulton Court about 94 m away.
+        let ring: [[Double]] = [
+            [-78.7770502421137, 43.91560767893686],
+            [-78.77704370766878, 43.91559314811727],
+            [-78.77708025276661, 43.91558469490593],
+            [-78.77706193130447, 43.91554359837042],
+            [-78.77689901167456, 43.91559166989546],
+            [-78.77692290758871, 43.91564525062058],
+            [-78.7770502421137, 43.91560767893686]
+        ]
+        let coordinate = try XCTUnwrap(MapLayerManager.centroidCoordinate(for: [ring]))
+        XCTAssertGreaterThan(coordinate.longitude, ring.map { $0[0] }.min()!)
+        XCTAssertLessThan(coordinate.longitude, ring.map { $0[0] }.max()!)
+        XCTAssertGreaterThan(coordinate.latitude, ring.map { $0[1] }.min()!)
+        XCTAssertLessThan(coordinate.latitude, ring.map { $0[1] }.max()!)
+        let reversed = try XCTUnwrap(MapLayerManager.centroidCoordinate(for: [Array(ring.reversed())]))
+        XCTAssertEqual(coordinate.longitude, reversed.longitude, accuracy: 1e-10)
+        XCTAssertEqual(coordinate.latitude, reversed.latitude, accuracy: 1e-10)
+    }
+
+    func testConcaveRoofLabelFallsBackInsideRoofInsteadOfCourtyard() throws {
+        let local = [[0.0, 0.0], [4, 0], [4, 4], [3, 4], [3, 1], [1, 1], [1, 4], [0, 4], [0, 0]]
+        let ring = local.map { [-78.777 + $0[0] * 0.0001, 43.915 + $0[1] * 0.0001] }
+        let coordinate = try XCTUnwrap(MapLayerManager.centroidCoordinate(for: [ring]))
+        let x = (coordinate.longitude + 78.777) / 0.0001
+        let y = (coordinate.latitude - 43.915) / 0.0001
+        XCTAssertTrue(x > 0 && x < 4 && y > 0 && y < 4)
+        XCTAssertTrue(y < 1 || x < 1 || x > 3, "Label must not land in the empty courtyard")
+    }
+
+    func testDisconnectedRoofLabelRemainsOnOneComponent() throws {
+        let first = [[0.0, 0.0], [1, 0], [1, 1], [0, 1], [0, 0]]
+        let second = first.map { [$0[0] + 4, $0[1]] }
+        let coordinate = try XCTUnwrap(MapLayerManager.centroidCoordinate(for: [first, second]))
+        XCTAssertTrue((coordinate.longitude > 0 && coordinate.longitude < 1)
+            || (coordinate.longitude > 4 && coordinate.longitude < 5))
+        XCTAssertTrue(coordinate.latitude > 0 && coordinate.latitude < 1)
+        XCTAssertNil(MapLayerManager.centroidCoordinate(for: [[[0, 0], [1, 0], [2, 0]]]))
+    }
+
+    func testCanonicalTownhousePinSurvivesBuildingLabelPlacement() throws {
+        let building = try makeBuildingFeature(gersId: "row-home", unitsCount: 2, addressCount: 2)
+        let firstId = UUID()
+        let secondId = UUID()
+        let first = try makeAddressFeature(id: firstId, buildingGersId: "row-home", houseNumber: "10",
+            formatted: "10 Main Street", coordinate: [-78.9998, 43.0002], pinPlacement: "building_parcel_centroid")
+        let second = try makeAddressFeature(id: secondId, buildingGersId: "row-home", houseNumber: "12",
+            formatted: "12 Main Street", coordinate: [-78.9982, 43.0002], pinPlacement: "building_parcel_centroid")
+        // Round-trip through the same Codable contract used by offline bundles.
+        let reloaded = try JSONDecoder().decode([AddressFeature].self, from: JSONEncoder().encode([first, second]))
+        XCTAssertEqual(reloaded.first?.properties.pinPlacement, "building_parcel_centroid")
+        let data = try MapLayerManager.buildAddressNumberLabelPointGeoJSON(addresses: reloaded,
+            buildings: [building], orderedAddressIdsByBuilding: ["row-home": [firstId, secondId]])
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let features = try XCTUnwrap(object["features"] as? [[String: Any]])
+        XCTAssertEqual(features.count, 2)
+        let coordinates = try features.map { try pointCoordinates(from: $0) }
+        XCTAssertTrue(coordinates.contains { abs($0.longitude - (-78.9998)) < 0.0000001 })
+        XCTAssertTrue(coordinates.contains { abs($0.longitude - (-78.9982)) < 0.0000001 })
+    }
+
+    func testAddressNumberLabelUsesBuildingPlacementForSingleLinkedHome() throws {
         let building = try makeBuildingFeature(
             gersId: "single-home-1",
             isTownhome: false,
@@ -738,7 +814,8 @@ final class BuildingDataServiceTests: XCTestCase {
             id: addressId,
             buildingGersId: "single-home-1",
             houseNumber: "18",
-            formatted: "18 Merino Street, Christchurch"
+            formatted: "18 Merino Street, Christchurch",
+            coordinate: [-79.01, 42.99]
         )
 
         let data = try MapLayerManager.buildAddressNumberLabelPointGeoJSON(
@@ -748,11 +825,13 @@ final class BuildingDataServiceTests: XCTestCase {
         )
         let coordinates = try firstPointCoordinates(from: data)
 
-        XCTAssertEqual(coordinates.longitude, -79.0, accuracy: 0.0000001)
-        XCTAssertEqual(coordinates.latitude, 43.0, accuracy: 0.0000001)
+        XCTAssertGreaterThanOrEqual(coordinates.longitude, -79.0)
+        XCTAssertLessThanOrEqual(coordinates.longitude, -78.998)
+        XCTAssertGreaterThanOrEqual(coordinates.latitude, 43.0)
+        XCTAssertLessThanOrEqual(coordinates.latitude, 43.0006)
     }
 
-    func testAddressNumberLabelsUseDistinctAddressPointsForMultiUnitBuilding() throws {
+    func testAddressNumberLabelsUseDistinctBuildingPlacementsForMultiUnitBuilding() throws {
         let building = try makeBuildingFeature(gersId: "multi-home-1", unitsCount: 2, addressCount: 2)
         let firstId = UUID()
         let secondId = UUID()
@@ -785,10 +864,13 @@ final class BuildingDataServiceTests: XCTestCase {
         let coordinates = try features.map { try pointCoordinates(from: $0) }
 
         XCTAssertEqual(coordinates.count, 2)
-        XCTAssertEqual(coordinates[0].longitude, firstCoordinate[0], accuracy: 0.0000001)
-        XCTAssertEqual(coordinates[0].latitude, firstCoordinate[1], accuracy: 0.0000001)
-        XCTAssertEqual(coordinates[1].longitude, secondCoordinate[0], accuracy: 0.0000001)
-        XCTAssertEqual(coordinates[1].latitude, secondCoordinate[1], accuracy: 0.0000001)
+        XCTAssertNotEqual(coordinates[0].longitude, coordinates[1].longitude)
+        for coordinate in coordinates {
+            XCTAssertGreaterThanOrEqual(coordinate.longitude, -79.0)
+            XCTAssertLessThanOrEqual(coordinate.longitude, -78.998)
+            XCTAssertGreaterThanOrEqual(coordinate.latitude, 43.0)
+            XCTAssertLessThanOrEqual(coordinate.latitude, 43.0006)
+        }
     }
 
     func testAddressNumberLabelsHideUnlinkedAddresses() throws {
@@ -886,6 +968,49 @@ final class BuildingDataServiceTests: XCTestCase {
         let statuses = features.compactMap { ($0["properties"] as? [String: Any])?["segment_status"] as? String }
 
         XCTAssertEqual(statuses, ["not_visited", "visited", "hot"])
+    }
+
+    func testTownhomeOverlayScopesAttemptedStatusToOneAddressSlice() throws {
+        let building = try makeBuildingFeature(gersId: "townhome-address-scoped-status")
+        let attemptedId = UUID()
+        let untouchedId = UUID()
+        let addresses = try [
+            makeAddressFeature(
+                id: attemptedId,
+                buildingGersId: "townhome-address-scoped-status",
+                houseNumber: "45",
+                formatted: "45 Richfield Square"
+            ),
+            makeAddressFeature(
+                id: untouchedId,
+                buildingGersId: "townhome-address-scoped-status",
+                houseNumber: "47",
+                formatted: "47 Richfield Square"
+            )
+        ]
+
+        let data = MapLayerManager.buildTownhomeStatusOverlayGeoJSON(
+            buildings: [building],
+            addresses: addresses,
+            orderedAddressIdsByBuilding: [
+                "townhome-address-scoped-status": [attemptedId, untouchedId]
+            ],
+            addressStatuses: [attemptedId: .noAnswer]
+        )
+
+        let properties = try townhomeSegmentProperties(from: data)
+        let statusesByAddressId = Dictionary(
+            uniqueKeysWithValues: properties.compactMap { properties -> (String, String)? in
+                guard let addressId = properties["address_id"] as? String,
+                      let status = properties["segment_status"] as? String else {
+                    return nil
+                }
+                return (addressId, status)
+            }
+        )
+
+        XCTAssertEqual(statusesByAddressId[attemptedId.uuidString.lowercased()], "no_answer")
+        XCTAssertEqual(statusesByAddressId[untouchedId.uuidString.lowercased()], "not_visited")
     }
 
     func testTownhomeOverlayFollowsAddressCoordinateOrderWhenAxisIsReversed() throws {

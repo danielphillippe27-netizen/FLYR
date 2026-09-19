@@ -1,0 +1,2 @@
+import type { MetadataRoute } from 'next';
+export default function manifest(): MetadataRoute.Manifest { return { name: 'WolfSocial', short_name: 'WolfSocial', description: 'Create, schedule, publish and reply across your social accounts.', start_url: '/app', display: 'standalone', background_color: '#07090d', theme_color: '#dc2626', icons: [{ src: '/wolfsocial-icon-1024.png', sizes: '1024x1024', type: 'image/png', purpose: 'maskable' }, { src: '/wolfsocial-icon.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any' }] }; }

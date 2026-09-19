@@ -40,6 +40,10 @@ struct WolfGridApp: App {
         _ = CampaignDownloadService.shared
         _ = OfflinePreloadCoordinator.shared
         #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--enable-campaign-gps-proximity") {
+            UserDefaults.standard.set(true, forKey: "pre_session_gps_proximity_enabled")
+            print("Campaign GPS proximity preference enabled")
+        }
         Self.verifyInterFonts()
         #endif
     }
@@ -67,7 +71,19 @@ struct WolfGridApp: App {
 
     var body: some Scene {
         WindowGroup {
-            AuthGate(routeState: routeState)
+            Group {
+                #if DEBUG
+                if ProcessInfo.processInfo.arguments.contains("--wolfy-pack-prototype") {
+                    WolfyPackPrototypeEntryView()
+                } else if ProcessInfo.processInfo.arguments.contains("--wolfy-map-prototype") {
+                    WolfyMapPrototypeEntryView()
+                } else if ProcessInfo.processInfo.arguments.contains("--wolfy-lab") {
+                    WolfyLaboratoryEntryView()
+                } else { AuthGate(routeState: routeState) }
+                #else
+                AuthGate(routeState: routeState)
+                #endif
+            }
                 .environmentObject(uiState)
                 .environmentObject(entitlementsService)
                 .environmentObject(routeState)
@@ -303,6 +319,8 @@ struct AuthGate: View {
     #if DEBUG
     @State private var e2ePresencePublished = false
     @State private var e2ePresenceError: String?
+    @State private var e2eFieldRouteCompleted = false
+    @State private var e2eFieldRouteError: String?
     #endif
 
     var body: some View {
@@ -390,7 +408,29 @@ struct AuthGate: View {
         }
         #if DEBUG
         .overlay(alignment: .bottomTrailing) {
-            if hasE2EPresenceConfiguration, !e2ePresencePublished {
+            if hasE2EFieldRouteConfiguration, !e2eFieldRouteCompleted {
+                VStack(alignment: .trailing, spacing: 8) {
+                    if let e2eFieldRouteError {
+                        Text(e2eFieldRouteError)
+                            .font(.caption2)
+                            .foregroundStyle(.red)
+                            .accessibilityIdentifier("e2e.field-route.error")
+                    }
+                    Button("Run E2E field route") {
+                        Task { await runE2EFieldRouteIfConfigured() }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .frame(minWidth: 180, minHeight: 44)
+                    .accessibilityIdentifier("e2e.run.field-route")
+                }
+                .padding()
+                .zIndex(999)
+            } else if e2eFieldRouteCompleted {
+                Text("E2E field route completed")
+                    .font(.caption2)
+                    .foregroundStyle(.clear)
+                    .accessibilityIdentifier("e2e.field-route.completed")
+            } else if hasE2EPresenceConfiguration, !e2ePresencePublished {
                 VStack(alignment: .trailing, spacing: 8) {
                     if let e2ePresenceError {
                         Text(e2ePresenceError)
@@ -435,6 +475,99 @@ struct AuthGate: View {
         return environment["WOLFGRID_E2E"] == "1"
             && environment["WOLFGRID_E2E_CAMPAIGN_ID"] != nil
             && environment["WOLFGRID_E2E_SESSION_ID"] != nil
+    }
+
+    private var hasE2EFieldRouteConfiguration: Bool {
+        let environment = ProcessInfo.processInfo.environment
+        return environment["WOLFGRID_E2E"] == "1"
+            && environment["WOLFGRID_E2E_FIELD_ROUTE"] == "1"
+            && environment["WOLFGRID_E2E_ADDRESS_IDS"] != nil
+    }
+
+    @MainActor
+    private func runE2EFieldRouteIfConfigured() async {
+        let environment = ProcessInfo.processInfo.environment
+        let addressIds = (environment["WOLFGRID_E2E_ADDRESS_IDS"] ?? "")
+            .split(separator: ",")
+            .compactMap { UUID(uuidString: String($0)) }
+        guard environment["WOLFGRID_E2E"] == "1",
+              environment["WOLFGRID_E2E_FIELD_ROUTE"] == "1",
+              SupabaseManager.shared.isLocalE2E,
+              let userId = auth.user?.id,
+              let workspaceId = SupabaseManager.shared.localE2EWorkspaceID,
+              let campaignId = UUID(uuidString: environment["WOLFGRID_E2E_CAMPAIGN_ID"] ?? ""),
+              let sessionId = UUID(uuidString: environment["WOLFGRID_E2E_SESSION_ID"] ?? ""),
+              addressIds.count == 5 else { return }
+
+        let points = [
+            CLLocation(latitude: 46.08782, longitude: -64.77823),
+            CLLocation(latitude: 46.08811, longitude: -64.77776),
+            CLLocation(latitude: 46.08843, longitude: -64.77720),
+            CLLocation(latitude: 46.08878, longitude: -64.77661),
+            CLLocation(latitude: 46.08908, longitude: -64.77612),
+        ]
+        let outcomes: [AddressStatus] = [.noAnswer, .talked, .futureSeller, .appointment, .delivered]
+        let startedAt = Date().addingTimeInterval(-900)
+        let distanceMeters = zip(points, points.dropFirst()).reduce(0.0) { partial, pair in
+            partial + pair.0.distance(from: pair.1)
+        }
+        let coordinates = points.map { "[\($0.coordinate.longitude),\($0.coordinate.latitude)]" }.joined(separator: ",")
+        let pathGeoJSON = "{\"type\":\"LineString\",\"coordinates\":[\(coordinates)]}"
+
+        do {
+            e2eFieldRouteError = nil
+            try await SessionsAPI.shared.createSession(
+                id: sessionId,
+                userId: userId,
+                campaignId: campaignId,
+                targetBuildingIds: addressIds.map(\.uuidString),
+                autoCompleteEnabled: false,
+                thresholdMeters: 20,
+                dwellSeconds: 3,
+                workspaceId: workspaceId,
+                goalType: .knocks,
+                goalAmount: 5,
+                sessionMode: .doorKnocking,
+                startedAt: startedAt
+            )
+
+            for index in addressIds.indices {
+                let status = outcomes[index]
+                _ = try await VisitsAPI.shared.performRemoteStatusUpdate(
+                    addressId: addressIds[index],
+                    campaignId: campaignId,
+                    status: status,
+                    notes: "E2E field route stop \(index + 1)",
+                    sessionId: sessionId,
+                    sessionTargetId: addressIds[index].uuidString,
+                    sessionEventType: SessionEventType.recordedVisitEventType(for: status),
+                    location: points[index],
+                    occurredAt: startedAt.addingTimeInterval(Double((index + 1) * 150)),
+                    clientMutationId: "e2e-field-\(sessionId.uuidString.lowercased())-\(index + 1)",
+                    baseRevision: 0
+                )
+            }
+
+            try await SessionsAPI.shared.updateSession(
+                id: sessionId,
+                completedCount: 5,
+                distanceM: distanceMeters,
+                activeSeconds: 900,
+                pathGeoJSON: pathGeoJSON,
+                flyersDelivered: 1,
+                conversations: 3,
+                leadsCreated: 2,
+                appointmentsCount: 1,
+                doorsHit: 5,
+                isPaused: false,
+                endTime: Date()
+            )
+            e2eFieldRouteCompleted = true
+            NSLog("WolfGrid E2E field route completed")
+        } catch {
+            e2eFieldRouteError = error.localizedDescription
+            NSLog("WolfGrid E2E field route failed: %@", error.localizedDescription)
+        }
     }
 
     @MainActor

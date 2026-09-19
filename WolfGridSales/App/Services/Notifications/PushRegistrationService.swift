@@ -10,7 +10,8 @@ final class PushRegistrationService {
 
     private let client = SupabaseManager.shared.client
     private var pendingDeviceToken: String?
-    private var lastUploadedDeviceToken: String?
+    private var lastUploadedIdentity: String?
+    private var registrationGeneration = 0
     private var isUploading = false
 
     private init() {}
@@ -41,13 +42,32 @@ final class PushRegistrationService {
     }
 
     func uploadPendingTokenIfPossible() async {
-        guard !isUploading else { return }
-        guard let token = pendingDeviceToken, token != lastUploadedDeviceToken else { return }
+        guard !isUploading, !AuthManager.shared.isUsingPasswordRecoverySession else { return }
         guard NetworkMonitor.shared.isOnline else { return }
-        guard let session = try? await client.auth.session else { return }
+        guard let session = try? await client.auth.session,
+              AuthManager.shared.user?.id == session.user.id else { return }
+        if !UIApplication.shared.isRegisteredForRemoteNotifications {
+            let settings = await UNUserNotificationCenter.current().notificationSettings()
+            guard settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional else { return }
+            guard AuthManager.shared.user?.id == session.user.id,
+                  !AuthManager.shared.isUsingPasswordRecoverySession else { return }
+            UIApplication.shared.registerForRemoteNotifications()
+        }
 
+        guard !isUploading, let token = pendingDeviceToken else { return }
+        let identity = "\(session.user.id):\(token)"
+        guard identity != lastUploadedIdentity else { return }
+        let generation = registrationGeneration
         isUploading = true
-        defer { isUploading = false }
+        defer {
+            isUploading = false
+            Task {
+                if let current = try? await client.auth.session,
+                   current.user.id != session.user.id || generation != registrationGeneration || pendingDeviceToken != token {
+                    await uploadPendingTokenIfPossible()
+                }
+            }
+        }
 
         var request = URLRequest(url: Self.apiBaseURL.appendingPathComponent("api/devices/push-token"))
         request.httpMethod = "POST"
@@ -62,7 +82,15 @@ final class PushRegistrationService {
         do {
             let (_, response) = try await URLSession.shared.data(for: request)
             if let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) {
-                lastUploadedDeviceToken = token
+                guard generation == registrationGeneration,
+                      (try? await client.auth.session.user.id) == session.user.id,
+                      AuthManager.shared.user?.id == session.user.id,
+                      !AuthManager.shared.isUsingPasswordRecoverySession else {
+                    request.httpMethod = "DELETE"
+                    _ = try? await URLSession.shared.data(for: request)
+                    return
+                }
+                lastUploadedIdentity = identity
                 #if DEBUG
                 print("✅ [Push] Uploaded APNs token")
                 #endif
@@ -72,6 +100,21 @@ final class PushRegistrationService {
             print("⚠️ [Push] APNs token upload failed: \(error.localizedDescription)")
             #endif
         }
+    }
+
+    func unregisterBeforeSignOut() async {
+        registrationGeneration += 1
+        lastUploadedIdentity = nil
+        UIApplication.shared.unregisterForRemoteNotifications()
+        guard let token = pendingDeviceToken,
+              let session = try? await client.auth.session else { return }
+        var request = URLRequest(url: Self.apiBaseURL.appendingPathComponent("api/devices/push-token"))
+        request.httpMethod = "DELETE"
+        request.timeoutInterval = 5
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
+        request.httpBody = try? JSONEncoder().encode(PushTokenRegistrationBody(token: token, platform: "ios", environment: Self.apnsEnvironment))
+        _ = try? await URLSession.shared.data(for: request)
     }
 
     private static var apnsEnvironment: String {

@@ -51,7 +51,7 @@ actor MobileCampaignClientPolicy {
     private func fetchPolicy() async -> Response? {
         let configured = (Bundle.main.object(forInfoDictionaryKey: "WOLFGRID_API_URL") as? String)?
             .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        let baseURL = configured?.isEmpty == false ? configured! : "https://wolfgrid.app"
+        let baseURL = configured?.isEmpty == false ? configured! : "https://sales.wolfgrid.app"
         let build = Int(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "") ?? 0
         guard let url = URL(string: "\(baseURL)/api/mobile/client-policy?platform=ios&build=\(build)") else {
             return nil

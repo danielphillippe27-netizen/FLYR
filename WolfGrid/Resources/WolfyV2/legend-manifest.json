@@ -1,0 +1,138 @@
+{
+  "version": 2,
+  "prototype": true,
+  "revision": "wolfy-character-4",
+  "skinning": "two-bone",
+  "stage": "Veteran Alpha",
+  "vertices": 14039,
+  "indices": 83970,
+  "bones": [
+    "root",
+    "body",
+    "neck",
+    "head",
+    "ear_l",
+    "ear_r",
+    "tail",
+    "front_l",
+    "front_l_lower",
+    "front_l_paw",
+    "rear_l",
+    "rear_l_lower",
+    "rear_l_paw",
+    "front_r",
+    "front_r_lower",
+    "front_r_paw",
+    "rear_r",
+    "rear_r_lower",
+    "rear_r_paw"
+  ],
+  "mesh": "legend-mesh.bin",
+  "clips": {
+    "idle": {
+      "file": "legend-idle.bin",
+      "duration": 24,
+      "frames": 576
+    },
+    "walk": {
+      "file": "legend-walk.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "trot": {
+      "file": "legend-trot.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "run": {
+      "file": "legend-run.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "sit": {
+      "file": "legend-sit.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "look_around": {
+      "file": "legend-look_around.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "celebrate": {
+      "file": "legend-celebrate.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "sniff": {
+      "file": "legend-sniff.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "scratch": {
+      "file": "legend-scratch.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "lie_down": {
+      "file": "legend-lie_down.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "get_up": {
+      "file": "legend-get_up.bin",
+      "duration": 2,
+      "frames": 48
+    }
+  },
+  "files": {
+    "legend-celebrate.bin": {
+      "bytes": 58368,
+      "sha256": "22817439ea4a553d8bad6de63273abc8ec4e0605cb89fd6a6fb48870e93d07d0"
+    },
+    "legend-get_up.bin": {
+      "bytes": 58368,
+      "sha256": "22afe10b516177cdc368469c4511d502d348b89d9cc837c40fa61cc855772c08"
+    },
+    "legend-idle.bin": {
+      "bytes": 700416,
+      "sha256": "1bdf43248dede17a493494b955ebb4cd57a7c8300b9b0c62af55b597bafae169"
+    },
+    "legend-scratch.bin": {
+      "bytes": 58368,
+      "sha256": "7f0d0156cf9d65d432da7f76d76fbed2b906c189890f10fc6b45c064e2719ce3"
+    },
+    "legend-look_around.bin": {
+      "bytes": 58368,
+      "sha256": "97ffed5564f327b5a2080633307de2e34e64ddcd52f981043029626227b830b5"
+    },
+    "legend-trot.bin": {
+      "bytes": 58368,
+      "sha256": "b2f440ba3b28fc9b0885b47f9427b5307f824ebf09ee125a8a11daf1643cf25d"
+    },
+    "legend-mesh.bin": {
+      "bytes": 1234376,
+      "sha256": "c4acbd0b4dde5849969f005152d3c2351643239e3b7ecfbe3f7fb93f241cd78d"
+    },
+    "legend-sit.bin": {
+      "bytes": 58368,
+      "sha256": "7285775e6fdc0d1d7701aef3ec681f7cb29c4ba2f4518e4761360d94a50c1efd"
+    },
+    "legend-run.bin": {
+      "bytes": 58368,
+      "sha256": "b2f440ba3b28fc9b0885b47f9427b5307f824ebf09ee125a8a11daf1643cf25d"
+    },
+    "legend-sniff.bin": {
+      "bytes": 58368,
+      "sha256": "795cbd9315b9286bdbbfc79c540bae379bb664e85713d9b66f23edf61f4fd1a7"
+    },
+    "legend-walk.bin": {
+      "bytes": 58368,
+      "sha256": "b2f440ba3b28fc9b0885b47f9427b5307f824ebf09ee125a8a11daf1643cf25d"
+    },
+    "legend-lie_down.bin": {
+      "bytes": 58368,
+      "sha256": "c9c4ba85a5c6ef8e72518f4a49f415b13c40503796e99e2ead8d645391091c75"
+    }
+  }
+}

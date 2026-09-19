@@ -1,0 +1,31 @@
+import assert from 'node:assert/strict';
+import { readFile, readdir } from 'node:fs/promises';
+import { createSalesFixture } from './field_sales_fixture.mjs';
+const {db,id}=await createSalesFixture();
+const dir=new URL('../migrations/',import.meta.url);
+for(const name of (await readdir(dir)).filter(n=>/^202609161\d+_pro_sales_.*\.sql$/.test(n)).sort()) await db.exec(await readFile(new URL(name,dir),'utf8'));
+await db.exec(`INSERT INTO field_sales_settings(workspace_id,enabled,currency,timezone) VALUES('${id(10)}',true,'CAD','America/Toronto')`);
+const actor=async n=>db.exec(`RESET ROLE;SET ROLE authenticated;SET request.jwt.claim.sub='${id(n)}'`);
+const cmd=async(a,d)=>(await db.query('select field_sales_pipeline_command($1,$2,$3) d',[id(10),a,d])).rows[0].d;
+const report=async(f={scope:'team'})=>(await db.query('select field_sales_report($1,$2) d',[id(10),f])).rows[0].d;
+await actor(1);
+await cmd('opportunity',{contact_id:id(30),stage_key:'proposal',expected_value_minor:'120001'});
+await cmd('opportunity',{contact_id:id(31),stage_key:'opportunity',expected_value_minor:'50000'});
+await cmd('opportunity',{contact_id:id(32),stage_key:'lost',loss_reason:'price'});
+await db.exec(`RESET ROLE;UPDATE field_sales_opportunities SET updated_at=now()-interval '4 days' WHERE contact_id='${id(30)}'`);
+await actor(1);
+let d=await report();assert.equal(d.current_pipeline.count,2);assert.equal(d.current_pipeline.value_minor,'170001');assert.equal(d.current_pipeline.stalled,1);assert.equal(d.current_pipeline.stages.reduce((n,s)=>n+s.count,0),2);assert.equal(d.current_pipeline.losses[0].percent,'100.00');assert.equal(d.summary.sold_value_minor,'0','pipeline never becomes actual revenue');
+const old=await report({scope:'team',period:'custom',start:'2020-01-01',end:'2020-01-31'});assert.equal(old.current_pipeline.value_minor,'170001','explicitly current snapshot is independent of historical sales period');
+assert.equal((await report({scope:'team',rep:id(2)})).current_pipeline.value_minor,'120001');
+assert.equal((await report({scope:'team',campaign:id(20)})).current_pipeline.count,1);
+assert.equal((await report({scope:'team',territory:id(21)})).current_pipeline.count,1);
+for(const [key,value] of [['team',id(77)],['product','Roof'],['source','manual'],['status','verified']]) {
+ const p=(await report({scope:'team',[key]:value})).current_pipeline;assert.equal(p.available,false);assert.equal(p.value_minor,undefined);assert.equal(p.count,undefined);
+}
+await actor(2);d=await report(null);assert.equal(d.current_pipeline.count,1,'NULL filter stays personal');assert.equal(d.current_pipeline.losses.length,0);await assert.rejects(()=>report({scope:'team'}),/permission/);
+await actor(1);await db.query('select field_sales_command($1,$2,$3)',[id(10),'settings',{rep_revenue_visible:false}]);await actor(2);
+d=await report({});assert.equal(d.current_pipeline.value_minor,undefined);assert.equal(d.current_pipeline.stages[0].value_minor,undefined);
+await assert.rejects(()=>db.query('select field_sales_report_without_pipeline($1,$2)',[id(10),{}]),/permission denied/);
+await db.exec(`RESET ROLE;UPDATE contacts SET user_id='${id(3)}' WHERE id='${id(30)}'`);await actor(2);assert.equal((await report({})).current_pipeline.count,0,'current ownership removes old rep pipeline');
+await actor(4);await assert.rejects(()=>report(),/Workspace access/);
+console.log('PASS Pro report pipeline: exact current totals, date separation, filters, loss distribution, stale records, current ownership, financial redaction and workspace isolation');await db.close();

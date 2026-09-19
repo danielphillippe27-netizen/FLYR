@@ -298,6 +298,9 @@ final class SharedLiveCanvassingService: ObservableObject {
               let sessionId,
               let userId else { return }
 
+        if await WolfyPresencePublisherV2.shared.handle(campaign: campaignId, session: sessionId, user: userId,
+                                                       location: location, paused: isPaused) { return }
+
         let nextStatus: SharedLiveCanvassingPresenceStatus = isPaused ? .paused : .active
         let now = Date()
         let locationToPersist = location ?? lastTeamPublishedLocation
@@ -345,6 +348,7 @@ final class SharedLiveCanvassingService: ObservableObject {
     }
 
     func clearTeamPresence(campaignId: UUID?, userId: UUID?) async {
+        WolfyPresencePublisherV2.shared.clear(user: userId, campaign: campaignId)
         guard NetworkMonitor.shared.isOnline,
               let campaignId,
               let userId else { return }
@@ -661,6 +665,9 @@ final class SharedLiveCanvassingService: ObservableObject {
             return
         }
 
+        if await WolfyPresencePublisherV2.shared.handle(campaign: campaignId, session: sessionId, user: userId,
+                                                       location: location, paused: status != .active) { return }
+
         let now = Date()
         let payload: [String: AnyCodable] = [
             "campaign_id": AnyCodable(campaignId.uuidString),
@@ -796,8 +803,10 @@ final class SharedLiveCanvassingService: ObservableObject {
         }
         let response = try await query.execute()
         let rows = try JSONDecoder.supabaseDates.decode([CampaignPresenceRow].self, from: response.data)
-        for row in rows {
-            presenceRows = SharedLiveCanvassingReducer.mergePresence(row, into: presenceRows)
+        guard currentCampaignId == campaignId else { return }
+        // A snapshot replaces prior visibility: absent/revoked rows must disappear.
+        presenceRows = rows.reduce(into: [:]) { result, row in
+            result = SharedLiveCanvassingReducer.mergePresence(row, into: result)
         }
         recomputeTeammates(now: Date())
     }

@@ -48,15 +48,15 @@ final class TeamWebHandoff {
 
     private var baseURL: String {
         (Bundle.main.object(forInfoDictionaryKey: "WOLFGRID_API_URL") as? String)?
-            .trimmingCharacters(in: CharacterSet(charactersIn: "/")) ?? "https://wolfgrid.app"
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/")) ?? "https://sales.wolfgrid.app"
     }
 
     /// Base URL for the handoff API request only. Always uses www to avoid apex→www redirect stripping Authorization.
     private var handoffRequestBaseURL: String {
-        guard let components = URLComponents(string: baseURL), components.host == "wolfgrid.app" else {
+        guard let components = URLComponents(string: baseURL), components.host == "sales.wolfgrid.app" else {
             return baseURL
         }
-        return "https://wolfgrid.app"
+        return "https://sales.wolfgrid.app"
     }
 
     func createTeamOnboardingURL() async throws -> URL {

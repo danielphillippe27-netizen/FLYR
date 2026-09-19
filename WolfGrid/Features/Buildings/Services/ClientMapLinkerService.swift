@@ -137,7 +137,7 @@ final class ClientMapLinkerService: Sendable {
 
         for address in preparedAddresses {
             if Task.isCancelled { break }
-            if address.existingBuildingId == nil,
+            if address.existingBuildingId == nil, !address.hasCanonicalPlacement,
                let match = bestMatch(
                     for: address,
                     buildings: preparedBuildings,
@@ -225,11 +225,9 @@ final class ClientMapLinkerService: Sendable {
         parcels: [PreparedParcel]
     ) -> MatchCandidate? {
         guard let parcel = parcels.first(where: { $0.contains(address.coordinate) }) else { return nil }
-        return nearby
-            .filter { parcel.contains($0.building.centroid) || $0.building.intersects(parcel.bbox) }
-            .map { $0.with(matchType: "parcel_verified", confidence: parcelConfidence) }
-            .sorted(by: rankedBefore)
-            .first
+        let candidates = nearby.filter { parcel.contains($0.building.centroid) }
+        guard candidates.count == 1 else { return nil }
+        return candidates[0].with(matchType: "parcel_verified", confidence: parcelConfidence)
     }
 
     private func rankedBefore(_ lhs: MatchCandidate, _ rhs: MatchCandidate) -> Bool {
@@ -316,17 +314,22 @@ private struct PreparedAddress {
     let houseNumber: String?
     let streetName: String?
     let existingBuildingId: String?
+    let hasCanonicalPlacement: Bool
 
     init?(feature: AddressFeature) {
+        // A canonical parcel placement is already resolved by the server.
+        // Do not reinterpret its display point as new address/building evidence.
         guard let id = feature.properties.id ?? feature.id,
               let point = feature.geometry.asPoint,
               point.count >= 2 else { return nil }
         self.id = id
+        hasCanonicalPlacement = feature.properties.pinPlacement != nil
         coordinate = CLLocationCoordinate2D(latitude: point[1], longitude: point[0])
         formatted = feature.properties.formatted
         houseNumber = feature.properties.houseNumber
         streetName = feature.properties.streetName
-        let existing = feature.properties.buildingGersId?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let existing = (feature.properties.buildingGersId ?? feature.properties.linkedBuildingId)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         existingBuildingId = existing?.isEmpty == false ? existing : nil
     }
 }
@@ -343,7 +346,10 @@ private struct PreparedBuilding {
     let canAcceptMultipleAddresses: Bool
 
     init?(feature: BuildingFeature) {
-        guard let id = feature.properties.canonicalBuildingIdentifier ?? feature.id else { return nil }
+        let buildingType = (feature.properties.buildingType ?? "").lowercased()
+        guard !["garage", "shed", "carport", "outbuilding", "accessory", "auxiliary"]
+            .contains(where: buildingType.contains),
+              let id = feature.properties.canonicalBuildingIdentifier ?? feature.id else { return nil }
         let rings = Self.rings(from: feature.geometry)
         guard !rings.isEmpty else { return nil }
         self.id = id

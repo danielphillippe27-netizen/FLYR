@@ -36,6 +36,8 @@
 	<string>$(QA_LATITUDE)</string>
 	<key>QA_LONGITUDE</key>
 	<string>$(QA_LONGITUDE)</string>
+	<key>QA_ADDRESS_IDS</key>
+	<string>$(QA_ADDRESS_IDS)</string>
 	<key>XCTContainsUITests</key>
 	<true/>
 </dict>

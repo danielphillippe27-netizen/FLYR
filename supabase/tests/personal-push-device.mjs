@@ -1,0 +1,13 @@
+const { PGlite } = await import(process.env.PGLITE_MODULE_PATH || '@electric-sql/pglite');
+import { readFileSync } from 'node:fs';
+import assert from 'node:assert/strict';
+const db=new PGlite();
+await db.exec(`CREATE ROLE anon; CREATE ROLE authenticated; CREATE ROLE service_role; CREATE TABLE user_push_tokens(user_id text,token text,platform text,environment text,enabled boolean);
+INSERT INTO user_push_tokens VALUES ('a','shared-device','ios','production',true),('b','shared-device','ios','production',true),('a','other-device','ios','production',true);`);
+await db.exec(readFileSync(new URL('../migrations/20260909080000_personal_push_device.sql',import.meta.url),'utf8'));
+assert.equal((await db.query("SELECT * FROM user_push_tokens WHERE token='shared-device' AND enabled")).rows.length,0);
+assert.equal((await db.query("SELECT * FROM user_push_tokens WHERE token='other-device' AND enabled")).rows.length,1);
+await db.exec("UPDATE user_push_tokens SET enabled=true WHERE token='shared-device' AND user_id='b'");
+await assert.rejects(db.exec("UPDATE user_push_tokens SET enabled=true WHERE token='shared-device' AND user_id='a'"),/unique/);
+console.log('PASS: ambiguous historical devices disabled; only one active user registration allowed per device and environment.');
+await db.close();

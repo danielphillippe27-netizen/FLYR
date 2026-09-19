@@ -13,7 +13,7 @@ struct MainTabView: View {
     @State private var endSessionSummaryItem: EndSessionSummaryItem?
 
     private enum Tab: Int {
-        case home = 0, record = 1, leads = 2, calendar = 3, settings = 4
+        case home = 0, record = 1, leads = 2, more = 3, settings = 4
     }
 
     private var recordHighlight: Bool {
@@ -71,20 +71,20 @@ struct MainTabView: View {
             Group {
                 switch uiState.selectedTabIndex {
                 case Tab.home.rawValue:
-                    // HomeView owns NavigationStack(path:) + destinations; an outer stack causes path type mismatch crashes.
-                    HomeView()
+                    // Each Home destination owns its navigation stack.
+                    WolfyHomeView()
                 case Tab.record.rawValue:
                     NavigationStack { RecordHomeView() }
                 case Tab.leads.rawValue:
                     // ContactsHubView owns NavigationStack + lead destination.
                     ContactsHubView()
-                case Tab.calendar.rawValue:
-                    NavigationStack { CalendarTabView() }
+                case Tab.more.rawValue:
+                    HomeView()
                 case Tab.settings.rawValue:
                     // SettingsView owns NavigationStack around its form.
                     SettingsView()
                 default:
-                    HomeView()
+                    WolfyHomeView()
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -157,6 +157,9 @@ struct MainTabView: View {
                     )
                 }
             }
+        }
+        .sheet(item: $uiState.pendingBusinessCardActivity) { route in
+            BusinessCardPushActivityView(route: route)
         }
         .task(id: resumedCreatingCampaignId) {
             guard resumedCreatingCampaignId != nil else { return }
@@ -271,7 +274,7 @@ struct MainTabView: View {
     }
 
     private func normalizeSelectedTab() {
-        if uiState.selectedTabIndex > Tab.calendar.rawValue {
+        if !(Tab.home.rawValue...Tab.settings.rawValue).contains(uiState.selectedTabIndex) {
             uiState.selectedTabIndex = 0
         }
     }

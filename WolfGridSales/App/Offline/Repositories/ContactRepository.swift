@@ -21,6 +21,7 @@ private struct CachedContactRecord: Codable, FetchableRecord, PersistableRecord 
     let fullName: String
     let phone: String?
     let email: String?
+    let company: String?
     let address: String
     let campaignId: String?
     let farmId: String?
@@ -43,6 +44,7 @@ private struct CachedContactRecord: Codable, FetchableRecord, PersistableRecord 
         case fullName = "full_name"
         case phone
         case email
+        case company
         case address
         case campaignId = "campaign_id"
         case farmId = "farm_id"
@@ -66,6 +68,7 @@ private struct CachedContactRecord: Codable, FetchableRecord, PersistableRecord 
         case fullName = "full_name"
         case phone
         case email
+        case company
         case address
         case campaignId = "campaign_id"
         case farmId = "farm_id"
@@ -163,6 +166,7 @@ final class ContactRepository {
             fullName: contact.fullName,
             phone: contact.phone,
             email: contact.email,
+            company: contact.company,
             address: contact.address,
             campaignId: contact.campaignId,
             farmId: contact.farmId,
@@ -443,6 +447,7 @@ final class ContactRepository {
             fullName: contact.fullName,
             phone: contact.phone,
             email: contact.email,
+            company: contact.company,
             address: contact.address,
             campaignId: contact.campaignId?.uuidString,
             farmId: contact.farmId?.uuidString,
@@ -470,6 +475,7 @@ final class ContactRepository {
             fullName: record.fullName,
             phone: record.phone,
             email: record.email,
+            company: record.company,
             address: record.address,
             campaignId: UUID(uuidString: record.campaignId ?? ""),
             farmId: UUID(uuidString: record.farmId ?? ""),

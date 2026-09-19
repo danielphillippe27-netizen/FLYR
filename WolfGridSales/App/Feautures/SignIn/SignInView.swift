@@ -1,6 +1,5 @@
 import SwiftUI
 import UIKit
-import Lottie
 
 struct SignInView: View {
     @Environment(\.colorScheme) private var colorScheme
@@ -272,43 +271,5 @@ struct SignInView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
             withAnimation { showToast = false }
         }
-    }
-}
-
-// MARK: - Looping Lottie (auth page)
-
-private struct LoopingLottieView: UIViewRepresentable {
-    let name: String
-
-    func makeUIView(context: Context) -> UIView {
-        let container = UIView()
-        container.clipsToBounds = true
-        let lottie = LottieAnimationView(name: name, bundle: .main)
-        lottie.loopMode = .loop
-        lottie.contentMode = .scaleAspectFit
-        lottie.backgroundBehavior = .pauseAndRestore
-        lottie.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(lottie)
-        NSLayoutConstraint.activate([
-            lottie.topAnchor.constraint(equalTo: container.topAnchor),
-            lottie.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            lottie.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            lottie.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-        ])
-        lottie.play()
-        context.coordinator.lottieView = lottie
-        return container
-    }
-
-    func updateUIView(_ uiView: UIView, context: Context) {
-        context.coordinator.lottieView?.contentMode = .scaleAspectFit
-    }
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator()
-    }
-
-    class Coordinator {
-        weak var lottieView: LottieAnimationView?
     }
 }

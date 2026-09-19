@@ -1,0 +1,96 @@
+{
+  "version": 2,
+  "stage": "Grid Legend",
+  "prototype": true,
+  "vertices": 6758,
+  "indices": 40080,
+  "bones": [
+    "root",
+    "body",
+    "neck",
+    "head",
+    "ear_l",
+    "ear_r",
+    "tail",
+    "front_l",
+    "front_l_lower",
+    "rear_l",
+    "rear_l_lower",
+    "front_r",
+    "front_r_lower",
+    "rear_r",
+    "rear_r_lower"
+  ],
+  "mesh": "legend-mesh.bin",
+  "clips": {
+    "idle": {
+      "file": "legend-idle.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "walk": {
+      "file": "legend-walk.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "trot": {
+      "file": "legend-trot.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "run": {
+      "file": "legend-run.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "sit": {
+      "file": "legend-sit.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "look_around": {
+      "file": "legend-look_around.bin",
+      "duration": 2,
+      "frames": 48
+    },
+    "celebrate": {
+      "file": "legend-celebrate.bin",
+      "duration": 2,
+      "frames": 48
+    }
+  },
+  "files": {
+    "legend-celebrate.bin": {
+      "bytes": 46080,
+      "sha256": "ac32bf3fde8dfb02f7af68dc1ec5536d023f8ddedbe8f0fe8f03c073797b08ad"
+    },
+    "legend-idle.bin": {
+      "bytes": 46080,
+      "sha256": "4318986bcd0e56c7189a265d5ebaebb7f5caf0c9c2409edb5b70c826a33da977"
+    },
+    "legend-look_around.bin": {
+      "bytes": 46080,
+      "sha256": "96ab6f0adf665fdc40589103e27e37fb0620beed153072dac5808fe8ee748995"
+    },
+    "legend-trot.bin": {
+      "bytes": 46080,
+      "sha256": "b196cd6638d4671a84c237022d147568a3008e57d85958f032b2febd3c889e40"
+    },
+    "legend-mesh.bin": {
+      "bytes": 592832,
+      "sha256": "caea7ec2a91a2cf716ccc14d97efeed33dc3b63f4b17b60ed302c6bb8ebe25b1"
+    },
+    "legend-sit.bin": {
+      "bytes": 46080,
+      "sha256": "c53fc32a8d1d8ceaa571bfb23381602ef4401d90a982501421add1122cbfe4f4"
+    },
+    "legend-run.bin": {
+      "bytes": 46080,
+      "sha256": "19977412b58777341579e56542ad891e96d61d4251f0801be849aae93b77f7b8"
+    },
+    "legend-walk.bin": {
+      "bytes": 46080,
+      "sha256": "4624dcf768570eb1b7e75092694b1126d9b26928b25d7ba1bf4bff0ec152072e"
+    }
+  }
+}

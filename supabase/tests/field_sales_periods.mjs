@@ -1,0 +1,18 @@
+import assert from 'node:assert/strict';
+import {createSalesFixture} from './field_sales_fixture.mjs';
+const {db,id}=await createSalesFixture();
+await db.exec(`INSERT INTO field_sales_settings(workspace_id,enabled,currency,timezone) VALUES('${id(10)}',true,'CAD','America/Toronto');
+INSERT INTO contacts(id,workspace_id,user_id,full_name,created_at) VALUES('${id(70)}','${id(10)}','${id(2)}','Historical cohort',((date_trunc('month',now() AT TIME ZONE 'America/Toronto')-interval '30 minutes') AT TIME ZONE 'America/Toronto'));
+INSERT INTO contact_activities(id,contact_id,type,timestamp) VALUES('${id(71)}','${id(70)}','meeting',((date_trunc('month',now() AT TIME ZONE 'America/Toronto')-interval '15 minutes') AT TIME ZONE 'America/Toronto'));
+INSERT INTO sessions VALUES('${id(72)}','${id(10)}','${id(2)}',null);
+INSERT INTO session_events(id,session_id,building_id,created_at,event_type) VALUES('${id(73)}','${id(72)}','Historical door',((date_trunc('month',now() AT TIME ZONE 'America/Toronto')-interval '10 minutes') AT TIME ZONE 'America/Toronto'),'completed_manual');`);
+const sold=(await db.query("select (date_trunc('month',now() AT TIME ZONE 'America/Toronto')::date-1)::text d")).rows[0].d;
+const actor=n=>db.exec(`SET ROLE authenticated;SELECT set_config('request.jwt.claim.sub','${id(n)}',false)`);
+const cmd=async(action,payload)=>(await db.query('select field_sales_command($1,$2,$3) d',[id(10),action,payload])).rows[0].d;
+const dash=async p=>(await db.query('select field_sales_dashboard($1,$2) d',[id(10),p])).rows[0].d;
+await actor(2);const sale=await cmd('submit',{contact_id:id(70),appointment_id:id(71),request_id:id(74),sold_on:sold,value_minor:'10001'});
+await actor(1);await cmd('verify',{id:sale.id,version:1});await actor(2);
+let d=await dash('previous_month');assert.equal(d.totals.sales,1);assert.equal(d.totals.revenue_minor,'10001');assert.equal(d.metrics.doors,1);assert.equal(d.metrics.appointments,1);assert.equal(d.metrics.appointment_converted,1);assert.equal(d.metrics.lead_converted,1);
+assert.equal((await dash('month')).totals.sales,0);
+await actor(1);await cmd('cancel',{id:sale.id,reason:'Historical correction'});await actor(2);d=await dash('previous_month');assert.equal(d.totals.sales,0);assert.equal(d.metrics.appointment_converted,0);
+await db.close();console.log('PASS: local-time historical month boundaries, exact minor units, linked cohorts and cancellation reversal in the original period');

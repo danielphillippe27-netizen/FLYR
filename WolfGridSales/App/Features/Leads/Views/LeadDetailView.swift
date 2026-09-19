@@ -10,6 +10,7 @@ struct LeadDetailView: View {
     @State private var integrations: [UserIntegration] = []
     @State private var showSyncSettings = false
     @State private var showShareSheet = false
+    @State private var showEmailComposer = false
     @State private var shareItems: [Any] = []
     @State private var isPushingToCRM = false
     @State private var pushToCRMSuccess: Bool? = nil
@@ -20,6 +21,11 @@ struct LeadDetailView: View {
     @State private var editableEmail: String = ""
     @State private var editableNotes: String = ""
     @State private var isSaving = false
+    @State private var emailRecipient = ""
+    @State private var emailSubject = "Following up"
+    @State private var emailBody = ""
+    @State private var isSendingEmail = false
+    @State private var emailErrorMessage: String?
     private var hasEdits: Bool { editableName != (lead.name ?? "") || editablePhone != (lead.phone ?? "") || editableEmail != (lead.email ?? "") || editableNotes != (lead.notes ?? "") }
     
     init(lead: FieldLead, onConnectCRM: @escaping () -> Void, onDismiss: (() -> Void)? = nil, onLeadUpdated: ((FieldLead) -> Void)? = nil) {
@@ -95,12 +101,26 @@ struct LeadDetailView: View {
             editablePhone = lead.phone ?? ""
             editableEmail = lead.email ?? ""
             editableNotes = lead.notes ?? ""
+            emailRecipient = lead.email ?? ""
         }
         .sheet(isPresented: $showSyncSettings) {
             SyncSettingsView()
         }
         .sheet(isPresented: $showShareSheet) {
             ShareSheet(activityItems: shareItems)
+        }
+        .sheet(isPresented: $showEmailComposer) {
+            SalespersonEmailComposer(
+                recipient: $emailRecipient,
+                subject: $emailSubject,
+                messageBody: $emailBody,
+                recipientName: displayTitle,
+                recipientIsEditable: false,
+                isSending: isSendingEmail,
+                errorMessage: emailErrorMessage,
+                onCancel: { showEmailComposer = false },
+                onSend: { Task { await sendEmail() } }
+            )
         }
     }
     
@@ -174,8 +194,29 @@ struct LeadDetailView: View {
     
     private func openEmail() {
         let email = editableEmail.isEmpty ? (lead.email ?? "") : editableEmail
-        guard !email.isEmpty, let url = URL(string: "mailto:\(email)") else { return }
-        UIApplication.shared.open(url)
+        guard !email.isEmpty else { return }
+        emailRecipient = email
+        emailErrorMessage = nil
+        showEmailComposer = true
+    }
+
+    private func sendEmail() async {
+        guard !isSendingEmail else { return }
+        isSendingEmail = true
+        emailErrorMessage = nil
+        defer { isSendingEmail = false }
+        do {
+            _ = try await SalespersonEmailSender.send(
+                leadId: lead.id.uuidString,
+                to: emailRecipient,
+                subject: emailSubject,
+                body: emailBody
+            )
+            emailBody = ""
+            showEmailComposer = false
+        } catch {
+            emailErrorMessage = error.localizedDescription
+        }
     }
     
     private func openMaps() {

@@ -31,6 +31,9 @@ struct CampaignPresenceRow: Codable, Equatable, Identifiable {
     let longitude: Double?
     let updatedAt: Date
     let status: SharedLiveCanvassingPresenceStatus
+    var locationFixedAt: Date? = nil
+
+    var locationObservedAt: Date { locationFixedAt ?? updatedAt }
 
     var id: String {
         "\(campaignId.uuidString.lowercased())-\(userId.uuidString.lowercased())"
@@ -49,6 +52,7 @@ struct CampaignPresenceRow: Codable, Equatable, Identifiable {
         case latitude = "lat"
         case longitude = "lng"
         case updatedAt = "updated_at"
+        case locationFixedAt = "location_fixed_at"
         case status
     }
 }
@@ -226,7 +230,7 @@ enum SharedLiveCanvassingReducer {
             guard currentSessionId == nil || row.sessionId == currentSessionId else { return nil }
             guard let coordinate = row.coordinate else { return nil }
 
-            let freshness = freshness(for: row.updatedAt, now: now, config: config)
+            let freshness = freshness(for: row.locationObservedAt, now: now, config: config)
             guard freshness != .expired else { return nil }
 
             let member = directory[row.userId] ?? SharedCanvassingMember(
@@ -247,7 +251,7 @@ enum SharedLiveCanvassingReducer {
                 avatarURL: member.avatarURL,
                 latitude: coordinate.latitude,
                 longitude: coordinate.longitude,
-                updatedAt: row.updatedAt,
+                updatedAt: row.locationObservedAt,
                 presenceStatus: row.status,
                 freshness: freshness,
                 opacity: opacity(for: freshness, status: row.status)

@@ -1,0 +1,584 @@
+'use client';
+
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react';
+import { getClientAsync } from '@/lib/supabase/client';
+import type { DashboardAccessLevel } from '@/app/api/_utils/workspace';
+
+const CURRENT_WORKSPACE_STORAGE_KEY = 'wolfgrid.currentWorkspaceId';
+const LEGACY_CURRENT_WORKSPACE_STORAGE_KEY = 'flyr.currentWorkspaceId';
+function workspaceStorageKeyForUser(userId: string): string {
+  return `${CURRENT_WORKSPACE_STORAGE_KEY}:${userId}`;
+}
+function legacyWorkspaceStorageKeyForUser(userId: string): string {
+  return `${LEGACY_CURRENT_WORKSPACE_STORAGE_KEY}:${userId}`;
+}
+
+export type WorkspaceRole = 'owner' | 'admin' | 'member';
+
+export type Workspace = {
+  id: string;
+  name: string;
+  owner_id: string | null;
+  created_at: string;
+  updated_at: string;
+  industry: string | null;
+  /** Canonical brokerage (when set during onboarding). */
+  brokerage_id: string | null;
+  /** Free-text brokerage name when no template match. */
+  brokerage_name: string | null;
+  movie_map_controls_enabled: boolean;
+  territory_iq_enabled: boolean;
+};
+
+type WorkspaceMembership = {
+  workspace_id: string;
+  role: WorkspaceRole;
+  created_at?: string;
+};
+
+type WorkspaceContextValue = {
+  workspaces: Workspace[];
+  membershipsByWorkspaceId: Record<string, WorkspaceRole>;
+  /** Number of members per workspace (for team vs solo gating). */
+  memberCountByWorkspaceId: Record<string, number>;
+  currentWorkspace: Workspace | null;
+  currentWorkspaceId: string | null;
+  accessLevel: DashboardAccessLevel | null;
+  isFounder: boolean;
+  isAmbassador: boolean;
+  planBadgeLabel: string | null;
+  redirectPath: string | null;
+  isLoading: boolean;
+  error: string | null;
+  setCurrentWorkspaceId: (workspaceId: string) => void;
+  refreshWorkspaces: () => Promise<void>;
+};
+
+const WorkspaceContext = createContext<WorkspaceContextValue | undefined>(undefined);
+
+type MembershipRow = {
+  workspace_id: string;
+  role: WorkspaceRole;
+  created_at?: string;
+};
+
+type WorkspaceRow = {
+  id: string;
+  name: string;
+  owner_id: string | null;
+  created_at: string;
+  updated_at: string;
+  industry: string | null;
+  brokerage_id: string | null;
+  brokerage_name: string | null;
+  movie_map_controls_enabled: boolean;
+  territory_iq_enabled: boolean;
+};
+
+type AccessStateRow = {
+  userId?: string | null;
+  workspaceId?: string | null;
+  workspace_id?: string | null;
+  workspaceName?: string | null;
+  industry?: string | null;
+  territoryIQEnabled?: boolean | null;
+  role?: WorkspaceRole | null;
+  hasAccess?: boolean | null;
+  memberCount?: number | null;
+  accessLevel?: DashboardAccessLevel | null;
+  isFounder?: boolean | null;
+  isAmbassador?: boolean | null;
+  isSalesperson?: boolean | null;
+  planBadgeLabel?: string | null;
+  reason?: string | null;
+  onboardingComplete?: boolean | null;
+  unauthorized?: boolean;
+};
+
+function isSelfServeCampaignCreatePath(pathname: string): boolean {
+  try {
+    const url = new URL(pathname, 'http://localhost');
+    return url.pathname === '/campaigns/create' && url.searchParams.get('source') === 'self-serve-demo';
+  } catch {
+    return false;
+  }
+}
+
+type WorkspacePreferenceRow = {
+  current_workspace_id?: string | null;
+};
+
+function computeRedirectPath(state: AccessStateRow, pathname: string): string | null {
+  if (isSelfServeCampaignCreatePath(pathname)) return null;
+  if (pathname.startsWith('/reset-password')) return null;
+
+  const url = new URL(pathname, 'http://localhost');
+  const inviteToken = url.searchParams.get('token');
+  if (pathname.startsWith('/join') && inviteToken) return null;
+
+  const workspaceId = state.workspaceId || state.workspace_id || null;
+  if (!workspaceId) {
+    if (state.isFounder) return '/admin';
+    return '/download-ios?next=/onboarding';
+  }
+
+  if (state.accessLevel === 'founder') return null;
+  if (state.isSalesperson) return null;
+
+  if (!state.onboardingComplete && state.role === 'owner') {
+    return '/download-ios?next=/onboarding';
+  }
+
+  if (state.role === 'member' && !state.hasAccess) {
+    return '/subscribe?reason=member-inactive';
+  }
+
+  if (!state.hasAccess) {
+    return '/subscribe';
+  }
+
+  return null;
+}
+
+function currentPathWithSearch(): string {
+  if (typeof window === 'undefined') return '/home';
+  return `${window.location.pathname}${window.location.search}`;
+}
+
+export function WorkspaceProvider({ children }: { children: ReactNode }) {
+  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
+  const [memberships, setMemberships] = useState<WorkspaceMembership[]>([]);
+  const [memberCountByWorkspaceId, setMemberCountByWorkspaceId] = useState<Record<string, number>>({});
+  const [currentWorkspaceId, setCurrentWorkspaceIdState] = useState<string | null>(null);
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+  const [accessLevel, setAccessLevel] = useState<DashboardAccessLevel | null>(null);
+  const [isFounder, setIsFounder] = useState(false);
+  const [isAmbassador, setIsAmbassador] = useState(false);
+  const [planBadgeLabel, setPlanBadgeLabel] = useState<string | null>(null);
+  const [redirectPath, setRedirectPath] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const initialLoadDoneRef = useRef(false);
+  const currentAuthUserIdRef = useRef<string | null>(null);
+
+  const refreshWorkspaces = useCallback(async () => {
+    setIsLoading(true);
+    setError(null);
+    setAccessLevel(null);
+    setIsFounder(false);
+    setIsAmbassador(false);
+    setPlanBadgeLabel(null);
+    setRedirectPath(null);
+
+    const accessStatePromise = fetch('/api/access/state', { credentials: 'include' })
+      .then((response) => {
+        if (response.status === 401) return { unauthorized: true } satisfies AccessStateRow;
+        return response.ok ? response.json() as Promise<AccessStateRow> : null;
+      })
+      .catch(() => null);
+
+    const applyAccessState = (data: AccessStateRow | null) => {
+      if (data?.unauthorized) {
+        setAccessLevel(null);
+        setIsFounder(false);
+        setIsAmbassador(false);
+        setPlanBadgeLabel(null);
+        setRedirectPath(isSelfServeCampaignCreatePath(currentPathWithSearch()) ? null : '/login');
+        return;
+      }
+
+      setAccessLevel(typeof data?.accessLevel === 'string' ? data.accessLevel : null);
+      setIsFounder(data?.isFounder === true);
+      setIsAmbassador(data?.isAmbassador === true);
+      setPlanBadgeLabel(typeof data?.planBadgeLabel === 'string' ? data.planBadgeLabel : null);
+      setRedirectPath(data ? computeRedirectPath(data, currentPathWithSearch()) : null);
+    };
+
+    try {
+      const hydrateFromAccessState = async (): Promise<boolean> => {
+        const data = await accessStatePromise;
+        applyAccessState(data);
+        if (!data) return false;
+        const workspaceId =
+          (typeof data.workspaceId === 'string' && data.workspaceId) ||
+          (typeof data.workspace_id === 'string' && data.workspace_id) ||
+          null;
+        if (!workspaceId) return false;
+
+        const workspaceName =
+          typeof data.workspaceName === 'string' && data.workspaceName.trim()
+            ? data.workspaceName.trim()
+            : 'Workspace';
+        const role: WorkspaceRole =
+          data.role === 'owner' || data.role === 'admin' || data.role === 'member'
+            ? data.role
+            : 'member';
+        const userId = typeof data.userId === 'string' && data.userId ? data.userId : null;
+
+        currentAuthUserIdRef.current = userId;
+        setCurrentUserId(userId);
+        setWorkspaces([
+          {
+            id: workspaceId,
+            name: workspaceName,
+            owner_id: null,
+            created_at: new Date(0).toISOString(),
+            updated_at: new Date().toISOString(),
+            industry: typeof data.industry === 'string' ? data.industry : null,
+            brokerage_id: null,
+            brokerage_name: null,
+            movie_map_controls_enabled: false,
+            territory_iq_enabled: data.territoryIQEnabled === true,
+          },
+        ]);
+        setMemberships([{ workspace_id: workspaceId, role }]);
+        setMemberCountByWorkspaceId({
+          [workspaceId]: typeof data.memberCount === 'number' ? data.memberCount : 0,
+        });
+        setCurrentWorkspaceIdState(workspaceId);
+
+        if (typeof window !== 'undefined' && userId) {
+          window.localStorage.setItem(workspaceStorageKeyForUser(userId), workspaceId);
+          window.localStorage.removeItem(legacyWorkspaceStorageKeyForUser(userId));
+          window.localStorage.removeItem(CURRENT_WORKSPACE_STORAGE_KEY);
+          window.localStorage.removeItem(LEGACY_CURRENT_WORKSPACE_STORAGE_KEY);
+        }
+
+        return true;
+      };
+
+      const supabase = await getClientAsync();
+
+      const {
+        data: { user },
+        error: userError,
+      } = await supabase.auth.getUser();
+
+      if (userError) throw userError;
+      if (!user) {
+        const hydrated = await hydrateFromAccessState();
+        if (hydrated) {
+          setIsLoading(false);
+          return;
+        }
+        setWorkspaces([]);
+        setMemberships([]);
+        setMemberCountByWorkspaceId({});
+        currentAuthUserIdRef.current = null;
+        setCurrentUserId(null);
+        setCurrentWorkspaceIdState(null);
+        setIsLoading(false);
+        return;
+      }
+      currentAuthUserIdRef.current = user.id;
+      setCurrentUserId(user.id);
+
+      const { data: membershipRows, error: membershipError } = await supabase
+        .from('workspace_members')
+        .select('workspace_id, role, created_at')
+        .eq('user_id', user.id);
+
+      if (membershipError) throw membershipError;
+
+      const safeMembershipRows = (membershipRows ?? []) as MembershipRow[];
+      const workspaceIds = Array.from(
+        new Set(safeMembershipRows.map((row) => row.workspace_id).filter(Boolean))
+      );
+      if (workspaceIds.length === 0) {
+        const hydrated = await hydrateFromAccessState();
+        if (hydrated) {
+          setIsLoading(false);
+          return;
+        }
+      }
+
+      let safeWorkspaceRows: WorkspaceRow[] = [];
+      let preferredWorkspaceId: string | null = null;
+      const countMap: Record<string, number> = {};
+      if (workspaceIds.length > 0) {
+        const [workspaceResult, membersResult, preferenceResult] = await Promise.all([
+          supabase
+            .from('workspaces')
+            .select('id, name, owner_id, created_at, updated_at, industry, brokerage_id, brokerage_name, movie_map_controls_enabled, territory_iq_enabled')
+            .in('id', workspaceIds)
+            .order('created_at', { ascending: true }),
+          supabase
+            .from('workspace_members')
+            .select('workspace_id')
+            .in('workspace_id', workspaceIds),
+          supabase
+            .from('user_profiles')
+            .select('current_workspace_id')
+            .eq('user_id', user.id)
+            .maybeSingle(),
+        ]);
+
+        if (workspaceResult.error) throw workspaceResult.error;
+        safeWorkspaceRows = (workspaceResult.data ?? []) as WorkspaceRow[];
+        const currentWorkspacePreference = (preferenceResult.data ?? null) as WorkspacePreferenceRow | null;
+
+        const memberRows = (membersResult.data ?? []) as { workspace_id: string }[];
+        for (const row of memberRows) {
+          countMap[row.workspace_id] = (countMap[row.workspace_id] ?? 0) + 1;
+        }
+        preferredWorkspaceId =
+          typeof currentWorkspacePreference?.current_workspace_id === 'string' &&
+          currentWorkspacePreference.current_workspace_id
+            ? currentWorkspacePreference.current_workspace_id
+            : null;
+      }
+
+      setMemberCountByWorkspaceId(countMap);
+      setMemberships(
+        safeMembershipRows.map((row) => ({
+          workspace_id: row.workspace_id,
+          role: row.role,
+          created_at: row.created_at,
+        }))
+      );
+
+      const roleRank = (role: WorkspaceRole) =>
+        role === 'owner' ? 0 : role === 'admin' ? 1 : 2;
+
+      const membershipByWorkspaceId = new Map(
+        safeMembershipRows.map((row) => [row.workspace_id, row])
+      );
+      const sortedWorkspaceRows = [...safeWorkspaceRows].sort((a, b) => {
+        const aMembership = membershipByWorkspaceId.get(a.id);
+        const bMembership = membershipByWorkspaceId.get(b.id);
+        const aRole = aMembership?.role ?? 'member';
+        const bRole = bMembership?.role ?? 'member';
+        const byRole = roleRank(aRole) - roleRank(bRole);
+        if (byRole !== 0) return byRole;
+
+        const aCreated = aMembership?.created_at ? new Date(aMembership.created_at).getTime() : Number.MAX_SAFE_INTEGER;
+        const bCreated = bMembership?.created_at ? new Date(bMembership.created_at).getTime() : Number.MAX_SAFE_INTEGER;
+        if (aCreated !== bCreated) return aCreated - bCreated;
+
+        return a.created_at.localeCompare(b.created_at);
+      });
+
+      setWorkspaces(sortedWorkspaceRows);
+
+      const validIds = new Set(sortedWorkspaceRows.map((ws) => ws.id));
+      const namespacedKey = workspaceStorageKeyForUser(user.id);
+      const legacyNamespacedKey = legacyWorkspaceStorageKeyForUser(user.id);
+      const storedWorkspaceId =
+        typeof window !== 'undefined'
+          ? window.localStorage.getItem(namespacedKey) ||
+            window.localStorage.getItem(legacyNamespacedKey) ||
+            window.localStorage.getItem(CURRENT_WORKSPACE_STORAGE_KEY) ||
+            window.localStorage.getItem(LEGACY_CURRENT_WORKSPACE_STORAGE_KEY)
+          : null;
+      const nextWorkspaceId =
+        (storedWorkspaceId && validIds.has(storedWorkspaceId) ? storedWorkspaceId : null) ||
+        (preferredWorkspaceId && validIds.has(preferredWorkspaceId) ? preferredWorkspaceId : null) ||
+        (sortedWorkspaceRows[0]?.id ?? null);
+
+      setCurrentWorkspaceIdState(nextWorkspaceId);
+      if (typeof window !== 'undefined') {
+        if (nextWorkspaceId) {
+          window.localStorage.setItem(namespacedKey, nextWorkspaceId);
+          window.localStorage.removeItem(legacyNamespacedKey);
+          window.localStorage.removeItem(CURRENT_WORKSPACE_STORAGE_KEY);
+          window.localStorage.removeItem(LEGACY_CURRENT_WORKSPACE_STORAGE_KEY);
+        } else {
+          window.localStorage.removeItem(namespacedKey);
+          window.localStorage.removeItem(legacyNamespacedKey);
+        }
+      }
+      applyAccessState(await accessStatePromise);
+    } catch (err) {
+      try {
+        const data = await accessStatePromise;
+        applyAccessState(data);
+        if (data) {
+          const workspaceId =
+            (typeof data.workspaceId === 'string' && data.workspaceId) ||
+            (typeof data.workspace_id === 'string' && data.workspace_id) ||
+            null;
+          if (workspaceId) {
+            const role: WorkspaceRole =
+              data.role === 'owner' || data.role === 'admin' || data.role === 'member'
+                ? data.role
+                : 'member';
+            const userId = typeof data.userId === 'string' && data.userId ? data.userId : null;
+            currentAuthUserIdRef.current = userId;
+            setCurrentUserId(userId);
+            setWorkspaces([
+              {
+                id: workspaceId,
+                name:
+                  typeof data.workspaceName === 'string' && data.workspaceName.trim()
+                    ? data.workspaceName.trim()
+                    : 'Workspace',
+                owner_id: null,
+                created_at: new Date(0).toISOString(),
+                updated_at: new Date().toISOString(),
+                industry: typeof data.industry === 'string' ? data.industry : null,
+                brokerage_id: null,
+                brokerage_name: null,
+                movie_map_controls_enabled: false,
+                territory_iq_enabled: false,
+              },
+            ]);
+            setMemberships([{ workspace_id: workspaceId, role }]);
+            setMemberCountByWorkspaceId({
+              [workspaceId]: typeof data.memberCount === 'number' ? data.memberCount : 0,
+            });
+            setCurrentWorkspaceIdState(workspaceId);
+            setError(null);
+            return;
+          }
+        }
+      } catch {
+        // Fall through to standard error state.
+      }
+
+      const message = err instanceof Error ? err.message : 'Failed to load workspaces';
+      setError(message);
+      setWorkspaces([]);
+      setMemberships([]);
+      setMemberCountByWorkspaceId({});
+      currentAuthUserIdRef.current = null;
+      setCurrentUserId(null);
+      setCurrentWorkspaceIdState(null);
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  const setCurrentWorkspaceId = useCallback((workspaceId: string) => {
+    setCurrentWorkspaceIdState(workspaceId);
+    if (typeof window !== 'undefined' && currentUserId) {
+      window.localStorage.setItem(workspaceStorageKeyForUser(currentUserId), workspaceId);
+      window.localStorage.removeItem(legacyWorkspaceStorageKeyForUser(currentUserId));
+    }
+
+    void fetch('/api/profile', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ current_workspace_id: workspaceId }),
+    }).then(async (response) => {
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => null)) as { error?: string } | null;
+        throw new Error(payload?.error ?? 'Failed to save workspace selection');
+      }
+      setError(null);
+    }).catch((err) => {
+      setError(err instanceof Error ? err.message : 'Failed to save workspace selection');
+      void refreshWorkspaces();
+    });
+  }, [currentUserId, refreshWorkspaces]);
+
+  useEffect(() => {
+    void refreshWorkspaces().finally(() => {
+      initialLoadDoneRef.current = true;
+    });
+  }, [refreshWorkspaces]);
+
+  useEffect(() => {
+    let isCancelled = false;
+    let unsubscribe: (() => void) | undefined;
+
+    getClientAsync()
+      .then((supabase) => {
+        const {
+          data: { subscription },
+        } = supabase.auth.onAuthStateChange((event, session) => {
+          if (isCancelled || event === 'INITIAL_SESSION' || !initialLoadDoneRef.current) {
+            return;
+          }
+
+          const nextUserId = session?.user?.id ?? null;
+          if (event === 'SIGNED_OUT') {
+            if (currentAuthUserIdRef.current === null) return;
+            currentAuthUserIdRef.current = null;
+            void refreshWorkspaces();
+            return;
+          }
+
+          if ((event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') && nextUserId !== currentAuthUserIdRef.current) {
+            currentAuthUserIdRef.current = nextUserId;
+            void refreshWorkspaces();
+          }
+        });
+        unsubscribe = () => subscription.unsubscribe();
+      })
+      .catch(() => {});
+
+    return () => {
+      isCancelled = true;
+      if (unsubscribe) unsubscribe();
+    };
+  }, [refreshWorkspaces]);
+
+  const currentWorkspace = useMemo(
+    () => workspaces.find((ws) => ws.id === currentWorkspaceId) ?? null,
+    [workspaces, currentWorkspaceId]
+  );
+
+  const membershipsByWorkspaceId = useMemo(() => {
+    const map: Record<string, WorkspaceRole> = {};
+    for (const membership of memberships) {
+      map[membership.workspace_id] = membership.role;
+    }
+    return map;
+  }, [memberships]);
+
+  const value = useMemo<WorkspaceContextValue>(
+    () => ({
+      workspaces,
+      membershipsByWorkspaceId,
+      memberCountByWorkspaceId,
+      currentWorkspace,
+      currentWorkspaceId,
+      accessLevel,
+      isFounder,
+      isAmbassador,
+      planBadgeLabel,
+      redirectPath,
+      isLoading,
+      error,
+      setCurrentWorkspaceId,
+      refreshWorkspaces,
+    }),
+    [
+      workspaces,
+      membershipsByWorkspaceId,
+      memberCountByWorkspaceId,
+      currentWorkspace,
+      currentWorkspaceId,
+      accessLevel,
+      isFounder,
+      isAmbassador,
+      planBadgeLabel,
+      redirectPath,
+      isLoading,
+      error,
+      setCurrentWorkspaceId,
+      refreshWorkspaces,
+    ]
+  );
+
+  return <WorkspaceContext.Provider value={value}>{children}</WorkspaceContext.Provider>;
+}
+
+export function useWorkspace() {
+  const ctx = useContext(WorkspaceContext);
+  if (!ctx) {
+    throw new Error('useWorkspace must be used within WorkspaceProvider');
+  }
+  return ctx;
+}
+

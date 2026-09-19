@@ -101,14 +101,17 @@ final class MapLayerManager {
     /// House numbers are only readable at close range; keep them out of overview zooms.
     private static let addressNumbersLayerMinZoom: Double = 16.0
     private static let addressHouseIconImageId = "campaign-address-house-emblem"
-    private static let manualPinBaseModelId = "flyr-push-pin-base-v3"
-    private static let manualPinTopModelId = "flyr-push-pin-top-v3"
-    private static let manualPinModelScale: Double = 2.3
+    private static let manualPinBaseModelId = "wolfgrid-push-pin-base-v7"
+    private static let manualPinTopModelId = "wolfgrid-push-pin-top-v7"
+    // Use the same 5.2 m reference as houses: 0.7 for pins versus 0.6 for houses.
+    static let manualPinRenderedHeight: Double = defaultBuildingExtrusionHeight * 0.7
+    private static let manualPinModelScale: Double = manualPinRenderedHeight / manualPinUnscaledHeight
     private static let manualPinUnscaledHeight: Double = 5.15
 
     /// Minimum rendered building height, reduced by 35% from the previous 8 m floor.
     static let defaultBuildingExtrusionHeight: Double = 5.2
     static let maximumBuildingExtrusionHeight: Double = 14.0
+    private static let buildingExtrusionHeightScale: Double = 0.6
     private static let selectedBuildingHeightScale: Double = 1.0
     private static let townhomeOverlayHeightLift: Double = 0.08
     private static let townhomeOverlayPlateThickness: Double = 0.045
@@ -116,8 +119,11 @@ final class MapLayerManager {
     private static let townhomeOverlayMinimumUnitCount = 2
     private static let addressMarkerExtrusionHeight: Double = 5.5
     private static let addressNumberRoofClearance: Double = 1.35
-    private static var manualPinAddressNumberZOffset: Double {
-        manualPinUnscaledHeight * manualPinModelScale + addressNumberRoofClearance
+    static let manualPinRoofClearance: Double = 0.65
+
+    static func manualPinBaseElevation(roofHeight: Double?) -> Double {
+        guard let roofHeight, roofHeight.isFinite, roofHeight > 0 else { return 0 }
+        return max(0, roofHeight + manualPinRoofClearance - manualPinRenderedHeight)
     }
     private static let interactionBuildingExtrusionHeight: Double = 1.25
     private static let interactionAddressExtrusionHeight: Double = 1.0
@@ -151,32 +157,38 @@ final class MapLayerManager {
     }
 
     static var buildingExtrusionHeightExpression: Exp {
-        Exp(.min) {
-            Exp(.max) {
-                Exp(.toNumber) {
-                    Exp(.coalesce) {
-                        Exp(.get) { "render_height" }
-                        Exp(.get) { "height_m" }
-                        Exp(.get) { "height" }
-                        Exp(.get) { "min_height" }
-                        Self.defaultBuildingExtrusionHeight
+        Exp(.product) {
+            Exp(.min) {
+                Exp(.max) {
+                    Exp(.toNumber) {
+                        Exp(.coalesce) {
+                            Exp(.get) { "render_height" }
+                            Exp(.get) { "height_m" }
+                            Exp(.get) { "height" }
+                            Exp(.get) { "min_height" }
+                            Self.defaultBuildingExtrusionHeight
+                        }
                     }
+                    Self.defaultBuildingExtrusionHeight
                 }
-                Self.defaultBuildingExtrusionHeight
+                Self.maximumBuildingExtrusionHeight
             }
-            Self.maximumBuildingExtrusionHeight
+            Self.buildingExtrusionHeightScale
         }
     }
 
     static var buildingExtrusionMinHeightExpression: Exp {
-        Exp(.max) {
-            Exp(.toNumber) {
-                Exp(.coalesce) {
-                    Exp(.get) { "min_height" }
-                    0.0
+        Exp(.product) {
+            Exp(.max) {
+                Exp(.toNumber) {
+                    Exp(.coalesce) {
+                        Exp(.get) { "min_height" }
+                        0.0
+                    }
                 }
+                0.0
             }
-            0.0
+            Self.buildingExtrusionHeightScale
         }
     }
 
@@ -240,6 +252,12 @@ final class MapLayerManager {
         }
     }
 
+    private static var cardEngagedExpression: Exp {
+        Exp(.coalesce) { Exp(.featureState) { "card_engaged" }; Exp(.get) { "card_engaged" }; false }
+    }
+    private static var digitallyEngagedExpression: Exp {
+        Exp(.any) { Self.cardEngagedExpression; Exp(.gt) { Self.scansTotalExpression; 0 } }
+    }
     private static var scansTotalExpression: Exp {
         Exp(.coalesce) {
             Exp(.featureState) { "scans_total" }
@@ -261,6 +279,7 @@ final class MapLayerManager {
 
     private static var isSelectedUnvisitedExpression: Exp {
         return Exp(.all) {
+            Exp(.not) { Self.cardEngagedExpression }
             Self.isSelectedExpression
             Exp(.lte) {
                 Self.scansTotalExpression
@@ -405,7 +424,7 @@ final class MapLayerManager {
         return formatted == "pinned home" || formatted?.hasPrefix("pinned home ") == true
     }
 
-    private static func isManualPinAddressFeature(_ feature: AddressFeature) -> Bool {
+    static func isManualPinAddressFeature(_ feature: AddressFeature) -> Bool {
         if [
             feature.properties.featureType,
             feature.properties.source
@@ -443,10 +462,7 @@ final class MapLayerManager {
             Self.isTeammateOwnedExpression
             MapStatusColor.teammateTouched
 
-            Exp(.gt) {
-                Self.scansTotalExpression
-                0
-            }
+            Self.digitallyEngagedExpression
             MapStatusColor.qrScanned
 
             Exp(.eq) {
@@ -577,10 +593,7 @@ final class MapLayerManager {
             Self.isSelectedHighlightVisibleExpression
             MapStatusColor.selectedHome
 
-            Exp(.gt) {
-                Self.scansTotalExpression
-                0
-            }
+            Self.digitallyEngagedExpression
             MapStatusColor.qrScanned
 
             Exp(.eq) {
@@ -1144,10 +1157,7 @@ final class MapLayerManager {
             Self.isSelectedUnvisitedExpression
             MapStatusColor.selectedHome
 
-            Exp(.gt) {
-                Self.scansTotalExpression
-                0
-            }
+            Self.digitallyEngagedExpression
             MapStatusColor.qrScanned
 
             Exp(.match) {
@@ -1287,6 +1297,9 @@ final class MapLayerManager {
     private var lastAppliedDiamondParcelVisibility: Bool?
     private var diamondTerritoryBoundary: GeoJSONObject?
     private var diamondTerritoryBoundarySignature = "none"
+    private var cachedTownhomeOverlayData: Data?
+    private var cardEngagementRows: [BusinessCardEngagement] = []
+    private var cardBuildingIdentifiersByAddress: [UUID: Set<String>] = [:]
     private var buildingFeatureStateCache: [String: [String: Any]] = [:]
     private var addressFeatureStateCache: [String: [String: Any]] = [:]
     private var townhomeOverlayFeatureIdsByBuildingIdentifier: [String: Set<String>] = [:]
@@ -1355,6 +1368,7 @@ final class MapLayerManager {
     private func resetSourceSignaturesForStyleReload() {
         lastBuildingsSourceSignature = nil
         lastTownhomeOverlaySignature = nil
+        cachedTownhomeOverlayData = nil
 #if DEBUG
         lastTownhomeOverlayRenderedUnitCounts = [:]
 #endif
@@ -1756,14 +1770,7 @@ final class MapLayerManager {
                 Self.isTeammateOwnedExpression
                 MapStatusColor.teammateTouched
 
-                Exp(.gt) {
-                    Exp(.coalesce) {
-                        Exp(.featureState) { "scans_total" }
-                        Exp(.get) { "scans_total" }
-                        0
-                    }
-                    0
-                }
+                Self.digitallyEngagedExpression
                 MapStatusColor.qrScanned
                 // Blue: conversation / talked (normalized "hot" or raw)
                 Exp(.eq) {
@@ -2038,7 +2045,12 @@ final class MapLayerManager {
             layer.modelType = .constant(.common3d)
             layer.modelScale = .constant([Self.manualPinModelScale, Self.manualPinModelScale, Self.manualPinModelScale])
             layer.modelRotation = .constant([0.0, 0.0, 0.0])
-            layer.modelTranslation = .constant([0.0, 0.0, 0.0])
+            layer.modelTranslation = .expression(
+                Exp(.coalesce) {
+                    Exp(.get) { "manual_pin_translation" }
+                    Exp(.literal) { [0.0, 0.0, 0.0] }
+                }
+            )
             layer.modelEmissiveStrength = .constant(0.22)
             layer.modelOpacity = .constant(1.0)
             layer.modelCastShadows = .constant(false)
@@ -2101,7 +2113,13 @@ final class MapLayerManager {
         layer.textHaloBlur = .constant(0.4)
         layer.textAnchor = .constant(.center)
         layer.textJustify = .constant(.center)
-        layer.textOffset = .constant([0, -0.35])
+        layer.textOffset = .expression(
+            Exp(.switchCase) {
+                Self.manualPinMarkerExpression
+                Exp(.literal) { [0.0, 0.0] }
+                Exp(.literal) { [0.0, -0.35] }
+            }
+        )
         layer.textPitchAlignment = .constant(.viewport)
         layer.textRotationAlignment = .constant(.viewport)
         layer.textVariableAnchor = .constant([.center])
@@ -2118,8 +2136,14 @@ final class MapLayerManager {
         layer.symbolZElevate = .constant(true)
         layer.symbolElevationReference = .constant(.ground)
         layer.symbolZOffset = .expression(
-            Exp(.coalesce) {
-                Exp(.get) { "label_z_offset" }
+            Exp(.switchCase) {
+                Self.manualPinMarkerExpression
+                Exp(.coalesce) {
+                    Exp(.get) { "label_z_offset" }
+                    Self.addressNumberRoofClearance
+                }
+                // symbolZElevate already supplies the rendered rooftop height.
+                // Add only clearance, matching Android, rather than counting the roof twice.
                 Self.addressNumberRoofClearance
             }
         )
@@ -2783,9 +2807,19 @@ final class MapLayerManager {
         orderedAddressIdsByBuilding: [String: [UUID]],
         addressStatuses: [UUID: AddressStatus],
         addressStatusRows: [UUID: AddressStatusRow] = [:],
-        currentUserId: UUID? = nil
+        currentUserId: UUID? = nil,
+        workspaceCoveredAddressIds: Set<UUID> = []
     ) {
         guard let mapView = mapView else { return }
+
+        let cardLinks = Self.cardEngagementBuildingLinks(
+            buildings: buildings, addresses: addresses,
+            orderedAddressIdsByBuilding: orderedAddressIdsByBuilding
+        )
+        if cardLinks != cardBuildingIdentifiersByAddress {
+            cardBuildingIdentifiersByAddress = cardLinks
+            updateCardEngagement(cardEngagementRows)
+        }
 
         let data = Self.buildTownhomeStatusOverlayGeoJSON(
             buildings: buildings,
@@ -2793,7 +2827,8 @@ final class MapLayerManager {
             orderedAddressIdsByBuilding: orderedAddressIdsByBuilding,
             addressStatuses: addressStatuses,
             addressStatusRows: addressStatusRows,
-            currentUserId: currentUserId
+            currentUserId: currentUserId,
+            workspaceCoveredAddressIds: workspaceCoveredAddressIds
         ) ?? Self.encodedEmptyTownhomeOverlay()
 #if DEBUG
         logTownhomeOverlayUnitChanges(
@@ -2802,6 +2837,31 @@ final class MapLayerManager {
             orderedAddressIdsByBuilding: orderedAddressIdsByBuilding
         )
 #endif
+        installTownhomeOverlay(data, on: mapView)
+    }
+
+    /// Returns false before geometry is available so the caller can rebuild.
+    /// Does not resolve visible geometry or building/address links on a status tap.
+    func updateCachedTownhomeStatuses(
+        addressStatuses: [UUID: AddressStatus],
+        addressStatusRows: [UUID: AddressStatusRow],
+        currentUserId: UUID?,
+        workspaceCoveredAddressIds: Set<UUID>
+    ) -> Bool {
+        guard let mapView, let cachedTownhomeOverlayData,
+              let data = Self.updatingTownhomeOverlayStatuses(
+                in: cachedTownhomeOverlayData,
+                addressStatuses: addressStatuses,
+                addressStatusRows: addressStatusRows,
+                currentUserId: currentUserId,
+                workspaceCoveredAddressIds: workspaceCoveredAddressIds
+              ) else { return false }
+        installTownhomeOverlay(data, on: mapView)
+        return true
+    }
+
+    private func installTownhomeOverlay(_ data: Data, on mapView: MapView) {
+        cachedTownhomeOverlayData = data
         let signature = Self.sourceSignature(for: data)
         guard lastTownhomeOverlaySignature != signature else { return }
 
@@ -2816,9 +2876,41 @@ final class MapLayerManager {
                 .count ?? 0
             print("✅ [MapLayer] Updated townhouse overlay source (\(overlayCount) features)")
             replayTownhomeOverlaySelectionStates(reason: "townhome_overlay_update")
+            replayCachedAddressFeatureStates(reason: "townhome_card_engagement_update")
         } catch {
             print("❌ [MapLayer] Error updating townhouse overlay: \(error)")
         }
+    }
+
+    /// Changes only state properties. Geometry, dividers, IDs and ordering are
+    /// retained exactly; a full geometry refresh replaces this snapshot.
+    static func updatingTownhomeOverlayStatuses(
+        in data: Data,
+        addressStatuses: [UUID: AddressStatus],
+        addressStatusRows: [UUID: AddressStatusRow] = [:],
+        currentUserId: UUID? = nil,
+        workspaceCoveredAddressIds: Set<UUID> = []
+    ) -> Data? {
+        guard var collection = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              var features = collection["features"] as? [[String: Any]] else { return nil }
+        var changed = false
+        for index in features.indices {
+            guard var properties = features[index]["properties"] as? [String: Any],
+                  let rawId = properties["address_id"] as? String,
+                  let addressId = UUID(uuidString: rawId) else { continue }
+            let covered = workspaceCoveredAddressIds.contains(addressId)
+            let status = covered ? "visited" : overlaySegmentStatus(for: addressStatuses[addressId])
+            let owner = covered ? "teammate" : overlayVisitOwner(for: addressStatusRows[addressId], currentUserId: currentUserId)
+            guard properties["segment_status"] as? String != status ||
+                  properties["visit_owner"] as? String != owner else { continue }
+            properties["segment_status"] = status
+            properties["visit_owner"] = owner
+            features[index]["properties"] = properties
+            changed = true
+        }
+        guard changed else { return data }
+        collection["features"] = features
+        return try? stableJSONData(withJSONObject: collection)
     }
 
     static func townhomeOverlayBuildingIdentifiers(from data: Data) -> Set<String> {
@@ -2943,7 +3035,8 @@ final class MapLayerManager {
         orderedAddressIdsByBuilding: [String: [UUID]],
         addressStatuses: [UUID: AddressStatus],
         addressStatusRows: [UUID: AddressStatusRow] = [:],
-        currentUserId: UUID? = nil
+        currentUserId: UUID? = nil,
+        workspaceCoveredAddressIds: Set<UUID> = []
     ) -> Data? {
         let addressContextsById = overlayAddressContextsById(addresses)
 
@@ -2971,8 +3064,14 @@ final class MapLayerManager {
             let height = max(
                 building.properties.heightM ?? building.properties.height,
                 Self.defaultBuildingExtrusionHeight
+            ) * Self.buildingExtrusionHeightScale
+            let base = max(
+                0,
+                min(
+                    building.properties.minHeight * Self.buildingExtrusionHeightScale,
+                    height - 0.01
+                )
             )
-            let base = max(0, min(building.properties.minHeight, height - 0.01))
             let roofOverlayBase = height + Self.townhomeOverlayHeightLift
             let overlayHeight = roofOverlayBase + Self.townhomeOverlayPlateThickness
             let dividerHeight = overlayHeight + Self.townhomeDividerLineLift
@@ -3003,8 +3102,8 @@ final class MapLayerManager {
                     "address_id": address.id.uuidString.lowercased(),
                     "unit_index": index,
                     "unit_count": linkedAddresses.count,
-                    "segment_status": overlaySegmentStatus(for: addressStatuses[address.id]),
-                    "visit_owner": overlayVisitOwner(for: addressStatusRows[address.id], currentUserId: currentUserId),
+                    "segment_status": workspaceCoveredAddressIds.contains(address.id) ? "visited" : overlaySegmentStatus(for: addressStatuses[address.id]),
+                    "visit_owner": workspaceCoveredAddressIds.contains(address.id) ? "teammate" : overlayVisitOwner(for: addressStatusRows[address.id], currentUserId: currentUserId),
                     "height": height,
                     "height_m": height,
                     "min_height": base,
@@ -3660,7 +3759,10 @@ final class MapLayerManager {
             buildingByAddressId: buildingByAddressId,
             requireHouseNumberLabel: true,
             requireCurrentBuildingLink: true,
-            keepSingleAddressCoordinate: true
+            // Canonical address points commonly describe a road/driveway entrance. Once the
+            // backend has linked an address to a footprint, render the label on that footprint
+            // so a valid parcel link cannot leave the visible marker bunched in the road.
+            keepSingleAddressCoordinate: false
         )
 
         let existingAddressFeatureIds = Set(addressPointFeatures.compactMap { feature -> String? in
@@ -3707,7 +3809,7 @@ final class MapLayerManager {
         )
     }
 
-    private static func smartAddressMarkerPointCollection(
+    static func smartAddressMarkerPointCollection(
         addresses: [AddressFeature],
         buildings: [BuildingFeature],
         orderedAddressIdsByBuilding: [String: [UUID]]
@@ -3736,7 +3838,9 @@ final class MapLayerManager {
             buildingByAddressId: buildingByAddressId,
             requireHouseNumberLabel: false,
             requireCurrentBuildingLink: false,
-            keepSingleAddressCoordinate: true
+            // Use the same linked-footprint placement as the number label. Keeping the raw
+            // source coordinate here made the marker and its building disagree visually.
+            keepSingleAddressCoordinate: false
         )
 
         return try stableJSONData(withJSONObject: [
@@ -3826,15 +3930,29 @@ final class MapLayerManager {
             }()
             let effectiveLabelMode = backendLabelMode
                 ?? (linkedBuilding != nil ? "all_modes" : (requireHouseNumberLabel ? "address_mode_only" : "hidden"))
-            let backendAllowsLabel = effectiveLabelMode == "all_modes" || effectiveLabelMode == "address_mode_only"
+            let backendAllowsLabel = isManualPin || effectiveLabelMode == "all_modes" || effectiveLabelMode == "address_mode_only"
             guard !requireHouseNumberLabel || backendAllowsLabel else { return nil }
-            guard !requireCurrentBuildingLink || linkedBuilding != nil else { return nil }
+            guard !requireCurrentBuildingLink || linkedBuilding != nil || isManualPin else { return nil }
 
             let resolvedCoordinate: CLLocationCoordinate2D
             var labelPriority: Double
             var labelZOffset = Self.addressMarkerExtrusionHeight + Self.addressNumberRoofClearance
 
-            if let linkedBuilding {
+            let usesCanonicalPlacement = ["parcel_center", "building_centroid", "building_parcel_centroid"]
+                .contains(feature.properties.pinPlacement ?? "")
+            if isManualPin {
+                // A dropped pin owns its anchor; its number must stay on its cap.
+                resolvedCoordinate = baseCoordinate
+                labelPriority = 98
+            } else if usesCanonicalPlacement {
+                // Server placement includes townhouse/parcel intersections. A
+                // whole-building center would collapse neighboring unit pins.
+                resolvedCoordinate = baseCoordinate
+                labelPriority = feature.properties.labelPriority ?? 90
+                if let linkedBuilding {
+                    labelZOffset = linkedBuilding.height + Self.addressNumberRoofClearance
+                }
+            } else if let linkedBuilding {
                 let totalAddresses = linkedAddressCount(for: linkedBuilding)
                 let addressIndex = addressUUID.flatMap { uuid in
                     linkedBuilding.orderedAddressIds.firstIndex(of: uuid)
@@ -3866,12 +3984,21 @@ final class MapLayerManager {
                 resolvedCoordinate = baseCoordinate
                 labelPriority = feature.properties.labelPriority ?? 90
             }
+            var pinBaseElevation = 0.0
             if isManualPin {
+                // Roof clearance is geometric, not CRM ownership/linkage. A manually
+                // dropped pin must also clear overlapping roofs with other address IDs.
+                let roofHeight = buildingContexts.filter { context in
+                    context.polygons.contains { ring in
+                        Self.manualPinCapOverlapsRoof(coordinate: baseCoordinate, ring: ring)
+                    }
+                }.map { min($0.height, Self.maximumBuildingExtrusionHeight * Self.buildingExtrusionHeightScale) }.max()
+                pinBaseElevation = Self.manualPinBaseElevation(roofHeight: roofHeight)
                 labelPriority = max(labelPriority, 98)
-                labelZOffset = Self.manualPinAddressNumberZOffset
+                labelZOffset = pinBaseElevation + Self.manualPinRenderedHeight + 0.04
             }
 
-            let usesBuildingPlacement = linkedBuilding != nil && !keepSingleAddressCoordinate
+            let usesBuildingPlacement = linkedBuilding != nil && !keepSingleAddressCoordinate && !isManualPin
             var labelProperties: [String: Any] = [
                 "id": addressIdString,
                 "address_id": addressIdString,
@@ -3883,6 +4010,9 @@ final class MapLayerManager {
                 "has_building_link": linkedBuilding != nil,
                 "has_parcel_link": feature.properties.hasParcelLink ?? false
             ]
+            if isManualPin {
+                labelProperties["manual_pin_translation"] = [0.0, 0.0, pinBaseElevation]
+            }
             if let linkedBuilding {
                 labelProperties["linked_building_identifiers"] = linkedBuilding.identifiers
                 if labelProperties["building_gers_id"] == nil,
@@ -3980,7 +4110,7 @@ final class MapLayerManager {
                 labelZOffset = max(
                     properties.heightM ?? properties.height,
                     Self.defaultBuildingExtrusionHeight
-                ) + Self.addressNumberRoofClearance
+                ) * Self.buildingExtrusionHeightScale + Self.addressNumberRoofClearance
             } else {
                 return nil
             }
@@ -4162,7 +4292,7 @@ final class MapLayerManager {
                 height: max(
                     building.properties.heightM ?? building.properties.height,
                     Self.defaultBuildingExtrusionHeight
-                ),
+                ) * Self.buildingExtrusionHeightScale,
                 usesExplicitAddressIds: explicitAddressIds != nil
             )
         }
@@ -4212,6 +4342,28 @@ final class MapLayerManager {
             return building.centroid
         }
         return coordinate
+    }
+
+    /// Include roof edges under the wider cap, not just the pin's centre point.
+    private static func manualPinCapOverlapsRoof(coordinate: CLLocationCoordinate2D, ring: [[Double]]) -> Bool {
+        if pointInPolygon(longitude: coordinate.longitude, latitude: coordinate.latitude, ring: ring) { return true }
+        guard ring.count >= 3 else { return false }
+        let capRadius = 1.62 * 3.0 * Self.manualPinModelScale
+        let metersPerLatitudeDegree = 111_320.0
+        let metersPerLongitudeDegree = metersPerLatitudeDegree * cos(coordinate.latitude * .pi / 180)
+        for index in ring.indices {
+            let a = ring[index], b = ring[(index + 1) % ring.count]
+            guard a.count >= 2, b.count >= 2 else { continue }
+            let ax = (a[0] - coordinate.longitude) * metersPerLongitudeDegree
+            let ay = (a[1] - coordinate.latitude) * metersPerLatitudeDegree
+            let bx = (b[0] - coordinate.longitude) * metersPerLongitudeDegree
+            let by = (b[1] - coordinate.latitude) * metersPerLatitudeDegree
+            let dx = bx - ax, dy = by - ay
+            let lengthSquared = dx * dx + dy * dy
+            let t = lengthSquared > 0 ? min(1, max(0, -(ax * dx + ay * dy) / lengthSquared)) : 0
+            if hypot(ax + t * dx, ay + t * dy) <= capRadius { return true }
+        }
+        return false
     }
 
     private static func buildingContext(
@@ -4341,7 +4493,7 @@ final class MapLayerManager {
     }
     
     /// Convert GeoJSON FeatureCollection of Point features to Polygon features (circle rings) for fill extrusion
-    private static func convertAddressPointsToCirclePolygons(_ pointGeoJSONData: Data, radiusMeters: Double = 2.7, height: Double = 10.8, segments: Int = 20) throws -> Data {
+    static func convertAddressPointsToCirclePolygons(_ pointGeoJSONData: Data, radiusMeters: Double = 2.7, height: Double = 10.8, segments: Int = 20) throws -> Data {
         guard let json = try JSONSerialization.jsonObject(with: pointGeoJSONData) as? [String: Any],
               let features = json["features"] as? [[String: Any]] else {
             print("🔍 [MapLayer] convertAddressPointsToCirclePolygons: no features array in GeoJSON")
@@ -4518,6 +4670,41 @@ final class MapLayerManager {
     
     /// Update a building's feature state for instant color change (no re-render).
     /// Uses lowercase featureId so it matches promoteId values in the source (buildings use lowercase gers_id).
+    static func cardEngagementBuildingLinks(
+        buildings: [BuildingFeature], addresses: [AddressFeature],
+        orderedAddressIdsByBuilding: [String: [UUID]]
+    ) -> [UUID: Set<String>] {
+        var links: [UUID: Set<String>] = [:]
+        for building in labelBuildingContexts(buildings: buildings, addresses: addresses,
+                                              orderedAddressIdsByBuilding: orderedAddressIdsByBuilding) {
+            for address in building.orderedAddressIds {
+                links[address, default: []].formUnion(building.identifiers)
+            }
+        }
+        return links
+    }
+
+    func updateCardEngagement(_ rows: [BusinessCardEngagement]) {
+        cardEngagementRows = rows
+        var buildings = Set(rows.compactMap { $0.building_id?.lowercased() })
+        for row in rows {
+            buildings.formUnion(cardBuildingIdentifiersByAddress[row.address_id] ?? [])
+        }
+        let addresses = Set(rows.map { $0.address_id.uuidString.lowercased() })
+        for id in Set(buildingFeatureStateCache.keys).union(buildings) {
+            var state = buildingFeatureStateCache[id] ?? [:]
+            state["card_engaged"] = buildings.contains(id)
+            buildingFeatureStateCache[id] = state
+            if let mapView { applyBuildingFeatureState(featureId: id, state: state, mapView: mapView, logSuccess: false) }
+        }
+        for id in Set(addressFeatureStateCache.keys).union(addresses) {
+            var state = addressFeatureStateCache[id] ?? [:]
+            state["card_engaged"] = addresses.contains(id)
+            addressFeatureStateCache[id] = state
+            if let mapView { applyAddressFeatureState(featureId: id, state: state, mapView: mapView, logSuccess: false) }
+        }
+    }
+
     func updateBuildingState(gersId: String, status: String, scansTotal: Int, visitOwner: String? = nil, isLinked: Bool? = nil) {
         let featureId = gersId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !featureId.isEmpty else { return }
@@ -4576,6 +4763,7 @@ final class MapLayerManager {
         guard !normalizedId.isEmpty else { return }
 
         let state: [String: Any] = [
+            "card_engaged": addressFeatureStateCache[normalizedId]?["card_engaged"] as? Bool ?? false,
             "status": status,
             "scans_total": scansTotal,
             "qr_scanned": scansTotal > 0,
@@ -4666,6 +4854,13 @@ final class MapLayerManager {
                     print("❌ [MapLayer] Error updating address feature state: \(error)")
                 }
             }
+        }
+
+        if mapView.mapboxMap.sourceExists(withId: Self.townhomeOverlaySourceId),
+           let engaged = state["card_engaged"] as? Bool {
+            mapView.mapboxMap.setFeatureState(sourceId: Self.townhomeOverlaySourceId,
+                sourceLayerId: nil, featureId: normalizedId,
+                state: ["card_engaged": engaged], callback: { _ in })
         }
 
         if mapView.mapboxMap.sourceExists(withId: Self.parcelsSourceId) {
@@ -5938,58 +6133,79 @@ final class MapLayerManager {
         return insetRing
     }
 
-    private static func centroidCoordinate(for polygons: [[[Double]]]) -> CLLocationCoordinate2D? {
+    /// Compute in local coordinates to avoid catastrophic cancellation on small roofs.
+    /// Rings are exterior components (not holes), matching the townhome slice contract.
+    static func centroidCoordinate(for polygons: [[[Double]]]) -> CLLocationCoordinate2D? {
+        let rings = polygons.compactMap { polygon -> [[Double]]? in
+            let ring = polygon.first == polygon.last ? Array(polygon.dropLast()) : polygon
+            guard ring.count >= 3,
+                  ring.allSatisfy({ $0.count >= 2 && $0[0].isFinite && $0[1].isFinite }) else { return nil }
+            return ring
+        }
+        guard let origin = rings.first?.first else { return nil }
         var weightedLongitude = 0.0
         var weightedLatitude = 0.0
         var totalWeight = 0.0
-        var fallbackPoints: [[Double]] = []
 
-        for polygon in polygons {
-            let openRing = polygon.first == polygon.last ? Array(polygon.dropLast()) : polygon
-            guard openRing.count >= 3 else { continue }
-
-            fallbackPoints.append(contentsOf: openRing)
-
-            var signedDoubleArea = 0.0
-            var centroidLongitudeTimesSixArea = 0.0
-            var centroidLatitudeTimesSixArea = 0.0
-
-            for index in openRing.indices {
-                let current = openRing[index]
-                let next = openRing[(index + 1) % openRing.count]
-                guard current.count >= 2, next.count >= 2 else { continue }
-
-                let cross = (current[0] * next[1]) - (next[0] * current[1])
-                signedDoubleArea += cross
-                centroidLongitudeTimesSixArea += (current[0] + next[0]) * cross
-                centroidLatitudeTimesSixArea += (current[1] + next[1]) * cross
+        for ring in rings {
+            var doubleArea = 0.0
+            var longitudeMoment = 0.0
+            var latitudeMoment = 0.0
+            for index in ring.indices {
+                let current = ring[index]
+                let next = ring[(index + 1) % ring.count]
+                let x = current[0] - origin[0]
+                let y = current[1] - origin[1]
+                let nextX = next[0] - origin[0]
+                let nextY = next[1] - origin[1]
+                let cross = x * nextY - nextX * y
+                doubleArea += cross
+                longitudeMoment += (x + nextX) * cross
+                latitudeMoment += (y + nextY) * cross
             }
-
-            let signedArea = signedDoubleArea / 2.0
-            guard abs(signedArea) > 0.000000001 else { continue }
-
-            let centroidLongitude = centroidLongitudeTimesSixArea / (6.0 * signedArea)
-            let centroidLatitude = centroidLatitudeTimesSixArea / (6.0 * signedArea)
-            let weight = abs(signedArea)
-
-            guard centroidLongitude.isFinite, centroidLatitude.isFinite else { continue }
-            weightedLongitude += centroidLongitude * weight
-            weightedLatitude += centroidLatitude * weight
+            guard abs(doubleArea) > 1e-18 else { continue }
+            let weight = abs(doubleArea)
+            weightedLongitude += longitudeMoment / (3 * doubleArea) * weight
+            weightedLatitude += latitudeMoment / (3 * doubleArea) * weight
             totalWeight += weight
         }
 
         if totalWeight > 0 {
-            return CLLocationCoordinate2D(
-                latitude: weightedLatitude / totalWeight,
-                longitude: weightedLongitude / totalWeight
-            )
+            let longitude = origin[0] + weightedLongitude / totalWeight
+            let latitude = origin[1] + weightedLatitude / totalWeight
+            if rings.contains(where: { pointInPolygon(longitude: longitude, latitude: latitude, ring: $0) }) {
+                return CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+            }
         }
 
-        guard !fallbackPoints.isEmpty else { return nil }
-        let averageLongitude = fallbackPoints.map { $0[0] }.reduce(0, +) / Double(fallbackPoints.count)
-        let averageLatitude = fallbackPoints.map { $0[1] }.reduce(0, +) / Double(fallbackPoints.count)
-        guard averageLongitude.isFinite, averageLatitude.isFinite else { return nil }
-        return CLLocationCoordinate2D(latitude: averageLatitude, longitude: averageLongitude)
+        // Concave or disconnected roofs can have an exterior centroid. Choose the
+        // midpoint of the widest interior scanline interval, never an arbitrary vertex.
+        var bestCoordinate: CLLocationCoordinate2D?
+        var bestWidth = 0.0
+        for ring in rings {
+            let latitudes = Array(Set(ring.map { $0[1] })).sorted()
+            for (lower, upper) in zip(latitudes, latitudes.dropFirst()) {
+                let latitude = lower + (upper - lower) / 2
+                var intersections: [Double] = []
+                for index in ring.indices {
+                    let current = ring[index]
+                    let next = ring[(index + 1) % ring.count]
+                    guard (current[1] > latitude) != (next[1] > latitude) else { continue }
+                    intersections.append(current[0] + (latitude - current[1])
+                        * (next[0] - current[0]) / (next[1] - current[1]))
+                }
+                intersections.sort()
+                for index in stride(from: 0, to: intersections.count - 1, by: 2) {
+                    let width = intersections[index + 1] - intersections[index]
+                    let longitude = intersections[index] + width / 2
+                    guard width > bestWidth,
+                          pointInPolygon(longitude: longitude, latitude: latitude, ring: ring) else { continue }
+                    bestWidth = width
+                    bestCoordinate = CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+                }
+            }
+        }
+        return bestCoordinate
     }
 
     private static func projectedCenter(for polygons: [[[Double]]]) -> (lon: Double, lat: Double) {

@@ -1,0 +1,35 @@
+import assert from 'node:assert/strict';
+import {createSalesFixture} from './field_sales_fixture.mjs';
+const {db,id}=await createSalesFixture();
+const actor=async n=>db.exec(`SET ROLE authenticated; SELECT set_config('request.jwt.claim.sub','${id(n)}',false)`);
+const command=async(action,data,w=id(10))=>(await db.query('SELECT field_sales_pipeline_command($1,$2,$3) d',[w,action,data])).rows[0].d;
+const load=async(w=id(10))=>(await db.query('SELECT field_sales_workbench($1) d',[w])).rows[0].d;
+await actor(2);assert.equal((await load()).enabled,false);await assert.rejects(load(id(11)));
+await db.exec(`RESET ROLE;INSERT INTO field_sales_settings(workspace_id,enabled,currency,timezone) VALUES('${id(10)}',true,'CAD','America/Toronto')`);
+await actor(2);assert.equal((await load()).stages.length,6);
+await assert.rejects(command('stage',{key:'test',label:'Bad',position:1,probability:50,kind:'open'}));
+await assert.rejects(command('opportunity',{contact_id:id(31),stage_key:'new'}));
+await assert.rejects(command('opportunity',{contact_id:id(33),stage_key:'new'}));
+let o=await command('opportunity',{contact_id:id(30),stage_key:'qualified',expected_value_minor:'9000000000000000'});
+assert.equal(o.version,1);await assert.rejects(command('opportunity',{contact_id:id(30),stage_key:'won',version:0}));
+await command('opportunity',{contact_id:id(30),stage_key:'won',version:1,expected_value_minor:'6200001'});
+let w=await load();assert.equal(w.opportunities[0].expected_value_minor,'6200001');assert.equal(w.summary.find(s=>s.key==='won').value_minor,undefined);
+assert.equal((await db.query('select field_sales_dashboard($1) d',[id(10)])).rows[0].d.totals.sales,0);
+const t={id:id(200),contact_id:id(30),kind:'call',title:'Discuss quote',due_at:new Date().toISOString()};
+await command('task',t);await command('task',t);assert.equal((await load()).tasks.length,1);
+await command('task_status',{id:t.id,status:'done',version:1});await command('task_status',{id:t.id,status:'done',version:1});
+assert.equal((await load()).tasks[0].version,2);
+await assert.rejects(command('task_status',{id:t.id,status:'pending',version:1}));
+await actor(1);w=await load();assert.equal(w.opportunities.length,0);assert.equal(w.tasks.length,0);assert.equal(w.summary.find(s=>s.key==='won').value_minor,'6200001');
+assert.equal(JSON.stringify(w.summary).includes('Private customer'),false);
+await assert.rejects(command('task_status',{id:t.id,status:'cancelled',version:2}));
+await command('stage',{key:'negotiation',label:'Negotiation',position:4,probability:80,kind:'open'});
+await assert.rejects(command('stage',{key:'bad',label:'Bad',position:4,probability:101,kind:'open'}));
+await actor(2);await command('task_status',{id:t.id,status:'cancelled',version:2});assert.equal((await load()).tasks.length,0);
+await assert.rejects(db.query('select * from field_sales_tasks'));await assert.rejects(db.query('select * from field_sales_opportunities'));
+await db.exec(`RESET ROLE;
+WITH added AS (INSERT INTO contacts(id,workspace_id,user_id,full_name) SELECT gen_random_uuid(),'${id(10)}','${id(2)}','Aggregate fixture' FROM generate_series(1,2050) RETURNING id)
+INSERT INTO field_sales_opportunities(workspace_id,contact_id,user_id,stage_key,expected_value_minor)
+SELECT '${id(10)}',id,'${id(2)}','won',9000000000000000 FROM added;`);
+await actor(1);const total=(await load()).summary.find(s=>s.key==='won');assert.equal(total.weighted_minor,(2050n*9000000000000000n+6200001n).toString());
+await db.close();console.log('PASS: pipeline privacy, custom stages, exact values, zero financial credit, task retries and stale writes');

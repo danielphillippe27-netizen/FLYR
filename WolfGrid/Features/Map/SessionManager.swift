@@ -311,6 +311,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
     var autoCompleteMaxSpeedMPS: Double = 2.5
     var autoCompleteRequiredAccuracyMeters: Double = 25.0
     private var dwellTracker: [String: DwellState] = [:]
+    private var autoCompleteDwellTask: Task<Void, Never>?
     private var lastAutoCompleteTime: Date?
     private let autoCompleteDebounceSeconds: Double = 3.0
 
@@ -1226,6 +1227,17 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         parcelAutoCompleteTargets = targets
     }
 
+    /// Restored sessions retain target IDs but reload coordinates from campaign data.
+    func configureAutoCompleteCoordinates(_ coordinates: [String: CLLocationCoordinate2D]) {
+        let changed = SessionAutoCompleteCoordinatePolicy.merge(
+            targetIDs: targetBuildings, incoming: coordinates, into: &buildingCentroids)
+        // A stationary phone may not emit a new fix after the map finishes loading.
+        if changed, let location = currentLocation, autoCompleteEnabled, sessionMode == .doorKnocking,
+           abs(location.timestamp.timeIntervalSinceNow) <= 15 {
+            Task { @MainActor [weak self] in await self?.checkAutoComplete(location: location) }
+        }
+    }
+
     private func setResolvedAddressIds(_ addressIds: [UUID], for targetId: String) {
         let uniqueAddressIds = Array(Set(addressIds))
         targetAddressIdsByTargetId[normalizeVisitKey(targetId)] = uniqueAddressIds
@@ -1336,7 +1348,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         sessionEndError = nil
         isDemoSession = true
         buildingCentroids = centroids.mapValues { CLLocation(latitude: $0.latitude, longitude: $0.longitude) }
-        dwellTracker = [:]
+        resetAutoCompleteDwell()
         lastAutoCompleteTime = nil
         startTime = Date()
         pathCoordinates = []
@@ -1461,7 +1473,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         sessionEndError = nil
         isDemoSession = false
         buildingCentroids = [:]
-        dwellTracker = [:]
+        resetAutoCompleteDwell()
         lastAutoCompleteTime = nil
         startTime = sessionStartedAt
         pathCoordinates = []
@@ -1630,7 +1642,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         sessionEndError = nil
         isDemoSession = false
         buildingCentroids = centroids.mapValues { CLLocation(latitude: $0.latitude, longitude: $0.longitude) }
-        dwellTracker = [:]
+        resetAutoCompleteDwell()
         lastAutoCompleteTime = nil
         startTime = sessionStartedAt
         pathCoordinates = []
@@ -1908,13 +1920,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
     /// The active session flow now uses raw GPS only, so we only need refreshed centroids here.
     func rehydrateVisitInferenceFromMapTargets(_ targets: [ResolvedCampaignTarget]) {
         guard sessionId != nil, sessionMode == .doorKnocking, !targetBuildings.isEmpty else { return }
-        var didAssign = false
-        for gers in targetBuildings {
-            guard let match = targets.first(where: { $0.id.lowercased() == gers.lowercased() }) else { continue }
-            buildingCentroids[gers] = CLLocation(latitude: match.coordinate.latitude, longitude: match.coordinate.longitude)
-            didAssign = true
-        }
-        guard didAssign else { return }
+        configureAutoCompleteCoordinates(targets.reduce(into: [:]) { $0[$1.id] = $1.coordinate })
     }
 
     @discardableResult
@@ -2680,6 +2686,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         activeSecondsAccumulator = currentActiveElapsedTime()
         activeSegmentStartTime = nil
         isPaused = true
+        resetAutoCompleteDwell()
         pauseStartTime = Date()
         elapsedTime = activeSecondsAccumulator
         locationManager.stopUpdatingLocation()
@@ -2740,7 +2747,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
     func setGPSProximityEnabled(_ enabled: Bool) async {
         guard autoCompleteEnabled != enabled else { return }
         autoCompleteEnabled = enabled
-        dwellTracker = [:]
+        resetAutoCompleteDwell()
         lastAutoCompleteTime = nil
 
         guard !isDemoSession, let sid = sessionId else { return }
@@ -2772,6 +2779,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         }
 
         locationManager.stopUpdatingLocation()
+        resetAutoCompleteDwell()
         headingManager.stop(reset: true)
         timer?.invalidate()
         timer = nil
@@ -3074,13 +3082,13 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         }
         guard location.horizontalAccuracy >= 0,
               location.horizontalAccuracy <= autoCompleteRequiredAccuracyMeters else {
-            dwellTracker = [:]
+            resetAutoCompleteDwell()
             return
         }
         // Invalid speed (< 0) is common when stationary; treat as slow so dwell can complete.
         let speedMPS = location.speed >= 0 ? location.speed : 0
         guard speedMPS < autoCompleteMaxSpeedMPS else {
-            dwellTracker = [:]
+            resetAutoCompleteDwell()
             return
         }
 
@@ -3095,13 +3103,13 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         }
 
         guard let nearest = findNearestIncompleteBuilding(from: location) else {
-            dwellTracker = [:]
+            resetAutoCompleteDwell()
             return
         }
         let distance = location.distance(from: nearest.centroid)
         let thresholdMeters = adaptiveAutoCompleteThresholdMeters(for: location)
         guard distance <= thresholdMeters else {
-            dwellTracker = [:]
+            resetAutoCompleteDwell()
             return
         }
         await processAutoCompleteDwell(
@@ -3136,13 +3144,13 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         let now = Date()
         if let activeDwell = dwellTracker.values.first,
            activeDwell.buildingId != targetId {
-            dwellTracker = [:]
+            resetAutoCompleteDwell()
         }
         if let dwellState = dwellTracker[targetId] {
             let dwellTime = now.timeIntervalSince(dwellState.enteredAt)
             if dwellTime >= autoCompleteDwellSeconds {
                 lastAutoCompleteTime = now
-                dwellTracker = [:]
+                resetAutoCompleteDwell()
                 dwellCompletionCount += 1
                 await queueCandidateCompletion(
                     targetId: targetId,
@@ -3159,7 +3167,29 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
                     location: location
                 )
             ]
+            scheduleAutoCompleteDwellCheck(targetId: targetId, fallbackLocation: location)
         }
+    }
+
+    /// Core Location may not emit another sample while the user is standing still at a door
+    /// because `distanceFilter` is non-zero. Recheck at the dwell deadline so a stationary
+    /// visit can complete without requiring GPS drift or artificial movement.
+    private func scheduleAutoCompleteDwellCheck(targetId: String, fallbackLocation: CLLocation) {
+        autoCompleteDwellTask?.cancel()
+        let delay = max(autoCompleteDwellSeconds, 0)
+        autoCompleteDwellTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled,
+                  let self,
+                  self.dwellTracker[targetId] != nil else { return }
+            await self.checkAutoComplete(location: self.currentLocation ?? fallbackLocation)
+        }
+    }
+
+    private func resetAutoCompleteDwell() {
+        autoCompleteDwellTask?.cancel()
+        autoCompleteDwellTask = nil
+        dwellTracker = [:]
     }
 
     private func adaptiveAutoCompleteThresholdMeters(for location: CLLocation) -> Double {
@@ -3176,7 +3206,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         var best: (String, CLLocation)?
         var bestDistance: Double = .infinity
         for gersId in incomplete {
-            guard let centroid = buildingCentroids[gersId] else { continue }
+            guard let centroid = buildingCentroids[normalizeVisitKey(gersId)] ?? buildingCentroids[gersId] else { continue }
             let d = location.distance(from: centroid)
             if d < bestDistance {
                 bestDistance = d
@@ -3268,12 +3298,12 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
             Task { @MainActor in
                 currentLocation = location
                 refreshHeadingPresentation(using: location)
-                await safetyBeaconService.recordHeartbeat(location: location, isPaused: isPaused)
-                await publishTeamLivePresence(location: location, isPaused: isPaused)
-                await sharedLiveCanvassingService.publishPresence(location: location, isPaused: isPaused)
                 if autoCompleteEnabled, sessionMode == .doorKnocking {
                     await checkAutoComplete(location: location)
                 }
+                await safetyBeaconService.recordHeartbeat(location: location, isPaused: isPaused)
+                await publishTeamLivePresence(location: location, isPaused: isPaused)
+                await sharedLiveCanvassingService.publishPresence(location: location, isPaused: isPaused)
             }
             return
         }
@@ -3293,6 +3323,9 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         Task { @MainActor in
             currentLocation = location
             refreshHeadingPresentation(using: location)
+            if autoCompleteEnabled, sessionMode == .doorKnocking {
+                await checkAutoComplete(location: location)
+            }
             await safetyBeaconService.recordHeartbeat(location: location, isPaused: isPaused)
             await publishTeamLivePresence(location: location, isPaused: isPaused)
             await sharedLiveCanvassingService.publishPresence(location: location, isPaused: isPaused)
@@ -3308,9 +3341,6 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
             pathCoordinates.append(newCoord)
             distanceMeters += addedDistance
             await persistLocalActiveSessionSnapshot()
-            if autoCompleteEnabled, sessionMode == .doorKnocking {
-                await checkAutoComplete(location: location)
-            }
             await queueProgressSync(force: false)
             await syncLiveActivity(forceStart: false)
         }

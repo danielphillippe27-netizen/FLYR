@@ -94,11 +94,11 @@ final class SessionSafetyBeaconService: ObservableObject {
     private let heartbeatMinDistanceMeters: CLLocationDistance = 20
     private let beaconBaseURL: String = {
         let raw = (Bundle.main.object(forInfoDictionaryKey: "WOLFGRID_API_URL") as? String)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? "https://wolfgrid.app"
-        guard let components = URLComponents(string: raw), components.host == "wolfgrid.app" else {
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? "https://sales.wolfgrid.app"
+        guard let components = URLComponents(string: raw), components.host == "sales.wolfgrid.app" else {
             return raw
         }
-        return "https://wolfgrid.app"
+        return "https://sales.wolfgrid.app"
     }()
     private var activeSessionId: UUID?
     private var activeSessionStart: Date?

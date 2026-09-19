@@ -11,6 +11,7 @@ final class PushRegistrationService {
     private let client = SupabaseManager.shared.client
     private var pendingDeviceToken: String?
     private var lastUploadedDeviceToken: String?
+    private var lastUploadedUserID: UUID?
     private var isUploading = false
 
     private init() {}
@@ -42,10 +43,15 @@ final class PushRegistrationService {
 
     func uploadPendingTokenIfPossible() async {
         guard !isUploading else { return }
-        guard let token = pendingDeviceToken, token != lastUploadedDeviceToken else { return }
+        guard let token = pendingDeviceToken else {
+            let settings = await UNUserNotificationCenter.current().notificationSettings()
+            if settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional { UIApplication.shared.registerForRemoteNotifications() }
+            return
+        }
         guard NetworkMonitor.shared.isOnline else { return }
         guard let session = try? await client.auth.session else { return }
 
+        guard token != lastUploadedDeviceToken || session.user.id != lastUploadedUserID else { return }
         isUploading = true
         defer { isUploading = false }
 
@@ -63,6 +69,7 @@ final class PushRegistrationService {
             let (_, response) = try await URLSession.shared.data(for: request)
             if let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) {
                 lastUploadedDeviceToken = token
+                lastUploadedUserID = session.user.id
                 #if DEBUG
                 print("✅ [Push] Uploaded APNs token")
                 #endif

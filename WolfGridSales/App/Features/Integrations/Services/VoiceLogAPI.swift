@@ -8,7 +8,7 @@ final class VoiceLogAPI {
 
     private var baseURL: String {
         (Bundle.main.object(forInfoDictionaryKey: "WOLFGRID_API_URL") as? String)?
-            .trimmingCharacters(in: CharacterSet(charactersIn: "/")) ?? "https://wolfgrid.app"
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/")) ?? "https://sales.wolfgrid.app"
     }
 
     private init() {}

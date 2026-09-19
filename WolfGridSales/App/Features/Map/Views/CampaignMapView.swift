@@ -1623,6 +1623,10 @@ struct CampaignMapView: View {
     @State private var showTargetsSheet = false
     @State private var statsExpanded = false
     @State private var sessionToolsExpanded = false
+    @State private var sessionUsesGoogle2D = false
+    @State private var googleRendererCamera: StandardCampaignMapCamera?
+    @State private var previous3DRendererCamera: DemoFixedCameraSnapshot?
+    @State private var shouldRestoreCameraAfter3DSwitch = false
     @State private var campaignMapCameraMode: CampaignMapCameraMode = .idle
     @State private var lastCampaignFollowCameraSnapshot: CampaignMapFollowCameraSnapshot?
     @State private var pendingCampaignCameraLocationRequest = false
@@ -1671,7 +1675,7 @@ struct CampaignMapView: View {
     @StateObject private var walkMode = WalkModeManager()
     @StateObject private var beaconService = SessionSafetyBeaconService.shared
     @StateObject private var sharedLiveCanvassingService = SharedLiveCanvassingService.shared
-    @StateObject private var liveSessionVoiceService = LiveSessionVoiceService.shared
+    @StateObject private var sessionChatStore = SessionChatStore.shared
     @StateObject private var networkMonitor = NetworkMonitor.shared
     @StateObject private var offlineSyncCoordinator = OfflineSyncCoordinator.shared
     @State private var presentedSyncConflict: CampaignMutationConflict?
@@ -1698,6 +1702,7 @@ struct CampaignMapView: View {
     @State private var showGoalSheet = false
     @State private var showActiveSessionInfoSheet = false
     @State private var showLiveSessionParticipants = false
+    @State private var showSessionChat = false
     @State private var showQuickStartContactBook = false
     @State private var liveSessionShareCode: LiveSessionShareCodePresentation?
     @State private var liveSessionCodeErrorMessage: String?
@@ -1945,15 +1950,81 @@ struct CampaignMapView: View {
     }
 
     private var quickStartUsesGoogleMapsRenderer: Bool {
-        false
+        usesStandardPinsRenderer
     }
 
     private var isCampaignStandardPinsMode: Bool {
-        effectiveCampaignMapMode.usesStandardPins
+        usesStandardPinsRenderer
     }
 
     private var usesStandardPinsRenderer: Bool {
-        false
+        campaignMapRendererDecision == .google2D
+    }
+
+    private var campaignMapRendererDecision: CampaignMapRendererDecision? {
+        CampaignMapRendererDecision.resolve(
+            dataResolved: sessionManager.sessionId != nil || campaignBuildingBundleResolved,
+            hasRenderableBuildings: hasRenderableCampaignBuildings,
+            activeSession: sessionManager.sessionId != nil,
+            sessionUses2D: sessionUsesGoogle2D,
+            mapboxAvailable: !Config.mapboxAccessToken.isEmpty,
+            googleAvailable: !Config.googleMapsAPIKey.isEmpty
+        )
+    }
+
+    private var campaignBuildingBundleResolved: Bool {
+        !featuresService.isLoading && featuresService.hasLoadedCampaignData(campaignId: campaignId)
+    }
+
+    private var hasRenderableCampaignBuildings: Bool {
+        (featuresService.buildings(for: campaignId)?.features ?? []).contains { feature in
+            let kind = feature.properties.featureType?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+            guard kind != "manual_pin", kind != "field_manual_pin" else { return false }
+            if feature.geometry.type == MapFeatureGeoJSONGeometryType.polygon.rawValue {
+                return feature.geometry.asPolygon?.contains { ring in
+                    ring.count >= 3 && ring.allSatisfy { Self.coordinate(from: $0) != nil }
+                } == true
+            }
+            if feature.geometry.type == MapFeatureGeoJSONGeometryType.multiPolygon.rawValue {
+                return feature.geometry.asMultiPolygon?.contains { polygon in
+                    polygon.contains { ring in
+                        ring.count >= 3 && ring.allSatisfy { Self.coordinate(from: $0) != nil }
+                    }
+                } == true
+            }
+            return false
+        }
+    }
+
+    private var campaignMapUnavailable: Bool {
+        (sessionManager.sessionId != nil || campaignBuildingBundleResolved)
+            && campaignMapRendererDecision == nil
+    }
+
+    private var session2DMapBinding: Binding<Bool> {
+        Binding(
+            get: { sessionUsesGoogle2D },
+            set: { enabled in
+                if enabled, let mapView {
+                    let camera = mapView.mapboxMap.cameraState
+                    previous3DRendererCamera = DemoFixedCameraSnapshot(
+                        center: camera.center,
+                        zoom: camera.zoom,
+                        bearing: camera.bearing,
+                        pitch: camera.pitch
+                    )
+                    googleRendererCamera = StandardCampaignMapCamera(
+                        center: camera.center,
+                        zoom: Float(camera.zoom)
+                    )
+                } else if !enabled {
+                    shouldRestoreCameraAfter3DSwitch = googleRendererCamera != nil
+                }
+                sessionUsesGoogle2D = enabled
+            }
+        )
     }
 
     private var shouldPresentStandardCanvassingNotice: Bool {
@@ -2024,7 +2095,6 @@ struct CampaignMapView: View {
     }
 
     private var visibleBuildingFeatures: [BuildingFeature] {
-        guard !isCampaignStandardPinsMode else { return [] }
         guard !shouldHoldCampaignGeometryUntilTerritoryLoads else { return [] }
         let visibleAddressIds = visibleCampaignAddressIdSet
         let allBuildings = (featuresService.buildings(for: campaignId)?.features ?? [])
@@ -2053,9 +2123,6 @@ struct CampaignMapView: View {
     private var visibleAddressFeatures: [AddressFeature] {
         guard !shouldHoldCampaignGeometryUntilTerritoryLoads else { return [] }
         let addresses = featuresService.addresses(for: campaignId)?.features ?? []
-        if isCampaignStandardPinsMode {
-            return addresses.filter(isManualPinAddressFeature)
-        }
         return addresses.filter { feature in
             isManualPinAddressFeature(feature) || featureIntersectsCampaignTerritory(feature.geometry)
         }
@@ -2331,10 +2398,18 @@ struct CampaignMapView: View {
             .sheet(isPresented: $showLiveSessionParticipants) {
                 LiveSessionParticipantsSheet(
                     teammates: sharedLiveCanvassingService.teammates,
-                    includesCurrentUser: teamVoiceBarParticipants.contains(where: \.isLocalUser)
+                    includesCurrentUser: true
                 )
                 .presentationDetents([.medium])
                 .presentationDragIndicator(.visible)
+            }
+            .sheet(isPresented: $showSessionChat) {
+                if let sessionId = teamChatSessionId,
+                   let campaignId = UUID(uuidString: campaignId) {
+                    NavigationStack {
+                        SessionChatRoomView(sessionId: sessionId, campaignId: campaignId)
+                    }
+                }
             }
             .sheet(isPresented: $showQuickStartContactBook) {
                 QuickStartContactBookView()
@@ -2546,7 +2621,7 @@ struct CampaignMapView: View {
                 scheduleRealtimeSubscriptionAfterFirstDraw()
                 refreshSharedLiveInviteAvailabilityIfNeeded(force: false)
                 maybePresentPendingLiveInviteHandoff()
-                ensureCampaignVoiceScope()
+                Task { await sessionChatStore.start() }
             }
             .onChange(of: campaignId) { _, _ in
                 configureUnlinkedTargetResolver()
@@ -2593,7 +2668,7 @@ struct CampaignMapView: View {
                 loadCampaignPresentationConfiguration(forceRemoteRefresh: true)
                 scheduleRealtimeSubscriptionAfterFirstDraw()
                 refreshSharedLiveInviteAvailabilityIfNeeded(force: true)
-                ensureCampaignVoiceScope()
+                Task { await sessionChatStore.start() }
             }
             .onChange(of: activeRouteWorkContext?.assignmentId) { _, _ in
                 hasFlownToCampaign = false
@@ -2659,7 +2734,7 @@ struct CampaignMapView: View {
                 subscribedRealtimeCampaignId = nil
                 standardMapTapCircleCoordinate = nil
                 LiveCampaignMapSnapshotStore.shared.setPreferredSummaryCamera(nil)
-                Task { await liveSessionVoiceService.endPushToTalk() }
+                SessionChatAudioController.shared.pausePlayback()
             }
         return applyFeatureAndSessionObservers(to: baseView)
     }
@@ -2770,6 +2845,10 @@ struct CampaignMapView: View {
                 updateSessionPathOnMap()
             }
             .onChange(of: sessionManager.sessionId) { _, new in
+                sessionUsesGoogle2D = false
+                googleRendererCamera = nil
+                previous3DRendererCamera = nil
+                shouldRestoreCameraAfter3DSwitch = false
                 updateSessionPathOnMap()
                 if new == nil {
                     resetCampaignMapCameraMode()
@@ -2794,7 +2873,7 @@ struct CampaignMapView: View {
                     layerManager?.clearManualAddressPreview()
                     refreshSharedLiveInviteAvailabilityIfNeeded(force: false)
                     maybePresentPendingLiveInviteHandoff()
-                    ensureCampaignVoiceScope()
+                    Task { await sessionChatStore.loadRooms() }
                     return
                 }
 
@@ -2808,7 +2887,7 @@ struct CampaignMapView: View {
                 } else {
                     flyerModeManager.stopObservingLocation()
                 }
-                ensureCampaignVoiceScope()
+                Task { await sessionChatStore.loadRooms() }
             }
             .onChange(of: sessionManager.sessionMode) { _, mode in
                 guard sessionManager.sessionId != nil else { return }
@@ -2858,7 +2937,6 @@ struct CampaignMapView: View {
             }
             .onReceive(sharedLiveCanvassingService.$teammates) { teammates in
                 layerManager?.updateTeammatePresence(teammates)
-                ensureCampaignVoiceScope()
             }
             .onReceive(sharedLiveCanvassingService.$homeStatesByAddressId) { rows in
                 if activeFarmCycleNumber != nil {
@@ -2873,39 +2951,11 @@ struct CampaignMapView: View {
             }
     }
 
-    private func ensureCampaignVoiceScope() {
-        Task {
-            guard shouldShowTeamVoiceBar,
-                  let currentCampaignId = campaignVoiceCampaignId,
-                  let currentSessionId = campaignVoiceSessionId else {
-                if liveSessionVoiceService.shouldShowOverlay {
-                    await liveSessionVoiceService.disconnect()
-                }
-                return
-            }
-
-            if let activeCampaignId = liveSessionVoiceService.activeCampaignId,
-               activeCampaignId != currentCampaignId {
-                await liveSessionVoiceService.disconnect()
-                return
-            }
-
-            if let activeSessionId = liveSessionVoiceService.activeSessionId,
-               activeSessionId != currentSessionId {
-                await liveSessionVoiceService.disconnect()
-            }
-        }
-    }
-
-    private var campaignVoiceCampaignId: UUID? {
-        UUID(uuidString: campaignId)
-    }
-
-    private var campaignVoiceSessionId: UUID? {
+    private var teamChatSessionId: UUID? {
         sessionManager.activeSharedLiveSessionId ?? sessionManager.sessionId
     }
 
-    private var shouldShowTeamVoiceBar: Bool {
+    private var shouldShowTeamChat: Bool {
         sessionManager.sessionId != nil && !sharedLiveCanvassingService.teammates.isEmpty
     }
 
@@ -3202,7 +3252,8 @@ struct CampaignMapView: View {
                         statsExpanded: $statsExpanded,
                         isExpanded: $sessionToolsExpanded,
                         satelliteMapEnabled: $satelliteMapEnabled,
-                        hideParcels: $hideParcels
+                        hideParcels: $hideParcels,
+                        use2DMap: session2DMapBinding
                     )
                     .padding(.bottom, 8)
                 }
@@ -3358,15 +3409,30 @@ struct CampaignMapView: View {
         let hasValidSize = Self.hasUsableMapContainerSize(raw)
         if hasValidSize {
             let size = Self.sanitizedMapContainerSize(raw)
-            if usesStandardPinsRenderer {
+            if campaignMapUnavailable {
+                VStack(spacing: 10) {
+                    Image(systemName: "map")
+                        .font(.system(size: 28, weight: .semibold))
+                    Text("Map unavailable")
+                        .font(.headline)
+                    Text("Google Maps is not configured for this campaign.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color.bg)
+            } else if usesStandardPinsRenderer {
                 StandardCampaignGoogleMapView(
                     campaignId: campaignId,
                     markers: standardMapMarkers,
                     pathCoordinates: sessionManager.pathCoordinates,
+                    boundaryCoordinates: campaignBoundaryCoordinates,
                     fallbackCenter: fallbackMapCenter,
+                    initialCamera: googleRendererCamera,
                     selectedCircleCenter: standardMapTapCircleCoordinate,
                     showUserLocation: sessionManager.sessionId != nil && !sessionManager.isDemoSession,
                     useSatelliteMap: satelliteMapEnabled,
+                    useDarkMapStyle: colorScheme == .dark,
                     contentInsets: standardPinsMapInsets,
                     onReady: {
                         mapView = nil
@@ -3379,6 +3445,12 @@ struct CampaignMapView: View {
                     },
                     onMapTap: { coordinate in
                         handleStandardMapTap(at: coordinate)
+                    },
+                    onMapLongPress: { coordinate, point in
+                        handleStandardMapLongPress(at: coordinate, screenPoint: point)
+                    },
+                    onCameraIdle: { camera in
+                        googleRendererCamera = camera
                     },
                     onTripleTap: {
                         exitWideDemoFromTripleTap()
@@ -3401,6 +3473,7 @@ struct CampaignMapView: View {
                         self.mapView = map
                         LiveCampaignMapSnapshotStore.shared.setMapView(map)
                         setupMap(map)
+                        restoreMapboxCameraAfterRendererSwitchIfNeeded(on: map)
                         enforceCampaignMapPresentationMode()
                         syncManualAddressPreview()
                         if let addressID = walkMode.highlightedAddressID {
@@ -3552,8 +3625,8 @@ struct CampaignMapView: View {
                         }
                         Spacer(minLength: 2)
                         SessionProgressPill(sessionManager: sessionManager, isExpanded: $statsExpanded)
-                        if shouldShowTeamVoiceBar {
-                            LiveSessionParticipantsButton(count: teamVoiceBarParticipants.count) {
+                        if shouldShowTeamChat {
+                            LiveSessionParticipantsButton(count: sharedLiveCanvassingService.teammates.count + 1) {
                                 HapticManager.light()
                                 showLiveSessionParticipants = true
                             }
@@ -3660,17 +3733,15 @@ struct CampaignMapView: View {
 
             Spacer()
 
-            if shouldShowTeamVoiceBar,
-               let campaignVoiceCampaignId,
-               let campaignVoiceSessionId,
+            if shouldShowTeamChat,
+               let teamChatSessionId,
                !statsExpanded {
                 HStack {
                     Spacer()
-                    CompactPushToTalkButton(
-                        voiceService: liveSessionVoiceService,
-                        campaignId: campaignVoiceCampaignId,
-                        sessionId: campaignVoiceSessionId
-                    )
+                    SessionChatButton(unreadCount: sessionChatStore.unreadCount(sessionId: teamChatSessionId)) {
+                        HapticManager.light()
+                        showSessionChat = true
+                    }
                 }
                 .padding(.trailing, 16)
                 .padding(.bottom, 72)
@@ -4119,57 +4190,6 @@ struct CampaignMapView: View {
     private var preSessionTrayIconTint: Color { isLightMode ? .black : .white }
     private var preSessionTrayChevronTint: Color { isLightMode ? Color.black.opacity(0.34) : Color.white.opacity(0.38) }
     private var preSessionTrayShadow: Color { .black.opacity(isLightMode ? 0.18 : 0.28) }
-
-    private var teamVoiceBarParticipants: [VoiceParticipant] {
-        var merged: [String: VoiceParticipant] = [:]
-
-        for participant in liveSessionVoiceService.participants {
-            merged[participant.id] = participant
-        }
-
-        for teammate in sharedLiveCanvassingService.teammates {
-            let id = teammate.userId.uuidString.lowercased()
-
-            if merged[id] == nil {
-                merged[id] = VoiceParticipant(
-                    id: id,
-                    initials: teammate.initials,
-                    isConnected: false,
-                    isVoiceEnabled: false,
-                    isSpeaking: false,
-                    isLocalUser: false
-                )
-            }
-        }
-
-        if let currentUserId = AuthManager.shared.user?.id.uuidString.lowercased(),
-           merged[currentUserId] == nil {
-            merged[currentUserId] = VoiceParticipant(
-                id: currentUserId,
-                initials: VoiceParticipantFormatter.initials(from: AuthManager.shared.user?.email ?? "Me"),
-                isConnected: false,
-                isVoiceEnabled: false,
-                isSpeaking: false,
-                isLocalUser: true
-            )
-        }
-
-        return merged.values.sorted { lhs, rhs in
-            if lhs.isLocalUser != rhs.isLocalUser {
-                return lhs.isLocalUser && !rhs.isLocalUser
-            }
-            if lhs.isSpeaking != rhs.isSpeaking {
-                return lhs.isSpeaking && !rhs.isSpeaking
-            }
-            if lhs.isVoiceEnabled != rhs.isVoiceEnabled {
-                return lhs.isVoiceEnabled && !rhs.isVoiceEnabled
-            }
-            if lhs.isConnected != rhs.isConnected {
-                return lhs.isConnected && !rhs.isConnected
-            }
-            return lhs.id < rhs.id
-        }
-    }
 
     private func matchingVisibleBuildingFeature(for gersId: String) -> BuildingFeature? {
         visibleBuildingFeatures.first { feature in
@@ -10434,6 +10454,31 @@ struct CampaignMapView: View {
         selectedAddressIdForCard = nil
     }
 
+    private func handleStandardMapLongPress(
+        at coordinate: CLLocationCoordinate2D,
+        screenPoint: CGPoint
+    ) {
+        if let address = nearestVisibleAddress(to: coordinate) {
+            presentHouseQuickStatus(address: address, at: screenPoint)
+            return
+        }
+        createManualPinAddress(at: coordinate, screenPoint: screenPoint)
+    }
+
+    private func restoreMapboxCameraAfterRendererSwitchIfNeeded(on mapView: MapView) {
+        guard shouldRestoreCameraAfter3DSwitch,
+              let googleCamera = googleRendererCamera else { return }
+        let previous = previous3DRendererCamera
+        shouldRestoreCameraAfter3DSwitch = false
+        mapView.mapboxMap.setCamera(to: CameraOptions(
+            center: googleCamera.center,
+            padding: nil,
+            zoom: CGFloat(googleCamera.zoom),
+            bearing: previous?.bearing ?? mapView.mapboxMap.cameraState.bearing,
+            pitch: previous?.pitch ?? campaignMapDefaultPitch
+        ))
+    }
+
     private func enterMapEditMode(with context: ManualShapeContext? = nil) {
         HapticManager.light()
         manualAddressReverseGeocodeTask?.cancel()
@@ -11163,8 +11208,7 @@ struct CampaignMapView: View {
             print("⚠️ [QuickStart] Google reverse geocode failed: \(error)")
         }
 
-        let fallbackFormatted = (try? await GeoAPI.shared.reverseAddressString(at: coordinate))
-            ?? fallbackQuickStartAddressLabel(for: coordinate)
+        let fallbackFormatted = fallbackQuickStartAddressLabel(for: coordinate)
         let parsedStreet = parseStreetNumberAndName(from: fallbackFormatted)
         return (
             formatted: fallbackFormatted,

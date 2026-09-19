@@ -3,6 +3,34 @@ import CoreLocation
 @testable import WolfGrid
 
 final class ClientMapLinkerServiceTests: XCTestCase {
+    func testCanonicalParcelPlacementIsNotRelinkedOffline() async throws {
+        let payload = """
+        {"type":"Feature","geometry":{"type":"Point","coordinates":[-79,43]},
+         "properties":{"id":"11111111-1111-1111-1111-111111111111","pin_placement":"parcel_center"}}
+        """
+        let canonical = try JSONDecoder().decode(AddressFeature.self, from: Data(payload.utf8))
+        let buildings = BuildingFeatureCollection(type: "FeatureCollection", features: [
+            building(id: "unclassified-outbuilding", ring: square(lon: -79, lat: 43, size: 0.001), street: "Main Street", house: "10")
+        ])
+        let summary = await ClientMapLinkerService.shared.link(buildings: buildings,
+            addresses: AddressFeatureCollection(type: "FeatureCollection", features: [canonical]), parcels: nil)
+        XCTAssertTrue(summary.links.isEmpty)
+    }
+
+    func testGarageClassificationIsExcludedFromOfflineLinks() async throws {
+        let payload = """
+        {"type":"Feature","id":"garage","geometry":{"type":"Polygon","coordinates":[[[-79.001,42.999],[-78.999,42.999],[-78.999,43.001],[-79.001,43.001],[-79.001,42.999]]]},
+         "properties":{"id":"garage","building":"garage","house_number":"10","street_name":"Main Street"}}
+        """
+        let garage = try JSONDecoder().decode(BuildingFeature.self, from: Data(payload.utf8))
+        let summary = await ClientMapLinkerService.shared.link(
+            buildings: BuildingFeatureCollection(type: "FeatureCollection", features: [garage]),
+            addresses: AddressFeatureCollection(type: "FeatureCollection", features: [
+                address(id: "11111111-1111-1111-1111-111111111111", lon: -79, lat: 43, street: "Main Street", house: "10")
+            ]), parcels: nil)
+        XCTAssertTrue(summary.links.isEmpty)
+    }
+
     func testContainmentLinkWinsForAddressInsideBuilding() async throws {
         let buildings = BuildingFeatureCollection(type: "FeatureCollection", features: [
             building(id: "building-1", ring: square(lon: -79.0, lat: 43.0, size: 0.001), street: "Main Street", house: "10")
@@ -42,6 +70,28 @@ final class ClientMapLinkerServiceTests: XCTestCase {
 
         XCTAssertEqual(summary.links.count, 1)
         XCTAssertEqual(summary.links.first?.matchType, "parcel_verified")
+    }
+
+    func testParcelOccupancyFilterKeepsAddressAndBuildingParcelsAndRemovesEmptyParcel() {
+        let parcels = ParcelFeatureCollection(type: "FeatureCollection", features: [
+            parcel(id: "address-parcel", ring: square(lon: -79.003, lat: 43.0, size: 0.001)),
+            parcel(id: "building-parcel", ring: square(lon: -79.001, lat: 43.0, size: 0.001)),
+            parcel(id: "empty-parcel", ring: square(lon: -78.999, lat: 43.0, size: 0.001)),
+        ])
+        let addresses = AddressFeatureCollection(type: "FeatureCollection", features: [
+            address(id: "address-only", lon: -79.003, lat: 43.0, street: "Test Street", house: "1")
+        ])
+        let buildings = BuildingFeatureCollection(type: "FeatureCollection", features: [
+            building(id: "building-only", ring: square(lon: -79.001, lat: 43.0, size: 0.0002), street: "Test Street", house: "2")
+        ])
+
+        let filtered = ParcelOccupancyFilter.filter(
+            parcels: parcels,
+            addresses: addresses,
+            buildings: buildings
+        )
+
+        XCTAssertEqual(filtered.features.compactMap(\.id), ["address-parcel", "building-parcel"])
     }
 
     func testSemanticProximityLinksMatchingStreetAndHouseNumber() async throws {

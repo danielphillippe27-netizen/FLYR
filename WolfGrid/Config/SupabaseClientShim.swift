@@ -322,9 +322,28 @@ public struct AnyCodable: Codable, Equatable, @unchecked Sendable {
     }
     
     public nonisolated init(from decoder: Decoder) throws {
+        if let keyedContainer = try? decoder.container(keyedBy: DynamicCodingKey.self) {
+            var object: [String: AnyCodable] = [:]
+            for key in keyedContainer.allKeys {
+                object[key.stringValue] = try keyedContainer.decode(AnyCodable.self, forKey: key)
+            }
+            value = object
+            return
+        }
+
+        if var unkeyedContainer = try? decoder.unkeyedContainer() {
+            var array: [AnyCodable] = []
+            while !unkeyedContainer.isAtEnd {
+                array.append(try unkeyedContainer.decode(AnyCodable.self))
+            }
+            value = array
+            return
+        }
+
         let container = try decoder.singleValueContainer()
-        
-        if let bool = try? container.decode(Bool.self) {
+        if container.decodeNil() {
+            value = NSNull()
+        } else if let bool = try? container.decode(Bool.self) {
             value = bool
         } else if let int = try? container.decode(Int.self) {
             value = int
@@ -332,10 +351,11 @@ public struct AnyCodable: Codable, Equatable, @unchecked Sendable {
             value = double
         } else if let string = try? container.decode(String.self) {
             value = string
-        } else if container.decodeNil() {
-            value = NSNull()
         } else {
-            throw DecodingError.dataCorruptedError(in: container, debugDescription: "Unsupported type")
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "Unsupported JSON value"
+            )
         }
     }
     

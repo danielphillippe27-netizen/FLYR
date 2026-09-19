@@ -1,0 +1,395 @@
+@import "tailwindcss" source(none);
+@import "tw-animate-css";
+
+/* Explicitly register source files to avoid scanning .cursor directory */
+@source "../app/**/*.{js,ts,jsx,tsx,mdx}";
+@source "../components/**/*.{js,ts,jsx,tsx,mdx}";
+@source "../lib/**/*.{js,ts,jsx,tsx,mdx}";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: ui-monospace, monospace;
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-progress: var(--progress);
+  --color-tabs-active: var(--tabs-active);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+:root {
+  --radius: 0.625rem;
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.145 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+  --primary: oklch(0.205 0 0);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.97 0 0);
+  --secondary-foreground: oklch(0.205 0 0);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.556 0 0);
+  --accent: oklch(0.97 0 0);
+  --accent-foreground: oklch(0.205 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: oklch(0.922 0 0);
+  --input: oklch(0.922 0 0);
+  --ring: oklch(0.708 0 0);
+  --chart-1: oklch(0.646 0.222 41.116);
+  --chart-2: oklch(0.6 0.118 25);
+  --chart-3: oklch(0.398 0.07 25);
+  --chart-4: oklch(0.828 0.189 84.429);
+  --chart-5: oklch(0.769 0.188 70.08);
+  --sidebar: oklch(0.985 0 0);
+  --sidebar-foreground: oklch(0.145 0 0);
+  --sidebar-primary: oklch(0.205 0 0);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.97 0 0);
+  --sidebar-accent-foreground: oklch(0.205 0 0);
+  --sidebar-border: oklch(0.922 0 0);
+  --sidebar-ring: oklch(0.708 0 0);
+  --progress: var(--primary);
+  --tabs-active: var(--muted);
+}
+
+/* Dark mode: charcoal background (#212121), boxes slightly brighter than #34363A */
+.dark {
+  --background: oklch(0.21 0 0); /* ~#212121 charcoal */
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.29 0 0); /* boxes: slightly brighter/greyer than #34363A */
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.29 0 0);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.65 0.24 25);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.28 0 0);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.29 0 0);
+  --muted-foreground: oklch(0.65 0 0);
+  --accent: oklch(0.65 0.24 25);
+  --accent-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.704 0.191 22.216);
+  --border: oklch(0.35 0 0);
+  --input: oklch(0.29 0 0);
+  --ring: oklch(0.65 0.24 25);
+  --chart-1: oklch(0.65 0.24 25);
+  --chart-2: oklch(0.696 0.17 162.48);
+  --chart-3: oklch(0.769 0.188 70.08);
+  --chart-4: oklch(0.627 0.265 303.9);
+  --chart-5: oklch(0.645 0.246 16.439);
+  --sidebar: oklch(0.21 0 0); /* same as background – no blue */
+  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar-primary: oklch(0.65 0.24 25);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.26 0 0);
+  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-border: oklch(0.32 0 0);
+  --sidebar-ring: oklch(0.65 0.24 25);
+  --progress: oklch(0.55 0.14 55);
+  --tabs-active: oklch(0.29 0 0);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-family: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  }
+}
+
+.auth-input {
+  height: 3rem;
+  width: 100%;
+  border-radius: 0.75rem;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.035);
+  padding: 0 1rem;
+  color: white;
+  outline: none;
+  transition: border-color 160ms ease, background-color 160ms ease, box-shadow 160ms ease;
+}
+
+.auth-input::placeholder {
+  color: rgb(71 85 105);
+}
+
+.auth-input:focus {
+  border-color: rgb(239 68 68);
+  background: rgba(255, 255, 255, 0.055);
+  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.12);
+}
+
+/* Editor-specific styles for Konva canvas */
+.canvas-wrapper {
+  position: relative;
+  z-index: 5;
+}
+
+.canvas-wrapper canvas {
+  display: block;
+}
+
+/* Fabric.js uses a real textarea for Textbox/IText keyboard input. Keep it
+   invisible so native text selection never leaks over the canvas artwork. */
+.canvas-container textarea {
+  position: absolute !important;
+  z-index: -1 !important;
+  opacity: 0 !important;
+  width: 1px !important;
+  height: 1px !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  border: 0 !important;
+  outline: 0 !important;
+  box-shadow: none !important;
+  background: transparent !important;
+  color: transparent !important;
+  caret-color: transparent !important;
+  resize: none !important;
+  overflow: hidden !important;
+  pointer-events: none !important;
+}
+
+/* Sidebar z-index - ensure they're above canvas but below modals */
+[class*="sidebar"],
+[class*="Sidebar"] {
+  position: relative;
+  z-index: 10;
+}
+
+/* Textarea overlay for text editing - must be above everything */
+.konva-text-editor {
+  position: fixed;
+  z-index: 1000;
+  pointer-events: auto;
+  border: none;
+  outline: none;
+  background: transparent;
+  resize: none;
+  overflow: hidden;
+}
+
+/* Ensure decorative overlays don't block pointer events */
+[class*="overlay"]:not([class*="interactive"]) {
+  pointer-events: none;
+}
+
+/* Glowing red shadow on hover for box components */
+.hover-glow-red {
+  transition: box-shadow 0.2s ease;
+}
+.hover-glow-red:hover {
+  box-shadow: 0 0 20px rgba(239, 68, 68, 0.4), 0 0 40px rgba(239, 68, 68, 0.2);
+}
+
+.operator-surface,
+.operator-surface:hover {
+  box-shadow: none !important;
+}
+
+.industry-marquee-viewport {
+  mask-image: linear-gradient(to right, transparent, black 5%, black 95%, transparent);
+}
+
+.industry-marquee {
+  animation: industry-marquee 44s linear infinite;
+  will-change: transform;
+}
+
+.industry-marquee:hover {
+  animation-play-state: paused;
+}
+
+@keyframes industry-marquee {
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .industry-marquee-viewport {
+    overflow-x: auto;
+    mask-image: none;
+  }
+
+  .industry-marquee {
+    animation: none;
+    will-change: auto;
+  }
+
+  .industry-marquee-duplicate {
+    display: none;
+  }
+}
+
+.mapboxgl-popup-close-button {
+  width: 28px;
+  height: 28px;
+  font-size: 18px;
+  line-height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  color: #6b7280;
+}
+
+.mapboxgl-popup-close-button:hover {
+  background: #f3f4f6;
+  color: #111827;
+}
+
+.flyr-territory-draw-cursor .mapboxgl-canvas-container.mapboxgl-interactive,
+.flyr-territory-draw-cursor .mapboxgl-canvas-container.mapboxgl-interactive:active {
+  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'%3E%3Cg fill='none' stroke-linecap='square'%3E%3Cpath d='M16 4v8.5M16 19.5V28M4 16h8.5M19.5 16H28' stroke='%23101010' stroke-width='3' opacity='0.7'/%3E%3Ccircle cx='16' cy='16' r='5' stroke='%23101010' stroke-width='3' opacity='0.55'/%3E%3Cpath d='M16 4v8.5M16 19.5V28M4 16h8.5M19.5 16H28' stroke='%23fff' stroke-width='1.25'/%3E%3Ccircle cx='16' cy='16' r='5' stroke='%23fff' stroke-width='1.25'/%3E%3C/g%3E%3C/svg%3E") 16 16, crosshair !important;
+}
+
+@media print {
+  body * {
+    visibility: hidden !important;
+  }
+
+  .team-report-print-root,
+  .team-report-print-root * {
+    visibility: visible !important;
+  }
+
+  .team-report-no-print,
+  .team-report-no-print * {
+    display: none !important;
+  }
+
+  .team-report-print-root {
+    position: absolute !important;
+    inset: 0 auto auto 0 !important;
+    width: 100% !important;
+    padding: 24px !important;
+    background: #ffffff !important;
+    color: #111111 !important;
+  }
+
+  .team-report-print-root * {
+    background-color: #ffffff !important;
+    color: #111111 !important;
+    box-shadow: none !important;
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+
+  .team-report-print-root .operator-surface {
+    break-inside: avoid;
+    border: 1px solid #d7d7d7 !important;
+  }
+
+  .team-report-print-root table {
+    page-break-inside: auto;
+  }
+
+  .team-report-print-root tr {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+}
+
+/* Rotating hero word: fade in */
+@keyframes hero-word-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.animate-hero-word-in {
+  animation: hero-word-in 0.5s ease-out forwards;
+}
+
+/* Compact, unified integration directory. Connection details stay available in
+   the existing management dialogs instead of making every card oversized. */
+.integrations-page [data-slot="card"] {
+  gap: 1rem;
+  min-width: 0;
+  padding-block: 1.125rem;
+  transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+}
+
+.integrations-page [data-slot="card"]:hover {
+  transform: translateY(-2px);
+  border-color: color-mix(in oklab, var(--primary) 28%, var(--border));
+  box-shadow: 0 12px 30px -22px color-mix(in oklab, var(--foreground) 35%, transparent);
+}
+
+.integrations-page [data-slot="card-header"],
+.integrations-page [data-slot="card-content"] {
+  padding-inline: 1.125rem;
+}
+
+.integrations-page [data-slot="card-header"] > div {
+  align-items: flex-start;
+}
+
+.integrations-page [data-slot="card-header"] [data-slot="card-description"] {
+  margin-top: 0.2rem;
+  line-height: 1.35rem;
+}
+
+.integrations-page [data-slot="card-content"] {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+}
+
+.integrations-page [data-slot="card-content"] > div {
+  flex: 1;
+}
+
+.integrations-page [data-slot="card-content"] > .space-y-4 > .rounded-lg.border,
+.integrations-page [data-slot="card-content"] > .space-y-5 > .rounded-lg.border,
+.integrations-page [data-slot="card-content"] > .space-y-6 > .rounded-lg.border {
+  display: none;
+}
+
+.integrations-page [data-slot="card-content"] button {
+  min-height: 2.5rem;
+}

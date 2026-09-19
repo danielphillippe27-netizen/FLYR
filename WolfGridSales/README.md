@@ -9,13 +9,16 @@ modes, app icon, and build version.
 
 `WolfGrid Sales` is no longer a selectable mode inside the public app. It has
 its own fixed root in `SalespersonMainTabView.swift` and always shows the
-Sales experience: Home, Phone, Messages, Emails, Contacts, List, and Follow Up.
+Sales experience: Home, Inbox, Contacts, List, Follow Up, Calendar, and Social.
+The Social workspace publishes one approved post to connected YouTube,
+Facebook, Instagram, TikTok, and LinkedIn accounts.
 
 The public `WolfGrid` target now has only the regular field/campaign tab root.
 The copied app includes the authentication, API models, design components,
 Sales data services, dialler, messaging, tasks, Telnyx voice integration,
 notifications, and other dependencies that were connected in the original
-iOS app. It still talks to the same deployed backend and Supabase services.
+iOS app. It uses the dedicated `https://sales.wolfgrid.app` Vercel backend
+deployment while continuing to share the existing Supabase services and data.
 
 The Sales target compiles `WolfGridSales/App` and does not compile files from
 the neighboring `WolfGrid` source folder.

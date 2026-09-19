@@ -15,6 +15,7 @@ struct BottomActionBar: View {
     @Binding var isExpanded: Bool
     @Binding var satelliteMapEnabled: Bool
     var hideParcels: Binding<Bool>? = nil
+    var use2DMap: Binding<Bool>? = nil
     var menuVariant: MenuVariant = .campaign
     @Environment(\.colorScheme) private var colorScheme
     @StateObject private var beaconService = SessionSafetyBeaconService.shared
@@ -139,6 +140,19 @@ struct BottomActionBar: View {
                         .overlay(dividerColor)
 
                     if showsCampaignSessionTools {
+                        if let use2DMap {
+                            toggleRow(
+                                title: "2D Map",
+                                subtitle: "Switch this session between Google 2D and Mapbox 3D.",
+                                systemImage: "square.2.layers.3d",
+                                tint: defaultIconTint,
+                                isOn: use2DMap
+                            )
+
+                            Divider()
+                                .overlay(dividerColor)
+                        }
+
                         toggleRow(
                             title: "GPS Proximity",
                             subtitle: gpsProximitySubtitle,

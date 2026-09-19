@@ -1,5 +1,7 @@
 .env
 .env.*
 .next
+.next.*
 node_modules
 tsconfig.tsbuildinfo
+.DS_Store

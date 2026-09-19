@@ -13,10 +13,10 @@ export function getSupabaseUrl(): string {
 }
 
 export function getSupabaseAnonKey(): string {
-  const value = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  const value = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY;
   if (!value) {
     throw new Error(
-      'NEXT_PUBLIC_SUPABASE_ANON_KEY is required. Set it in your environment.'
+      'NEXT_PUBLIC_SUPABASE_ANON_KEY or SUPABASE_ANON_KEY is required. Set it in your environment.'
     );
   }
   return value;

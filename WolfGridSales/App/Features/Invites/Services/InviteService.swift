@@ -5,19 +5,19 @@ import Supabase
 @MainActor
 final class InviteService {
     static let shared = InviteService()
-    private let legacyInvitesAPIHost = "wolfgrid.app"
+    private let legacyInvitesAPIHost = "sales.wolfgrid.app"
 
     private var baseURL: String {
         (Bundle.main.object(forInfoDictionaryKey: "WOLFGRID_API_URL") as? String)?
-            .trimmingCharacters(in: CharacterSet(charactersIn: "/")) ?? "https://wolfgrid.app"
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/")) ?? "https://sales.wolfgrid.app"
     }
 
     /// Uses `www` for authenticated requests so redirects do not drop Authorization headers.
     private var requestBaseURL: String {
-        guard let components = URLComponents(string: baseURL), components.host == "wolfgrid.app" else {
+        guard let components = URLComponents(string: baseURL), components.host == "sales.wolfgrid.app" else {
             return baseURL
         }
-        return "https://wolfgrid.app"
+        return "https://sales.wolfgrid.app"
     }
 
     private var inviteBaseURL: String {
@@ -25,8 +25,8 @@ final class InviteService {
            !configured.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             let trimmed = configured.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
             if let components = URLComponents(string: trimmed),
-               components.host?.lowercased() == "wolfgrid.app" {
-                return "https://wolfgrid.app"
+               components.host?.lowercased() == "sales.wolfgrid.app" {
+                return "https://sales.wolfgrid.app"
             }
             return trimmed
         }

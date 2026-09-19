@@ -289,7 +289,7 @@ actor LeadSyncManager {
                         print("🔍 [LeadSyncManager] Parsed synced: \(synced.count), failed: \(failed.count)")
 
                         if synced.isEmpty && failed.isEmpty {
-                            print("ℹ️ [LeadSyncManager] No CRM integrations connected. Connect at: https://wolfgrid.app/settings/integrations")
+                            print("ℹ️ [LeadSyncManager] No CRM integrations connected. Connect at: https://sales.wolfgrid.app/settings/integrations")
                         } else if !failed.isEmpty, synced.isEmpty {
                             explicitFailure = true
                             for fail in failed {
@@ -298,7 +298,7 @@ actor LeadSyncManager {
                                    let error = fail["error"] as? String {
                                     print("⚠️ [LeadSyncManager] \(provider) sync failed: \(error)")
                                     if error.contains("expired") || error.contains("401") {
-                                        print("🔑 [LeadSyncManager] Token expired. Reconnect \(provider) at: https://wolfgrid.app/settings/integrations")
+                                        print("🔑 [LeadSyncManager] Token expired. Reconnect \(provider) at: https://sales.wolfgrid.app/settings/integrations")
                                     }
                                 } else {
                                     print("⚠️ [LeadSyncManager] Could not parse fail entry: \(fail)")

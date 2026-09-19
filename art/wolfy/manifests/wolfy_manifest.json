@@ -1,0 +1,878 @@
+{
+  "version": 1,
+  "compatibility": "wolfy-v1",
+  "base": "wolfy_base.usdz",
+  "poster": "wolfy_poster.png",
+  "triangles": 24836,
+  "bones": [
+    "wolfy_root",
+    "wolfy_pelvis",
+    "wolfy_spine_01",
+    "wolfy_spine_02",
+    "wolfy_chest",
+    "wolfy_neck",
+    "wolfy_head",
+    "wolfy_jaw",
+    "wolfy_ear_l",
+    "wolfy_eye_l",
+    "wolfy_brow_l",
+    "wolfy_shoulder_l",
+    "wolfy_upperarm_l",
+    "wolfy_forearm_l",
+    "wolfy_hand_l",
+    "wolfy_thigh_l",
+    "wolfy_shin_l",
+    "wolfy_foot_l",
+    "wolfy_ear_r",
+    "wolfy_eye_r",
+    "wolfy_brow_r",
+    "wolfy_shoulder_r",
+    "wolfy_upperarm_r",
+    "wolfy_forearm_r",
+    "wolfy_hand_r",
+    "wolfy_thigh_r",
+    "wolfy_shin_r",
+    "wolfy_foot_r",
+    "wolfy_tail_01",
+    "wolfy_tail_02",
+    "wolfy_tail_03"
+  ],
+  "sockets": [
+    "socket_head",
+    "socket_face",
+    "socket_neck",
+    "socket_chest",
+    "socket_back",
+    "socket_hand_l",
+    "socket_hand_r",
+    "socket_waist",
+    "socket_feet",
+    "socket_tail",
+    "socket_aura",
+    "socket_vehicle_scene"
+  ],
+  "animations": [
+    {
+      "name": "idle_neutral",
+      "file": "wolfy_idle_neutral.usdz",
+      "loop": true,
+      "duration": 2
+    },
+    {
+      "name": "idle_happy",
+      "file": "wolfy_idle_happy.usdz",
+      "loop": true,
+      "duration": 2
+    },
+    {
+      "name": "idle_focused",
+      "file": "wolfy_idle_focused.usdz",
+      "loop": true,
+      "duration": 2
+    },
+    {
+      "name": "idle_tired",
+      "file": "wolfy_idle_tired.usdz",
+      "loop": true,
+      "duration": 2
+    },
+    {
+      "name": "blink",
+      "file": "wolfy_blink.usdz",
+      "loop": true,
+      "duration": 2
+    },
+    {
+      "name": "look_around",
+      "file": "wolfy_look_around.usdz",
+      "loop": true,
+      "duration": 2
+    },
+    {
+      "name": "tail_wag",
+      "file": "wolfy_tail_wag.usdz",
+      "loop": true,
+      "duration": 2
+    },
+    {
+      "name": "thinking",
+      "file": "wolfy_thinking.usdz",
+      "loop": true,
+      "duration": 2
+    },
+    {
+      "name": "talking",
+      "file": "wolfy_talking.usdz",
+      "loop": true,
+      "duration": 2
+    },
+    {
+      "name": "listening",
+      "file": "wolfy_listening.usdz",
+      "loop": true,
+      "duration": 2
+    },
+    {
+      "name": "concerned",
+      "file": "wolfy_concerned.usdz",
+      "loop": false,
+      "duration": 3
+    },
+    {
+      "name": "encouraging",
+      "file": "wolfy_encouraging.usdz",
+      "loop": false,
+      "duration": 3
+    },
+    {
+      "name": "celebrate_lead",
+      "file": "wolfy_celebrate_lead.usdz",
+      "loop": false,
+      "duration": 3
+    },
+    {
+      "name": "celebrate_appointment",
+      "file": "wolfy_celebrate_appointment.usdz",
+      "loop": false,
+      "duration": 3
+    },
+    {
+      "name": "celebrate_sale",
+      "file": "wolfy_celebrate_sale.usdz",
+      "loop": false,
+      "duration": 3
+    },
+    {
+      "name": "goal_completed",
+      "file": "wolfy_goal_completed.usdz",
+      "loop": false,
+      "duration": 3
+    },
+    {
+      "name": "streak_saved",
+      "file": "wolfy_streak_saved.usdz",
+      "loop": false,
+      "duration": 3
+    },
+    {
+      "name": "level_up",
+      "file": "wolfy_level_up.usdz",
+      "loop": false,
+      "duration": 3
+    },
+    {
+      "name": "rank_up",
+      "file": "wolfy_rank_up.usdz",
+      "loop": false,
+      "duration": 3
+    },
+    {
+      "name": "equip_item",
+      "file": "wolfy_equip_item.usdz",
+      "loop": false,
+      "duration": 3
+    },
+    {
+      "name": "wave",
+      "file": "wolfy_wave.usdz",
+      "loop": false,
+      "duration": 3
+    },
+    {
+      "name": "walk",
+      "file": "wolfy_walk.usdz",
+      "loop": true,
+      "duration": 2
+    },
+    {
+      "name": "run",
+      "file": "wolfy_run.usdz",
+      "loop": true,
+      "duration": 2
+    },
+    {
+      "name": "eat_treat",
+      "file": "wolfy_eat_treat.usdz",
+      "loop": false,
+      "duration": 3
+    },
+    {
+      "name": "play",
+      "file": "wolfy_play.usdz",
+      "loop": false,
+      "duration": 3
+    },
+    {
+      "name": "train",
+      "file": "wolfy_train.usdz",
+      "loop": false,
+      "duration": 3
+    },
+    {
+      "name": "sleep",
+      "file": "wolfy_sleep.usdz",
+      "loop": true,
+      "duration": 2
+    },
+    {
+      "name": "wake_up",
+      "file": "wolfy_wake_up.usdz",
+      "loop": false,
+      "duration": 3
+    }
+  ],
+  "items": [
+    {
+      "id": "default_hoodie",
+      "name": "Black W Hoodie",
+      "description": "Black W Hoodie \u2022 cosmetic only",
+      "category": "tops",
+      "socket": "socket_chest",
+      "rarity": "common",
+      "price": 0,
+      "requiredLevel": 1,
+      "asset": null,
+      "thumbnail": "default_hoodie.png",
+      "compatibility": [
+        "wolfy-v1"
+      ],
+      "active": true,
+      "sortOrder": 0,
+      "bundled": true
+    },
+    {
+      "id": "default_pants",
+      "name": "Dark Cargo Pants",
+      "description": "Dark Cargo Pants \u2022 cosmetic only",
+      "category": "pants",
+      "socket": "socket_waist",
+      "rarity": "common",
+      "price": 0,
+      "requiredLevel": 1,
+      "asset": null,
+      "thumbnail": "default_pants.png",
+      "compatibility": [
+        "wolfy-v1"
+      ],
+      "active": true,
+      "sortOrder": 1,
+      "bundled": true
+    },
+    {
+      "id": "default_shoes",
+      "name": "Black and White Sneakers",
+      "description": "Black and White Sneakers \u2022 cosmetic only",
+      "category": "feet",
+      "socket": "socket_feet",
+      "rarity": "common",
+      "price": 0,
+      "requiredLevel": 1,
+      "asset": null,
+      "thumbnail": "default_shoes.png",
+      "compatibility": [
+        "wolfy-v1"
+      ],
+      "active": true,
+      "sortOrder": 2,
+      "bundled": true
+    },
+    {
+      "id": "basic_collar",
+      "name": "Basic Collar",
+      "description": "Basic Collar \u2022 cosmetic only",
+      "category": "neck",
+      "socket": "socket_neck",
+      "rarity": "common",
+      "price": 0,
+      "requiredLevel": 1,
+      "asset": "basic_collar.usdz",
+      "thumbnail": "basic_collar.png",
+      "compatibility": [
+        "wolfy-v1"
+      ],
+      "active": true,
+      "sortOrder": 3,
+      "bundled": true
+    },
+    {
+      "id": "default_den",
+      "name": "Default Den",
+      "description": "Default Den \u2022 cosmetic only",
+      "category": "den",
+      "socket": "socket_vehicle_scene",
+      "rarity": "common",
+      "price": 0,
+      "requiredLevel": 1,
+      "asset": null,
+      "thumbnail": "default_den.png",
+      "compatibility": [
+        "wolfy-v1"
+      ],
+      "active": true,
+      "sortOrder": 4,
+      "bundled": true
+    },
+    {
+      "id": "cap",
+      "name": "WolfGrid Cap",
+      "description": "WolfGrid Cap \u2022 cosmetic only",
+      "category": "head",
+      "socket": "socket_head",
+      "rarity": "common",
+      "price": 150,
+      "requiredLevel": 1,
+      "asset": "cap.usdz",
+      "thumbnail": "cap.png",
+      "compatibility": [
+        "wolfy-v1"
+      ],
+      "active": true,
+      "sortOrder": 5,
+      "bundled": true
+    },
+    {
+      "id": "beanie",
+      "name": "Black Beanie",
+      "description": "Black Beanie \u2022 cosmetic only",
+      "category": "head",
+      "socket": "socket_head",
+      "rarity": "common",
+      "price": 100,
+      "requiredLevel": 1,
+      "asset": "beanie.usdz",
+      "thumbnail": "beanie.png",
+      "compatibility": [
+        "wolfy-v1"
+      ],
+      "active": true,
+      "sortOrder": 6,
+      "bundled": true
+    },
+    {
+      "id": "silver_chain",
+      "name": "Silver Chain",
+      "description": "Silver Chain \u2022 cosmetic only",
+      "category": "neck",
+      "socket": "socket_neck",
+      "rarity": "common",
+      "price": 200,
+      "requiredLevel": 1,
+      "asset": "silver_chain.usdz",
+      "thumbnail": "silver_chain.png",
+      "compatibility": [
+        "wolfy-v1"
+      ],
+      "active": true,
+      "sortOrder": 7,
+      "bundled": true
+    },
+    {
+      "id": "glasses",
+      "name": "Clear Glasses",
+      "description": "Clear Glasses \u2022 cosmetic only",
+      "category": "face",
+      "socket": "socket_face",
+      "rarity": "common",
+      "price": 150,
+      "requiredLevel": 1,
+      "asset": "glasses.usdz",
+      "thumbnail": "glasses.png",
+      "compatibility": [
+        "wolfy-v1"
+      ],
+      "active": true,
+      "sortOrder": 8,
+      "bundled": true
+    },
+    {
+      "id": "sunglasses",
+      "name": "Dark Sunglasses",
+      "description": "Dark Sunglasses \u2022 cosmetic only",
+      "category": "face",
+      "socket": "socket_face",
+      "rarity": "common",
+      "price": 200,
+      "requiredLevel": 1,
+      "asset": "sunglasses.usdz",
+      "thumbnail": "sunglasses.png",
+      "compatibility": [
+        "wolfy-v1"
+      ],
+      "active": true,
+      "sortOrder": 9,
+      "bundled": true
+    },
+    {
+      "id": "bandana",
+      "name": "Black Bandana",
+      "description": "Black Bandana \u2022 cosmetic only",
+      "category": "neck",
+      "socket": "socket_neck",
+      "rarity": "common",
+      "price": 100,
+      "requiredLevel": 1,
+      "asset": "bandana.usdz",
+      "thumbnail": "bandana.png",
+      "compatibility": [
+        "wolfy-v1"
+      ],
+      "active": true,
+      "sortOrder": 10,
+      "bundled": true
+    },
+    {
+      "id": "white_sneakers",
+      "name": "White Sneakers",
+      "description": "White Sneakers \u2022 cosmetic only",
+      "category": "feet",
+      "socket": "socket_feet",
+      "rarity": "common",
+      "price": 300,
+      "requiredLevel": 1,
+      "asset": "white_sneakers.usdz",
+      "thumbnail": "white_sneakers.png",
+      "compatibility": [
+        "wolfy-v1"
+      ],
+      "active": true,
+      "sortOrder": 11,
+      "bundled": true
+    },
+    {
+      "id": "gloves",
+      "name": "Work Gloves",
+      "description": "Work Gloves \u2022 cosmetic only",
+      "category": "hands",
+      "socket": "socket_hand_r",
+      "rarity": "common",
+      "price": 200,
+      "requiredLevel": 1,
+      "asset": "gloves.usdz",
+      "thumbnail": "gloves.png",
+      "compatibility": [
+        "wolfy-v1"
+      ],
+      "active": true,
+      "sortOrder": 12,
+      "bundled": true
+    },
+    {
+      "id": "hard_hat",
+      "name": "Roofing Hard Hat",
+      "description": "Roofing Hard Hat \u2022 cosmetic only",
+      "category": "head",
+      "socket": "socket_head",
+      "rarity": "rare",
+      "price": 500,
+      "requiredLevel": 10,
+      "asset": "hard_hat.usdz",
+      "thumbnail": "hard_hat.png",
+      "compatibility": [
+        "wolfy-v1"
+      ],
+      "active": true,
+      "sortOrder": 13,
+      "bundled": true
+    },
+    {
+      "id": "hi_vis",
+      "name": "High Visibility Vest",
+      "description": "High Visibility Vest \u2022 cosmetic only",
+      "category": "outerwear",
+      "socket": "socket_chest",
+      "rarity": "rare",
+      "price": 500,
+      "requiredLevel": 10,
+      "asset": "hi_vis.usdz",
+      "thumbnail": "hi_vis.png",
+      "compatibility": [
+        "wolfy-v1"
+      ],
+      "active": true,
+      "sortOrder": 14,
+      "bundled": true
+    },
+    {
+      "id": "tool_belt",
+      "name": "Tool Belt",
+      "description": "Tool Belt \u2022 cosmetic only",
+      "category": "waist",
+      "socket": "socket_waist",
+      "rarity": "rare",
+      "price": 600,
+      "requiredLevel": 10,
+      "asset": "tool_belt.usdz",
+      "thumbnail": "tool_belt.png",
+      "compatibility": [
+        "wolfy-v1"
+      ],
+      "active": true,
+      "sortOrder": 15,
+      "bundled": true
+    },
+    {
+      "id": "clipboard",
+      "name": "Clipboard",
+      "description": "Clipboard \u2022 cosmetic only",
+      "category": "hands",
+      "socket": "socket_hand_l",
+      "rarity": "rare",
+      "price": 400,
+      "requiredLevel": 10,
+      "asset": "clipboard.usdz",
+      "thumbnail": "clipboard.png",
+      "compatibility": [
+        "wolfy-v1"
+      ],
+      "active": true,
+      "sortOrder": 16,
+      "bundled": true
+    },
+    {
+      "id": "backpack",
+      "name": "WolfGrid Backpack",
+      "description": "WolfGrid Backpack \u2022 cosmetic only",
+      "category": "back",
+      "socket": "socket_back",
+      "rarity": "rare",
+      "price": 700,
+      "requiredLevel": 10,
+      "asset": "backpack.usdz",
+      "thumbnail": "backpack.png",
+      "compatibility": [
+        "wolfy-v1"
+      ],
+      "active": true,
+      "sortOrder": 17,
+      "bundled": true
+    },
+    {
+      "id": "storm_jacket",
+      "name": "Storm Jacket",
+      "description": "Storm Jacket \u2022 cosmetic only",
+      "category": "outerwear",
+      "socket": "socket_chest",
+      "rarity": "rare",
+      "price": 900,
+      "requiredLevel": 10,
+      "asset": "storm_jacket.usdz",
+      "thumbnail": "storm_jacket.png",
+      "compatibility": [
+        "wolfy-v1"
+      ],
+      "active": true,
+      "sortOrder": 18,
+      "bundled": true
+    },
+    {
+      "id": "work_boots",
+      "name": "Premium Work Boots",
+      "description": "Premium Work Boots \u2022 cosmetic only",
+      "category": "feet",
+      "socket": "socket_feet",
+      "rarity": "rare",
+      "price": 650,
+      "requiredLevel": 10,
+      "asset": "work_boots.usdz",
+      "thumbnail": "work_boots.png",
+      "compatibility": [
+        "wolfy-v1"
+      ],
+      "active": true,
+      "sortOrder": 19,
+      "bundled": true
+    },
+    {
+      "id": "headset",
+      "name": "Headset",
+      "description": "Headset \u2022 cosmetic only",
+      "category": "head",
+      "socket": "socket_head",
+      "rarity": "rare",
+      "price": 450,
+      "requiredLevel": 10,
+      "asset": "headset.usdz",
+      "thumbnail": "headset.png",
+      "compatibility": [
+        "wolfy-v1"
+      ],
+      "active": true,
+      "sortOrder": 20,
+      "bundled": true
+    },
+    {
+      "id": "alpha_jacket",
+      "name": "Alpha Bomber",
+      "description": "Alpha Bomber \u2022 cosmetic only",
+      "category": "outerwear",
+      "socket": "socket_chest",
+      "rarity": "epic",
+      "price": 1800,
+      "requiredLevel": 50,
+      "asset": "alpha_jacket.usdz",
+      "thumbnail": "alpha_jacket.png",
+      "compatibility": [
+        "wolfy-v1"
+      ],
+      "active": true,
+      "sortOrder": 21,
+      "bundled": true
+    },
+    {
+      "id": "gold_chain",
+      "name": "Heavy Gold Chain",
+      "description": "Heavy Gold Chain \u2022 cosmetic only",
+      "category": "neck",
+      "socket": "socket_neck",
+      "rarity": "epic",
+      "price": 1500,
+      "requiredLevel": 25,
+      "asset": "gold_chain.usdz",
+      "thumbnail": "gold_chain.png",
+      "compatibility": [
+        "wolfy-v1"
+      ],
+      "active": true,
+      "sortOrder": 22,
+      "bundled": true
+    },
+    {
+      "id": "tablet",
+      "name": "Sales Tablet",
+      "description": "Sales Tablet \u2022 cosmetic only",
+      "category": "hands",
+      "socket": "socket_hand_l",
+      "rarity": "epic",
+      "price": 1200,
+      "requiredLevel": 25,
+      "asset": "tablet.usdz",
+      "thumbnail": "tablet.png",
+      "compatibility": [
+        "wolfy-v1"
+      ],
+      "active": true,
+      "sortOrder": 23,
+      "bundled": true
+    },
+    {
+      "id": "blue_aura",
+      "name": "Electric Blue Aura",
+      "description": "Electric Blue Aura \u2022 cosmetic only",
+      "category": "auras",
+      "socket": "socket_aura",
+      "rarity": "epic",
+      "price": 2500,
+      "requiredLevel": 25,
+      "asset": "blue_aura.usdz",
+      "thumbnail": "blue_aura.png",
+      "compatibility": [
+        "wolfy-v1"
+      ],
+      "active": true,
+      "sortOrder": 24,
+      "bundled": true
+    }
+  ],
+  "files": {
+    "wolfy_look_around.usdz": {
+      "sha256": "742cdb06a71dbdd1d3cc208a93aacfbb0dbb5503f592d483a43625eaa6810df9",
+      "bytes": 1729720
+    },
+    "tablet.usdz": {
+      "sha256": "4b60c017e368425f97a76360887990adad12d39fb10ce557e45164b8cbf8cc33",
+      "bytes": 38072
+    },
+    "wolfy_base.usdz": {
+      "sha256": "c07cd6e944c616d8086cea433e2be0ac2dc77b5dd2eaaf165a5fc9a03cce67fa",
+      "bytes": 1686812
+    },
+    "blue_aura.usdz": {
+      "sha256": "772837865ba3290e1a72015ffa808e06d892efbeb481a544784e46adb4a41271",
+      "bytes": 63779
+    },
+    "wolfy_eat_treat.usdz": {
+      "sha256": "77fb0e3aad08783258bf30d8fd1c601c35a1ef9e6557ac55073cb000d1b76aca",
+      "bytes": 1750842
+    },
+    "beanie.usdz": {
+      "sha256": "b84d22d7f0cbcc187343f58c10a854842584806a0568333f6ebd45882741a310",
+      "bytes": 47760
+    },
+    "sunglasses.usdz": {
+      "sha256": "e15c47b7858a2e4746fdc8a7c3b22bda632f8c040a6bc7eacd134e63ab296d89",
+      "bytes": 51912
+    },
+    "wolfy_play.usdz": {
+      "sha256": "27a89c09ad9fe9dc9de0612a00995e7b3883192d1f913511c5d1ca3f03a2ac07",
+      "bytes": 1750840
+    },
+    "headset.usdz": {
+      "sha256": "5ff7f0ab3174c332a6ecd754e6975ef3664768f051f6e00315b7e0bce3dd01f7",
+      "bytes": 107445
+    },
+    "wolfy_idle_tired.usdz": {
+      "sha256": "1c1e92f9033ba4525d179a8117d000f3f15a4462bfe2d76b0a1ffe3035bdd411",
+      "bytes": 1729733
+    },
+    "silver_chain.usdz": {
+      "sha256": "66fac5e37193c3b814dbd383b4da94dddc121f8ea52217816f8a78211e030839",
+      "bytes": 149464
+    },
+    "wolfy_sleep.usdz": {
+      "sha256": "4919e2ac19d4f6a3facde439c718ffd8f95013c6952ab9df53598b3433e617df",
+      "bytes": 1729726
+    },
+    "wolfy_idle_neutral.usdz": {
+      "sha256": "2323106f88790fd4f65bff100f12bfe3c614b96b7ddb1d8dfeb85d3e2665ac20",
+      "bytes": 1730487
+    },
+    "wolfy_goal_completed.usdz": {
+      "sha256": "42400b464eac2bbbf64870d85d5da94b2041da82e6f8551a13406f5010b110c9",
+      "bytes": 1768673
+    },
+    "wolfy_talking.usdz": {
+      "sha256": "3b1f314142f69e79fcd2d76fa73f45faf32299b65dd8fe1adbf15078011ddb5a",
+      "bytes": 1729723
+    },
+    "hard_hat.usdz": {
+      "sha256": "4a83e23709291f9423c17b7a76d6ade64eb7ba300eebe263d54297b618eeabf4",
+      "bytes": 61164
+    },
+    "wolfy_run.usdz": {
+      "sha256": "7bb97979b7e71dfe0f4319bdc1805dc6de62eb820ada5635f1ae8f5a51d4414b",
+      "bytes": 1729716
+    },
+    "wolfy_level_up.usdz": {
+      "sha256": "4e49fbef27db053faca785116926a49de623edc439bf04f329084b31625e3f50",
+      "bytes": 1768675
+    },
+    "wolfy_wave.usdz": {
+      "sha256": "ceff4cc6f34c80aa7d3ecf4ebdfdd622e91fcead39f5248468d16f2753d281db",
+      "bytes": 1750837
+    },
+    "wolfy_celebrate_lead.usdz": {
+      "sha256": "3df4eae28f7776d8b770b931242f28c4e7ee96e97f13999c118ac4cdc5c7e5b6",
+      "bytes": 1768674
+    },
+    "hi_vis.usdz": {
+      "sha256": "b6decfa2af85a137fb15bddc28760c1b9fb110e66deb9ee2e01c83f5c6dbba61",
+      "bytes": 74904
+    },
+    "clipboard.usdz": {
+      "sha256": "1837123c8d8bbd096daa8fe535f9fe8d83359d00af4c6b3255ed4aebd7105f3c",
+      "bytes": 38074
+    },
+    "alpha_jacket.usdz": {
+      "sha256": "d60a9dd452a2ff7b4b5614c7345f680f1a9e0b30810e52464370401842746a52",
+      "bytes": 74780
+    },
+    "wolfy_concerned.usdz": {
+      "sha256": "8970aee2fd4607217d7c247a6df4c94c6721d26da6ed38e60fa30e40ec5a54b1",
+      "bytes": 1750917
+    },
+    "wolfy_listening.usdz": {
+      "sha256": "3ada2f46341203bad9dc46aeab3dbfae1ffa0ed1ba12af7c99b7da48b5bee695",
+      "bytes": 1729727
+    },
+    "wolfy_blink.usdz": {
+      "sha256": "d7aae839053d2ba639628d1ac7c6902119b377db85dfb4ec0091a6d90ec46570",
+      "bytes": 1730479
+    },
+    "wolfy_idle_focused.usdz": {
+      "sha256": "4b47ecd75b13870046ea755298ae6f0f2854e121bd20d0394085c1b1b4df4d43",
+      "bytes": 1729735
+    },
+    "white_sneakers.usdz": {
+      "sha256": "677c399a9e78e43108e4d3cd3137c32b48f274860532a78f4b90faacd9fd4210",
+      "bytes": 24954
+    },
+    "wolfy_rank_up.usdz": {
+      "sha256": "a1c0896eae4ce560376d09198c924a159f3f77f0e2c6966ae8a9e67e83ecc854",
+      "bytes": 1768673
+    },
+    "wolfy_streak_saved.usdz": {
+      "sha256": "719ed21f43e719f8705164fa6c4034fa0b0b80861f6d96dcfcd627d2884f7835",
+      "bytes": 1768671
+    },
+    "storm_jacket.usdz": {
+      "sha256": "99defcc99d7f741d246ae0ba75f003c1c13d7b9023072e2fc1ea3ae1724eacde",
+      "bytes": 74879
+    },
+    "tool_belt.usdz": {
+      "sha256": "d6d62c7d547992181790e47a3e5cadd548be5524b7fd14c992ae68b0bbf0b77d",
+      "bytes": 38280
+    },
+    "backpack.usdz": {
+      "sha256": "080fb5659a9e7488b7fec414fd0c5ffd9c3fa7cc0cfae81f36dd31705685813b",
+      "bytes": 56126
+    },
+    "cap.usdz": {
+      "sha256": "95db3358c13272d9bd74021c31db2b24495b59e4d1afeefd29563121818c8167",
+      "bytes": 74487
+    },
+    "wolfy_train.usdz": {
+      "sha256": "04fce78f2ba5324c1ba24ca8f837a95e4dda9e92130c32915ccbecbb558117d6",
+      "bytes": 1750849
+    },
+    "glasses.usdz": {
+      "sha256": "e7dc619805f5770f81f68f1479242c7ed69515fa655ff1451df8d66551ae16d6",
+      "bytes": 51908
+    },
+    "wolfy_thinking.usdz": {
+      "sha256": "a70f13600e4b1d540e08cf5dfa6d3886596e34395ca5a0295fc8ad277eef0337",
+      "bytes": 1729803
+    },
+    "wolfy_wake_up.usdz": {
+      "sha256": "71d61a269e22490d08c968ae4a6e921d576e7018aebd2c29fdda296b47bd93cd",
+      "bytes": 1750833
+    },
+    "wolfy_tail_wag.usdz": {
+      "sha256": "4b3d5a90e8730199dac89e9759bc70d79d0575f1206ae92d0cad249f79f17804",
+      "bytes": 1729718
+    },
+    "wolfy_celebrate_appointment.usdz": {
+      "sha256": "98e45681e1c44fcde423c3b969a7fe0dbaf2ecfb76404d08020f7fd9fef8666f",
+      "bytes": 1768802
+    },
+    "wolfy_idle_happy.usdz": {
+      "sha256": "2ef632b6a9000daa4d056a48c8e663e797a30b2ef215d983b02828f7a0fea8d1",
+      "bytes": 1730492
+    },
+    "wolfy_celebrate_sale.usdz": {
+      "sha256": "bd2375fea48bdbf449883a72bae8f2823d64fce2d3c73ef023cc82a6dc32c8fd",
+      "bytes": 1768687
+    },
+    "gloves.usdz": {
+      "sha256": "fd983feb47a298dbcba91393c5ff8c25d084ab7f539cb0c40ad1db3a1d79d223",
+      "bytes": 47789
+    },
+    "gold_chain.usdz": {
+      "sha256": "43599b1e1f075a485b13f35c62ddc23c339de98dca3a59099e0fbe609aced849",
+      "bytes": 247776
+    },
+    "wolfy_walk.usdz": {
+      "sha256": "e847d46d9960b05731cf8e0663084d2a5b802a9d469d17eefa7beeabf1858209",
+      "bytes": 1729722
+    },
+    "wolfy_encouraging.usdz": {
+      "sha256": "79311660646fc0931c91522fec62703b0adec3fe1cdf3d3d06351242d82c8dbc",
+      "bytes": 1750841
+    },
+    "wolfy_equip_item.usdz": {
+      "sha256": "0625e7446005a09ed0b168f49d53a2e9cf51cb1fae85f79c2e3f4982b9849891",
+      "bytes": 1750843
+    },
+    "basic_collar.usdz": {
+      "sha256": "f4c6e3c57fa440ddf4a40a506d90b983fa89480663e4cee95fa64dca19ae4357",
+      "bytes": 247759
+    },
+    "bandana.usdz": {
+      "sha256": "c7357b5751eedc9cbb7baae5939eef8e26528cb134c535601c14a9bbe5567a6e",
+      "bytes": 24671
+    },
+    "work_boots.usdz": {
+      "sha256": "c219ed5424cc15c33c4c1377449638d9b4ce92df9ec70b2c7185753ad8a928d5",
+      "bytes": 24969
+    }
+  }
+}

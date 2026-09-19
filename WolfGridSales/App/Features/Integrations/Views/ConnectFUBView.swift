@@ -174,7 +174,7 @@ struct ConnectFUBView: View {
 
         Task {
             do {
-                let response = try await FUBPushLeadAPI.shared.testConnection()
+                let response = try await FUBConnectionTestAPI.shared.testConnection()
                 await MainActor.run {
                     isTestingConnection = false
                     successMessage = response.message ?? "Follow Up Boss connection is working."
@@ -195,7 +195,7 @@ struct ConnectFUBView: View {
 
         Task {
             do {
-                let response = try await FUBPushLeadAPI.shared.testPush()
+                let response = try await FUBConnectionTestAPI.shared.testPush()
                 await MainActor.run {
                     isSendingTestLead = false
                     successMessage = response.message ?? "Test lead sent to Follow Up Boss."

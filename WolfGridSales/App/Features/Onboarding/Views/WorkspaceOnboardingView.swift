@@ -5,7 +5,6 @@ import Supabase
 struct WorkspaceOnboardingView: View {
     @EnvironmentObject var routeState: AppRouteState
     @EnvironmentObject var uiState: AppUIState
-    @EnvironmentObject var entitlementsService: EntitlementsService
     @StateObject private var viewModel = WorkspaceOnboardingViewModel()
     @State private var isSubmitting = false
 
@@ -34,10 +33,6 @@ struct WorkspaceOnboardingView: View {
             await ensureFreshSession()
             let response = try await AccessAPI.shared.completeOnboarding(request)
             await hydrateWorkspaceContextAfterOnboarding()
-            if response.redirect?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() != "/subscribe" {
-                _ = await OnboardingDemoViewModel.shared.seedStarterCampaign()
-            }
-            _ = await entitlementsService.fetchEntitlement()
             await MainActor.run {
                 advanceAfterSuccessfulOnboarding(response)
             }
@@ -46,10 +41,6 @@ struct WorkspaceOnboardingView: View {
                 await ensureFreshSession()
                 let response = try await AccessAPI.shared.completeOnboarding(request)
                 await hydrateWorkspaceContextAfterOnboarding()
-                if response.redirect?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() != "/subscribe" {
-                    _ = await OnboardingDemoViewModel.shared.seedStarterCampaign()
-                }
-                _ = await entitlementsService.fetchEntitlement()
                 await MainActor.run {
                     advanceAfterSuccessfulOnboarding(response)
                 }
@@ -75,8 +66,6 @@ struct WorkspaceOnboardingView: View {
             print("⚠️ [Onboarding] Failed to refresh access state after onboarding: \(error)")
             #endif
         }
-
-        _ = await RoutePlansAPI.shared.existingWorkspaceIdForCurrentUser()
     }
     
     private func advanceAfterSuccessfulOnboarding(_ response: OnboardingCompleteResponse) {
@@ -84,7 +73,7 @@ struct WorkspaceOnboardingView: View {
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
         if normalizedRedirect == "/subscribe" || normalizedRedirect == "subscribe" {
-            routeState.setRouteToSubscribe(memberInactive: false)
+            routeState.setRoute(.dashboard)
             return
         }
         routeState.setRoute(.dashboard)

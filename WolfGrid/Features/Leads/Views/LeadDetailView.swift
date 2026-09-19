@@ -59,6 +59,13 @@ struct LeadDetailView: View {
             VStack(alignment: .leading, spacing: 24) {
                 appleStyleHeaderSection
                 contactRowsSection
+                BusinessCardSendView(contactID: lead.id, phone: editablePhone, email: editableEmail, saveLead: {
+                    var updated = lead
+                    updated.name = editableName; updated.phone = editablePhone; updated.email = editableEmail; updated.notes = editableNotes
+                    let saved = try await FieldLeadsService.shared.updateLead(updated)
+                    onLeadUpdated?(saved)
+                    return saved.id
+                })
                 addressSection
                 fieldNotesMetadataSection
                 if lead.qrCode != nil { qrSection }

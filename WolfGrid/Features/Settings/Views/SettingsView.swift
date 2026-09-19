@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import Supabase
 
 struct SettingsView: View {
     @StateObject private var vm = SettingsViewModel()
@@ -30,7 +31,18 @@ struct SettingsView: View {
                 if let user = auth.user {
                     // Profile Section
                     profileSection(user: user)
+                    Section("Business Card") {
+                        NavigationLink { BusinessCardEditorView() } label: {
+                            Label("My Business Card", systemImage: "person.crop.rectangle")
+                        }
+                    }
                     
+                    Section("Activity") {
+                        NavigationLink { YouStatsView() } label: {
+                            Label("Stats", systemImage: "chart.bar.fill")
+                        }
+                    }
+
                     // Integrations Section
                     integrationsSection
 
@@ -43,6 +55,8 @@ struct SettingsView: View {
                     // Streak Settings
                     streakSettingsSection
                     
+                    WorkspaceCoverageSettingsSection()
+
                     // Appearance
                     appearanceSection
 
@@ -477,5 +491,54 @@ struct SettingsView: View {
         } catch {
             deleteAccountError = error.localizedDescription
         }
+    }
+}
+
+
+private struct WorkspaceCoverageSettingsSection: View {
+    @ObservedObject private var workspace = WorkspaceContext.shared
+    @State private var settings: WorkspaceCoverageSettings?
+    @State private var saving = false
+    @State private var message: String?
+
+    var body: some View {
+        Group {
+            if workspace.role == "owner" || workspace.role == "admin" {
+                Section {
+                    Toggle("Prevent duplicate visits", isOn: Binding(
+                        get: { settings?.enabled ?? false },
+                        set: { enabled in Task { await save(enabled) } }
+                    ))
+                    .disabled(settings?.canManage != true || saving)
+                    if let message { Text(message).font(.caption).foregroundStyle(.secondary) }
+                } header: { Text("Shared team coverage") }
+                footer: { Text("Off by default. Share visited homes across this workspace’s campaigns. Only owners and managers can change this or override a visited home.") }
+            }
+        }
+        .task(id: workspace.workspaceId) {
+            settings = nil
+            message = nil
+            guard let id = workspace.workspaceId else { return }
+            do {
+                let loaded: WorkspaceCoverageSettings = try await SupabaseManager.shared.client
+                    .rpc("get_workspace_coverage_settings", params: ["p_workspace_id": id.uuidString]).execute().value
+                guard workspace.workspaceId == id, !Task.isCancelled else { return }
+                settings = loaded
+            } catch { if workspace.workspaceId == id { message = "Shared coverage settings are unavailable." } }
+        }
+    }
+
+    @MainActor private func save(_ enabled: Bool) async {
+        guard let id = workspace.workspaceId, settings?.canManage == true, !saving else { return }
+        saving = true
+        defer { saving = false }
+        do {
+            let result: WorkspaceCoverageSettings = try await SupabaseManager.shared.client.rpc(
+                "set_workspace_coverage", params: ["p_workspace_id": AnyCodable(id.uuidString), "p_enabled": AnyCodable(enabled)]
+            ).execute().value
+            guard workspace.workspaceId == id else { return }
+            settings = result
+            message = nil
+        } catch { if workspace.workspaceId == id { message = "Could not save shared coverage. Please try again." } }
     }
 }

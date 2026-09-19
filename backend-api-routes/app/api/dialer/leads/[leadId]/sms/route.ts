@@ -1,3 +1,4 @@
+import { getSalespersonSmsFromNumber } from '@/lib/dialer/salesperson-settings';
 import { NextResponse, type NextRequest } from "next/server";
 import { createAdminClient } from "@/lib/supabase/server";
 import { resolveDialerWorkspace } from "../../../_utils";
@@ -56,7 +57,7 @@ async function resolveLead(request: NextRequest, leadId: string, options?: { all
   if (response) return { response, context: null, contact: null };
 
   const admin = createAdminClient();
-  const contact = await getContactForWorkspace(admin, leadId, context!.workspace!.id);
+  const contact = await getContactForWorkspace(admin, leadId, context!.workspace!.id, context!.user.id);
   if (!contact && !options?.allowMissing) {
     return {
       response: NextResponse.json({ error: "Dialer lead was not found." }, { status: 404 }),
@@ -79,6 +80,7 @@ export async function GET(request: NextRequest, routeContext: RouteContext) {
       .from("dialer_messages")
       .select("*")
       .eq("workspace_id", resolved.context!.workspace!.id)
+      .eq("sender_user_id", resolved.context!.user.id)
       .eq("contact_id", resolved.contact!.id)
       .order("created_at", { ascending: false })
       .limit(100);
@@ -120,9 +122,13 @@ export async function POST(request: NextRequest, routeContext: RouteContext) {
       );
     }
 
-    const sent = await sendTelnyxSms({ to, text: body });
+    const senderNumber = await getSalespersonSmsFromNumber(createAdminClient(), {
+      userId: resolved.context!.user.id, workspaceId: resolved.context!.workspace!.id,
+    }, null);
+    if (!senderNumber) return NextResponse.json({ error: 'A personal phone number must be assigned before texting.' }, { status: 409 });
+    const sent = await sendTelnyxSms({ from: senderNumber, to, text: body });
     const now = new Date().toISOString();
-    const from = normalizePhone(sent?.from?.phone_number) ?? normalizePhone(telnyxSmsFromNumber())!;
+    const from = normalizePhone(sent?.from?.phone_number) ?? senderNumber;
     const providerMessageId = sent?.id ?? null;
     const status = sent?.to?.[0]?.status ?? "queued";
     const optimisticMessage = outboundMessageFromTelnyx({
@@ -179,6 +185,7 @@ export async function POST(request: NextRequest, routeContext: RouteContext) {
     await admin
       .from("contact_activities")
       .insert({
+        communication_owner_user_id: resolved.context!.user.id,
         contact_id: resolved.contact.id,
         type: "text",
         note: body,

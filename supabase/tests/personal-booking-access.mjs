@@ -1,0 +1,30 @@
+const { PGlite } = await import(process.env.PGLITE_MODULE_PATH || '@electric-sql/pglite');
+import { readFileSync } from 'node:fs';
+import assert from 'node:assert/strict';
+const db=new PGlite();
+const a='00000000-0000-0000-0000-000000000001',b='00000000-0000-0000-0000-000000000002',w='00000000-0000-0000-0000-000000000003',team='00000000-0000-0000-0000-000000000004';
+await db.exec(`CREATE ROLE authenticated; CREATE ROLE anon; CREATE ROLE service_role; CREATE SCHEMA auth;
+CREATE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql AS $$ SELECT nullif(current_setting('request.jwt.claim.sub',true),'')::uuid $$;
+CREATE TABLE workspace_members(workspace_id uuid,user_id uuid,role text);
+INSERT INTO workspace_members VALUES ('${w}','${a}','owner'),('${w}','${b}','member');
+CREATE TABLE sales_booking_links(id uuid,workspace_id uuid,owner_user_id uuid,mode text);
+CREATE TABLE sales_booking_link_members(booking_link_id uuid,user_id uuid,is_active boolean DEFAULT true);
+CREATE TABLE sales_availability_rules(id uuid,user_id uuid);
+CREATE TABLE sales_availability_overrides(id uuid,user_id uuid);
+INSERT INTO sales_booking_links VALUES ('${a}','${w}','${a}','personal'),('${b}','${w}','${b}','personal'),('${team}','${w}',null,'round_robin');
+INSERT INTO sales_booking_link_members VALUES ('${a}','${a}',true),('${b}','${b}',true),('${team}','${b}',true);
+GRANT USAGE ON SCHEMA public,auth TO authenticated; GRANT SELECT ON workspace_members TO authenticated;`);
+for(const table of ['sales_booking_links','sales_booking_link_members','sales_availability_rules','sales_availability_overrides']) await db.exec(`ALTER TABLE ${table} ENABLE ROW LEVEL SECURITY; CREATE POLICY legacy ON ${table} FOR ALL TO authenticated USING (true) WITH CHECK (true); GRANT ALL ON ${table} TO authenticated;`);
+await db.exec(readFileSync(new URL('../migrations/20260909100000_personal_booking_access.sql',import.meta.url),'utf8'));
+for(const user of [a,b]) {
+ await db.exec(`SET ROLE authenticated; SELECT set_config('request.jwt.claim.sub','${user}',false);`);
+ assert.deepEqual((await db.query('SELECT id FROM sales_booking_links ORDER BY id')).rows.map(r=>r.id),[user,team]);
+ const foreign=user===a?b:a;
+ assert.equal((await db.query(`DELETE FROM sales_booking_links WHERE id='${foreign}' RETURNING id`)).rows.length,0);
+ assert.equal((await db.query(`SELECT * FROM sales_booking_link_members WHERE booking_link_id='${foreign}'`)).rows.length,0);
+ await assert.rejects(db.exec(`INSERT INTO sales_booking_link_members VALUES ('${user}','${foreign}',true)`),/row-level security/);
+ if(user===b) assert.equal((await db.query(`DELETE FROM sales_booking_links WHERE id='${team}' RETURNING id`)).rows.length,0);
+ await db.exec('RESET ROLE');
+}
+console.log('PASS: personal booking links remain private even from workspace owners; team members can read but not edit team links; personal links reject foreign members.');
+await db.close();

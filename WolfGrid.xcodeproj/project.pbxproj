@@ -7,8 +7,6 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		C8A100000000000000000002 /* WhiteWolfSales.icon in Resources */ = {isa = PBXBuildFile; fileRef = C8A100000000000000000001 /* WhiteWolfSales.icon */; };
-		B8A100000000000000000002 /* SalespersonMainTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8A100000000000000000001 /* SalespersonMainTabView.swift */; };
 		1CACC434BF75CC566159355F /* PostgREST in Frameworks */ = {isa = PBXBuildFile; productRef = 30A4A5E52EA70F3500FA72B1 /* PostgREST */; };
 		20C2A5368BEFBBC4F41A064B /* telnyx-webrtc-ios in Frameworks */ = {isa = PBXBuildFile; productRef = 4D9F102B2F94000100A1F1A1 /* telnyx-webrtc-ios */; };
 		256A6DB64C951F7679B03285 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 79E245EF5F24004170C35541 /* Foundation.framework */; };
@@ -23,7 +21,6 @@
 		30A4A6182EA71CB500FA72B1 /* GoogleSignIn in Frameworks */ = {isa = PBXBuildFile; productRef = 30A4A6192EA71CB500FA72B1 /* GoogleSignIn */; };
 		30A4A6222EA71CC000FA72B1 /* Lottie in Frameworks */ = {isa = PBXBuildFile; productRef = 30A4A6212EA71CC000FA72B1 /* Lottie */; };
 		30DC41E02F35A3A5003EBA4A /* GoogleSignInSwift in Frameworks */ = {isa = PBXBuildFile; productRef = 30DC41DF2F35A3A5003EBA4A /* GoogleSignInSwift */; };
-		3131E301951249468DCE60E1 /* LiveKit in Frameworks */ = {isa = PBXBuildFile; productRef = 7B3EAA062F50A001003EBA4A /* LiveKit */; };
 		34028A72351DD9A11F0A5E8C /* GoogleMaps in Frameworks */ = {isa = PBXBuildFile; productRef = 9A1B2C3D4E5F60718293A4B7 /* GoogleMaps */; };
 		3FC2BD30BB5656455623A5CB /* MapboxMaps in Frameworks */ = {isa = PBXBuildFile; productRef = 30A4A6152EA71CA500FA72B1 /* MapboxMaps */; };
 		4D9F102C2F94000100A1F1A1 /* telnyx-webrtc-ios in Frameworks */ = {isa = PBXBuildFile; productRef = 4D9F102B2F94000100A1F1A1 /* telnyx-webrtc-ios */; };
@@ -31,10 +28,11 @@
 		6E6070619E28865FB84BCA38 /* SessionLiveActivityWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5194BCD47B2F8D7EAA1E888C /* SessionLiveActivityWidget.swift */; };
 		6F7425C6E149E560D59BFFDC /* GoogleSignInSwift in Frameworks */ = {isa = PBXBuildFile; productRef = 30DC41DF2F35A3A5003EBA4A /* GoogleSignInSwift */; };
 		7418DC3C0E3864D424C22B74 /* Functions in Frameworks */ = {isa = PBXBuildFile; productRef = 30A4A5E32EA70F3500FA72B1 /* Functions */; };
-		7B3EAA072F50A001003EBA4A /* LiveKit in Frameworks */ = {isa = PBXBuildFile; productRef = 7B3EAA062F50A001003EBA4A /* LiveKit */; };
 		9A1B2C3D4E5F60718293A4B5 /* GoogleMaps in Frameworks */ = {isa = PBXBuildFile; productRef = 9A1B2C3D4E5F60718293A4B7 /* GoogleMaps */; };
 		9A53263F101C0745DAA278FD /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = A1B2C3D4E5F60718293A4B5C /* GRDB */; };
 		B666D9B179DB98D0135C86D4 /* SessionLiveActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1F739542582267E77AA500C4 /* SessionLiveActivityAttributes.swift */; };
+		B8A100000000000000000002 /* WolfGridSales/SalespersonMainTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8A100000000000000000001 /* WolfGridSales/SalespersonMainTabView.swift */; };
+		C8A100000000000000000002 /* WolfGridSales/WhiteWolfSales.icon in Resources */ = {isa = PBXBuildFile; fileRef = C8A100000000000000000001 /* WolfGridSales/WhiteWolfSales.icon */; };
 		D4C78D0AA4117F21B8EF129D /* Lottie in Frameworks */ = {isa = PBXBuildFile; productRef = 30A4A6212EA71CC000FA72B1 /* Lottie */; };
 		DF68D92A586821CAB5327679 /* Realtime in Frameworks */ = {isa = PBXBuildFile; productRef = 30A4A5E72EA70F3500FA72B1 /* Realtime */; };
 		E26E0150653C05C6BEF265BD /* Storage in Frameworks */ = {isa = PBXBuildFile; productRef = 30A4A5E92EA70F3500FA72B1 /* Storage */; };
@@ -85,8 +83,6 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
-		C8A100000000000000000001 /* WhiteWolfSales.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = WolfGridSales/WhiteWolfSales.icon; sourceTree = SOURCE_ROOT; };
-		B8A100000000000000000001 /* SalespersonMainTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WolfGridSales/SalespersonMainTabView.swift; sourceTree = SOURCE_ROOT; };
 		05030697214A2D9EDD508F34 /* Info.plist */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		0AD261E306FAE62EF87A9A36 /* WolfGridSales.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = WolfGridSales.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		1F739542582267E77AA500C4 /* SessionLiveActivityAttributes.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SessionLiveActivityAttributes.swift; path = WolfGrid/Shared/LiveActivity/SessionLiveActivityAttributes.swift; sourceTree = "<group>"; };
@@ -99,19 +95,12 @@
 		79E245EF5F24004170C35541 /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS18.0.sdk/System/Library/Frameworks/Foundation.framework; sourceTree = DEVELOPER_DIR; };
 		91CCBD85356FC43A6E8767FE /* WolfGridSessionActivityBundle.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = WolfGridSessionActivityBundle.swift; sourceTree = "<group>"; };
 		AA7395B8BD595392DE025A5C /* Assets.xcassets */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = folder.assetcatalog; name = Assets.xcassets; path = WolfGrid/Assets.xcassets; sourceTree = "<group>"; };
+		B8A100000000000000000001 /* WolfGridSales/SalespersonMainTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WolfGridSales/SalespersonMainTabView.swift; sourceTree = SOURCE_ROOT; };
+		C8A100000000000000000001 /* WolfGridSales/WhiteWolfSales.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = WolfGridSales/WhiteWolfSales.icon; sourceTree = SOURCE_ROOT; };
+		C8A200000000000000000001 /* WolfGridSales/Config.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = WolfGridSales/Config.xcconfig; sourceTree = SOURCE_ROOT; };
 		E1679E8381A2ED5D165B57D9 /* WolfGridSales.entitlements */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.entitlements; path = WolfGridSales.entitlements; sourceTree = "<group>"; };
 		EA8FCBA9368E8DCE17DB6292 /* WolfGridSales-Info.plist */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.xml; path = "WolfGridSales-Info.plist"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
-
-/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
-		C0DE00000000000000000001 /* Exceptions for "WolfGridUITests" folder in "WolfGridUITests" target */ = {
-			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
-			membershipExceptions = (
-				Info.plist,
-			);
-			target = 30A4A5942EA6CD9900FA72B1 /* WolfGridUITests */;
-		};
-/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		30A4A5802EA6CD9800FA72B1 /* WolfGrid */ = {
@@ -126,9 +115,6 @@
 		};
 		30A4A5982EA6CD9900FA72B1 /* WolfGridUITests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			exceptions = (
-				C0DE00000000000000000001 /* Exceptions for "WolfGridUITests" folder in "WolfGridUITests" target */,
-			);
 			path = WolfGridUITests;
 			sourceTree = "<group>";
 		};
@@ -146,7 +132,6 @@
 			buildActionMask = 2147483647;
 			files = (
 				30A113B02F9C567D00F50F88 /* GRDB in Frameworks */,
-				7B3EAA072F50A001003EBA4A /* LiveKit in Frameworks */,
 				30DC41E02F35A3A5003EBA4A /* GoogleSignInSwift in Frameworks */,
 				30A4A5E62EA70F3500FA72B1 /* PostgREST in Frameworks */,
 				30A4A5E42EA70F3500FA72B1 /* Functions in Frameworks */,
@@ -201,7 +186,6 @@
 				D4C78D0AA4117F21B8EF129D /* Lottie in Frameworks */,
 				20C2A5368BEFBBC4F41A064B /* telnyx-webrtc-ios in Frameworks */,
 				34028A72351DD9A11F0A5E8C /* GoogleMaps in Frameworks */,
-				3131E301951249468DCE60E1 /* LiveKit in Frameworks */,
 				9A53263F101C0745DAA278FD /* GRDB in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -267,8 +251,9 @@
 		F0516957BB93BD02C534C91B /* WolfGridSales */ = {
 			isa = PBXGroup;
 			children = (
-				C8A100000000000000000001 /* WhiteWolfSales.icon */,
-				B8A100000000000000000001 /* SalespersonMainTabView.swift */,
+				C8A100000000000000000001 /* WolfGridSales/WhiteWolfSales.icon */,
+				C8A200000000000000000001 /* WolfGridSales/Config.xcconfig */,
+				B8A100000000000000000001 /* WolfGridSales/SalespersonMainTabView.swift */,
 				EA8FCBA9368E8DCE17DB6292 /* WolfGridSales-Info.plist */,
 				E1679E8381A2ED5D165B57D9 /* WolfGridSales.entitlements */,
 			);
@@ -316,7 +301,6 @@
 				30A4A6212EA71CC000FA72B1 /* Lottie */,
 				4D9F102B2F94000100A1F1A1 /* telnyx-webrtc-ios */,
 				9A1B2C3D4E5F60718293A4B7 /* GoogleMaps */,
-				7B3EAA062F50A001003EBA4A /* LiveKit */,
 				A1B2C3D4E5F60718293A4B5C /* GRDB */,
 			);
 			productName = WolfGrid;
@@ -411,7 +395,6 @@
 				30A4A6212EA71CC000FA72B1 /* Lottie */,
 				4D9F102B2F94000100A1F1A1 /* telnyx-webrtc-ios */,
 				9A1B2C3D4E5F60718293A4B7 /* GoogleMaps */,
-				7B3EAA062F50A001003EBA4A /* LiveKit */,
 				A1B2C3D4E5F60718293A4B5C /* GRDB */,
 			);
 			productName = WolfGridSales;
@@ -463,7 +446,6 @@
 				30A4A6202EA71CC000FA72B1 /* XCRemoteSwiftPackageReference "lottie-ios" */,
 				4D9F102A2F94000100A1F1A1 /* XCRemoteSwiftPackageReference "telnyx-webrtc-ios" */,
 				9A1B2C3D4E5F60718293A4B6 /* XCRemoteSwiftPackageReference "ios-maps-sdk" */,
-				7B3EAA052F50A001003EBA4A /* XCRemoteSwiftPackageReference "client-sdk-swift" */,
 				A1B2C3D4E5F60718293A4B5B /* XCRemoteSwiftPackageReference "GRDB.swift" */,
 			);
 			preferredProjectObjectVersion = 77;
@@ -514,7 +496,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				C8A100000000000000000002 /* WhiteWolfSales.icon in Resources */,
+				C8A100000000000000000002 /* WolfGridSales/WhiteWolfSales.icon in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -568,7 +550,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				B8A100000000000000000002 /* SalespersonMainTabView.swift in Sources */,
+				B8A100000000000000000002 /* WolfGridSales/SalespersonMainTabView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -759,7 +741,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = WolfGrid/WolfGrid.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 13;
+				CURRENT_PROJECT_VERSION = 15;
 				DEVELOPMENT_TEAM = 2AR5T8ZYAS;
 				ENABLE_DEBUG_DYLIB = NO;
 				ENABLE_PREVIEWS = YES;
@@ -774,7 +756,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.27;
+				MARKETING_VERSION = 1.28;
 				PRODUCT_BUNDLE_IDENTIFIER = com.danielphillippe.FLYR;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -799,7 +781,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = WolfGrid/WolfGrid.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 13;
+				CURRENT_PROJECT_VERSION = 15;
 				DEVELOPMENT_TEAM = 2AR5T8ZYAS;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -813,7 +795,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.27;
+				MARKETING_VERSION = 1.28;
 				PRODUCT_BUNDLE_IDENTIFIER = com.danielphillippe.FLYR;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -835,11 +817,11 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 13;
+				CURRENT_PROJECT_VERSION = 15;
 				DEVELOPMENT_TEAM = 2AR5T8ZYAS;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				MARKETING_VERSION = 1.27;
+				MARKETING_VERSION = 1.28;
 				PRODUCT_BUNDLE_IDENTIFIER = com.danielphillippe.wolfgrid.Tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
@@ -857,11 +839,11 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 13;
+				CURRENT_PROJECT_VERSION = 15;
 				DEVELOPMENT_TEAM = 2AR5T8ZYAS;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				MARKETING_VERSION = 1.27;
+				MARKETING_VERSION = 1.28;
 				PRODUCT_BUNDLE_IDENTIFIER = com.danielphillippe.wolfgrid.Tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
@@ -878,7 +860,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 13;
+				CURRENT_PROJECT_VERSION = 15;
 				DEVELOPMENT_TEAM = 2AR5T8ZYAS;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = WolfGridUITests/Info.plist;
@@ -887,7 +869,7 @@
 				INFOPLIST_KEY_QA_SUPABASE_ANON_KEY = "$(QA_SUPABASE_ANON_KEY)";
 				INFOPLIST_KEY_QA_SUPABASE_URL = "$(QA_SUPABASE_URL)";
 				INFOPLIST_KEY_QA_WORKSPACE_ID = "$(QA_WORKSPACE_ID)";
-				MARKETING_VERSION = 1.27;
+				MARKETING_VERSION = 1.28;
 				PRODUCT_BUNDLE_IDENTIFIER = com.danielphillippe.wolfgrid.UITests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
@@ -904,7 +886,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 13;
+				CURRENT_PROJECT_VERSION = 15;
 				DEVELOPMENT_TEAM = 2AR5T8ZYAS;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = WolfGridUITests/Info.plist;
@@ -913,7 +895,7 @@
 				INFOPLIST_KEY_QA_SUPABASE_ANON_KEY = "$(QA_SUPABASE_ANON_KEY)";
 				INFOPLIST_KEY_QA_SUPABASE_URL = "$(QA_SUPABASE_URL)";
 				INFOPLIST_KEY_QA_WORKSPACE_ID = "$(QA_WORKSPACE_ID)";
-				MARKETING_VERSION = 1.27;
+				MARKETING_VERSION = 1.28;
 				PRODUCT_BUNDLE_IDENTIFIER = com.danielphillippe.wolfgrid.UITests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
@@ -928,13 +910,14 @@
 		};
 		3BC4967DC059EFB5D025EB2D /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = C8A200000000000000000001 /* WolfGridSales/Config.xcconfig */;
 			buildSettings = {
 				APS_ENVIRONMENT = production;
 				ASSETCATALOG_COMPILER_APPICON_NAME = WhiteWolfSales;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = WolfGridSales/WolfGridSales.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 14;
 				DEVELOPMENT_TEAM = 2AR5T8ZYAS;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -972,7 +955,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CLANG_ENABLE_OBJC_WEAK = NO;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 13;
+				CURRENT_PROJECT_VERSION = 15;
 				DEVELOPMENT_TEAM = 2AR5T8ZYAS;
 				ENABLE_DEBUG_DYLIB = NO;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -983,7 +966,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.27;
+				MARKETING_VERSION = 1.28;
 				PRODUCT_BUNDLE_IDENTIFIER = com.danielphillippe.FLYR.SessionActivityExtension;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
@@ -1004,13 +987,14 @@
 		};
 		83DAAAE04165CA6FA945ABE1 /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = C8A200000000000000000001 /* WolfGridSales/Config.xcconfig */;
 			buildSettings = {
 				APS_ENVIRONMENT = development;
 				ASSETCATALOG_COMPILER_APPICON_NAME = WhiteWolfSales;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = WolfGridSales/WolfGridSales.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 14;
 				DEVELOPMENT_TEAM = 2AR5T8ZYAS;
 				ENABLE_DEBUG_DYLIB = NO;
 				ENABLE_PREVIEWS = YES;
@@ -1049,7 +1033,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CLANG_ENABLE_OBJC_WEAK = NO;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 13;
+				CURRENT_PROJECT_VERSION = 15;
 				DEVELOPMENT_TEAM = 2AR5T8ZYAS;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = WolfGridSessionActivityExtension/Info.plist;
@@ -1059,7 +1043,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.27;
+				MARKETING_VERSION = 1.28;
 				PRODUCT_BUNDLE_IDENTIFIER = com.danielphillippe.FLYR.SessionActivityExtension;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
@@ -1177,14 +1161,6 @@
 				kind = branch;
 			};
 		};
-		7B3EAA052F50A001003EBA4A /* XCRemoteSwiftPackageReference "client-sdk-swift" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/livekit/client-sdk-swift.git";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 2.11.0;
-			};
-		};
 		9A1B2C3D4E5F60718293A4B6 /* XCRemoteSwiftPackageReference "ios-maps-sdk" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/googlemaps/ios-maps-sdk";
@@ -1288,11 +1264,6 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 4D9F102A2F94000100A1F1A1 /* XCRemoteSwiftPackageReference "telnyx-webrtc-ios" */;
 			productName = "telnyx-webrtc-ios";
-		};
-		7B3EAA062F50A001003EBA4A /* LiveKit */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 7B3EAA052F50A001003EBA4A /* XCRemoteSwiftPackageReference "client-sdk-swift" */;
-			productName = LiveKit;
 		};
 		9A1B2C3D4E5F60718293A4B7 /* GoogleMaps */ = {
 			isa = XCSwiftPackageProductDependency;

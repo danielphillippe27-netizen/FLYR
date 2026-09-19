@@ -102,6 +102,7 @@ final class AuthManager: ObservableObject {
     }
 
     func signOut() async {
+        await SessionChatStore.shared.resetForAccountChange()
         KeychainAuthStorage.clearAll()
         do { try await client.auth.signOut() } catch {}
         WorkspaceContext.shared.clear()

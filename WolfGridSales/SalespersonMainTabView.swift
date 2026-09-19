@@ -3,39 +3,36 @@ import SwiftUI
 /// The root experience for the private WolfGrid Sales app.
 ///
 /// This intentionally has no dependency on the field-app campaign/session
-/// navigation. The Sales target always presents these seven salesperson tools.
+/// navigation. Pro mode keeps the five daily sales workflows one tap away.
 struct SalespersonMainTabView: View {
+    @ObservedObject private var auth = AuthManager.shared
+    @ObservedObject private var workspace = WorkspaceContext.shared
     @EnvironmentObject private var uiState: AppUIState
     @Environment(\.scenePhase) private var scenePhase
 
     private enum Tab: Int {
         case home = 0
-        case phone = 1
-        case messages = 2
-        case emails = 3
-        case contacts = 4
-        case list = 5
-        case followUp = 6
+        case inbox = 1
+        case contacts = 2
+        case dialler = 3
+        case followUp = 4
     }
 
     var body: some View {
         VStack(spacing: 0) {
+            SharedActiveCallBanner()
             Group {
                 switch uiState.selectedTabIndex {
                 case Tab.home.rawValue:
                     SalespersonHomeView()
-                case Tab.phone.rawValue:
-                    SalespersonDiallerView()
-                case Tab.messages.rawValue:
-                    SalespersonInboxView(source: "sms", title: "Messages")
-                case Tab.emails.rawValue:
-                    SalespersonInboxView(source: "email", title: "Emails")
+                case Tab.inbox.rawValue:
+                    SalespersonCommunicationsView()
                 case Tab.contacts.rawValue:
                     SalespersonLeadsView(mode: .contacts)
-                case Tab.list.rawValue:
-                    SalespersonLeadsView(mode: .lists)
+                case Tab.dialler.rawValue:
+                    SalespersonDiallerView()
                 case Tab.followUp.rawValue:
-                    SalespersonTasksView()
+                    SalespersonFollowUpHubView()
                 default:
                     SalespersonHomeView()
                 }
@@ -56,6 +53,7 @@ struct SalespersonMainTabView: View {
                 )
             }
         }
+        .id("\(auth.user?.id.uuidString ?? "signed-out"):\(workspace.workspaceId?.uuidString ?? "no-workspace")")
         .background(Color.bg)
         .onAppear {
             normalizeSelectedTab()

@@ -122,24 +122,8 @@ final class CampaignsAPI {
     }
 
     private func fetchAssignedCampaignIds(workspaceId: UUID) async -> [UUID] {
-        var ids = Set<UUID>()
-
-        if let routes = try? await RouteAssignmentsAPI.shared.fetchAssignments(workspaceId: workspaceId).assignments {
-            ids.formUnion(routes.filter(Self.isActiveRouteAssignment).compactMap(\.campaignId))
-        } else if let legacyRoutes = try? await RoutePlansAPI.shared.fetchMyAssignedRoutes(workspaceId: workspaceId) {
-            ids.formUnion(legacyRoutes.filter(Self.isActiveRouteAssignment).compactMap(\.campaignId))
-        }
-
-        if let campaignAssignments = try? await CampaignAssignmentsAPI.shared.fetchAssignments(workspaceId: workspaceId) {
-            ids.formUnion(campaignAssignments.assignments.filter(\.isActive).map(\.campaignId))
-        }
-
-        return Array(ids)
-    }
-
-    private static func isActiveRouteAssignment(_ assignment: RouteAssignmentSummary) -> Bool {
-        !["completed", "complete", "cancelled", "canceled", "archived", "declined"]
-            .contains(assignment.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+        let snapshot = await CampaignAssignmentSnapshotLoader.live.load(workspaceId: workspaceId)
+        return Array(snapshot.campaignListAssignedIDs)
     }
 
     private func currentUserId() async throws -> UUID {
@@ -498,31 +482,55 @@ final class CampaignsAPI {
     // Fetch Campaigns V2 - REAL SUPABASE INTEGRATION
     // Fetches campaign metadata and address counts so list shows correct house count
     func fetchCampaignsV2(workspaceId: UUID? = nil) async throws -> [CampaignV2] {
+        try await fetchCampaignListV2(workspaceId: workspaceId).campaigns.get()
+    }
+
+    func fetchCampaignListV2(workspaceId: UUID? = nil) async -> CampaignListLoadResult {
         print("🌐 [API DEBUG] Fetching campaigns V2 from Supabase (metadata + address counts)")
+        let resolvedWorkspaceId: UUID
+        do {
+            resolvedWorkspaceId = try await requireResolvedWorkspaceId(workspaceId)
+        } catch {
+            return CampaignListLoadResult(campaigns: .failure(error), assignmentSnapshot: .empty)
+        }
+
+        let isOnline = NetworkMonitor.shared.isOnline
+        async let assignmentSnapshot = isOnline
+            ? CampaignAssignmentSnapshotLoader.live.load(workspaceId: resolvedWorkspaceId)
+            : CampaignAssignmentSnapshotLoader.live.loadCached(workspaceId: resolvedWorkspaceId)
+
         if OfflineFirstConfig.isEnabled && !NetworkMonitor.shared.isOnline {
-            let cachedCampaigns = await CampaignRepository.shared.getCachedCampaigns()
+            let cachedCampaigns = await CampaignRepository.shared.getCachedCampaigns(workspaceId: resolvedWorkspaceId)
             if !cachedCampaigns.isEmpty {
                 PerfTrace.event("offline_first", "campaign_list_cache_hit", fields: [
                     "count": cachedCampaigns.count,
                     "online": NetworkMonitor.shared.isOnline
                 ])
-                return cachedCampaigns
+                return await CampaignListLoadResult(
+                    campaigns: .success(cachedCampaigns),
+                    assignmentSnapshot: assignmentSnapshot
+                )
             }
         }
 
         if !NetworkMonitor.shared.isOnline {
-            let cachedCampaigns = await CampaignRepository.shared.getCachedCampaigns()
+            let cachedCampaigns = await CampaignRepository.shared.getCachedCampaigns(workspaceId: resolvedWorkspaceId)
             if !cachedCampaigns.isEmpty {
                 print("📴 [API DEBUG] Loaded \(cachedCampaigns.count) cached campaigns for offline list")
-                return cachedCampaigns
+                return await CampaignListLoadResult(
+                    campaigns: .success(cachedCampaigns),
+                    assignmentSnapshot: assignmentSnapshot
+                )
             }
         }
 
         do {
             let dbRows: [CampaignDBRow]
-            let workspaceId = try await requireResolvedWorkspaceId(workspaceId)
-            let sharedIds = await fetchAssignedCampaignIds(workspaceId: workspaceId)
-            let primaryCampaigns = try await fetchOwnedCampaignRows(workspaceId: workspaceId)
+            // Neither query depends on the other. Starting both together removes the
+            // assignment lookup from the critical path for owned campaign metadata.
+            async let ownedCampaignRows = fetchOwnedCampaignRows(workspaceId: resolvedWorkspaceId)
+            let (snapshot, primaryCampaigns) = try await (assignmentSnapshot, ownedCampaignRows)
+            let sharedIds = snapshot.campaignListAssignedIDs
 
             if sharedIds.isEmpty {
                 dbRows = primaryCampaigns.filter { !Self.isHiddenFromCampaignLists($0) }
@@ -540,30 +548,11 @@ final class CampaignsAPI {
             }
             print("✅ [API DEBUG] Fetched \(dbRows.count) campaigns from DB")
 
-            // 2. Fetch address counts per campaign (for house count in list)
-            var addressCountByCampaignId: [UUID: Int] = [:]
-            do {
-                struct CampaignCountRow: Decodable {
-                    let campaignId: UUID
-                    let addressCount: Int
-                    enum CodingKeys: String, CodingKey {
-                        case campaignId = "campaign_id"
-                        case addressCount = "address_count"
-                    }
-                }
-                let countRes: PostgrestResponse<[CampaignCountRow]> = try await client
-                    .rpc("get_campaign_address_counts")
-                    .execute()
-                addressCountByCampaignId = Dictionary(uniqueKeysWithValues: countRes.value.map { ($0.campaignId, $0.addressCount) })
-                print("✅ [API DEBUG] Fetched address counts for \(addressCountByCampaignId.count) campaigns")
-            } catch {
-                print("⚠️ [API DEBUG] Could not fetch live address counts; using cached counts: \(error)")
-                let cachedCampaigns = await CampaignRepository.shared.getCachedCampaigns()
-                addressCountByCampaignId = Dictionary(
-                    uniqueKeysWithValues: cachedCampaigns.map { ($0.id, $0.houseCount) }
-                )
-                print("📴 [API DEBUG] Falling back to \(addressCountByCampaignId.count) cached campaign counts")
-            }
+            // Use device-cached counts for the first paint. The expensive aggregate RPC
+            // refreshes them after the list is visible instead of blocking navigation.
+            let addressCountByCampaignId = await CampaignRepository.shared.getCachedCampaignAddressCounts(
+                campaignIds: Set(dbRows.map(\.id))
+            )
 
             // 3. Convert each campaign to CampaignV2 with correct totalFlyers
             var campaigns: [CampaignV2] = []
@@ -576,18 +565,69 @@ final class CampaignsAPI {
 
             await CampaignRepository.shared.upsertCampaignMetadataRows(
                 dbRows,
-                addressCounts: addressCountByCampaignId
+                addressCounts: addressCountByCampaignId,
+                workspaceId: resolvedWorkspaceId
             )
 
+            Task { [weak self] in
+                await self?.refreshCampaignAddressCounts(
+                    for: dbRows,
+                    workspaceId: resolvedWorkspaceId
+                )
+            }
+
             print("✅ [API DEBUG] Converted \(campaigns.count) campaigns to CampaignV2 with house counts")
-            return campaigns
+            return CampaignListLoadResult(
+                campaigns: .success(campaigns),
+                assignmentSnapshot: snapshot
+            )
         } catch {
-            let cachedCampaigns = await CampaignRepository.shared.getCachedCampaigns()
+            let snapshot = await assignmentSnapshot
+            let cachedCampaigns = await CampaignRepository.shared.getCachedCampaigns(workspaceId: resolvedWorkspaceId)
             if !cachedCampaigns.isEmpty {
                 print("⚠️ [API DEBUG] Campaign DB fetch failed, using \(cachedCampaigns.count) cached campaigns: \(error.localizedDescription) debug=\(String(describing: error))")
-                return cachedCampaigns
+                return CampaignListLoadResult(
+                    campaigns: .success(cachedCampaigns),
+                    assignmentSnapshot: snapshot
+                )
             }
-            throw error
+            return CampaignListLoadResult(campaigns: .failure(error), assignmentSnapshot: snapshot)
+        }
+    }
+
+    private func refreshCampaignAddressCounts(
+        for dbRows: [CampaignDBRow],
+        workspaceId: UUID
+    ) async {
+        struct CampaignCountRow: Decodable {
+            let campaignId: UUID
+            let addressCount: Int
+
+            enum CodingKeys: String, CodingKey {
+                case campaignId = "campaign_id"
+                case addressCount = "address_count"
+            }
+        }
+
+        do {
+            let countRes: PostgrestResponse<[CampaignCountRow]> = try await client
+                .rpc("get_campaign_address_counts")
+                .execute()
+            let counts = Dictionary(
+                uniqueKeysWithValues: countRes.value.map { ($0.campaignId, $0.addressCount) }
+            )
+            await CampaignRepository.shared.upsertCampaignMetadataRows(
+                dbRows,
+                addressCounts: counts,
+                workspaceId: workspaceId
+            )
+            await MainActor.run {
+                guard WorkspaceContext.shared.workspaceId == workspaceId else { return }
+                CampaignV2Store.shared.updateAddressCounts(counts)
+            }
+            print("✅ [API DEBUG] Refreshed address counts for \(counts.count) campaigns")
+        } catch {
+            print("⚠️ [API DEBUG] Background address count refresh failed; keeping cached counts: \(error)")
         }
     }
 
@@ -1709,8 +1749,27 @@ final class CampaignAssignmentsAPI {
 /// Protocol for CampaignV2 API operations
 protocol CampaignsV2APIType {
     func fetchCampaigns(workspaceId: UUID?) async throws -> [CampaignV2]
+    func fetchCampaignList(workspaceId: UUID?) async -> CampaignListLoadResult
+    func fetchAssignmentSnapshot(workspaceId: UUID?) async -> CampaignAssignmentSnapshot
     func fetchCampaign(id: UUID) async throws -> CampaignV2
     func createCampaign(_ draft: CampaignV2Draft, workspaceId: UUID?) async throws -> CampaignV2
+}
+
+extension CampaignsV2APIType {
+    func fetchCampaignList(workspaceId: UUID?) async -> CampaignListLoadResult {
+        do {
+            return CampaignListLoadResult(
+                campaigns: .success(try await fetchCampaigns(workspaceId: workspaceId)),
+                assignmentSnapshot: .empty
+            )
+        } catch {
+            return CampaignListLoadResult(campaigns: .failure(error), assignmentSnapshot: .empty)
+        }
+    }
+
+    func fetchAssignmentSnapshot(workspaceId: UUID?) async -> CampaignAssignmentSnapshot {
+        .empty
+    }
 }
 
 /// Mock implementation for CampaignV2 API
@@ -1754,6 +1813,20 @@ final class CampaignsV2APISupabase: CampaignsV2APIType {
     
     func fetchCampaigns(workspaceId: UUID? = nil) async throws -> [CampaignV2] {
         return try await api.fetchCampaignsV2(workspaceId: workspaceId)
+    }
+
+    func fetchCampaignList(workspaceId: UUID? = nil) async -> CampaignListLoadResult {
+        await api.fetchCampaignListV2(workspaceId: workspaceId)
+    }
+
+    func fetchAssignmentSnapshot(workspaceId: UUID? = nil) async -> CampaignAssignmentSnapshot {
+        guard let resolvedWorkspaceId = await RoutePlansAPI.shared.resolveWorkspaceId(preferred: workspaceId) else {
+            return .empty
+        }
+        if !NetworkMonitor.shared.isOnline {
+            return await CampaignAssignmentSnapshotLoader.live.loadCached(workspaceId: resolvedWorkspaceId)
+        }
+        return await CampaignAssignmentSnapshotLoader.live.load(workspaceId: resolvedWorkspaceId)
     }
     
     func fetchCampaign(id: UUID) async throws -> CampaignV2 {

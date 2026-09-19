@@ -25,6 +25,24 @@ final class SalespersonVoiceCallService: NSObject, ObservableObject {
     static let shared = SalespersonVoiceCallService()
 
     @Published private(set) var activeCallLabel: String?
+    private var activeCallNumber: String?
+    private var activeCallScope: String?
+
+    var sharedCallSnapshot: SharedCallSnapshot? {
+        guard let id = activeCalls.keys.first,
+              activeCallScope == currentVoiceScope,
+              callPhase == .connecting || callPhase == .connected,
+              let startedAt = callStartedAt else { return nil }
+        let formatter = ISO8601DateFormatter()
+        return SharedCallSnapshot(
+            id: id.uuidString,
+            name: String((activeCallLabel ?? activeCallNumber ?? "Call").prefix(300)),
+            phone: activeCallNumber,
+            phase: callPhase == .connected ? "connected" : "connecting",
+            startedAt: formatter.string(from: startedAt),
+            connectedAt: callConnectedAt.map { formatter.string(from: $0) }
+        )
+    }
     @Published private(set) var registrationError: String?
     @Published private(set) var isRegisteredForIncomingCalls = false
     @Published private(set) var callPhase: VoiceCallPhase = .idle
@@ -35,6 +53,10 @@ final class SalespersonVoiceCallService: NSObject, ObservableObject {
     @Published private(set) var audioRouteOptions: [SalespersonAudioRouteOption] = []
     @Published private(set) var selectedAudioRouteId: String = "iphone"
 
+    var isSpeakerActive: Bool {
+        selectedAudioRouteId == "speaker"
+    }
+
     private let client = SupabaseManager.shared.client
     private let callController = CXCallController()
     private let provider: CXProvider
@@ -44,6 +66,9 @@ final class SalespersonVoiceCallService: NSObject, ObservableObject {
     private var lastRegisteredDeviceToken: Data?
     private var lastRegisteredIdentity: String?
     private var lastRegisteredToken: String?
+    private var accountSubscription: AnyCancellable?
+    private var assignedVoiceNumber: String?
+    private var voiceScope: String?
     private var isRegistering = false
     private var isConnectingClient = false
     private var isResettingClientConnection = false
@@ -53,6 +78,11 @@ final class SalespersonVoiceCallService: NSObject, ObservableObject {
     private var pendingClientReadyContinuations: [CheckedContinuation<Void, Error>] = []
     private var pendingSessionReadyContinuations: [CheckedContinuation<Void, Error>] = []
     private var pendingPushCompletion: (() -> Void)?
+    private static let speakerPreferenceKey = "salesperson.voice.speakerEnabled"
+    private static var preferredBuiltInAudioRouteId: String {
+        UserDefaults.standard.bool(forKey: speakerPreferenceKey) ? "speaker" : "iphone"
+    }
+    private var requestedAudioRouteId = SalespersonVoiceCallService.preferredBuiltInAudioRouteId
 
     private override init() {
         let configuration = CXProviderConfiguration(localizedName: "WolfGrid")
@@ -71,9 +101,32 @@ final class SalespersonVoiceCallService: NSObject, ObservableObject {
             object: nil
         )
         refreshAudioRoutes()
+        accountSubscription = Publishers.CombineLatest(AuthManager.shared.$user, WorkspaceContext.shared.$workspaceId)
+            .map { user, workspace in "\(user?.id.uuidString ?? "signed-out"):\(workspace?.uuidString ?? "no-workspace")" }
+            .removeDuplicates()
+            .dropFirst()
+            .sink { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    self.voiceScope = nil
+                    self.assignedVoiceNumber = nil
+                    self.providerDidReset(self.provider)
+                    self.isRegisteredForIncomingCalls = false
+                    self.lastRegisteredIdentity = nil
+                    self.lastRegisteredToken = nil
+                    self.lastRegisteredDeviceToken = nil
+                }
+            }
+    }
+
+    private var currentVoiceScope: String? {
+        guard let userId = AuthManager.shared.user?.id,
+              let workspaceId = WorkspaceContext.shared.workspaceId else { return nil }
+        return "\(userId.uuidString):\(workspaceId.uuidString)"
     }
 
     func start() {
+        SharedActiveCallService.shared.start()
         guard pushRegistry == nil else { return }
         let registry = PKPushRegistry(queue: .main)
         registry.delegate = self
@@ -107,7 +160,7 @@ final class SalespersonVoiceCallService: NSObject, ObservableObject {
             lastRegisteredDeviceToken = registrationDeviceToken
             lastRegisteredIdentity = tokenResponse.identity
             lastRegisteredToken = tokenResponse.token
-            isRegisteredForIncomingCalls = true
+            isRegisteredForIncomingCalls = tokenResponse.incomingAllowed == true
             registrationError = tokenResponse.voipPushConfigured
                 ? nil
                 : "Telnyx iOS push credential is not confirmed. Outbound calls work, but background incoming calls require Telnyx APNs setup."
@@ -188,6 +241,8 @@ final class SalespersonVoiceCallService: NSObject, ObservableObject {
         try await request(transaction: CXTransaction(action: startAction))
 
         activeCallLabel = label
+        activeCallNumber = destination
+        activeCallScope = currentVoiceScope
         callPhase = .connecting
         callStartedAt = Date()
         callConnectedAt = nil
@@ -312,35 +367,69 @@ final class SalespersonVoiceCallService: NSObject, ObservableObject {
 
     func selectAudioRoute(_ option: SalespersonAudioRouteOption) {
         do {
-            let session = AVAudioSession.sharedInstance()
             try configureVoiceAudioSession()
-
-            switch option.kind {
-            case .speaker:
-                try session.setPreferredInput(nil)
-                try session.overrideOutputAudioPort(.speaker)
-            case .iPhone:
-                if let builtInMic = session.availableInputs?.first(where: { $0.portType == .builtInMic }) {
-                    try session.setPreferredInput(builtInMic)
-                } else {
-                    try session.setPreferredInput(nil)
-                }
-                try session.overrideOutputAudioPort(.none)
-            case .bluetooth(let inputUID):
-                guard let bluetoothInput = session.availableInputs?.first(where: { $0.uid == inputUID }) else {
-                    throw VoiceCallError.status(400, "That audio route is no longer available.")
-                }
-                try session.overrideOutputAudioPort(.none)
-                try session.setPreferredInput(bluetoothInput)
-            }
-
+            try applyAudioRoute(option)
+            requestedAudioRouteId = option.id
+            UserDefaults.standard.set(option.kind == .speaker, forKey: Self.speakerPreferenceKey)
             refreshAudioRoutes()
         } catch {
             registrationError = "Unable to switch audio route: \(error.localizedDescription)"
         }
     }
 
+    private func applyAudioRoute(_ option: SalespersonAudioRouteOption) throws {
+        let session = AVAudioSession.sharedInstance()
+
+        switch option.kind {
+        case .speaker:
+            try session.setPreferredInput(nil)
+            // Telnyx tracks speaker state internally and restores it after WebRTC
+            // audio resets. Using its API prevents the SDK from reverting this
+            // AVAudioSession override back to the receiver.
+            telnyxClient.setSpeaker()
+        case .iPhone:
+            telnyxClient.setEarpiece()
+            if let builtInMic = session.availableInputs?.first(where: { $0.portType == .builtInMic }) {
+                try session.setPreferredInput(builtInMic)
+            } else {
+                try session.setPreferredInput(nil)
+            }
+        case .bluetooth(let inputUID):
+            guard let bluetoothInput = session.availableInputs?.first(where: { $0.uid == inputUID }) else {
+                throw VoiceCallError.status(400, "That audio route is no longer available.")
+            }
+            telnyxClient.setEarpiece()
+            try session.setPreferredInput(bluetoothInput)
+        }
+    }
+
+    private func restoreRequestedAudioRoute() {
+        refreshAudioRoutes()
+        guard let requestedRoute = audioRouteOptions.first(where: { $0.id == requestedAudioRouteId }) else {
+            requestedAudioRouteId = Self.preferredBuiltInAudioRouteId
+            return
+        }
+        do {
+            try applyAudioRoute(requestedRoute)
+            refreshAudioRoutes()
+        } catch {
+            registrationError = "Unable to restore the audio route: \(error.localizedDescription)"
+        }
+    }
+
+    func toggleSpeaker() {
+        let destinationId = isSpeakerActive ? "iphone" : "speaker"
+        guard let option = audioRouteOptions.first(where: { $0.id == destinationId }) else {
+            refreshAudioRoutes()
+            return
+        }
+        selectAudioRoute(option)
+    }
+
     private func fetchVoiceToken() async throws -> VoiceTokenResponse {
+        guard let requestedScope = currentVoiceScope else {
+            throw VoiceCallError.status(401, "Sign in to enable voice calling.")
+        }
         guard let workspaceId = WorkspaceContext.shared.workspaceId else {
             throw VoiceCallError.missingWorkspace
         }
@@ -386,7 +475,12 @@ final class SalespersonVoiceCallService: NSObject, ObservableObject {
             guard !tokenResponse.token.isEmpty else {
                 throw VoiceCallError.status(500, "Telnyx token response did not include a token.")
             }
+            guard currentVoiceScope == requestedScope else {
+                throw VoiceCallError.status(401, "Account changed while connecting voice.")
+            }
             try validateTelnyxToken(tokenResponse.token)
+            voiceScope = requestedScope
+            assignedVoiceNumber = tokenResponse.fromNumber
             return tokenResponse
         } catch let error as VoiceCallError {
             throw error
@@ -607,8 +701,10 @@ final class SalespersonVoiceCallService: NSObject, ObservableObject {
         refreshAudioRoutes()
     }
 
-    @objc private func audioRouteDidChange() {
-        refreshAudioRoutes()
+    @objc nonisolated private func audioRouteDidChange() {
+        DispatchQueue.main.async { [weak self] in
+            self?.refreshAudioRoutes()
+        }
     }
 
     private var telnyxPushEnvironment: PushEnvironment {
@@ -633,6 +729,10 @@ final class SalespersonVoiceCallService: NSObject, ObservableObject {
     }
 
     private func reportIncomingCall(call: Call) {
+        guard voiceScope != nil, voiceScope == currentVoiceScope else {
+            call.hangup()
+            return
+        }
         guard let uuid = call.callInfo?.callId else {
             #if DEBUG
             print("📞 Telnyx incoming call missing callId.")
@@ -645,6 +745,8 @@ final class SalespersonVoiceCallService: NSObject, ObservableObject {
         #endif
         activeCalls[uuid] = call
         activeCallLabel = from
+        activeCallNumber = incomingNumber(for: call)
+        activeCallScope = currentVoiceScope
         hasIncomingCall = true
         callPhase = .connecting
         callStartedAt = Date()
@@ -726,7 +828,8 @@ final class SalespersonVoiceCallService: NSObject, ObservableObject {
     }
 
     private func reportMissedCallIfNeeded(callId: UUID, endedAt: Date, reason: String) {
-        guard callConnectedAt == nil,
+        guard voiceScope != nil, voiceScope == currentVoiceScope,
+              callConnectedAt == nil,
               reportedMissedCallIds.insert(callId).inserted,
               let fromNumber = incomingNumber(for: activeCalls[callId]),
               let workspaceId = WorkspaceContext.shared.workspaceId else {
@@ -739,7 +842,7 @@ final class SalespersonVoiceCallService: NSObject, ObservableObject {
                 providerCallId: callId.uuidString,
                 direction: "inbound",
                 from: fromNumber,
-                to: nil,
+                to: assignedVoiceNumber,
                 status: "missed",
                 disposition: reason,
                 startedAt: callStartedAt,
@@ -815,11 +918,14 @@ final class SalespersonVoiceCallService: NSObject, ObservableObject {
         activeCalls.removeValue(forKey: uuid)
         if activeCalls.isEmpty {
             activeCallLabel = nil
+            activeCallNumber = nil
             hasIncomingCall = false
             callPhase = .idle
             callStartedAt = nil
             callConnectedAt = nil
             isMuted = false
+            // Keep the user's speaker choice between calls; accessory routes are temporary.
+            requestedAudioRouteId = Self.preferredBuiltInAudioRouteId
         }
     }
 }
@@ -957,135 +1063,173 @@ extension SalespersonVoiceCallService: PKPushRegistryDelegate {
 }
 
 extension SalespersonVoiceCallService: TxClientDelegate {
-    func onSocketConnected() {
+    nonisolated func onSocketConnected() {
         #if DEBUG
         print("🔌 Telnyx socket connected")
         #endif
     }
 
-    func onSocketDisconnected() {
-        #if DEBUG
-        print("🔌 Telnyx socket disconnected reset=\(isResettingClientConnection)")
-        #endif
-        if isResettingClientConnection {
-            isRegisteredForIncomingCalls = false
-            currentTelnyxSessionId = nil
-            isResettingClientConnection = false
-            return
-        }
+    nonisolated func onSocketDisconnected() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            #if DEBUG
+            print("🔌 Telnyx socket disconnected reset=\(self.isResettingClientConnection)")
+            #endif
+            if self.isResettingClientConnection {
+                self.isRegisteredForIncomingCalls = false
+                self.currentTelnyxSessionId = nil
+                self.isResettingClientConnection = false
+                return
+            }
 
-        let error = VoiceCallError.status(503, "Telnyx voice session disconnected. Try calling again.")
-        isRegisteredForIncomingCalls = false
-        rejectClientReady(error: error)
-        rejectSessionReady(error: error)
-    }
-
-    func onClientError(error: Error) {
-        #if DEBUG
-        print("❌ Telnyx client error: \(error.localizedDescription)")
-        #endif
-        registrationError = error.localizedDescription
-        rejectClientReady(error: error)
-        rejectSessionReady(error: error)
-    }
-
-    func onClientReady() {
-        #if DEBUG
-        print("✅ Telnyx client ready")
-        #endif
-        isRegisteredForIncomingCalls = true
-        resolveClientReady()
-    }
-
-    func onPushDisabled(success: Bool, message: String) {
-        if success {
-            isRegisteredForIncomingCalls = false
-        } else {
-            registrationError = message
+            let error = VoiceCallError.status(503, "Telnyx voice session disconnected. Try calling again.")
+            self.isRegisteredForIncomingCalls = false
+            self.rejectClientReady(error: error)
+            self.rejectSessionReady(error: error)
         }
     }
 
-    func onSessionUpdated(sessionId: String) {
-        #if DEBUG
-        print("✅ Telnyx session updated id=\(sessionId)")
-        #endif
-        resolveSessionReady(sessionId: sessionId)
-    }
-
-    func onCallStateUpdated(callState: CallState, callId: UUID) {
-        #if DEBUG
-        print("📞 Telnyx call state id=\(callId) state=\(callState)")
-        #endif
-        switch callState {
-        case .NEW, .CONNECTING, .RINGING:
-            if callStartedAt == nil {
-                callStartedAt = Date()
-            }
-            callPhase = .connecting
-        case .ACTIVE, .HELD:
-            if callStartedAt == nil {
-                callStartedAt = Date()
-            }
-            if callConnectedAt == nil {
-                callConnectedAt = Date()
-            }
-            callPhase = .connected
-            hasIncomingCall = false
-            if let call = activeCalls[callId] {
-                isMuted = call.isMuted
-            }
-            provider.reportOutgoingCall(with: callId, connectedAt: Date())
-        case .DONE:
-            provider.reportCall(with: callId, endedAt: Date(), reason: .remoteEnded)
-            reportMissedCallIfNeeded(callId: callId, endedAt: Date(), reason: "ended")
-            clearCall(uuid: callId)
-            callPhase = .ended
-        case .RECONNECTING, .DROPPED:
-            callPhase = .connecting
+    nonisolated func onClientError(error: Error) {
+        let message = error.localizedDescription
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            #if DEBUG
+            print("❌ Telnyx client error: \(message)")
+            #endif
+            let bridgedError = VoiceCallError.status(503, message)
+            self.registrationError = message
+            self.rejectClientReady(error: bridgedError)
+            self.rejectSessionReady(error: bridgedError)
         }
     }
 
-    func onIncomingCall(call: Call) {
-        #if DEBUG
-        print("📞 Telnyx delegate onIncomingCall")
-        #endif
-        reportIncomingCall(call: call)
-    }
-
-    func onRemoteCallEnded(callId: UUID, reason: CallTerminationReason?) {
-        #if DEBUG
-        print("📞 Telnyx remote ended id=\(callId) sip=\(String(describing: reason?.sipCode))")
-        #endif
-        let endedReason: CXCallEndedReason
-        switch reason?.sipCode {
-        case 486, 600:
-            endedReason = .unanswered
-        case 403, 404:
-            endedReason = .failed
-        default:
-            endedReason = .remoteEnded
+    nonisolated func onClientReady() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            #if DEBUG
+            print("✅ Telnyx client ready")
+            #endif
+            self.isRegisteredForIncomingCalls = true
+            self.resolveClientReady()
         }
-        provider.reportCall(with: callId, endedAt: Date(), reason: endedReason)
-        reportMissedCallIfNeeded(callId: callId, endedAt: Date(), reason: "remote_ended")
-        clearCall(uuid: callId)
-        callPhase = .ended
-        completePendingPushIfNeeded()
     }
 
-    func onPushCall(call: Call) {
-        #if DEBUG
-        print("📲 Telnyx delegate onPushCall id=\(String(describing: call.callInfo?.callId))")
-        #endif
-        if let uuid = call.callInfo?.callId {
-            activeCalls[uuid] = call
-            activeCallLabel = incomingLabel(for: call)
-            hasIncomingCall = true
-            callPhase = .connecting
-            if callStartedAt == nil {
-                callStartedAt = Date()
+    nonisolated func onPushDisabled(success: Bool, message: String) {
+        DispatchQueue.main.async { [weak self] in
+            if success {
+                self?.isRegisteredForIncomingCalls = false
+            } else {
+                self?.registrationError = message
             }
-            callConnectedAt = nil
-            isMuted = call.isMuted
+        }
+    }
+
+    nonisolated func onSessionUpdated(sessionId: String) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            let didChange = self.currentTelnyxSessionId != sessionId
+            self.resolveSessionReady(sessionId: sessionId)
+            #if DEBUG
+            if didChange {
+                print("✅ Telnyx session updated id=\(sessionId)")
+            }
+            #endif
+        }
+    }
+
+    nonisolated func onCallStateUpdated(callState: CallState, callId: UUID) {
+        let stateDescription = String(describing: callState)
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            #if DEBUG
+            print("📞 Telnyx call state id=\(callId) state=\(stateDescription)")
+            #endif
+            switch callState {
+            case .NEW, .CONNECTING, .RINGING:
+                if self.callStartedAt == nil {
+                    self.callStartedAt = Date()
+                }
+                self.callPhase = .connecting
+            case .ACTIVE, .HELD:
+                if self.callStartedAt == nil {
+                    self.callStartedAt = Date()
+                }
+                if self.callConnectedAt == nil {
+                    self.callConnectedAt = Date()
+                }
+                self.callPhase = .connected
+                self.hasIncomingCall = false
+                if let call = self.activeCalls[callId] {
+                    self.isMuted = call.isMuted
+                }
+                self.provider.reportOutgoingCall(with: callId, connectedAt: Date())
+            case .DONE:
+                self.provider.reportCall(with: callId, endedAt: Date(), reason: .remoteEnded)
+                self.reportMissedCallIfNeeded(callId: callId, endedAt: Date(), reason: "ended")
+                self.clearCall(uuid: callId)
+                self.callPhase = .ended
+            case .RECONNECTING, .DROPPED:
+                self.callPhase = .connecting
+            }
+        }
+    }
+
+    nonisolated func onIncomingCall(call: Call) {
+        DispatchQueue.main.async { [weak self] in
+            #if DEBUG
+            print("📞 Telnyx delegate onIncomingCall")
+            #endif
+            self?.reportIncomingCall(call: call)
+        }
+    }
+
+    nonisolated func onRemoteCallEnded(callId: UUID, reason: CallTerminationReason?) {
+        let sipCode = reason?.sipCode
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            #if DEBUG
+            print("📞 Telnyx remote ended id=\(callId) sip=\(String(describing: sipCode))")
+            #endif
+            let endedReason: CXCallEndedReason
+            switch sipCode {
+            case 486, 600:
+                endedReason = .unanswered
+            case 403, 404:
+                endedReason = .failed
+            default:
+                endedReason = .remoteEnded
+            }
+            self.provider.reportCall(with: callId, endedAt: Date(), reason: endedReason)
+            self.reportMissedCallIfNeeded(callId: callId, endedAt: Date(), reason: "remote_ended")
+            self.clearCall(uuid: callId)
+            self.callPhase = .ended
+            self.completePendingPushIfNeeded()
+        }
+    }
+
+    nonisolated func onPushCall(call: Call) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            #if DEBUG
+            print("📲 Telnyx delegate onPushCall id=\(String(describing: call.callInfo?.callId))")
+            #endif
+            guard self.voiceScope != nil, self.voiceScope == self.currentVoiceScope else {
+                call.hangup()
+                return
+            }
+            if let uuid = call.callInfo?.callId {
+                self.activeCalls[uuid] = call
+                self.activeCallLabel = self.incomingLabel(for: call)
+                self.activeCallNumber = self.incomingNumber(for: call)
+                self.activeCallScope = self.currentVoiceScope
+                self.hasIncomingCall = true
+                self.callPhase = .connecting
+                if self.callStartedAt == nil {
+                    self.callStartedAt = Date()
+                }
+                self.callConnectedAt = nil
+                self.isMuted = call.isMuted
+            }
         }
     }
 }
@@ -1097,11 +1241,13 @@ extension SalespersonVoiceCallService: CXProviderDelegate {
         }
         activeCalls.removeAll()
         activeCallLabel = nil
+        activeCallNumber = nil
         hasIncomingCall = false
         callPhase = .idle
         callStartedAt = nil
         callConnectedAt = nil
         isMuted = false
+        requestedAudioRouteId = Self.preferredBuiltInAudioRouteId
         telnyxClient.disconnect()
     }
 
@@ -1112,6 +1258,7 @@ extension SalespersonVoiceCallService: CXProviderDelegate {
             registrationError = "Unable to activate the microphone for Telnyx calling: \(error.localizedDescription)"
         }
         telnyxClient.enableAudioSession(audioSession: audioSession)
+        restoreRequestedAudioRoute()
     }
 
     func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) {

@@ -499,8 +499,9 @@ final class CampaignsAPI {
     // Fetches campaign metadata and address counts so list shows correct house count
     func fetchCampaignsV2(workspaceId: UUID? = nil) async throws -> [CampaignV2] {
         print("🌐 [API DEBUG] Fetching campaigns V2 from Supabase (metadata + address counts)")
+        let resolvedWorkspaceId = try await requireResolvedWorkspaceId(workspaceId)
         if OfflineFirstConfig.isEnabled && !NetworkMonitor.shared.isOnline {
-            let cachedCampaigns = await CampaignRepository.shared.getCachedCampaigns()
+            let cachedCampaigns = await CampaignRepository.shared.getCachedCampaigns(workspaceId: resolvedWorkspaceId)
             if !cachedCampaigns.isEmpty {
                 PerfTrace.event("offline_first", "campaign_list_cache_hit", fields: [
                     "count": cachedCampaigns.count,
@@ -511,7 +512,7 @@ final class CampaignsAPI {
         }
 
         if !NetworkMonitor.shared.isOnline {
-            let cachedCampaigns = await CampaignRepository.shared.getCachedCampaigns()
+            let cachedCampaigns = await CampaignRepository.shared.getCachedCampaigns(workspaceId: resolvedWorkspaceId)
             if !cachedCampaigns.isEmpty {
                 print("📴 [API DEBUG] Loaded \(cachedCampaigns.count) cached campaigns for offline list")
                 return cachedCampaigns
@@ -520,9 +521,8 @@ final class CampaignsAPI {
 
         do {
             let dbRows: [CampaignDBRow]
-            let workspaceId = try await requireResolvedWorkspaceId(workspaceId)
-            let sharedIds = await fetchAssignedCampaignIds(workspaceId: workspaceId)
-            let primaryCampaigns = try await fetchOwnedCampaignRows(workspaceId: workspaceId)
+            let sharedIds = await fetchAssignedCampaignIds(workspaceId: resolvedWorkspaceId)
+            let primaryCampaigns = try await fetchOwnedCampaignRows(workspaceId: resolvedWorkspaceId)
 
             if sharedIds.isEmpty {
                 dbRows = primaryCampaigns.filter { !Self.isHiddenFromCampaignLists($0) }
@@ -540,30 +540,11 @@ final class CampaignsAPI {
             }
             print("✅ [API DEBUG] Fetched \(dbRows.count) campaigns from DB")
 
-            // 2. Fetch address counts per campaign (for house count in list)
-            var addressCountByCampaignId: [UUID: Int] = [:]
-            do {
-                struct CampaignCountRow: Decodable {
-                    let campaignId: UUID
-                    let addressCount: Int
-                    enum CodingKeys: String, CodingKey {
-                        case campaignId = "campaign_id"
-                        case addressCount = "address_count"
-                    }
-                }
-                let countRes: PostgrestResponse<[CampaignCountRow]> = try await client
-                    .rpc("get_campaign_address_counts")
-                    .execute()
-                addressCountByCampaignId = Dictionary(uniqueKeysWithValues: countRes.value.map { ($0.campaignId, $0.addressCount) })
-                print("✅ [API DEBUG] Fetched address counts for \(addressCountByCampaignId.count) campaigns")
-            } catch {
-                print("⚠️ [API DEBUG] Could not fetch live address counts; using cached counts: \(error)")
-                let cachedCampaigns = await CampaignRepository.shared.getCachedCampaigns()
-                addressCountByCampaignId = Dictionary(
-                    uniqueKeysWithValues: cachedCampaigns.map { ($0.id, $0.houseCount) }
-                )
-                print("📴 [API DEBUG] Falling back to \(addressCountByCampaignId.count) cached campaign counts")
-            }
+            // Use device-cached counts for the first paint. The expensive aggregate RPC
+            // refreshes them after the list is visible instead of blocking navigation.
+            let addressCountByCampaignId = await CampaignRepository.shared.getCachedCampaignAddressCounts(
+                campaignIds: Set(dbRows.map(\.id))
+            )
 
             // 3. Convert each campaign to CampaignV2 with correct totalFlyers
             var campaigns: [CampaignV2] = []
@@ -576,18 +557,62 @@ final class CampaignsAPI {
 
             await CampaignRepository.shared.upsertCampaignMetadataRows(
                 dbRows,
-                addressCounts: addressCountByCampaignId
+                addressCounts: addressCountByCampaignId,
+                workspaceId: resolvedWorkspaceId
             )
+
+            Task { [weak self] in
+                await self?.refreshCampaignAddressCounts(
+                    for: dbRows,
+                    workspaceId: resolvedWorkspaceId
+                )
+            }
 
             print("✅ [API DEBUG] Converted \(campaigns.count) campaigns to CampaignV2 with house counts")
             return campaigns
         } catch {
-            let cachedCampaigns = await CampaignRepository.shared.getCachedCampaigns()
+            let cachedCampaigns = await CampaignRepository.shared.getCachedCampaigns(workspaceId: resolvedWorkspaceId)
             if !cachedCampaigns.isEmpty {
                 print("⚠️ [API DEBUG] Campaign DB fetch failed, using \(cachedCampaigns.count) cached campaigns: \(error.localizedDescription) debug=\(String(describing: error))")
                 return cachedCampaigns
             }
             throw error
+        }
+    }
+
+    private func refreshCampaignAddressCounts(
+        for dbRows: [CampaignDBRow],
+        workspaceId: UUID
+    ) async {
+        struct CampaignCountRow: Decodable {
+            let campaignId: UUID
+            let addressCount: Int
+
+            enum CodingKeys: String, CodingKey {
+                case campaignId = "campaign_id"
+                case addressCount = "address_count"
+            }
+        }
+
+        do {
+            let countRes: PostgrestResponse<[CampaignCountRow]> = try await client
+                .rpc("get_campaign_address_counts")
+                .execute()
+            let counts = Dictionary(
+                uniqueKeysWithValues: countRes.value.map { ($0.campaignId, $0.addressCount) }
+            )
+            await CampaignRepository.shared.upsertCampaignMetadataRows(
+                dbRows,
+                addressCounts: counts,
+                workspaceId: workspaceId
+            )
+            await MainActor.run {
+                guard WorkspaceContext.shared.workspaceId == workspaceId else { return }
+                CampaignV2Store.shared.updateAddressCounts(counts)
+            }
+            print("✅ [API DEBUG] Refreshed address counts for \(counts.count) campaigns")
+        } catch {
+            print("⚠️ [API DEBUG] Background address count refresh failed; keeping cached counts: \(error)")
         }
     }
 
@@ -792,7 +817,7 @@ final class CampaignsAPI {
 
     // MARK: - Provision (Diamond/Bedrock backend)
 
-    /// Backend base URL for provision API (e.g. https://wolfgrid.app).
+    /// Backend base URL for provision API (e.g. https://sales.wolfgrid.app).
     private static var provisionBaseURL: String {
         Config.backendAPIURL.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
     }
@@ -1628,14 +1653,14 @@ final class CampaignAssignmentsAPI {
 
     private var baseURL: String {
         (Bundle.main.object(forInfoDictionaryKey: "WOLFGRID_API_URL") as? String)?
-            .trimmingCharacters(in: CharacterSet(charactersIn: "/")) ?? "https://wolfgrid.app"
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/")) ?? "https://sales.wolfgrid.app"
     }
 
     private var requestBaseURL: String {
-        guard let components = URLComponents(string: baseURL), components.host == "wolfgrid.app" else {
+        guard let components = URLComponents(string: baseURL), components.host == "sales.wolfgrid.app" else {
             return baseURL
         }
-        return "https://wolfgrid.app"
+        return "https://sales.wolfgrid.app"
     }
 
     func fetchAssignments(workspaceId: UUID) async throws -> CampaignAssignmentsResponse {

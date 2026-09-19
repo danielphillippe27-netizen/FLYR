@@ -120,12 +120,14 @@ export function publicMessage(row: Record<string, unknown>) {
 export async function getContactForWorkspace(
   admin: SupabaseAdmin,
   leadId: string,
-  workspaceId: string
+  workspaceId: string,
+  userId: string
 ): Promise<DialerContact | null> {
   const { data, error } = await admin
     .from("contacts")
     .select("id,user_id,workspace_id,full_name,phone,email,address")
     .eq("id", leadId)
+    .eq("workspace_id", workspaceId).eq("user_id", userId)
     .maybeSingle();
 
   if (error) throw error;
@@ -138,8 +140,10 @@ export async function getContactForWorkspace(
 export async function findContactForInbound(
   admin: SupabaseAdmin,
   workspaceId: string,
-  fromNumber: string
+  fromNumber: string,
+  userId: string | null
 ): Promise<DialerContact | null> {
+  if (!userId) return null;
   const normalized = normalizePhone(fromNumber);
   if (!normalized) return null;
 
@@ -149,7 +153,7 @@ export async function findContactForInbound(
   const { data, error } = await admin
     .from("contacts")
     .select("id,user_id,workspace_id,full_name,phone,email,address")
-    .eq("workspace_id", workspaceId)
+    .eq("workspace_id", workspaceId).eq("user_id", userId)
     .or(variants.map((value) => `phone.ilike.%${value}%`).join(","))
     .order("updated_at", { ascending: false })
     .limit(25);
@@ -164,6 +168,7 @@ export async function sendTelnyxSms(params: {
   to: string;
   text: string;
   from?: string | null;
+  mediaUrls?: string[];
 }) {
   const apiKey = clean(process.env.TELNYX_API_KEY);
   if (!apiKey) {
@@ -185,6 +190,10 @@ export async function sendTelnyxSms(params: {
     to,
     text: params.text,
   };
+  if (params.mediaUrls?.length) {
+    body.media_urls = params.mediaUrls.slice(0, 1);
+    body.type = "MMS";
+  }
 
   const messagingProfileId = telnyxMessagingProfileId();
   if (messagingProfileId) body.messaging_profile_id = messagingProfileId;

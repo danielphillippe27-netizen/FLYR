@@ -15,6 +15,7 @@ struct BottomActionBar: View {
     @Binding var isExpanded: Bool
     @Binding var satelliteMapEnabled: Bool
     var hideParcels: Binding<Bool>? = nil
+    var use2DMap: Binding<Bool>? = nil
     var menuVariant: MenuVariant = .campaign
     @Environment(\.colorScheme) private var colorScheme
     @StateObject private var beaconService = SessionSafetyBeaconService.shared
@@ -139,6 +140,27 @@ struct BottomActionBar: View {
                         .overlay(dividerColor)
 
                     if showsCampaignSessionTools {
+                        if let use2DMap {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("Map view")
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(primaryText)
+                                Picker("Map view", selection: use2DMap) {
+                                    Text("2D").tag(true)
+                                    Text("3D").tag(false)
+                                }
+                                .pickerStyle(.segmented)
+                                .accessibilityIdentifier("session-map-dimension")
+                                Text(use2DMap.wrappedValue ? "Satellite map with flat pins" : "WolfGrid buildings and 3D pins")
+                                    .font(.caption)
+                                    .foregroundStyle(secondaryText)
+                            }
+                            .padding(.vertical, 8)
+
+                            Divider()
+                                .overlay(dividerColor)
+                        }
+
                         toggleRow(
                             title: "GPS Proximity",
                             subtitle: gpsProximitySubtitle,
@@ -150,16 +172,18 @@ struct BottomActionBar: View {
                         Divider()
                             .overlay(dividerColor)
 
-                        toggleRow(
-                            title: "Satellite Map",
-                            subtitle: "Show aerial imagery with streets and labels.",
-                            systemImage: "map.fill",
-                            tint: defaultIconTint,
-                            isOn: $satelliteMapEnabled
-                        )
+                        if use2DMap?.wrappedValue != true {
+                            toggleRow(
+                                title: "Satellite Map",
+                                subtitle: "Show aerial imagery with streets and labels.",
+                                systemImage: "map.fill",
+                                tint: defaultIconTint,
+                                isOn: $satelliteMapEnabled
+                            )
 
-                        Divider()
-                            .overlay(dividerColor)
+                            Divider()
+                                .overlay(dividerColor)
+                        }
 
                         if let hideParcels {
                             toggleRow(
