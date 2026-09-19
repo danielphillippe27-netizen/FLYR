@@ -18,7 +18,7 @@ struct WolfyHomeCompanion: View {
     private var mood: WolfyMood {
         WolfyMood.resolve(hour:Calendar.current.component(.hour,from:Date()),workStart:economy.snapshot?.profile.work_start ?? 9,
                           workEnd:economy.snapshot?.profile.work_end ?? 18,dnd:economy.snapshot?.profile.dnd ?? false,active:active,
-                          doors:summary.metrics?.doors,target:summary.goals?.daily_door_goal,
+                          doors:summary.metrics?.doors,target:summary.goals?.dailyTarget(),
                           overdue:summary.followUps.map{$0.filter{($0.dueDate ?? .distantFuture)<Date()}.count},happiness:economy.snapshot?.profile.happiness ?? 60)
     }
     private var expression: WolfyPocketExpression {

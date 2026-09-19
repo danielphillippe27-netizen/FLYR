@@ -38,8 +38,8 @@ struct FieldSalesEntryLink: View {
     private var scope: String { "\(auth.user?.id.uuidString ?? ""):\(workspace.workspaceId?.uuidString ?? "")" }
     var body: some View {
         Group {
-            if enabledScope == scope {
-                NavigationLink(leaderboard ? "Sales & Revenue leaderboard · Beta" : "Mark as sold") { FieldSalesRootView(leadID: leadID, leaderboardOnly: leaderboard, appointmentID: appointmentID, propertyKey: propertyKey, campaignID: campaignID) }
+            if enabledScope == scope, leaderboard || appointmentID != nil {
+                NavigationLink(leaderboard ? "Sales & Revenue leaderboard · Beta" : "Convert to sale") { FieldSalesRootView(leadID: leadID, leaderboardOnly: leaderboard, appointmentID: appointmentID, propertyKey: propertyKey, campaignID: campaignID) }
             }
         }.task(id: scope) {
             enabledScope = nil

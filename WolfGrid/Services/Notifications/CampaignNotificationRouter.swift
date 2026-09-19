@@ -11,6 +11,8 @@ struct PendingCampaignRoute: Codable, Equatable {
 final class CampaignNotificationRouter: NSObject, UNUserNotificationCenterDelegate {
     static let shared = CampaignNotificationRouter()
 
+    private var pendingCardRoute: BusinessCardPushRoute?
+    private let pendingCardKey = "pending_business_card_push"
     private weak var uiState: AppUIState?
     private var pendingRoute: PendingCampaignRoute?
     private let pendingRouteKey = "pending_campaign_notification_route"
@@ -19,6 +21,7 @@ final class CampaignNotificationRouter: NSObject, UNUserNotificationCenterDelega
         if let data = UserDefaults.standard.data(forKey: pendingRouteKey) {
             pendingRoute = try? JSONDecoder().decode(PendingCampaignRoute.self, from: data)
         }
+        if let data = UserDefaults.standard.data(forKey: pendingCardKey) { pendingCardRoute = try? JSONDecoder().decode(BusinessCardPushRoute.self, from: data) }
         super.init()
     }
 
@@ -34,6 +37,11 @@ final class CampaignNotificationRouter: NSObject, UNUserNotificationCenterDelega
     }
 
     func applyPendingRouteIfPossible() {
+        if let card = pendingCardRoute, let uiState, let user = AuthManager.shared.user {
+            if user.id == card.userId { uiState.pendingBusinessCardActivity = card }
+            pendingCardRoute = nil
+            UserDefaults.standard.removeObject(forKey: pendingCardKey)
+        }
         guard let pendingRoute, let uiState else { return }
         guard AuthManager.shared.user != nil else { return }
         Task {
@@ -65,6 +73,15 @@ final class CampaignNotificationRouter: NSObject, UNUserNotificationCenterDelega
         didReceive response: UNNotificationResponse
     ) async {
         let userInfo = response.notification.request.content.userInfo
+        if let route = BusinessCardPushRoute(userInfo: userInfo) {
+            await MainActor.run {
+                let router = CampaignNotificationRouter.shared
+                router.pendingCardRoute = route
+                if let data = try? JSONEncoder().encode(route) { UserDefaults.standard.set(data, forKey: router.pendingCardKey) }
+                router.applyPendingRouteIfPossible()
+            }
+            return
+        }
         guard userInfo["type"] as? String == "campaign_ready",
               let rawCampaignId = userInfo["campaign_id"] as? String,
               let campaignId = UUID(uuidString: rawCampaignId) else {

@@ -1,3 +1,4 @@
+import CoreLocation
 import XCTest
 import UIKit
 @testable import WolfGrid
@@ -726,6 +727,47 @@ final class BuildingDataServiceTests: XCTestCase {
 
         XCTAssertEqual(deduped.count, 1)
         XCTAssertEqual(deduped.first?.id, requestedId)
+    }
+
+    func testCourticeTownhouseCentroidStaysInsideSmallRoof() throws {
+        // Real roof slice that previously placed 9 Moulton Court about 94 m away.
+        let ring: [[Double]] = [
+            [-78.7770502421137, 43.91560767893686],
+            [-78.77704370766878, 43.91559314811727],
+            [-78.77708025276661, 43.91558469490593],
+            [-78.77706193130447, 43.91554359837042],
+            [-78.77689901167456, 43.91559166989546],
+            [-78.77692290758871, 43.91564525062058],
+            [-78.7770502421137, 43.91560767893686]
+        ]
+        let coordinate = try XCTUnwrap(MapLayerManager.centroidCoordinate(for: [ring]))
+        XCTAssertGreaterThan(coordinate.longitude, ring.map { $0[0] }.min()!)
+        XCTAssertLessThan(coordinate.longitude, ring.map { $0[0] }.max()!)
+        XCTAssertGreaterThan(coordinate.latitude, ring.map { $0[1] }.min()!)
+        XCTAssertLessThan(coordinate.latitude, ring.map { $0[1] }.max()!)
+        let reversed = try XCTUnwrap(MapLayerManager.centroidCoordinate(for: [Array(ring.reversed())]))
+        XCTAssertEqual(coordinate.longitude, reversed.longitude, accuracy: 1e-10)
+        XCTAssertEqual(coordinate.latitude, reversed.latitude, accuracy: 1e-10)
+    }
+
+    func testConcaveRoofLabelFallsBackInsideRoofInsteadOfCourtyard() throws {
+        let local = [[0.0, 0.0], [4, 0], [4, 4], [3, 4], [3, 1], [1, 1], [1, 4], [0, 4], [0, 0]]
+        let ring = local.map { [-78.777 + $0[0] * 0.0001, 43.915 + $0[1] * 0.0001] }
+        let coordinate = try XCTUnwrap(MapLayerManager.centroidCoordinate(for: [ring]))
+        let x = (coordinate.longitude + 78.777) / 0.0001
+        let y = (coordinate.latitude - 43.915) / 0.0001
+        XCTAssertTrue(x > 0 && x < 4 && y > 0 && y < 4)
+        XCTAssertTrue(y < 1 || x < 1 || x > 3, "Label must not land in the empty courtyard")
+    }
+
+    func testDisconnectedRoofLabelRemainsOnOneComponent() throws {
+        let first = [[0.0, 0.0], [1, 0], [1, 1], [0, 1], [0, 0]]
+        let second = first.map { [$0[0] + 4, $0[1]] }
+        let coordinate = try XCTUnwrap(MapLayerManager.centroidCoordinate(for: [first, second]))
+        XCTAssertTrue((coordinate.longitude > 0 && coordinate.longitude < 1)
+            || (coordinate.longitude > 4 && coordinate.longitude < 5))
+        XCTAssertTrue(coordinate.latitude > 0 && coordinate.latitude < 1)
+        XCTAssertNil(MapLayerManager.centroidCoordinate(for: [[[0, 0], [1, 0], [2, 0]]]))
     }
 
     func testCanonicalTownhousePinSurvivesBuildingLabelPlacement() throws {

@@ -53,6 +53,7 @@ struct WolfyKPIReport: Decodable {
     @Published private(set) var sending = false
     @Published private(set) var error: String?
     @Published private(set) var report: WolfyKPIReport?
+    @Published private(set) var homeReport: WolfyKPIReport?
     @Published private(set) var reporting = false
     @Published private(set) var analysisScope = "self"
     @Published private(set) var historyDays = 90
@@ -60,11 +61,13 @@ struct WolfyKPIReport: Decodable {
     private var scope: String?
     private var generation = UUID()
     private var lastQuestion: String?
+    private var loadingHomeReport = false
 
     func clear() {
         generation = UUID(); brief = nil; messages = []; error = nil
         scope = nil; loading = false; sending = false; lastQuestion = nil
-        report = nil; reporting = false; analysisScope = "self"; historyDays = 90
+        report = nil; homeReport = nil; reporting = false; analysisScope = "self"; historyDays = 90
+        loadingHomeReport = false
     }
     private func select(user: UUID, workspace: UUID) {
         let next = "\(user):\(workspace)"
@@ -107,6 +110,21 @@ struct WolfyKPIReport: Decodable {
             guard token == generation else { return }
             brief = nil
             self.error = "AI coaching is unavailable. Your next step still uses available activity."
+        }
+    }
+    func refreshHomeReport(user: UUID, workspace: UUID) async {
+        select(user: user, workspace: workspace)
+        guard !loadingHomeReport else { return }
+        loadingHomeReport = true
+        let token = generation
+        defer { if token == generation { loadingHomeReport = false } }
+        do {
+            let result = try await request(user: user, workspace: workspace, question: nil, mode: "report", requestedScope: "self")
+            guard token == generation, !Task.isCancelled else { return }
+            homeReport = result.analysis
+        } catch {
+            guard token == generation else { return }
+            homeReport = nil
         }
     }
     func ask(_ question: String, user: UUID, workspace: UUID, retry: Bool = false) async {

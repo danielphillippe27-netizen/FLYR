@@ -2,13 +2,12 @@ import SwiftUI
 import Supabase
 
 private struct SaleEntrySnapshot: Decodable {
+    let capabilities: [String: Bool]?
     let enabled: Bool; let needs_setup: Bool?; let currency: String?; let today: String?; let verification_required: Bool?
-    let can_assign: Bool?; let can_override_duplicate: Bool?; let has_more_contacts: Bool?
-    let contacts: [Contact]?; let representatives: [Representative]?; let selected: Selected?; let appointments: [Appointment]?; let duplicates: [Duplicate]?
-    struct Contact: Decodable, Identifiable { let id: UUID; let name: String; let address: String? }
-    struct Representative: Decodable, Identifiable { let id: UUID; let name: String }
-    struct Selected: Decodable { let id: UUID; let name: String; let address: String?; let rep_id: UUID; let setter_id: UUID; let closer_id: UUID; let appointment_id: UUID?; let opportunity_id: UUID? }
-    struct Appointment: Decodable, Identifiable { let id: UUID; let scheduled_at: String }
+    let can_override_duplicate: Bool?; let has_more_appointments: Bool?
+    let appointment_options: [AppointmentOption]?; let selected: Selected?; let duplicates: [Duplicate]?
+    struct AppointmentOption: Decodable, Identifiable { let id: UUID; let contact_id: UUID; let name: String; let address: String?; let scheduled_at: String; let note: String? }
+    struct Selected: Decodable { let id: UUID; let name: String; let address: String?; let rep_id: UUID; let appointment_id: UUID; let appointment_at: String; let appointment_note: String? }
     struct Duplicate: Decodable, Identifiable { let id: UUID; let product: String; let sold_on: String; let status: String }
 }
 struct FieldSalesMarkSoldView: View {
@@ -24,22 +23,22 @@ struct FieldSalesMarkSoldView: View {
     var body: some View {
         Group {
             if let d = data, let selected = d.selected {
-                SaleEntryForm(workspace: workspace, data: d, selected: selected, busy: $busy, saved: saved, change: { context = [:] }).id(selected.id)
+                SaleEntryForm(workspace: workspace, data: d, selected: selected, busy: $busy, saved: saved, change: { context = [:] }).id(selected.appointment_id)
             } else {
                 List {
-                    if let error { Text(error).foregroundStyle(.red); Button("Retry") { Task { await reload() } }; Button("Choose another prospect") { context = [:] } }
+                    if let error { Text(error).foregroundStyle(.red); Button("Retry") { Task { await reload() } }; Button("Choose another appointment") { context = [:] } }
                     if let d = data {
                         if !d.enabled || d.needs_setup == true { Text("Set up Sales before recording a sale.") }
                         else {
-                            Section { TextField("Name, address, phone or email", text: $search).onSubmit { context["search"] = search }; Button("Search prospects") { context["search"] = search } }
-                            ForEach(d.contacts ?? []) { c in Button { context["contact_id"] = c.id.uuidString } label: { VStack(alignment: .leading) { Text(c.name); if let address = c.address { Text(address).font(.caption).foregroundStyle(.secondary) } } } }
-                            if d.has_more_contacts == true { Text("Refine your search to find more prospects.").font(.caption) }
-                            if d.contacts?.isEmpty == true { Text("No accessible prospects match.") }
+                            Section { Text("Choose a past appointment. Sales cannot be created directly from a lead.").font(.subheadline); TextField("Customer, address or appointment note", text: $search).onSubmit { context = ["search":search] }; Button("Search appointments") { context = ["search":search] } }
+                            ForEach(d.appointment_options ?? []) { appointment in Button { context = ["appointment_id":appointment.id.uuidString,"contact_id":appointment.contact_id.uuidString] } label: { VStack(alignment: .leading) { Text(appointment.name); Text(appointment.scheduled_at).font(.caption).foregroundStyle(.secondary); if let address = appointment.address { Text(address).font(.caption).foregroundStyle(.secondary) }; if let note = appointment.note, !note.isEmpty { Text(note).font(.subheadline) } } } }
+                            if d.has_more_appointments == true { Text("Refine your search to find more appointments.").font(.caption) }
+                            if d.appointment_options?.isEmpty == true { Text("No eligible past appointments are waiting to be converted.") }
                         }
                     } else if error == nil { ProgressView("Loading sale details…") }
                 }
             }
-        }.navigationTitle("Mark as sold").navigationBarTitleDisplayMode(.inline)
+        }.navigationTitle("Convert appointment").navigationBarTitleDisplayMode(.inline)
         .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() }.disabled(busy) } }
         .interactiveDismissDisabled(busy)
         .task(id: context) { await reload() }
@@ -55,17 +54,15 @@ struct FieldSalesMarkSoldView: View {
 private struct SaleEntryForm: View {
     let workspace: UUID; let data: SaleEntrySnapshot; let selected: SaleEntrySnapshot.Selected; @Binding var busy: Bool; let saved: (UUID) -> Void; let change: () -> Void
     @State private var amount = ""
+    @State private var commissionEnabled = false
+    @State private var commissionPercentage = ""
+    @State private var commissionFixedFee = false
+    @State private var commissionFee = ""
     @State private var product = ""
     @State private var notes = ""
     @State private var soldOn = Date()
     @State private var completion = Date()
     @State private var hasCompletion = false
-    @State private var rep: UUID
-    @State private var setter: UUID
-    @State private var closer: UUID
-    @State private var appointment: UUID?
-    @State private var split = false
-    @State private var setterPercent = "50"
     @State private var job = ""
     @State private var reason = ""
     @State private var request = UUID()
@@ -73,14 +70,33 @@ private struct SaleEntryForm: View {
     @State private var initialized = false
     init(workspace: UUID, data: SaleEntrySnapshot, selected: SaleEntrySnapshot.Selected, busy: Binding<Bool>, saved: @escaping (UUID)->Void, change: @escaping ()->Void) {
         self.workspace = workspace; self.data = data; self.selected = selected; _busy = busy; self.saved = saved; self.change = change
-        _rep = State(initialValue: selected.rep_id); _setter = State(initialValue: selected.setter_id); _closer = State(initialValue: selected.closer_id); _appointment = State(initialValue: selected.appointment_id)
     }
     private var duplicate: Bool { data.duplicates?.isEmpty == false }
     private var format: DateFormatter { let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.dateFormat = "yyyy-MM-dd"; return f }
     var body: some View {
         Form {
-            Section { Text(selected.name).font(.headline); if let address = selected.address { Text(address).foregroundStyle(.secondary) }; Button("Change prospect", action: change).disabled(busy) }
+            Section { Text(selected.name).font(.headline); if let address = selected.address { Text(address).foregroundStyle(.secondary) }; Text("Appointment · \(selected.appointment_at)").font(.caption).foregroundStyle(.secondary); if let note = selected.appointment_note, !note.isEmpty { Text(note) }; Button("Choose another appointment", action: change).disabled(busy) }
             Section("Contract value (\(data.currency ?? ""))") { TextField("0.00", text: $amount).keyboardType(.decimalPad).font(.largeTitle).monospacedDigit() }
+            if data.capabilities?["commission"] == true {
+                Section("Commission") {
+                    Toggle("Commission", isOn: $commissionEnabled).disabled(busy)
+                    if commissionEnabled {
+                        Picker("Commission type", selection: $commissionFixedFee) {
+                            Text("Percentage").tag(false)
+                            Text("Fixed fee").tag(true)
+                        }.pickerStyle(.segmented).disabled(busy)
+                        if commissionFixedFee {
+                            TextField("Fixed fee (\(data.currency ?? "CAD"))", text: $commissionFee).keyboardType(.decimalPad).disabled(busy)
+                        } else {
+                            TextField("Commission (%)", text: $commissionPercentage).keyboardType(.decimalPad).disabled(busy)
+                        }
+                        if let calculated = try? commissionMinor() {
+                            LabeledContent("Expected commission", value: FieldSalesService.money(calculated, currency: data.currency))
+                        }
+                        Text("Counts after verification; payment is tracked separately.").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
             if duplicate {
                 Section("Existing sale") {
                     Text("An existing sale may already be associated with this customer.")
@@ -90,17 +106,11 @@ private struct SaleEntryForm: View {
                 }
             }
             Section {
-                DisclosureGroup("Sale details & attribution") {
+                DisclosureGroup("Sale details") {
                     TextField("Product / service", text: $product)
                     DatePicker("Sold date", selection: $soldOn, in: ...(format.date(from: data.today ?? "") ?? Date()), displayedComponents: .date)
                     Toggle("Expected completion date", isOn: $hasCompletion)
                     if hasCompletion { DatePicker("Expected completion", selection: $completion, in: soldOn..., displayedComponents: .date) }
-                    Picker("Appointment", selection: $appointment) { Text("No linked appointment").tag(UUID?.none); ForEach(data.appointments ?? []) { Text($0.scheduled_at).tag(Optional($0.id)) } }
-                    if data.can_assign == true {
-                        repPicker("Primary rep", selection: $rep); repPicker("Setter", selection: $setter); repPicker("Closer", selection: $closer)
-                        Toggle("Split revenue credit", isOn: $split)
-                        if split { TextField("Setter credit (%)", text: $setterPercent).keyboardType(.decimalPad); Text("Closer receives the remaining share.").font(.caption) }
-                    }
                     TextField("Notes", text: $notes, axis: .vertical).lineLimit(3...6)
                 }
             }
@@ -111,21 +121,17 @@ private struct SaleEntryForm: View {
             }
         }.task { guard !initialized else { return }; soldOn = format.date(from: data.today ?? "") ?? Date(); completion = soldOn; initialized = true }
     }
-    private func repPicker(_ label: String, selection: Binding<UUID>) -> some View { Picker(label, selection: selection) { ForEach(data.representatives ?? []) { Text($0.name).tag($0.id) } } }
+    private func commissionMinor() throws -> String {
+        if commissionFixedFee { return try FieldSalesService.minorUnits(commissionFee, currency: data.currency ?? "CAD") }
+        return try FieldSalesService.commissionMinorUnits(value: amount, percentage: commissionPercentage, currency: data.currency ?? "CAD")
+    }
     private func save() async {
         busy = true; error = nil; defer { busy = false }
-        struct Credit: Encodable { let user_id: UUID; let role: String; let basis_points: Int }
-        struct Payload: Encodable { let request_id: UUID; let contact_id: UUID; let opportunity_id: UUID?; let appointment_id: UUID?; let value_minor: String; let product: String; let sold_on: String; let expected_completion_on: String?; let notes: String; let rep_id: UUID; let setter_id: UUID; let closer_id: UUID; let credits: [Credit]?; let job_identifier: String?; let duplicate_override_reason: String? }
+        struct Payload: Encodable { let request_id: UUID; let contact_id: UUID; let appointment_id: UUID; let value_minor: String; let commission_minor: String?; let product: String; let sold_on: String; let expected_completion_on: String?; let notes: String; let job_identifier: String?; let duplicate_override_reason: String? }
         struct Params: Encodable { let p_workspace: UUID; let p_action: String; let p_data: Payload }
         struct Result: Decodable { let id: UUID }
         do {
-            var credits: [Credit]?
-            if split {
-                guard setter != closer, setterPercent.range(of: #"^\d+(\.\d{1,2})?$"#, options: .regularExpression) != nil, let percent = Decimal(string: setterPercent), percent >= 0, percent <= 100 else { throw NSError(domain:"Sale",code:1,userInfo:[NSLocalizedDescriptionKey:"Choose different setter and closer reps and a valid credit percentage."]) }
-                let bp = NSDecimalNumber(decimal: percent*100).intValue
-                credits = [Credit(user_id:setter,role:"setter",basis_points:bp),Credit(user_id:closer,role:"closer",basis_points:10000-bp)]
-            }
-            let payload = Payload(request_id:request,contact_id:selected.id,opportunity_id:selected.opportunity_id,appointment_id:appointment,value_minor:try FieldSalesService.minorUnits(amount,currency:data.currency ?? "CAD"),product:product,sold_on:format.string(from:soldOn),expected_completion_on:hasCompletion ? format.string(from:completion) : nil,notes:notes,rep_id:rep,setter_id:setter,closer_id:closer,credits:credits,job_identifier:duplicate ? job : nil,duplicate_override_reason:duplicate ? reason : nil)
+            let payload = Payload(request_id:request,contact_id:selected.id,appointment_id:selected.appointment_id,value_minor:try FieldSalesService.minorUnits(amount,currency:data.currency ?? "CAD"),commission_minor:data.capabilities?["commission"] == true && commissionEnabled ? try commissionMinor() : nil,product:product,sold_on:format.string(from:soldOn),expected_completion_on:hasCompletion ? format.string(from:completion) : nil,notes:notes,job_identifier:duplicate ? job : nil,duplicate_override_reason:duplicate ? reason : nil)
             let result: Result = try await SupabaseManager.shared.client.rpc("field_sales_command", params:Params(p_workspace:workspace,p_action:"submit",p_data:payload)).execute().value
             UINotificationFeedbackGenerator().notificationOccurred(.success)
             NotificationCenter.default.post(name:.fieldSalesChanged,object:nil); saved(result.id)

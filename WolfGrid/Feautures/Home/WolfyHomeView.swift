@@ -57,7 +57,7 @@ private struct WolfyHomeContent: View {
     }
     private func weekFact(_ key: String) -> WolfyKPIFact? {
         // Home always shows personal data, even if chat is switched to team scope.
-        coach.brief?.analysis?.facts.first { $0.id == "scope.week.\(key)" }
+        coach.homeReport?.facts.first { $0.id == "scope.week.\(key)" }
     }
     private var greeting: String {
         let hour = Calendar.current.component(.hour, from: Date())
@@ -145,6 +145,21 @@ private struct WolfyHomeContent: View {
             HomeAccountControls()
         }
     }
+    private var streakSummary: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "flame.fill")
+                .font(.title3)
+                .foregroundStyle(Color.red)
+            Text(model.summary.stats.map { String($0.day_streak) } ?? "—")
+                .font(.subheadline.weight(.semibold))
+                .monospacedDigit()
+        }
+        .frame(maxWidth: .infinity)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Daily streak")
+        .accessibilityValue(model.summary.stats.map { "\($0.day_streak) days" } ?? "Unavailable")
+    }
+
     private var weeklyHeader: some View {
         HStack {
             eyebrow("This week")
@@ -171,10 +186,7 @@ private struct WolfyHomeContent: View {
     private var weeklyHero: some View {
         VStack(spacing: 20) {
             WolfyWeeklyRing(completed: weeklyDoors, target: weeklyGoal)
-            if weeklyGoal == nil {
-                Button(model.summary.goals == nil ? "Goals unavailable" : "Set weekly goal →") { editingGoals = true }
-                    .font(.subheadline.weight(.medium)).disabled(model.summary.goals == nil)
-            }
+            streakSummary
         }
     }
     private var funnel: some View {
@@ -220,10 +232,12 @@ private struct WolfyHomeContent: View {
                 HStack(spacing: 12) {
                     Image(systemName: "bubble.left")
                     Text("Ask Wolfy about your performance…")
+                        .font(.headline).lineLimit(1).minimumScaleFactor(0.7)
                     Spacer()
                     Image(systemName: "plus").font(.subheadline)
-                }.foregroundStyle(.secondary).padding(18).frame(maxWidth: .infinity)
-                    .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 24))
+                }.foregroundStyle(.secondary)
+                    .padding(.horizontal, 20).padding(.vertical, 16).frame(maxWidth: .infinity)
+                    .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 18))
             }.buttonStyle(.plain)
         }
     }
@@ -286,8 +300,9 @@ private struct WolfyHomeContent: View {
     private func refresh() async {
         async let home: () = model.load(userID: userID, workspaceID: workspaceID)
         async let insight: () = coach.refresh(user: userID, workspace: workspaceID)
+        async let performance: () = coach.refreshHomeReport(user: userID, workspace: workspaceID)
         async let assignments: () = model.loadAssignments(userID: userID, workspaceID: workspaceID)
-        _ = await (home, insight, assignments)
+        _ = await (home, insight, performance, assignments)
     }
 }
 
@@ -396,6 +411,7 @@ private struct WolfyGoalEditor: View {
     @Environment(\.dismiss) private var dismiss
     @State private var daily = ""
     @State private var weekly = ""
+    @State private var days: Set<Int> = [1, 2, 3, 4, 5]
     @State private var saving = false
     @State private var error: String?
 
@@ -407,17 +423,40 @@ private struct WolfyGoalEditor: View {
                     TextField("Weekly target", text: $weekly).keyboardType(.numberPad)
                     Text("Leave a target blank to clear it. The week runs Monday through Sunday.").font(.caption)
                 }
+                Section {
+                    HStack(spacing: 4) {
+                        ForEach(1...7, id: \.self) { day in
+                            Button {
+                                if days.contains(day) { days.remove(day) } else { days.insert(day) }
+                            } label: {
+                                Text(["M", "T", "W", "T", "F", "S", "S"][day - 1])
+                                    .font(.subheadline.weight(.semibold))
+                                    .frame(maxWidth: .infinity, minHeight: 44)
+                                    .foregroundStyle(days.contains(day) ? Color(uiColor: .systemBackground) : Color.primary)
+                                    .background(days.contains(day) ? Color.primary : Color(uiColor: .tertiarySystemFill), in: Capsule())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel(["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"][day - 1])
+                            .accessibilityAddTraits(days.contains(day) ? .isSelected : [])
+                        }
+                    }
+                    Button("Monday–Friday") { days = [1, 2, 3, 4, 5] }
+                } header: { Text("Goal days") } footer: {
+                    Text("Tap the days you want a daily goal. Choose at least one day.")
+                }
+                .disabled(saving)
                 if let error { Text(error).foregroundStyle(.red) }
             }
             .navigationTitle("Door goals")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() }.disabled(saving) }
-                ToolbarItem(placement: .confirmationAction) { Button(saving ? "Saving…" : "Save") { save() }.disabled(saving) }
+                ToolbarItem(placement: .confirmationAction) { Button(saving ? "Saving…" : "Save") { save() }.disabled(saving || days.isEmpty) }
             }
             .interactiveDismissDisabled(saving)
         }.onAppear {
             daily = model.summary.goals?.daily_door_goal.map(String.init) ?? ""
             weekly = model.summary.goals?.weekly_door_goal.map(String.init) ?? ""
+            days = Set(model.summary.goals?.scheduledDays ?? [1, 2, 3, 4, 5])
         }
     }
     private func save() {
@@ -430,7 +469,7 @@ private struct WolfyGoalEditor: View {
         saving = true
         error = nil
         Task {
-            do { try await model.saveGoals(daily: Int(d), weekly: Int(w)); dismiss() }
+            do { try await model.saveGoals(daily: Int(d), weekly: Int(w), days: Array(days)); dismiss() }
             catch { self.error = "Could not save goals. \(error.localizedDescription)" }
             saving = false
         }

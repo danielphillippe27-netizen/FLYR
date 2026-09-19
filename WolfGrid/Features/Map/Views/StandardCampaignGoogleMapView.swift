@@ -14,9 +14,14 @@ enum CampaignMapRendererDecision: Equatable {
         sessionUses2D: Bool,
         mapboxAvailable: Bool,
         googleAvailable: Bool,
-        standardMode: Bool = false
+        standardMode: Bool = false,
+        preferred2D: Bool? = nil
     ) -> CampaignMapRendererDecision? {
-        // Standard can render immediately and stays in Google 2D throughout a session.
+        if let preferred2D {
+            if preferred2D { return googleAvailable ? .google2D : (mapboxAvailable ? .mapbox3D : nil) }
+            return mapboxAvailable ? .mapbox3D : (googleAvailable ? .google2D : nil)
+        }
+        // Standard renders immediately unless the user selects WolfGrid 3D.
         if standardMode { return googleAvailable ? .google2D : nil }
         guard dataResolved else { return nil }
         if activeSession {
@@ -34,6 +39,7 @@ struct StandardCampaignMapMarker: Equatable {
     let title: String
     let address: MapLayerManager.AddressTapResult
     let status: AddressStatus
+    var cardEngaged: Bool = false
 
     static func == (lhs: StandardCampaignMapMarker, rhs: StandardCampaignMapMarker) -> Bool {
         lhs.addressId == rhs.addressId
@@ -41,6 +47,7 @@ struct StandardCampaignMapMarker: Equatable {
             && lhs.coordinate.longitude == rhs.coordinate.longitude
             && lhs.title == rhs.title
             && lhs.status == rhs.status
+            && lhs.cardEngaged == rhs.cardEngaged
     }
 }
 
@@ -58,14 +65,14 @@ struct StandardCampaignMapCamera: Equatable {
 private enum StandardCampaignMarkerIcon {
     private static var cache: [String: UIImage] = [:]
 
-    static func image(for status: AddressStatus) -> UIImage {
-        let key = status.rawValue
+    static func image(for status: AddressStatus, cardEngaged: Bool = false) -> UIImage {
+        let key = status.rawValue + (cardEngaged ? "-card" : "")
         if let cached = cache[key] {
             return cached
         }
 
         let image = makeImage(
-            fillColor: fillColor(for: status),
+            fillColor: cardEngaged ? MapStatusColor.qrScanned : fillColor(for: status),
             symbolName: symbolName(for: status)
         )
         cache[key] = image
@@ -109,8 +116,8 @@ private enum StandardCampaignMarkerIcon {
     }
 
     private static func makeImage(fillColor: UIColor, symbolName: String) -> UIImage {
-        let canvasSize = CGSize(width: 24, height: 24)
-        let symbolRect = CGRect(x: 3, y: 3, width: 18, height: 18)
+        let canvasSize = CGSize(width: 32, height: 32)
+        let symbolRect = CGRect(x: 7, y: 7, width: 18, height: 18)
 
         let format = UIGraphicsImageRendererFormat.default()
         format.scale = UIScreen.main.scale
@@ -120,9 +127,14 @@ private enum StandardCampaignMarkerIcon {
             let cgContext = context.cgContext
             cgContext.setShadow(offset: CGSize(width: 0, height: 1), blur: 3, color: UIColor.black.withAlphaComponent(0.28).cgColor)
 
+            UIColor.white.setFill()
+            UIBezierPath(ovalIn: CGRect(x: 2, y: 2, width: 28, height: 28)).fill()
+            cgContext.setShadow(offset: .zero, blur: 0, color: nil)
+            fillColor.setFill()
+            UIBezierPath(ovalIn: CGRect(x: 4, y: 4, width: 24, height: 24)).fill()
             let configuration = UIImage.SymbolConfiguration(pointSize: 18, weight: .bold)
             if let symbol = UIImage(systemName: symbolName, withConfiguration: configuration)?
-                .withTintColor(fillColor, renderingMode: .alwaysOriginal) {
+                .withTintColor(.white, renderingMode: .alwaysOriginal) {
                 symbol.draw(in: symbolRect)
             }
         }
@@ -140,6 +152,7 @@ struct StandardCampaignGoogleMapView: UIViewRepresentable {
     let initialCamera: StandardCampaignMapCamera?
     let selectedCircleCenter: CLLocationCoordinate2D?
     let showUserLocation: Bool
+    var userLocation: CLLocation? = nil
     let useSatelliteMap: Bool
     let useDarkMapStyle: Bool
     let contentInsets: UIEdgeInsets
@@ -182,6 +195,7 @@ struct StandardCampaignGoogleMapView: UIViewRepresentable {
         mapView.addGestureRecognizer(tripleTapGesture)
 
         DispatchQueue.main.async {
+            context.coordinator.syncWolf(on: mapView)
             context.coordinator.syncMarkers(on: mapView)
             context.coordinator.syncPath(on: mapView)
             context.coordinator.syncBoundary(on: mapView)
@@ -195,10 +209,14 @@ struct StandardCampaignGoogleMapView: UIViewRepresentable {
 
     func updateUIView(_ uiView: GMSMapView, context: Context) {
         context.coordinator.parent = self
-        uiView.padding = contentInsets
-        uiView.mapType = useSatelliteMap ? .hybrid : .normal
-        applyTheme(to: uiView)
-        uiView.isMyLocationEnabled = showUserLocation
+        if uiView.padding != contentInsets { uiView.padding = contentInsets }
+        let mapType: GMSMapViewType = useSatelliteMap ? .hybrid : .normal
+        if uiView.mapType != mapType { uiView.mapType = mapType }
+        if context.coordinator.lastTheme != [useSatelliteMap, useDarkMapStyle] {
+            applyTheme(to: uiView)
+            context.coordinator.lastTheme = [useSatelliteMap, useDarkMapStyle]
+        }
+        context.coordinator.syncWolf(on: uiView)
         context.coordinator.syncMarkers(on: uiView)
         context.coordinator.syncPath(on: uiView)
         context.coordinator.syncBoundary(on: uiView)
@@ -227,6 +245,48 @@ struct StandardCampaignGoogleMapView: UIViewRepresentable {
 
     final class Coordinator: NSObject, GMSMapViewDelegate {
         var parent: StandardCampaignGoogleMapView
+        var lastTheme: [Bool]?
+        private var lastMarkerData: [UUID: StandardCampaignMapMarker] = [:]
+        private var lastPath: [CLLocationCoordinate2D] = []
+        private var lastBoundary: [CLLocationCoordinate2D] = []
+        private var wolfMarker: GMSMarker?
+        private static let wolfIcon: UIImage? = {
+            guard let asset = UIImage(named: "WolfyStage1") else { return nil }
+            return UIGraphicsImageRenderer(size: CGSize(width: 52, height: 52)).image { _ in
+                UIColor.white.setFill()
+                UIBezierPath(ovalIn: CGRect(x: 1, y: 1, width: 50, height: 50)).fill()
+                UIBezierPath(ovalIn: CGRect(x: 3, y: 3, width: 46, height: 46)).addClip()
+                asset.draw(in: CGRect(x: 3, y: 3, width: 46, height: 46))
+            }
+        }()
+
+        func syncWolf(on mapView: GMSMapView) {
+            guard parent.showUserLocation, let location = parent.userLocation,
+                  CLLocationCoordinate2DIsValid(location.coordinate), let icon = Self.wolfIcon else {
+                wolfMarker?.map = nil
+                mapView.isMyLocationEnabled = parent.showUserLocation
+                return
+            }
+            let marker = wolfMarker ?? GMSMarker()
+            if wolfMarker == nil {
+                marker.icon = icon
+                marker.groundAnchor = CGPoint(x: 0.5, y: 0.5)
+                marker.title = "Wolfy · Your location"
+                marker.isTappable = false
+                marker.zIndex = 1000
+                wolfMarker = marker
+            }
+            marker.position = location.coordinate
+            marker.map = mapView
+            mapView.isMyLocationEnabled = false
+        }
+
+        private func sameCoordinates(_ lhs: [CLLocationCoordinate2D], _ rhs: [CLLocationCoordinate2D]) -> Bool {
+            lhs.count == rhs.count && zip(lhs, rhs).allSatisfy {
+                $0.0.latitude == $0.1.latitude && $0.0.longitude == $0.1.longitude
+            }
+        }
+
         private var markersByAddressId: [UUID: GMSMarker] = [:]
         private var pathPolyline: GMSPolyline?
         private var boundaryPolygon: GMSPolygon?
@@ -241,14 +301,14 @@ struct StandardCampaignGoogleMapView: UIViewRepresentable {
         }
 
         func syncMarkers(on mapView: GMSMapView) {
-            let incomingByID = Dictionary(uniqueKeysWithValues: parent.markers.map { ($0.addressId, $0) })
+            let incomingByID = Dictionary(parent.markers.filter { CLLocationCoordinate2DIsValid($0.coordinate) }.map { ($0.addressId, $0) }, uniquingKeysWith: { _, latest in latest })
 
             for (addressId, marker) in markersByAddressId where incomingByID[addressId] == nil {
                 marker.map = nil
                 markersByAddressId[addressId] = nil
             }
 
-            for markerData in parent.markers {
+            for markerData in incomingByID.values {
                 let marker = markersByAddressId[markerData.addressId] ?? {
                     let marker = GMSMarker(position: markerData.coordinate)
                     marker.map = mapView
@@ -256,17 +316,22 @@ struct StandardCampaignGoogleMapView: UIViewRepresentable {
                     return marker
                 }()
 
+                marker.userData = markerData.address
+                guard lastMarkerData[markerData.addressId] != markerData else { continue }
                 marker.position = markerData.coordinate
                 marker.title = markerData.title
                 marker.snippet = markerData.status.displayName
-                marker.icon = StandardCampaignMarkerIcon.image(for: markerData.status)
+                marker.icon = StandardCampaignMarkerIcon.image(for: markerData.status, cardEngaged: markerData.cardEngaged)
                 marker.groundAnchor = CGPoint(x: 0.5, y: 0.5)
                 marker.userData = markerData.address
                 marker.appearAnimation = .none
             }
+            lastMarkerData = incomingByID
         }
 
         func syncPath(on mapView: GMSMapView) {
+            guard !sameCoordinates(lastPath, parent.pathCoordinates) else { return }
+            lastPath = parent.pathCoordinates
             pathPolyline?.map = nil
             pathPolyline = nil
 
@@ -286,6 +351,8 @@ struct StandardCampaignGoogleMapView: UIViewRepresentable {
         }
 
         func syncBoundary(on mapView: GMSMapView) {
+            guard !sameCoordinates(lastBoundary, parent.boundaryCoordinates) else { return }
+            lastBoundary = parent.boundaryCoordinates
             boundaryPolygon?.map = nil
             boundaryPolygon = nil
 

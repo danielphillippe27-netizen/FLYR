@@ -636,7 +636,6 @@ struct NewCampaignDetailView: View {
 
     private var campaignNavigation: some View {
         campaignContent
-        .toolbar { ToolbarItem(placement: .secondaryAction) { if let campaign = hook.item { FieldSalesEntryLink(campaignID: campaign.id) } } }
         .navigationTitle("Campaign Details")
         .navigationBarTitleDisplayMode(.inline)
         .safeAreaInset(edge: .bottom) {

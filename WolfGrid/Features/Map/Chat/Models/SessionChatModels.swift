@@ -32,6 +32,7 @@ struct SessionChatMessage: Codable, Identifiable, Hashable, Sendable {
     var deliveryState: SessionChatDeliveryState?
     var localAudioPath: String?
     var errorMessage: String?
+    var transmissionStarted: Bool? = nil
 
     var isDelivered: Bool { deliveryState == nil || deliveryState == .delivered }
 

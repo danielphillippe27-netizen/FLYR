@@ -30,33 +30,35 @@ struct ActivityView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            NavigationLink {
-                TeamChatListView()
-            } label: {
-                HStack(spacing: 12) {
-                    Image(systemName: "bubble.left.and.bubble.right.fill")
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .frame(width: 38, height: 38)
-                        .background(Color.red)
-                        .clipShape(Circle())
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Team Chats").font(.headline).foregroundStyle(Color.text)
-                        Text("Live and completed session conversations")
-                            .font(.caption).foregroundStyle(Color.muted)
+            if selectedFilter == .activity {
+                NavigationLink {
+                    TeamChatListView()
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: "bubble.left.and.bubble.right.fill")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .frame(width: 38, height: 38)
+                            .background(Color.red)
+                            .clipShape(Circle())
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Team Chats").font(.headline).foregroundStyle(Color.text)
+                            Text("Live and completed session conversations")
+                                .font(.caption).foregroundStyle(Color.muted)
+                        }
+                        Spacer()
+                        if sessionChatStore.totalUnreadCount > 0 {
+                            Text("\(sessionChatStore.totalUnreadCount)")
+                                .font(.caption.bold()).foregroundStyle(.white)
+                                .frame(minWidth: 22, minHeight: 22).background(Color.red).clipShape(Capsule())
+                        }
+                        Image(systemName: "chevron.right").font(.caption.bold()).foregroundStyle(Color.muted)
                     }
-                    Spacer()
-                    if sessionChatStore.totalUnreadCount > 0 {
-                        Text("\(sessionChatStore.totalUnreadCount)")
-                            .font(.caption.bold()).foregroundStyle(.white)
-                            .frame(minWidth: 22, minHeight: 22).background(Color.red).clipShape(Capsule())
-                    }
-                    Image(systemName: "chevron.right").font(.caption.bold()).foregroundStyle(Color.muted)
+                    .padding(12)
+                    .background(RoundedRectangle(cornerRadius: 12).fill(Color.bgSecondary.opacity(0.75)))
                 }
-                .padding(12)
-                .background(RoundedRectangle(cornerRadius: 12).fill(Color.bgSecondary.opacity(0.75)))
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
             if filters.count > 1 {
                 filterTabs
             }
@@ -82,9 +84,12 @@ struct ActivityView: View {
             await loadItems()
         }
         .task {
-            async let activityLoad: Void = loadItems()
-            async let chatLoad: Void = sessionChatStore.start()
-            _ = await (activityLoad, chatLoad)
+            await loadItems()
+        }
+        .task(id: selectedFilter) {
+            if selectedFilter == .activity {
+                await sessionChatStore.start()
+            }
         }
         .onChange(of: selectedFilter) { _, _ in
             Task { await loadItems() }

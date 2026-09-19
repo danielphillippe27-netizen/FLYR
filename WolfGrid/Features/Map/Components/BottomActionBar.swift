@@ -141,13 +141,21 @@ struct BottomActionBar: View {
 
                     if showsCampaignSessionTools {
                         if let use2DMap {
-                            toggleRow(
-                                title: "2D Map",
-                                subtitle: "Switch this session between Google 2D and Mapbox 3D.",
-                                systemImage: "square.2.layers.3d",
-                                tint: defaultIconTint,
-                                isOn: use2DMap
-                            )
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("Map view")
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(primaryText)
+                                Picker("Map view", selection: use2DMap) {
+                                    Text("2D").tag(true)
+                                    Text("3D").tag(false)
+                                }
+                                .pickerStyle(.segmented)
+                                .accessibilityIdentifier("session-map-dimension")
+                                Text(use2DMap.wrappedValue ? "Satellite map with flat pins" : "WolfGrid buildings and 3D pins")
+                                    .font(.caption)
+                                    .foregroundStyle(secondaryText)
+                            }
+                            .padding(.vertical, 8)
 
                             Divider()
                                 .overlay(dividerColor)
@@ -164,16 +172,18 @@ struct BottomActionBar: View {
                         Divider()
                             .overlay(dividerColor)
 
-                        toggleRow(
-                            title: "Satellite Map",
-                            subtitle: "Show aerial imagery with streets and labels.",
-                            systemImage: "map.fill",
-                            tint: defaultIconTint,
-                            isOn: $satelliteMapEnabled
-                        )
+                        if use2DMap?.wrappedValue != true {
+                            toggleRow(
+                                title: "Satellite Map",
+                                subtitle: "Show aerial imagery with streets and labels.",
+                                systemImage: "map.fill",
+                                tint: defaultIconTint,
+                                isOn: $satelliteMapEnabled
+                            )
 
-                        Divider()
-                            .overlay(dividerColor)
+                            Divider()
+                                .overlay(dividerColor)
+                        }
 
                         if let hideParcels {
                             toggleRow(

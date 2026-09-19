@@ -20,6 +20,7 @@ final class SessionChatStore: ObservableObject {
     private var networkCancellable: AnyCancellable?
     private var foregroundSessionId: UUID?
     private var startedUserId: UUID?
+    private var sendingIDs: Set<UUID> = []
 
     var totalUnreadCount: Int { rooms.reduce(0) { $0 + $1.unreadCount } }
 
@@ -36,10 +37,18 @@ final class SessionChatStore: ObservableObject {
         rooms.first(where: { $0.sessionId == sessionId })?.unreadCount ?? 0
     }
 
+    func resetForAccountChange() async {
+        let previousUser = startedUserId
+        rooms=[];messagesBySession=[:];nextMessageCursorBySession=[:]
+        foregroundSessionId=nil;startedUserId=nil;loadingRooms=false;loadingSessions=[];errorMessage=nil
+        if let previousUser { await cache.pausePending(userId: previousUser) }
+        await stopRealtime()
+    }
+
     func start() async {
         guard let userId = AuthManager.shared.user?.id else { return }
         if startedUserId != userId {
-            await stopRealtime()
+            await resetForAccountChange()
             startedUserId = userId
             await subscribeRealtime(userId: userId)
         }
@@ -48,8 +57,10 @@ final class SessionChatStore: ObservableObject {
     }
 
     func loadRooms() async {
+        guard let userId = AuthManager.shared.user?.id else { return }
         loadingRooms = true
-        let cached = await cache.fetchRooms()
+        let cached = await cache.fetchRooms(userId: userId)
+        guard userId == AuthManager.shared.user?.id else { return }
         if rooms.isEmpty { rooms = sortRooms(cached) }
         guard NetworkMonitor.shared.isOnline else {
             loadingRooms = false
@@ -57,8 +68,9 @@ final class SessionChatStore: ObservableObject {
         }
         do {
             let response = try await api.fetchRooms()
+            guard userId == AuthManager.shared.user?.id else { return }
             rooms = sortRooms(response.rooms)
-            await cache.upsertRooms(response.rooms)
+            await cache.upsertRooms(response.rooms, userId: userId)
             errorMessage = nil
         } catch {
             errorMessage = error.localizedDescription
@@ -67,8 +79,10 @@ final class SessionChatStore: ObservableObject {
     }
 
     func loadMessages(sessionId: UUID, refresh: Bool = false) async {
+        guard let userId = AuthManager.shared.user?.id else { return }
         loadingSessions.insert(sessionId)
-        let cached = await cache.fetchMessages(sessionId: sessionId)
+        let cached = await cache.fetchMessages(sessionId: sessionId, userId: userId)
+        guard userId == AuthManager.shared.user?.id else { return }
         if messagesBySession[sessionId] == nil || refresh {
             messagesBySession[sessionId] = merge(messagesBySession[sessionId] ?? [], cached)
         }
@@ -78,6 +92,7 @@ final class SessionChatStore: ObservableObject {
         }
         do {
             let response = try await api.fetchMessages(sessionId: sessionId)
+            guard userId == AuthManager.shared.user?.id else { return }
             nextMessageCursorBySession[sessionId] = response.nextCursor
             let delivered = response.messages.map { message -> SessionChatMessage in
                 var copy = message
@@ -86,7 +101,7 @@ final class SessionChatStore: ObservableObject {
             }
             let merged = merge(messagesBySession[sessionId] ?? [], delivered)
             messagesBySession[sessionId] = merged
-            await cache.upsertMessages(merged)
+            await cache.upsertMessages(merged, userId: userId)
             errorMessage = nil
             if foregroundSessionId == sessionId { await markRead(sessionId: sessionId) }
         } catch {
@@ -96,12 +111,14 @@ final class SessionChatStore: ObservableObject {
     }
 
     func loadOlderMessages(sessionId: UUID) async {
+        guard let userId = AuthManager.shared.user?.id else { return }
         guard NetworkMonitor.shared.isOnline,
               let cursor = nextMessageCursorBySession[sessionId],
               !loadingSessions.contains(sessionId) else { return }
         loadingSessions.insert(sessionId)
         do {
             let response = try await api.fetchMessages(sessionId: sessionId, cursor: cursor)
+            guard userId == AuthManager.shared.user?.id else { return }
             let delivered = response.messages.map { message -> SessionChatMessage in
                 var copy = message
                 copy.deliveryState = .delivered
@@ -110,7 +127,7 @@ final class SessionChatStore: ObservableObject {
             let merged = merge(messagesBySession[sessionId] ?? [], delivered)
             messagesBySession[sessionId] = merged
             nextMessageCursorBySession[sessionId] = response.nextCursor
-            await cache.upsertMessages(delivered)
+            await cache.upsertMessages(delivered, userId: userId)
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -128,6 +145,7 @@ final class SessionChatStore: ObservableObject {
     }
 
     func sendText(sessionId: UUID, campaignId: UUID, text: String) async {
+        guard let userId = AuthManager.shared.user?.id else { return }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard (1...1_000).contains(trimmed.count), let sender = currentSender else { return }
         let pending = SessionChatMessage.pendingText(
@@ -138,11 +156,12 @@ final class SessionChatStore: ObservableObject {
             sender: sender
         )
         messagesBySession[sessionId] = merge(messagesBySession[sessionId] ?? [], [pending])
-        await cache.upsertMessages([pending])
+        await cache.upsertMessages([pending], userId: userId)
         if NetworkMonitor.shared.isOnline { await deliver(pending) }
     }
 
     func sendVoice(sessionId: UUID, campaignId: UUID, fileURL: URL, durationMs: Int) async {
+        guard let userId = AuthManager.shared.user?.id else { return }
         guard let sender = currentSender else { return }
         guard (1_000...120_000).contains(durationMs) else {
             try? FileManager.default.removeItem(at: fileURL)
@@ -179,27 +198,47 @@ final class SessionChatStore: ObservableObject {
             errorMessage: nil
         )
         messagesBySession[sessionId] = merge(messagesBySession[sessionId] ?? [], [pending])
-        await cache.upsertMessages([pending])
+        await cache.upsertMessages([pending], userId: userId)
         if NetworkMonitor.shared.isOnline { await deliver(pending) }
     }
 
     func retry(_ message: SessionChatMessage) async {
+        guard let userId = AuthManager.shared.user?.id else { return }
+        guard message.sender.id == userId else { return }
         var retrying = message
         retrying.deliveryState = .retrying
         retrying.errorMessage = nil
         replace(retrying)
-        await cache.upsertMessages([retrying])
+        await cache.upsertMessages([retrying], userId: userId)
         await deliver(retrying)
     }
 
     func discard(_ message: SessionChatMessage) async {
+        guard let userId = AuthManager.shared.user?.id else { return }
+        guard message.sender.id == userId else { return }
+        let cached = await cache.fetchMessages(sessionId: message.sessionId, userId: userId)
+        let latest = cached.first(where: { $0.clientMessageId == message.clientMessageId }) ?? message
+        guard !sendingIDs.contains(message.clientMessageId), !latest.isDelivered, latest.transmissionStarted != true else {
+            errorMessage="This message is sending or was already sent and cannot be recalled."
+            return
+        }
         if let path = message.localAudioPath { try? FileManager.default.removeItem(atPath: path) }
         messagesBySession[message.sessionId]?.removeAll { $0.clientMessageId == message.clientMessageId }
-        await cache.delete(clientMessageId: message.clientMessageId)
+        await cache.delete(clientMessageId: message.clientMessageId, userId: userId)
     }
 
     private func deliver(_ pending: SessionChatMessage) async {
+        guard let userId = AuthManager.shared.user?.id, pending.sender.id == userId, startedUserId == userId,
+              !sendingIDs.contains(pending.clientMessageId) else { return }
+        sendingIDs.insert(pending.clientMessageId)
+        defer { sendingIDs.remove(pending.clientMessageId) }
+        guard await cache.fetchPending(userId: userId).contains(where: { $0.clientMessageId == pending.clientMessageId }),
+              userId == AuthManager.shared.user?.id, startedUserId == userId else { return }
         guard NetworkMonitor.shared.isOnline else { return }
+        var transmitting = pending
+        transmitting.transmissionStarted = true
+        await cache.upsertMessages([transmitting], userId: userId)
+        replace(transmitting)
         do {
             let response: SessionChatSendResponse
             switch pending.type {
@@ -207,7 +246,7 @@ final class SessionChatStore: ObservableObject {
                 response = try await api.sendText(
                     sessionId: pending.sessionId,
                     clientMessageId: pending.clientMessageId,
-                    text: pending.text ?? ""
+                    text: pending.text ?? "", expectedUserId: userId
                 )
             case .voice:
                 guard let path = pending.localAudioPath else {
@@ -217,38 +256,43 @@ final class SessionChatStore: ObservableObject {
                     sessionId: pending.sessionId,
                     clientMessageId: pending.clientMessageId,
                     fileURL: URL(fileURLWithPath: path),
-                    durationMs: pending.durationMs ?? 0
+                    durationMs: pending.durationMs ?? 0, expectedUserId: userId
                 )
             }
+            guard userId == AuthManager.shared.user?.id else { return }
             var delivered = response.message
             delivered.deliveryState = .delivered
             delivered.localAudioPath = nil
             if let path = pending.localAudioPath { try? FileManager.default.removeItem(atPath: path) }
             replace(delivered)
-            await cache.upsertMessages([delivered])
+            await cache.upsertMessages([delivered], userId: userId)
             await loadRooms()
         } catch {
-            var failed = pending
+            guard userId == AuthManager.shared.user?.id, startedUserId == userId else { return }
+            var failed = transmitting
             failed.deliveryState = error is SessionChatAPIError ? .failed : .pending
             failed.errorMessage = error.localizedDescription
             replace(failed)
-            await cache.upsertMessages([failed])
+            await cache.upsertMessages([failed], userId: userId)
         }
     }
 
     func flushPending() async {
+        guard let userId = AuthManager.shared.user?.id else { return }
         guard NetworkMonitor.shared.isOnline else { return }
-        for message in await cache.fetchPending() { await deliver(message) }
+        for message in await cache.fetchPending(userId: userId) { await deliver(message) }
     }
 
     private func markRead(sessionId: UUID) async {
+        guard let userId = AuthManager.shared.user?.id else { return }
         guard NetworkMonitor.shared.isOnline else { return }
         let last = messagesBySession[sessionId]?.last(where: { $0.isDelivered })
         do {
-            _ = try await api.markRead(sessionId: sessionId, lastReadMessageId: last?.id)
+            _ = try await api.markRead(sessionId: sessionId, lastReadMessageId: last?.id, expectedUserId: userId)
+            guard userId == AuthManager.shared.user?.id else { return }
             if let index = rooms.firstIndex(where: { $0.sessionId == sessionId }) {
                 rooms[index].unreadCount = 0
-                await cache.upsertRooms([rooms[index]])
+                await cache.upsertRooms([rooms[index]], userId: userId)
             }
         } catch {
             errorMessage = error.localizedDescription

@@ -116,6 +116,18 @@ enum FieldSalesService {
         guard minor > 0, minor <= Decimal(9_000_000_000_000_000 as Int64) else { throw validation("Contract value is outside the supported range.") }
         return NSDecimalNumber(decimal: minor).stringValue
     }
+    static func commissionMinorUnits(value: String, percentage: String, currency: String) throws -> String {
+        let text = percentage.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard text.range(of: #"^[0-9]+(?:\.[0-9]{1,2})?$"#, options: .regularExpression) != nil,
+              let rate = Decimal(string: text, locale: Locale(identifier: "en_US_POSIX")), rate >= 0, rate <= 100 else {
+            throw validation("Enter a commission percentage from 0 to 100, with up to two decimal places.")
+        }
+        let minor = try minorUnits(value, currency: currency)
+        var calculated = Decimal(string: minor)! * rate / 100
+        var rounded = Decimal()
+        NSDecimalRound(&rounded, &calculated, 0, .plain)
+        return NSDecimalNumber(decimal: rounded).stringValue
+    }
     static func validation(_ message: String) -> NSError { NSError(domain: "FieldSales", code: 1, userInfo: [NSLocalizedDescriptionKey: message]) }
     static func timestamp(_ value: String, timezone: String) -> String {
         let parser = ISO8601DateFormatter(); parser.formatOptions = [.withInternetDateTime, .withFractionalSeconds]

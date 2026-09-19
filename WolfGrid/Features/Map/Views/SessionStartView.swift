@@ -6,30 +6,17 @@ private struct SessionRouteAssignmentDetailSheetItem: Identifiable {
 
 private struct SessionActionCardStyle: ButtonStyle {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    let tint: Color
-    let gradientTop: Color
-    let gradientBottom: Color
+    let fill: Color
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .background {
                 RoundedRectangle(cornerRadius: 24, style: .continuous)
-                    .fill(LinearGradient(
-                        colors: [gradientTop, gradientBottom],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    ))
+                    .fill(fill)
                     .overlay {
                         RoundedRectangle(cornerRadius: 24, style: .continuous)
-                            .strokeBorder(.white.opacity(0.7), lineWidth: 1)
+                            .strokeBorder(.white.opacity(0.12), lineWidth: 1)
                     }
-                    .shadow(color: .black.opacity(configuration.isPressed ? 0.05 : 0.10),
-                            radius: configuration.isPressed ? 9 : 18,
-                            x: 0, y: configuration.isPressed ? 3 : 8)
-                    .shadow(color: tint.opacity(configuration.isPressed ? 0.04 : 0.08),
-                            radius: configuration.isPressed ? 12 : 24,
-                            x: 0, y: configuration.isPressed ? 4 : 10)
             }
             .contentShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
             .scaleEffect(configuration.isPressed ? 0.97 : 1)
@@ -39,6 +26,7 @@ private struct SessionActionCardStyle: ButtonStyle {
 
 struct SessionStartView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var entitlementsService: EntitlementsService
     @EnvironmentObject private var uiState: AppUIState
     @ObservedObject private var workspaceContext = WorkspaceContext.shared
@@ -162,9 +150,7 @@ struct SessionStartView: View {
             quickActionButton(
                 title: "Standard",
                 systemImage: "map.fill",
-                tint: Color(red: 0.78, green: 0.60, blue: 0.20),
-                gradientTop: Color(red: 1.00, green: 0.98, blue: 0.93),
-                gradientBottom: Color(red: 0.99, green: 0.94, blue: 0.77)
+                fill: Color(red: 0.88, green: 0.66, blue: 0.08)
             ) {
                 HapticManager.light()
                 if entitlementsService.canUsePro {
@@ -176,10 +162,8 @@ struct SessionStartView: View {
 
             quickActionButton(
                 title: "Networking",
-                systemImage: "person.2.fill",
-                tint: Color(red: 0.28, green: 0.55, blue: 0.83),
-                gradientTop: Color(red: 0.86, green: 0.93, blue: 1.00),
-                gradientBottom: Color(red: 0.95, green: 0.98, blue: 1.00)
+                systemImage: "person.badge.plus",
+                fill: Color(red: 0.10, green: 0.36, blue: 0.72)
             ) {
                 HapticManager.light()
                 showNetworkingSession = true
@@ -187,10 +171,8 @@ struct SessionStartView: View {
 
             quickActionButton(
                 title: "Join Session",
-                systemImage: "person.badge.plus",
-                tint: Color(red: 0.28, green: 0.65, blue: 0.47),
-                gradientTop: Color(red: 0.86, green: 0.96, blue: 0.91),
-                gradientBottom: Color(red: 0.95, green: 0.99, blue: 0.94)
+                systemImage: "person.2.fill",
+                fill: Color(red: 0.06, green: 0.43, blue: 0.28)
             ) {
                 HapticManager.light()
                 showJoinSessionCodeSheet = true
@@ -204,9 +186,7 @@ struct SessionStartView: View {
     private func quickActionButton(
         title: String,
         systemImage: String,
-        tint: Color,
-        gradientTop: Color,
-        gradientBottom: Color,
+        fill: Color,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
@@ -216,11 +196,10 @@ struct SessionStartView: View {
                     .frame(width: 40, height: 40)
                     .background {
                         Circle()
-                            .fill(.white.opacity(0.65))
+                            .fill(.white.opacity(0.10))
                             .overlay {
-                                Circle().strokeBorder(.white.opacity(0.8), lineWidth: 1)
+                                Circle().strokeBorder(.white.opacity(0.16), lineWidth: 1)
                             }
-                            .shadow(color: tint.opacity(0.12), radius: 5, x: 0, y: 2)
                     }
                     .accessibilityHidden(true)
 
@@ -230,15 +209,11 @@ struct SessionStartView: View {
                     .lineLimit(2)
                     .minimumScaleFactor(0.85)
             }
-            .foregroundStyle(Color(red: 0.18, green: 0.20, blue: 0.23))
+            .foregroundStyle(colorScheme == .dark ? Color.white : Color.black)
             .padding(.horizontal, 6)
             .frame(maxWidth: .infinity, minHeight: 96)
         }
-        .buttonStyle(SessionActionCardStyle(
-            tint: tint,
-            gradientTop: gradientTop,
-            gradientBottom: gradientBottom
-        ))
+        .buttonStyle(SessionActionCardStyle(fill: fill))
     }
 
     private var campaignList: some View {

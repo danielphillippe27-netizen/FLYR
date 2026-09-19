@@ -9,13 +9,22 @@ struct FieldSalesRootView: View {
     var campaignID: UUID? = nil
     @ObservedObject private var auth = AuthManager.shared
     @ObservedObject private var workspace = WorkspaceContext.shared
+    private var appointmentContext: [String:String] {
+        guard let appointmentID else { return [:] }
+        var context = ["appointment_id": appointmentID.uuidString]
+        if let leadID { context["contact_id"] = leadID.uuidString }
+        return context
+    }
     var body: some View {
         Group {
             if let user = auth.user?.id, let space = workspace.workspaceId {
-                FieldSalesGate(workspace: space, user: user, leadID: leadID, leaderboardOnly: leaderboardOnly, initial: ["contact_id":leadID?.uuidString,"appointment_id":appointmentID?.uuidString,"opportunity_id":opportunityID?.uuidString,"property_key":propertyKey,"campaign_id":campaignID?.uuidString].compactMapValues { $0 })
+                FieldSalesGate(workspace: space, user: user, leadID: leadID, leaderboardOnly: leaderboardOnly, initial: appointmentContext)
                     .id("\(user):\(space)")
             } else { ContentUnavailableView("Sales · Beta", systemImage: "chart.line.uptrend.xyaxis", description: Text("Sign in and select a workspace.")) }
         }
+        .navigationTitle("Sales")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.visible, for: .navigationBar)
     }
 }
 
@@ -26,12 +35,27 @@ private struct FieldSalesGate: View {
     var body: some View {
         Group {
             if let d = data {
-                if d.pro_sales_version != nil && d.currency != nil && d.timezone != nil && d.needs_setup != true {
+                if !d.enabled {
+                    ContentUnavailableView {
+                        Label("Sales isn’t enabled", systemImage: "chart.line.uptrend.xyaxis")
+                    } description: {
+                        Text("Sales hasn’t been activated for this workspace yet. Once enabled, you can set its currency and timezone, then record and review sales here.")
+                    } actions: {
+                        Button("Check again") { Task { await reload() } }
+                    }
+                } else if d.pro_sales_version != nil && d.currency != nil && d.timezone != nil && d.needs_setup != true {
                     if leaderboardOnly { FieldSalesLeaderboardView() }
                     else { FieldSalesProDashboard(workspace: workspace, data: d, initial: initial) }
                 } else { FieldSalesScreen(workspace:workspace,user:user,leadID:leadID,leaderboardOnly:leaderboardOnly) }
-            } else if let error { Text(error); Button("Retry") { Task { await reload() } } }
-            else { ProgressView("Loading Sales…") }
+            } else if let error {
+                ContentUnavailableView {
+                    Label("Sales couldn’t load", systemImage: "wifi.exclamationmark")
+                } description: {
+                    Text(error)
+                } actions: {
+                    Button("Retry") { Task { await reload() } }
+                }
+            } else { ProgressView("Loading Sales…").frame(maxWidth: .infinity, maxHeight: .infinity) }
         }.task { await reload() }
         .onReceive(NotificationCenter.default.publisher(for: .fieldSalesChanged)) { _ in Task { await reload() } }
     }
@@ -89,7 +113,7 @@ private struct FieldSalesScreen: View {
             if let error = model.error { Section { Text(error).foregroundStyle(.red); Button("Retry") { Task { await reload() } } } }
             if let d = model.data, d.enabled {
                 if d.needs_setup == true {
-                    if d.role == "owner" { FieldSalesSettings(data: d, workspace: workspace) }
+                    if d.role == "owner" || d.role == "admin" { FieldSalesSettings(data: d, workspace: workspace) }
                     else { Text("An owner must select the reporting currency and timezone.") }
                 } else {
                     Section { NavigationLink("Pipeline & follow-ups · Beta") { FieldSalesPipelineRootView() } }
@@ -134,7 +158,7 @@ private struct FieldSalesScreen: View {
             }
             FieldSalesGoal(data: d, workspace: workspace, rep: team ? rep : user).id("\(team):\(String(describing: rep)):\(d.goal?.target ?? 0)")
             Section(status == "pending" ? "Pending verification" : "Recent sales") {
-                Button("Record Sale · Beta") { editing = nil; replacement = false; recording = true }
+                Button("Convert appointment · Beta") { editing = nil; replacement = false; recording = true }
                 if let actionError { Text(actionError).foregroundStyle(.red) }
                 if d.sales?.isEmpty != false { Text("No sales match these filters.").foregroundStyle(.secondary) }
                 ForEach(d.sales ?? []) { sale in
@@ -205,14 +229,14 @@ private struct FieldSaleEditor: View {
             Picker("Existing lead", selection: Binding(get: { contact }, set: { contact = $0; appointment = "" })) { Text("Select lead").tag(""); ForEach(data.options?.leads ?? []) { Text($0.name).tag($0.id.uuidString) } }
             Text("Campaign and territory follow the selected lead’s campaign.").font(.caption)
             Picker("Representative", selection: $rep) { ForEach(data.ranking ?? []) { Text($0.rep_name).tag($0.rep_id.uuidString) } }.disabled(!data.manager)
-            Picker("Appointment", selection: $appointment) { Text("None linked").tag(""); ForEach((data.options?.appointments ?? []).filter { $0.contact_id.uuidString == contact }) { Text($0.scheduled_at).tag($0.id.uuidString) } }
+            Picker("Appointment (required)", selection: $appointment) { Text("Select appointment").tag(""); ForEach((data.options?.appointments ?? []).filter { $0.contact_id.uuidString == contact }) { Text($0.scheduled_at).tag($0.id.uuidString) } }
             TextField("Contract value (\(data.currency ?? ""))", text: $amount).keyboardType(.decimalPad)
             TextField("Sale date (YYYY-MM-DD)", text: $soldOn).keyboardType(.numbersAndPunctuation)
             TextField("Notes", text: $notes, axis: .vertical).lineLimit(3...6)
             Text("Pending until verified by an authorized manager.").font(.caption)
             if let error { Text(error).foregroundStyle(.red) }
-            Button("Save sale") { Task { await save() } }.disabled(busy || contact.isEmpty)
-        }.navigationTitle(initial != nil && !replacement ? "Edit sale" : "Record Sale · Beta")
+            Button("Save sale") { Task { await save() } }.disabled(busy || contact.isEmpty || appointment.isEmpty)
+        }.navigationTitle(initial != nil && !replacement ? "Edit sale" : "Convert appointment · Beta")
         .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() }.disabled(busy) } }
         .onAppear {
             contact = (initial?.contact_id ?? leadID)?.uuidString ?? ""; rep = (initial?.rep_id ?? data.user_id)?.uuidString ?? ""

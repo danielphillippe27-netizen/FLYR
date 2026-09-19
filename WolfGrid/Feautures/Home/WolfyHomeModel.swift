@@ -5,6 +5,13 @@ import Supabase
 struct WolfyGoals: Codable, Equatable {
     var daily_door_goal: Int?
     var weekly_door_goal: Int?
+    /// ISO weekdays: Monday = 1, Sunday = 7.
+    var door_goal_days: [Int]?
+    var scheduledDays: [Int] { door_goal_days ?? [1, 2, 3, 4, 5] }
+    func dailyTarget(on date: Date = Date(), calendar: Calendar = .current) -> Int? {
+        let day = (calendar.component(.weekday, from: date) + 5) % 7 + 1
+        return scheduledDays.contains(day) ? daily_door_goal : nil
+    }
 }
 
 struct WolfyMetrics: Decodable {
@@ -71,7 +78,7 @@ final class WolfyHomeModel: ObservableObject {
         if generation == request { summary.metrics = next.metrics }
         do {
             let rows: [WolfyGoals] = try await client.from("user_profiles")
-                .select("daily_door_goal,weekly_door_goal").eq("user_id", value: userID).execute().value
+                .select("daily_door_goal,weekly_door_goal,door_goal_days").eq("user_id", value: userID).execute().value
             next.goals = rows.first ?? WolfyGoals()
         } catch { next.unavailable.append("Goals") }
         if generation == request { summary.goals = next.goals }
@@ -131,25 +138,30 @@ final class WolfyHomeModel: ObservableObject {
         }
     }
 
-    func saveGoals(daily: Int?, weekly: Int?) async throws {
+    func saveGoals(daily: Int?, weekly: Int?, days: [Int]) async throws {
         guard daily.map({ $0 > 0 }) ?? true, weekly.map({ $0 > 0 }) ?? true else {
             throw NSError(domain: "WolfyGoals", code: 1, userInfo: [NSLocalizedDescriptionKey: "Enter a positive door target."])
+        }
+        guard !days.isEmpty, days.allSatisfy({ (1...7).contains($0) }) else {
+            throw NSError(domain: "WolfyGoals", code: 2, userInfo: [NSLocalizedDescriptionKey: "Choose at least one goal day."])
         }
         guard let userID = scopedUserID else { throw CancellationError() }
         struct Params: Encodable {
             let p_user: UUID
             let p_daily: Int?
             let p_weekly: Int?
+            let p_days: [Int]
             func encode(to encoder: Encoder) throws {
                 var c = encoder.container(keyedBy: CodingKeys.self)
                 try c.encode(p_user, forKey: .p_user)
                 try c.encode(p_daily, forKey: .p_daily)
                 try c.encode(p_weekly, forKey: .p_weekly)
+                try c.encode(p_days, forKey: .p_days)
             }
-            enum CodingKeys: String, CodingKey { case p_user, p_daily, p_weekly }
+            enum CodingKeys: String, CodingKey { case p_user, p_daily, p_weekly, p_days }
         }
         let request = generation
-        let saved: WolfyGoals = try await client.rpc("wolfy_save_personal_goals", params: Params(p_user: userID, p_daily: daily, p_weekly: weekly)).execute().value
+        let saved: WolfyGoals = try await client.rpc("wolfy_save_personal_goals", params: Params(p_user: userID, p_daily: daily, p_weekly: weekly, p_days: days.sorted())).execute().value
         guard generation == request else { throw CancellationError() }
         summary.goals = saved
     }

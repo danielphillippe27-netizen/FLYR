@@ -134,9 +134,7 @@ private struct FieldSalesPipelineScreen: View {
             Text(opportunity.expected_value_minor == nil ? "Value unavailable" : FieldSalesService.money(opportunity.expected_value_minor, currency: currency))
             if let close = opportunity.expected_close { Text("Expected close: \(close)").font(.caption) }
             Button("Edit") { editing = opportunity; adding = true }
-            if stage.kind != "lost" {
-                NavigationLink("Mark as sold") { FieldSalesRootView(leadID: opportunity.contact_id) }
-            }
+            if stage.kind != "lost" { Text("Create or complete an appointment before recording a sale.").font(.caption).foregroundStyle(.secondary) }
         }
     }
     private func reload() async {

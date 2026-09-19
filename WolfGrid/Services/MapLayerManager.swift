@@ -101,9 +101,11 @@ final class MapLayerManager {
     /// House numbers are only readable at close range; keep them out of overview zooms.
     private static let addressNumbersLayerMinZoom: Double = 16.0
     private static let addressHouseIconImageId = "campaign-address-house-emblem"
-    private static let manualPinBaseModelId = "flyr-push-pin-base-v3"
-    private static let manualPinTopModelId = "flyr-push-pin-top-v3"
-    private static let manualPinModelScale: Double = 2.3
+    private static let manualPinBaseModelId = "wolfgrid-push-pin-base-v7"
+    private static let manualPinTopModelId = "wolfgrid-push-pin-top-v7"
+    // Use the same 5.2 m reference as houses: 0.7 for pins versus 0.6 for houses.
+    static let manualPinRenderedHeight: Double = defaultBuildingExtrusionHeight * 0.7
+    private static let manualPinModelScale: Double = manualPinRenderedHeight / manualPinUnscaledHeight
     private static let manualPinUnscaledHeight: Double = 5.15
 
     /// Minimum rendered building height, reduced by 35% from the previous 8 m floor.
@@ -117,8 +119,11 @@ final class MapLayerManager {
     private static let townhomeOverlayMinimumUnitCount = 2
     private static let addressMarkerExtrusionHeight: Double = 5.5
     private static let addressNumberRoofClearance: Double = 1.35
-    private static var manualPinAddressNumberZOffset: Double {
-        manualPinUnscaledHeight * manualPinModelScale + addressNumberRoofClearance
+    static let manualPinRoofClearance: Double = 0.65
+
+    static func manualPinBaseElevation(roofHeight: Double?) -> Double {
+        guard let roofHeight, roofHeight.isFinite, roofHeight > 0 else { return 0 }
+        return max(0, roofHeight + manualPinRoofClearance - manualPinRenderedHeight)
     }
     private static let interactionBuildingExtrusionHeight: Double = 1.25
     private static let interactionAddressExtrusionHeight: Double = 1.0
@@ -247,6 +252,12 @@ final class MapLayerManager {
         }
     }
 
+    private static var cardEngagedExpression: Exp {
+        Exp(.coalesce) { Exp(.featureState) { "card_engaged" }; Exp(.get) { "card_engaged" }; false }
+    }
+    private static var digitallyEngagedExpression: Exp {
+        Exp(.any) { Self.cardEngagedExpression; Exp(.gt) { Self.scansTotalExpression; 0 } }
+    }
     private static var scansTotalExpression: Exp {
         Exp(.coalesce) {
             Exp(.featureState) { "scans_total" }
@@ -268,6 +279,7 @@ final class MapLayerManager {
 
     private static var isSelectedUnvisitedExpression: Exp {
         return Exp(.all) {
+            Exp(.not) { Self.cardEngagedExpression }
             Self.isSelectedExpression
             Exp(.lte) {
                 Self.scansTotalExpression
@@ -412,7 +424,7 @@ final class MapLayerManager {
         return formatted == "pinned home" || formatted?.hasPrefix("pinned home ") == true
     }
 
-    private static func isManualPinAddressFeature(_ feature: AddressFeature) -> Bool {
+    static func isManualPinAddressFeature(_ feature: AddressFeature) -> Bool {
         if [
             feature.properties.featureType,
             feature.properties.source
@@ -450,10 +462,7 @@ final class MapLayerManager {
             Self.isTeammateOwnedExpression
             MapStatusColor.teammateTouched
 
-            Exp(.gt) {
-                Self.scansTotalExpression
-                0
-            }
+            Self.digitallyEngagedExpression
             MapStatusColor.qrScanned
 
             Exp(.eq) {
@@ -584,10 +593,7 @@ final class MapLayerManager {
             Self.isSelectedHighlightVisibleExpression
             MapStatusColor.selectedHome
 
-            Exp(.gt) {
-                Self.scansTotalExpression
-                0
-            }
+            Self.digitallyEngagedExpression
             MapStatusColor.qrScanned
 
             Exp(.eq) {
@@ -1151,10 +1157,7 @@ final class MapLayerManager {
             Self.isSelectedUnvisitedExpression
             MapStatusColor.selectedHome
 
-            Exp(.gt) {
-                Self.scansTotalExpression
-                0
-            }
+            Self.digitallyEngagedExpression
             MapStatusColor.qrScanned
 
             Exp(.match) {
@@ -1763,14 +1766,7 @@ final class MapLayerManager {
                 Self.isTeammateOwnedExpression
                 MapStatusColor.teammateTouched
 
-                Exp(.gt) {
-                    Exp(.coalesce) {
-                        Exp(.featureState) { "scans_total" }
-                        Exp(.get) { "scans_total" }
-                        0
-                    }
-                    0
-                }
+                Self.digitallyEngagedExpression
                 MapStatusColor.qrScanned
                 // Blue: conversation / talked (normalized "hot" or raw)
                 Exp(.eq) {
@@ -2045,7 +2041,12 @@ final class MapLayerManager {
             layer.modelType = .constant(.common3d)
             layer.modelScale = .constant([Self.manualPinModelScale, Self.manualPinModelScale, Self.manualPinModelScale])
             layer.modelRotation = .constant([0.0, 0.0, 0.0])
-            layer.modelTranslation = .constant([0.0, 0.0, 0.0])
+            layer.modelTranslation = .expression(
+                Exp(.coalesce) {
+                    Exp(.get) { "manual_pin_translation" }
+                    Exp(.literal) { [0.0, 0.0, 0.0] }
+                }
+            )
             layer.modelEmissiveStrength = .constant(0.22)
             layer.modelOpacity = .constant(1.0)
             layer.modelCastShadows = .constant(false)
@@ -2108,7 +2109,13 @@ final class MapLayerManager {
         layer.textHaloBlur = .constant(0.4)
         layer.textAnchor = .constant(.center)
         layer.textJustify = .constant(.center)
-        layer.textOffset = .constant([0, -0.35])
+        layer.textOffset = .expression(
+            Exp(.switchCase) {
+                Self.manualPinMarkerExpression
+                Exp(.literal) { [0.0, 0.0] }
+                Exp(.literal) { [0.0, -0.35] }
+            }
+        )
         layer.textPitchAlignment = .constant(.viewport)
         layer.textRotationAlignment = .constant(.viewport)
         layer.textVariableAnchor = .constant([.center])
@@ -3723,7 +3730,7 @@ final class MapLayerManager {
         )
     }
 
-    private static func smartAddressMarkerPointCollection(
+    static func smartAddressMarkerPointCollection(
         addresses: [AddressFeature],
         buildings: [BuildingFeature],
         orderedAddressIdsByBuilding: [String: [UUID]]
@@ -3844,9 +3851,9 @@ final class MapLayerManager {
             }()
             let effectiveLabelMode = backendLabelMode
                 ?? (linkedBuilding != nil ? "all_modes" : (requireHouseNumberLabel ? "address_mode_only" : "hidden"))
-            let backendAllowsLabel = effectiveLabelMode == "all_modes" || effectiveLabelMode == "address_mode_only"
+            let backendAllowsLabel = isManualPin || effectiveLabelMode == "all_modes" || effectiveLabelMode == "address_mode_only"
             guard !requireHouseNumberLabel || backendAllowsLabel else { return nil }
-            guard !requireCurrentBuildingLink || linkedBuilding != nil else { return nil }
+            guard !requireCurrentBuildingLink || linkedBuilding != nil || isManualPin else { return nil }
 
             let resolvedCoordinate: CLLocationCoordinate2D
             var labelPriority: Double
@@ -3854,7 +3861,11 @@ final class MapLayerManager {
 
             let usesCanonicalPlacement = ["parcel_center", "building_centroid", "building_parcel_centroid"]
                 .contains(feature.properties.pinPlacement ?? "")
-            if usesCanonicalPlacement {
+            if isManualPin {
+                // A dropped pin owns its anchor; its number must stay on its cap.
+                resolvedCoordinate = baseCoordinate
+                labelPriority = 98
+            } else if usesCanonicalPlacement {
                 // Server placement includes townhouse/parcel intersections. A
                 // whole-building center would collapse neighboring unit pins.
                 resolvedCoordinate = baseCoordinate
@@ -3894,12 +3905,21 @@ final class MapLayerManager {
                 resolvedCoordinate = baseCoordinate
                 labelPriority = feature.properties.labelPriority ?? 90
             }
+            var pinBaseElevation = 0.0
             if isManualPin {
+                // Roof clearance is geometric, not CRM ownership/linkage. A manually
+                // dropped pin must also clear overlapping roofs with other address IDs.
+                let roofHeight = buildingContexts.filter { context in
+                    context.polygons.contains { ring in
+                        Self.manualPinCapOverlapsRoof(coordinate: baseCoordinate, ring: ring)
+                    }
+                }.map { min($0.height, Self.maximumBuildingExtrusionHeight * Self.buildingExtrusionHeightScale) }.max()
+                pinBaseElevation = Self.manualPinBaseElevation(roofHeight: roofHeight)
                 labelPriority = max(labelPriority, 98)
-                labelZOffset = Self.manualPinAddressNumberZOffset
+                labelZOffset = pinBaseElevation + Self.manualPinRenderedHeight + 0.04
             }
 
-            let usesBuildingPlacement = linkedBuilding != nil && !keepSingleAddressCoordinate
+            let usesBuildingPlacement = linkedBuilding != nil && !keepSingleAddressCoordinate && !isManualPin
             var labelProperties: [String: Any] = [
                 "id": addressIdString,
                 "address_id": addressIdString,
@@ -3911,6 +3931,9 @@ final class MapLayerManager {
                 "has_building_link": linkedBuilding != nil,
                 "has_parcel_link": feature.properties.hasParcelLink ?? false
             ]
+            if isManualPin {
+                labelProperties["manual_pin_translation"] = [0.0, 0.0, pinBaseElevation]
+            }
             if let linkedBuilding {
                 labelProperties["linked_building_identifiers"] = linkedBuilding.identifiers
                 if labelProperties["building_gers_id"] == nil,
@@ -4242,6 +4265,28 @@ final class MapLayerManager {
         return coordinate
     }
 
+    /// Include roof edges under the wider cap, not just the pin's centre point.
+    private static func manualPinCapOverlapsRoof(coordinate: CLLocationCoordinate2D, ring: [[Double]]) -> Bool {
+        if pointInPolygon(longitude: coordinate.longitude, latitude: coordinate.latitude, ring: ring) { return true }
+        guard ring.count >= 3 else { return false }
+        let capRadius = 1.62 * 3.0 * Self.manualPinModelScale
+        let metersPerLatitudeDegree = 111_320.0
+        let metersPerLongitudeDegree = metersPerLatitudeDegree * cos(coordinate.latitude * .pi / 180)
+        for index in ring.indices {
+            let a = ring[index], b = ring[(index + 1) % ring.count]
+            guard a.count >= 2, b.count >= 2 else { continue }
+            let ax = (a[0] - coordinate.longitude) * metersPerLongitudeDegree
+            let ay = (a[1] - coordinate.latitude) * metersPerLatitudeDegree
+            let bx = (b[0] - coordinate.longitude) * metersPerLongitudeDegree
+            let by = (b[1] - coordinate.latitude) * metersPerLatitudeDegree
+            let dx = bx - ax, dy = by - ay
+            let lengthSquared = dx * dx + dy * dy
+            let t = lengthSquared > 0 ? min(1, max(0, -(ax * dx + ay * dy) / lengthSquared)) : 0
+            if hypot(ax + t * dx, ay + t * dy) <= capRadius { return true }
+        }
+        return false
+    }
+
     private static func buildingContext(
         containing coordinate: CLLocationCoordinate2D,
         in contexts: [LabelBuildingContext]
@@ -4369,7 +4414,7 @@ final class MapLayerManager {
     }
     
     /// Convert GeoJSON FeatureCollection of Point features to Polygon features (circle rings) for fill extrusion
-    private static func convertAddressPointsToCirclePolygons(_ pointGeoJSONData: Data, radiusMeters: Double = 2.7, height: Double = 10.8, segments: Int = 20) throws -> Data {
+    static func convertAddressPointsToCirclePolygons(_ pointGeoJSONData: Data, radiusMeters: Double = 2.7, height: Double = 10.8, segments: Int = 20) throws -> Data {
         guard let json = try JSONSerialization.jsonObject(with: pointGeoJSONData) as? [String: Any],
               let features = json["features"] as? [[String: Any]] else {
             print("🔍 [MapLayer] convertAddressPointsToCirclePolygons: no features array in GeoJSON")
@@ -4546,6 +4591,23 @@ final class MapLayerManager {
     
     /// Update a building's feature state for instant color change (no re-render).
     /// Uses lowercase featureId so it matches promoteId values in the source (buildings use lowercase gers_id).
+    func updateCardEngagement(_ rows: [BusinessCardEngagement]) {
+        let buildings = Set(rows.compactMap { $0.building_id?.lowercased() })
+        let addresses = Set(rows.map { $0.address_id.uuidString.lowercased() })
+        for id in Set(buildingFeatureStateCache.keys).union(buildings) {
+            var state = buildingFeatureStateCache[id] ?? [:]
+            state["card_engaged"] = buildings.contains(id)
+            buildingFeatureStateCache[id] = state
+            if let mapView { applyBuildingFeatureState(featureId: id, state: state, mapView: mapView, logSuccess: false) }
+        }
+        for id in Set(addressFeatureStateCache.keys).union(addresses) {
+            var state = addressFeatureStateCache[id] ?? [:]
+            state["card_engaged"] = addresses.contains(id)
+            addressFeatureStateCache[id] = state
+            if let mapView { applyAddressFeatureState(featureId: id, state: state, mapView: mapView, logSuccess: false) }
+        }
+    }
+
     func updateBuildingState(gersId: String, status: String, scansTotal: Int, visitOwner: String? = nil, isLinked: Bool? = nil) {
         let featureId = gersId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !featureId.isEmpty else { return }
@@ -4604,6 +4666,7 @@ final class MapLayerManager {
         guard !normalizedId.isEmpty else { return }
 
         let state: [String: Any] = [
+            "card_engaged": addressFeatureStateCache[normalizedId]?["card_engaged"] as? Bool ?? false,
             "status": status,
             "scans_total": scansTotal,
             "qr_scanned": scansTotal > 0,
@@ -5966,58 +6029,79 @@ final class MapLayerManager {
         return insetRing
     }
 
-    private static func centroidCoordinate(for polygons: [[[Double]]]) -> CLLocationCoordinate2D? {
+    /// Compute in local coordinates to avoid catastrophic cancellation on small roofs.
+    /// Rings are exterior components (not holes), matching the townhome slice contract.
+    static func centroidCoordinate(for polygons: [[[Double]]]) -> CLLocationCoordinate2D? {
+        let rings = polygons.compactMap { polygon -> [[Double]]? in
+            let ring = polygon.first == polygon.last ? Array(polygon.dropLast()) : polygon
+            guard ring.count >= 3,
+                  ring.allSatisfy({ $0.count >= 2 && $0[0].isFinite && $0[1].isFinite }) else { return nil }
+            return ring
+        }
+        guard let origin = rings.first?.first else { return nil }
         var weightedLongitude = 0.0
         var weightedLatitude = 0.0
         var totalWeight = 0.0
-        var fallbackPoints: [[Double]] = []
 
-        for polygon in polygons {
-            let openRing = polygon.first == polygon.last ? Array(polygon.dropLast()) : polygon
-            guard openRing.count >= 3 else { continue }
-
-            fallbackPoints.append(contentsOf: openRing)
-
-            var signedDoubleArea = 0.0
-            var centroidLongitudeTimesSixArea = 0.0
-            var centroidLatitudeTimesSixArea = 0.0
-
-            for index in openRing.indices {
-                let current = openRing[index]
-                let next = openRing[(index + 1) % openRing.count]
-                guard current.count >= 2, next.count >= 2 else { continue }
-
-                let cross = (current[0] * next[1]) - (next[0] * current[1])
-                signedDoubleArea += cross
-                centroidLongitudeTimesSixArea += (current[0] + next[0]) * cross
-                centroidLatitudeTimesSixArea += (current[1] + next[1]) * cross
+        for ring in rings {
+            var doubleArea = 0.0
+            var longitudeMoment = 0.0
+            var latitudeMoment = 0.0
+            for index in ring.indices {
+                let current = ring[index]
+                let next = ring[(index + 1) % ring.count]
+                let x = current[0] - origin[0]
+                let y = current[1] - origin[1]
+                let nextX = next[0] - origin[0]
+                let nextY = next[1] - origin[1]
+                let cross = x * nextY - nextX * y
+                doubleArea += cross
+                longitudeMoment += (x + nextX) * cross
+                latitudeMoment += (y + nextY) * cross
             }
-
-            let signedArea = signedDoubleArea / 2.0
-            guard abs(signedArea) > 0.000000001 else { continue }
-
-            let centroidLongitude = centroidLongitudeTimesSixArea / (6.0 * signedArea)
-            let centroidLatitude = centroidLatitudeTimesSixArea / (6.0 * signedArea)
-            let weight = abs(signedArea)
-
-            guard centroidLongitude.isFinite, centroidLatitude.isFinite else { continue }
-            weightedLongitude += centroidLongitude * weight
-            weightedLatitude += centroidLatitude * weight
+            guard abs(doubleArea) > 1e-18 else { continue }
+            let weight = abs(doubleArea)
+            weightedLongitude += longitudeMoment / (3 * doubleArea) * weight
+            weightedLatitude += latitudeMoment / (3 * doubleArea) * weight
             totalWeight += weight
         }
 
         if totalWeight > 0 {
-            return CLLocationCoordinate2D(
-                latitude: weightedLatitude / totalWeight,
-                longitude: weightedLongitude / totalWeight
-            )
+            let longitude = origin[0] + weightedLongitude / totalWeight
+            let latitude = origin[1] + weightedLatitude / totalWeight
+            if rings.contains(where: { pointInPolygon(longitude: longitude, latitude: latitude, ring: $0) }) {
+                return CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+            }
         }
 
-        guard !fallbackPoints.isEmpty else { return nil }
-        let averageLongitude = fallbackPoints.map { $0[0] }.reduce(0, +) / Double(fallbackPoints.count)
-        let averageLatitude = fallbackPoints.map { $0[1] }.reduce(0, +) / Double(fallbackPoints.count)
-        guard averageLongitude.isFinite, averageLatitude.isFinite else { return nil }
-        return CLLocationCoordinate2D(latitude: averageLatitude, longitude: averageLongitude)
+        // Concave or disconnected roofs can have an exterior centroid. Choose the
+        // midpoint of the widest interior scanline interval, never an arbitrary vertex.
+        var bestCoordinate: CLLocationCoordinate2D?
+        var bestWidth = 0.0
+        for ring in rings {
+            let latitudes = Array(Set(ring.map { $0[1] })).sorted()
+            for (lower, upper) in zip(latitudes, latitudes.dropFirst()) {
+                let latitude = lower + (upper - lower) / 2
+                var intersections: [Double] = []
+                for index in ring.indices {
+                    let current = ring[index]
+                    let next = ring[(index + 1) % ring.count]
+                    guard (current[1] > latitude) != (next[1] > latitude) else { continue }
+                    intersections.append(current[0] + (latitude - current[1])
+                        * (next[0] - current[0]) / (next[1] - current[1]))
+                }
+                intersections.sort()
+                for index in stride(from: 0, to: intersections.count - 1, by: 2) {
+                    let width = intersections[index + 1] - intersections[index]
+                    let longitude = intersections[index] + width / 2
+                    guard width > bestWidth,
+                          pointInPolygon(longitude: longitude, latitude: latitude, ring: ring) else { continue }
+                    bestWidth = width
+                    bestCoordinate = CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+                }
+            }
+        }
+        return bestCoordinate
     }
 
     private static func projectedCenter(for polygons: [[[Double]]]) -> (lon: Double, lat: Double) {

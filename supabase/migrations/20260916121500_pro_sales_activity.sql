@@ -10,7 +10,9 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path=public,pg_temp AS $$
    AND (nullif(f->>'campaign','') IS NULL OR c.campaign_id=(f->>'campaign')::uuid)
    AND (nullif(f->>'territory','') IS NULL OR to_jsonb(cp)->>'territory_id'=f->>'territory')
  ), visits AS (
-  SELECT DISTINCT ON(e.session_id,coalesce(e.building_id::text,e.address_id::text,e.id::text)) e.*,sn.user_id,sn.campaign_id
+  SELECT DISTINCT ON(e.session_id,coalesce(e.building_id::text,e.address_id::text,e.id::text))
+   e.id,e.session_id,e.building_id,e.address_id,e.created_at,e.event_type,e.metadata,e.outcome,
+   sn.user_id,sn.campaign_id
   FROM public.session_events e JOIN public.sessions sn ON sn.id=e.session_id
   LEFT JOIN public.campaigns cp ON cp.id=sn.campaign_id AND cp.workspace_id=w
   WHERE p_kind IN ('all','doors','conversations') AND sn.workspace_id=w

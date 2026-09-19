@@ -30,7 +30,18 @@ struct SettingsView: View {
                 if let user = auth.user {
                     // Profile Section
                     profileSection(user: user)
+                    Section("Business Card") {
+                        NavigationLink { BusinessCardEditorView() } label: {
+                            Label("My Business Card", systemImage: "person.crop.rectangle")
+                        }
+                    }
                     
+                    Section("Activity") {
+                        NavigationLink { YouStatsView() } label: {
+                            Label("Stats", systemImage: "chart.bar.fill")
+                        }
+                    }
+
                     // Integrations Section
                     integrationsSection
 

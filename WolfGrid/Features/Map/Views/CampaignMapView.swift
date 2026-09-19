@@ -1513,6 +1513,7 @@ private struct CampaignSyncConflictSheet: View {
 }
 
 struct CampaignMapView: View {
+    @StateObject private var cardEngagement = BusinessCardEngagementStore()
     private static let manualAddressConfirmationRetryCount = 5
     private static let manualAddressConfirmationRetryDelayNs: UInt64 = 750_000_000
     private static let standardMapAddressTapToleranceMeters: CLLocationDistance = 12
@@ -1618,6 +1619,7 @@ struct CampaignMapView: View {
     @State private var statsExpanded = false
     @State private var sessionToolsExpanded = false
     @State private var sessionUsesGoogle2D = false
+    @State private var renderer2DOverride: Bool?
     @State private var googleRendererCamera: StandardCampaignMapCamera?
     @State private var previous3DRendererCamera: DemoFixedCameraSnapshot?
     @State private var shouldRestoreCameraAfter3DSwitch = false
@@ -1756,7 +1758,7 @@ struct CampaignMapView: View {
     private let demoFixedCameraPullbackPitch: CGFloat = 0.0
     @State private var standardMapTapCircleCoordinate: CLLocationCoordinate2D?
     @State private var quickStartStandardSavedHomes: [QuickStartStandardSavedHome] = []
-    @State private var quickStartStandardTapTask: Task<Void, Never>?
+    @State private var quickStartStandardTapTasks: [UUID: Task<Void, Never>] = [:]
     @State private var quickStartFlyrPreparationTask: Task<Void, Never>?
     @State private var hasStartedQuickStartFlyrPreparation = false
     @State private var wasWalkModeActiveBeforeBackground = false
@@ -1970,7 +1972,8 @@ struct CampaignMapView: View {
             sessionUses2D: sessionUsesGoogle2D,
             mapboxAvailable: !Config.mapboxAccessToken.isEmpty,
             googleAvailable: !Config.googleMapsAPIKey.isEmpty,
-            standardMode: quickStartEnabled
+            standardMode: quickStartEnabled,
+            preferred2D: renderer2DOverride
         )
     }
 
@@ -2007,7 +2010,7 @@ struct CampaignMapView: View {
 
     private var session2DMapBinding: Binding<Bool> {
         Binding(
-            get: { sessionUsesGoogle2D },
+            get: { usesStandardPinsRenderer },
             set: { enabled in
                 if enabled, let mapView {
                     let camera = mapView.mapboxMap.cameraState
@@ -2022,9 +2025,12 @@ struct CampaignMapView: View {
                         zoom: Float(camera.zoom)
                     )
                 } else if !enabled {
+                    displayMode = .buildings
+                    lastLayerVisibilitySignature = nil
                     shouldRestoreCameraAfter3DSwitch = googleRendererCamera != nil
                 }
                 sessionUsesGoogle2D = enabled
+                renderer2DOverride = enabled
             }
         )
     }
@@ -2131,36 +2137,7 @@ struct CampaignMapView: View {
     }
 
     private func isManualPinAddressFeature(_ feature: AddressFeature) -> Bool {
-        if [
-            feature.properties.featureType,
-            feature.properties.source
-        ]
-        .contains(where: { value in
-            guard let raw = value else { return false }
-            let normalized = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            return normalized == "manual_pin" || normalized == "field_manual_pin"
-        }) {
-            return true
-        }
-        let source = feature.properties.source?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-        let labelMode = feature.properties.labelVisibilityMode?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-        if source == "manual" &&
-            feature.properties.hasBuildingLink != true &&
-            feature.properties.buildingGersId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false &&
-            feature.properties.linkedBuildingId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false &&
-            labelMode == "address_mode_only" {
-            return true
-        }
-
-        let formatted = feature.properties.formatted?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-            .replacingOccurrences(of: "_", with: " ")
-        return formatted == "pinned home" || formatted?.hasPrefix("pinned home ") == true
+        MapLayerManager.isManualPinAddressFeature(feature)
     }
 
     private var visibleCampaignAddressIdSet: Set<String> {
@@ -2239,7 +2216,7 @@ struct CampaignMapView: View {
     }
 
     private var standardPinsMarkers: [StandardCampaignMapMarker] {
-        visibleAddressFeatures.compactMap { feature in
+        visibleAddressFeatures.filter(isManualPinAddressFeature).compactMap { feature in
             guard let address = addressTapResult(from: feature),
                   let point = feature.geometry.asPoint,
                   point.count >= 2 else {
@@ -2251,7 +2228,8 @@ struct CampaignMapView: View {
                 coordinate: CLLocationCoordinate2D(latitude: point[1], longitude: point[0]),
                 title: address.formatted,
                 address: address,
-                status: addressStatuses[address.addressId] ?? .untouched
+                status: addressStatuses[address.addressId] ?? .untouched,
+                cardEngaged: cardEngagement.rows.contains { $0.address_id == address.addressId }
             )
         }
     }
@@ -2263,14 +2241,16 @@ struct CampaignMapView: View {
                 coordinate: home.coordinate,
                 title: home.address.formatted,
                 address: home.address,
-                status: addressStatuses[home.address.addressId] ?? .untouched
+                status: addressStatuses[home.address.addressId] ?? .untouched,
+                cardEngaged: cardEngagement.rows.contains { $0.address_id == home.address.addressId }
             )
         }
     }
 
     private var standardMapMarkers: [StandardCampaignMapMarker] {
         guard quickStartEnabled else { return standardPinsMarkers }
-        return quickStartStandardMarkers
+        var seen = Set<UUID>()
+        return (standardPinsMarkers + quickStartStandardMarkers).filter { seen.insert($0.addressId).inserted }
     }
 
     private var walkModeRoute: [CampaignAddress] {
@@ -2748,7 +2728,8 @@ struct CampaignMapView: View {
                 addBuildingHintDismissTask?.cancel()
                 manualPinReverseGeocodeTasks.values.forEach { $0.cancel() }
                 manualPinReverseGeocodeTasks.removeAll()
-                quickStartStandardTapTask?.cancel()
+                quickStartStandardTapTasks.values.forEach { $0.cancel() }
+                quickStartStandardTapTasks.removeAll()
                 quickStartFlyrPreparationTask?.cancel()
                 Task { await statsSubscriber?.unsubscribe() }
                 if let campaignUUID = UUID(uuidString: campaignId) {
@@ -2767,7 +2748,13 @@ struct CampaignMapView: View {
     private func applyFeatureAndSessionObservers<V: View>(to view: V) -> some View {
         let featureObserved = applyFeatureObservers(to: view)
         let sessionObserved = applySessionObservers(to: featureObserved)
-        return applyRealtimeObservers(to: sessionObserved)
+        return applyCardObservers(to: applyRealtimeObservers(to: sessionObserved))
+    }
+
+    private func applyCardObservers<V: View>(to view: V) -> some View {
+        view
+            .task(id: "cards-" + campaignId) { await cardEngagement.observe(campaignID: campaignId) }
+            .onReceive(cardEngagement.$rows) { rows in layerManager?.updateCardEngagement(rows) }
     }
 
     private func applyFeatureObservers<V: View>(to view: V) -> some View {
@@ -2872,6 +2859,7 @@ struct CampaignMapView: View {
             }
             .onChange(of: sessionManager.sessionId) { _, new in
                 sessionUsesGoogle2D = false
+                renderer2DOverride = nil
                 googleRendererCamera = nil
                 previous3DRendererCamera = nil
                 shouldRestoreCameraAfter3DSwitch = false
@@ -3255,7 +3243,7 @@ struct CampaignMapView: View {
             loadingOverlay
                 .animation(.easeInOut(duration: 0.28), value: featuresService.isLoading)
                 .animation(.easeInOut(duration: 0.22), value: isInitialMapPreparing)
-            mapOptimizingOverlay
+            mapOptimizingOverlay(bottomInset: geometry.safeAreaInsets.bottom)
                 .animation(.easeInOut(duration: 0.24), value: featuresService.clientLinkingProgress.percent)
                 .animation(.easeInOut(duration: 0.24), value: featuresService.isMapDataOptimizing)
             mapQualityCompletionCard
@@ -3283,7 +3271,7 @@ struct CampaignMapView: View {
                         isExpanded: $sessionToolsExpanded,
                         satelliteMapEnabled: $satelliteMapEnabled,
                         hideParcels: $hideParcels,
-                        use2DMap: quickStartEnabled ? nil : session2DMapBinding
+                        use2DMap: !Config.googleMapsAPIKey.isEmpty && !Config.mapboxAccessToken.isEmpty ? session2DMapBinding : nil
                     )
                     .padding(.bottom, 8)
                 }
@@ -3461,7 +3449,8 @@ struct CampaignMapView: View {
                     initialCamera: googleRendererCamera,
                     selectedCircleCenter: standardMapTapCircleCoordinate,
                     showUserLocation: sessionManager.sessionId != nil && !sessionManager.isDemoSession,
-                    useSatelliteMap: satelliteMapEnabled,
+                    userLocation: sessionManager.currentLocation,
+                    useSatelliteMap: true,
                     useDarkMapStyle: colorScheme == .dark,
                     contentInsets: standardPinsMapInsets,
                     onReady: {
@@ -3642,19 +3631,22 @@ struct CampaignMapView: View {
     }
 
     @ViewBuilder
+    private var mapLayerControl: some View {
+        if !usesStandardPinsRenderer {
+            BuildingCircleToggle(mode: $displayMode) { _ in
+                scheduleLayerVisibilityReassert()
+            }
+        }
+    }
+
+    @ViewBuilder
     private func overlayUI(geometry: GeometryProxy) -> some View {
         VStack {
             if sessionManager.sessionId != nil {
-                // Session: building/circle toggle, Progress pill, End button top right
+                // Keep the building/pin layers beside progress, settings and End.
                 VStack(alignment: .leading, spacing: 8) {
                     HStack(alignment: .top, spacing: 4) {
-                        if quickStartEnabled {
-                            quickStartContactBookButton
-                        } else if !isQuickStartStandardMode {
-                            BuildingCircleToggle(mode: $displayMode) { _ in
-                                scheduleLayerVisibilityReassert()
-                            }
-                        }
+                        mapLayerControl
                         Spacer(minLength: 2)
                         SessionProgressPill(sessionManager: sessionManager, isExpanded: $statsExpanded)
                         if shouldShowTeamChat {
@@ -3691,6 +3683,9 @@ struct CampaignMapView: View {
                         .disabled(!sessionManager.isDemoSession && sessionManager.isEndingSession)
                         .opacity(!sessionManager.isDemoSession && sessionManager.isEndingSession ? 0.7 : 1)
                     }
+                    if quickStartEnabled {
+                        quickStartContactBookButton
+                    }
                     if !usesStandardPinsRenderer {
                         HStack(spacing: 0) {
                             Spacer(minLength: 0)
@@ -3704,12 +3699,9 @@ struct CampaignMapView: View {
             } else {
                 // Pre-session: toggle top-left; GPS (+ optional map dismiss) top-right
                 HStack(alignment: .top, spacing: 0) {
+                    mapLayerControl
                     if quickStartEnabled {
-                        quickStartContactBookButton
-                    } else if !isQuickStartStandardMode {
-                        BuildingCircleToggle(mode: $displayMode) { _ in
-                            scheduleLayerVisibilityReassert()
-                        }
+                        quickStartContactBookButton.padding(.leading, 8)
                     }
                     Spacer(minLength: 8)
                     VStack(spacing: 8) {
@@ -6180,7 +6172,7 @@ struct CampaignMapView: View {
     }
 
     @ViewBuilder
-    private var mapOptimizingOverlay: some View {
+    private func mapOptimizingOverlay(bottomInset: CGFloat) -> some View {
         let progress = featuresService.clientLinkingProgress
         let backendOptimizing = featuresService.isMapDataOptimizing
         let isOptimizing = progress.isOptimizing || backendOptimizing
@@ -6208,11 +6200,13 @@ struct CampaignMapView: View {
                     RoundedRectangle(cornerRadius: 8)
                         .fill(isLightMode ? Color.black.opacity(0.72) : Color.darkSurfaceElevated.opacity(0.96))
                 )
-                .padding(.trailing, 16)
+                Spacer()
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+            // Match the Mapbox logo’s eight-point margin above the bottom safe area.
+            .padding(.bottom, bottomInset + 8)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
             .allowsHitTesting(false)
-            .transition(.move(edge: .trailing).combined(with: .opacity))
+            .transition(.move(edge: .bottom).combined(with: .opacity))
         }
     }
 
@@ -6965,7 +6959,15 @@ struct CampaignMapView: View {
         let loadedAddressFeatures = featuresService.addresses(for: campaignId)?.features
         let hasResolvedAddressLayer = loadedAddressFeatures != nil
         let hasSourceAddressFeatures = loadedAddressFeatures?.isEmpty == false
-        if !hasDiamondAddresses,
+        if hasDiamondAddresses, !usesStandardPinsRenderer,
+           let manualPinData = addressDataForLayerCache(features: visibleManualPins) {
+            // Keep manual pins and their roof offsets refreshed even when the
+            // preloaded campaign addresses are rendered from vector tiles.
+            manager.updateAddresses(
+                manualPinData, addresses: visibleManualPins, buildings: visibleBuildings,
+                orderedAddressIdsByBuilding: buildingAddressMap
+            )
+        } else if !hasDiamondAddresses,
            !addressFeaturesForDisplay.isEmpty,
            let addressesData = addressDataForLayerCache(features: addressFeaturesForDisplay) {
             manager.updateAddresses(
@@ -10582,9 +10584,13 @@ struct CampaignMapView: View {
         quickStatusPoint: CGPoint? = nil
     ) {
         standardMapTapCircleCoordinate = coordinate
-        quickStartStandardTapTask?.cancel()
 
-        if quickStartEnabled {
+        if quickStartEnabled || sessionManager.sessionId != nil {
+            if let address = nearestStandardMapPin(to: coordinate) {
+                houseQuickStatusMenu = nil
+                presentAddressSelection(address)
+                return
+            }
             if let savedHome = nearestQuickStartSavedHome(to: coordinate) {
                 houseQuickStatusMenu = nil
                 presentAddressSelection(savedHome.address)
@@ -10597,13 +10603,14 @@ struct CampaignMapView: View {
             selectedAddressHasBuildingGeometry = true
             selectedAddressIdForCard = nil
 
-            quickStartStandardTapTask = Task {
-                await createQuickStartStandardAddress(at: coordinate)
+            let taskID = UUID()
+            quickStartStandardTapTasks[taskID] = Task {
+                await createStandardSessionPin(at: coordinate, taskID: taskID)
             }
             return
         }
 
-        if let address = nearestVisibleAddress(to: coordinate) {
+        if let address = nearestStandardMapPin(to: coordinate) {
             houseQuickStatusMenu = nil
             presentAddressSelection(address)
             return
@@ -10623,7 +10630,22 @@ struct CampaignMapView: View {
         at coordinate: CLLocationCoordinate2D,
         screenPoint: CGPoint
     ) {
-        if let address = nearestVisibleAddress(to: coordinate) {
+        if quickStartEnabled || sessionManager.sessionId != nil {
+            if let address = nearestStandardMapPin(to: coordinate) {
+                presentHouseQuickStatus(address: address, at: screenPoint)
+                return
+            }
+            if let home = nearestQuickStartSavedHome(to: coordinate) {
+                presentHouseQuickStatus(address: home.address, at: screenPoint)
+                return
+            }
+            let taskID = UUID()
+            quickStartStandardTapTasks[taskID] = Task {
+                await createStandardSessionPin(at: coordinate, taskID: taskID, quickStatusPoint: screenPoint)
+            }
+            return
+        }
+        if let address = nearestStandardMapPin(to: coordinate) {
             presentHouseQuickStatus(address: address, at: screenPoint)
             return
         }
@@ -11252,41 +11274,23 @@ struct CampaignMapView: View {
     }
 
     @MainActor
-    private func createQuickStartStandardAddress(at coordinate: CLLocationCoordinate2D) async {
-        defer { quickStartStandardTapTask = nil }
-
+    private func createStandardSessionPin(at coordinate: CLLocationCoordinate2D, taskID: UUID, quickStatusPoint: CGPoint? = nil) async {
+        defer { quickStartStandardTapTasks[taskID] = nil }
         do {
-            let geocodedAddress = try await reverseGeocodeQuickStartAddress(at: coordinate)
-            guard !Task.isCancelled else { return }
+            // Persist locally first. The shared pin flow resolves the address in the background.
             let response = try await BuildingLinkService.shared.createManualAddress(
                 campaignId: campaignId,
                 input: ManualAddressCreateInput(
                     coordinate: coordinate,
-                    formatted: geocodedAddress.formatted,
-                    houseNumber: geocodedAddress.houseNumber,
-                    streetName: geocodedAddress.streetName,
-                    locality: geocodedAddress.locality,
-                    region: geocodedAddress.region,
-                    postalCode: geocodedAddress.postalCode,
-                    country: geocodedAddress.country,
-                    buildingId: nil
-                )
+                    formatted: fallbackQuickStartAddressLabel(for: coordinate),
+                    houseNumber: nil, streetName: nil, locality: nil,
+                    region: nil, postalCode: nil, country: nil, buildingId: nil,
+                    addressProvenance: "field_manual_pin", userConfirmed: true
+                ),
+                syncBehavior: .enqueueAndReturnLocal
             )
             guard !Task.isCancelled else { return }
-
-            let tappedAddress = addressTapResult(
-                from: response.address,
-                fallbackFormatted: geocodedAddress.formatted
-            )
-            quickStartStandardSavedHomes.append(
-                QuickStartStandardSavedHome(coordinate: coordinate, address: tappedAddress)
-            )
-            saveQuickStartStandardSavedHomesToCache()
-            handleManualAddressSaved(
-                response: response,
-                coordinate: coordinate,
-                renderAsManualPin: true
-            )
+            handleManualAddressSaved(response: response, coordinate: coordinate, renderAsManualPin: true, quickStatusPoint: quickStatusPoint)
         } catch is CancellationError {
             return
         } catch {
@@ -11544,6 +11548,10 @@ struct CampaignMapView: View {
             region: region,
             postalCode: postalCode
         )
+        if quickStartEnabled, let index = quickStartStandardSavedHomes.firstIndex(where: { $0.address.addressId == addressId }) {
+            quickStartStandardSavedHomes[index] = QuickStartStandardSavedHome(coordinate: coordinate, address: updatedAddress)
+            saveQuickStartStandardSavedHomesToCache()
+        }
         reverseGeocodedAddressIds.insert(addressId)
 
         if selectedAddress?.addressId == addressId {
@@ -11632,6 +11640,16 @@ struct CampaignMapView: View {
         return (firstString, streetName?.isEmpty == true ? nil : streetName)
     }
 
+    private func nearestStandardMapPin(to coordinate: CLLocationCoordinate2D) -> MapLayerManager.AddressTapResult? {
+        let location = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
+        let candidates = standardMapMarkers.map { marker in
+            (marker, location.distance(from: CLLocation(latitude: marker.coordinate.latitude, longitude: marker.coordinate.longitude)))
+        }
+        guard let nearest = candidates.min(by: { $0.1 < $1.1 }),
+              nearest.1 <= Self.standardMapAddressTapToleranceMeters else { return nil }
+        return nearest.0.address
+    }
+
     private func nearestVisibleAddress(
         to coordinate: CLLocationCoordinate2D,
         maxDistanceMeters: CLLocationDistance = Self.standardMapAddressTapToleranceMeters
@@ -11672,7 +11690,6 @@ struct CampaignMapView: View {
             "userInitiated": userInitiated
         ])
         let building = enrichedBuildingSelection(building)
-        quickStartStandardTapTask?.cancel()
         selectedBuilding = building
         selectedBuildingTapCoordinate = tapCoordinate
         let addressResolution = resolvedAddressResolutionForBuildingCard(building)
@@ -11722,7 +11739,6 @@ struct CampaignMapView: View {
         haptic: Bool = true
     ) {
         let addressForSelection = addressTapResultWithParcelMetadata(address)
-        quickStartStandardTapTask?.cancel()
         selectedAddress = addressForSelection
         selectedBuildingTapCoordinate = nil
         selectedAddressIdForCard = addressForSelection.addressId
@@ -12491,6 +12507,11 @@ struct CampaignMapView: View {
                 renderAsManualPin: renderAsManualPin,
                 presentSelection: quickStatusPoint == nil
             )
+            if renderAsManualPin, quickStartEnabled {
+                quickStartStandardSavedHomes.removeAll { $0.address.addressId == tappedAddress.addressId }
+                quickStartStandardSavedHomes.append(QuickStartStandardSavedHome(coordinate: coordinate, address: tappedAddress))
+                saveQuickStartStandardSavedHomesToCache()
+            }
             if renderAsManualPin {
                 sessionManager.recordManualPinTarget(addressId: tappedAddress.addressId)
             }
@@ -15474,6 +15495,8 @@ private struct AppointmentSheet: View {
 
 @MainActor
 struct LocationCardView: View {
+    @State private var businessCardContactID: UUID?
+
 
     /// Overture GERS ID string (from map feature)
     let gersId: String
@@ -16690,12 +16713,24 @@ struct LocationCardView: View {
         .frame(maxWidth: .infinity)
     }
 
+    private var addressEditBackground: Color {
+        isLightMode ? cardBackground : .darkSurfaceElevated
+    }
+
+    private var addressEditDestructiveColor: Color {
+        isLightMode ? Color(red: 0.72, green: 0.04, blue: 0.08) : .red
+    }
+
+    private var addressEditBuildingColor: Color {
+        isLightMode ? Color(red: 0.55, green: 0.25, blue: 0.0) : .orange
+    }
+
     private var attachedAddressEditCard: some View {
         VStack(spacing: 0) {
             addressEditCardContent
 
             AttachedMenuPointer()
-                .fill(isLightMode ? Color.black.opacity(0.92) : Color.darkSurfaceElevated)
+                .fill(addressEditBackground)
                 .frame(width: 18, height: 10)
                 .overlay(
                     AttachedMenuPointer()
@@ -16717,7 +16752,7 @@ struct LocationCardView: View {
                 HStack(alignment: .top, spacing: 10) {
                     Text(addressEditSubtitle)
                         .font(.system(size: 16, weight: .bold))
-                        .foregroundColor(.white)
+                        .foregroundColor(cardText)
                         .lineLimit(1)
                     Spacer(minLength: 8)
                     Button {
@@ -16727,9 +16762,9 @@ struct LocationCardView: View {
                     } label: {
                         Image(systemName: "xmark")
                             .font(.system(size: 12, weight: .bold))
-                            .foregroundColor(.white.opacity(0.82))
+                            .foregroundColor(cardSecondaryText)
                             .frame(width: 30, height: 30)
-                            .background(Color.white.opacity(0.12))
+                            .background(cardFieldBackground)
                             .clipShape(Circle())
                     }
                     .buttonStyle(.plain)
@@ -16739,13 +16774,13 @@ struct LocationCardView: View {
                 addressEditHomesList
 
                 HStack(spacing: 8) {
-                    addressEditActionButton("Manual", icon: "square.and.pencil", tint: .red) {
+                    addressEditActionButton("Manual", icon: "square.and.pencil", tint: addressEditDestructiveColor) {
                         addressEditAction(.addManualAddress)
                     }
-                    addressEditActionButton("Add Building", icon: "building.2.fill", tint: .orange) {
+                    addressEditActionButton("Add Building", icon: "building.2.fill", tint: addressEditBuildingColor) {
                         addressEditAction(.addBuildingShape)
                     }
-                    addressEditActionButton("Delete", icon: "trash", tint: .red) {
+                    addressEditActionButton("Delete", icon: "trash", tint: addressEditDestructiveColor) {
                         withAnimation(.spring(response: 0.22, dampingFraction: 0.9)) {
                             showDeleteScopeOptions.toggle()
                         }
@@ -16761,7 +16796,7 @@ struct LocationCardView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(isLightMode ? Color.black.opacity(0.92) : Color.darkSurfaceElevated)
+                    .fill(addressEditBackground)
                     .overlay(
                         RoundedRectangle(cornerRadius: 16, style: .continuous)
                             .stroke(Color.red.opacity(0.24), lineWidth: 1)
@@ -16784,11 +16819,11 @@ struct LocationCardView: View {
             VStack(spacing: 8) {
                 Text("Link a nearby home, use GPS reverse geocode, or write a manual address.")
                     .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(.white.opacity(0.62))
+                    .foregroundColor(cardSecondaryText)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(12)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.white.opacity(0.08))
+                    .background(cardFieldBackground)
                     .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                 addressEditNearbyHomeRow
             }
@@ -16813,23 +16848,23 @@ struct LocationCardView: View {
                         let rowLabel = multiAddressRowLabel(for: address)
                         Text(rowLabel)
                             .font(.system(size: 14, weight: .semibold))
-                            .foregroundColor(.white)
+                            .foregroundColor(cardText)
                             .lineLimit(1)
                         let secondary = streetOnly(from: address.displayFull)
                         if !secondary.isEmpty && secondary != rowLabel {
                             Text(secondary)
                                 .font(.system(size: 11, weight: .medium))
-                                .foregroundColor(.white.opacity(0.52))
+                                .foregroundColor(cardSecondaryText)
                                 .lineLimit(1)
                         }
                     }
                     Spacer(minLength: 8)
                     Image(systemName: "chevron.right")
                         .font(.system(size: 13, weight: .semibold))
-                        .foregroundColor(.white.opacity(0.45))
+                        .foregroundColor(cardSecondaryText)
                 }
                 .padding(10)
-                .background(Color.white.opacity(0.08))
+                .background(cardFieldBackground)
                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
             .buttonStyle(.plain)
@@ -16839,7 +16874,7 @@ struct LocationCardView: View {
             } label: {
                 Image(systemName: "minus.circle.fill")
                     .font(.system(size: 20, weight: .semibold))
-                    .foregroundColor(.red)
+                    .foregroundColor(addressEditDestructiveColor)
                     .frame(width: 34, height: 34)
                     .background(Color.red.opacity(0.14))
                     .clipShape(Circle())
@@ -16856,7 +16891,7 @@ struct LocationCardView: View {
             HStack(spacing: 10) {
                 Image(systemName: "list.bullet.rectangle")
                     .font(.system(size: 15, weight: .semibold))
-                    .foregroundColor(.red)
+                    .foregroundColor(addressEditDestructiveColor)
                     .frame(width: 34, height: 34)
                     .background(Color.red.opacity(0.16))
                     .clipShape(Circle())
@@ -16864,15 +16899,15 @@ struct LocationCardView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Nearby")
                         .font(.system(size: 14, weight: .semibold))
-                        .foregroundColor(.white)
+                        .foregroundColor(cardText)
                     Text("Add another home to building")
                         .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(.white.opacity(0.52))
+                        .foregroundColor(cardSecondaryText)
                 }
                 Spacer(minLength: 8)
                 Image(systemName: "chevron.right")
                     .font(.system(size: 13, weight: .semibold))
-                    .foregroundColor(.white.opacity(0.45))
+                    .foregroundColor(cardSecondaryText)
             }
             .padding(10)
             .background(Color.red.opacity(0.12))
@@ -16898,7 +16933,7 @@ struct LocationCardView: View {
             .foregroundColor(tint)
             .frame(maxWidth: .infinity)
             .padding(.vertical, 10)
-            .background(tint.opacity(0.18))
+            .background(tint.opacity(isLightMode ? 0.09 : 0.18))
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
         .buttonStyle(.plain)
@@ -16961,10 +16996,10 @@ struct LocationCardView: View {
             Image(systemName: "trash")
                 .font(.system(size: 12, weight: .bold))
         }
-        .foregroundColor(.red)
+        .foregroundColor(addressEditDestructiveColor)
         .padding(.horizontal, 10)
         .padding(.vertical, 9)
-        .background(Color.black.opacity(0.16))
+        .background(isLightMode ? cardBackground : Color.black.opacity(0.16))
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
@@ -17335,6 +17370,16 @@ struct LocationCardView: View {
                 fieldBackground: cardFieldBackground,
                 borderColor: cardFieldBorder
             )
+            BusinessCardSendView(addressID: editableAddress?.id, contactID: businessCardContactID, phone: phoneText, email: emailText, saveLead: {
+                guard let address = editableAddress, !isSavingForm, !isTranscribing, !voiceRecorder.isRecording else { throw BusinessCardAPI.failure("Finish editing or recording this lead first") }
+                isSavingForm = true
+                defer { isSavingForm = false }
+                contactSaveError = nil
+                await saveContactDetailsIfNeeded(for: address)
+                if let error = contactSaveError { throw BusinessCardAPI.failure(error) }
+                guard let id = businessCardContactID else { throw BusinessCardAPI.failure("Enter and save contact details first") }
+                return id
+            })
             LocationCardExtractedChipsBlock(chips: extractedPreviewChipModels)
             followUpSchedulingRow
             appointmentSchedulingRow
@@ -18941,6 +18986,8 @@ struct LocationCardView: View {
                     syncToCRM: !shouldPushCRMManually
                 )
             }
+
+            businessCardContactID = savedContact.id
 
             if showFollowUpDetails,
                let followUpNote = followUpSummary(

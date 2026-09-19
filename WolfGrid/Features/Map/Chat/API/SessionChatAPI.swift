@@ -35,7 +35,7 @@ final class SessionChatAPI {
         return try await send(URLRequest(url: components.url!))
     }
 
-    func sendText(sessionId: UUID, clientMessageId: UUID, text: String) async throws -> SessionChatSendResponse {
+    func sendText(sessionId: UUID, clientMessageId: UUID, text: String, expectedUserId: UUID) async throws -> SessionChatSendResponse {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard (1...1_000).contains(trimmed.count) else {
             throw SessionChatAPIError.invalidMessage("Messages must contain between 1 and 1,000 characters.")
@@ -49,14 +49,15 @@ final class SessionChatAPI {
             "type": "text",
             "text": trimmed,
         ])
-        return try await send(request)
+        return try await send(request, expectedUserId: expectedUserId)
     }
 
     func sendVoice(
         sessionId: UUID,
         clientMessageId: UUID,
         fileURL: URL,
-        durationMs: Int
+        durationMs: Int,
+        expectedUserId: UUID
     ) async throws -> SessionChatSendResponse {
         guard (1_000...120_000).contains(durationMs) else {
             throw SessionChatAPIError.invalidMessage("Voice notes must be between 1 and 120 seconds.")
@@ -80,21 +81,22 @@ final class SessionChatAPI {
         request.httpMethod = "POST"
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         request.httpBody = body
-        return try await send(request)
+        return try await send(request, expectedUserId: expectedUserId)
     }
 
-    func markRead(sessionId: UUID, lastReadMessageId: String?) async throws -> SessionChatReadResponse {
+    func markRead(sessionId: UUID, lastReadMessageId: String?, expectedUserId: UUID) async throws -> SessionChatReadResponse {
         var payload = ["sessionId": sessionId.uuidString]
         if let lastReadMessageId { payload["lastReadMessageId"] = lastReadMessageId }
         var request = URLRequest(url: URL(string: "\(baseURL)/api/live-sessions/chat/read")!)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try encoder.encode(payload)
-        return try await send(request)
+        return try await send(request, expectedUserId: expectedUserId)
     }
 
-    private func send<T: Decodable>(_ original: URLRequest) async throws -> T {
+    private func send<T: Decodable>(_ original: URLRequest, expectedUserId: UUID? = nil) async throws -> T {
         let authSession = try await SupabaseManager.shared.client.auth.session
+        if let expectedUserId, authSession.user.id != expectedUserId { throw SessionChatAPIError.unauthorized }
         var request = original
         request.setValue("Bearer \(authSession.accessToken)", forHTTPHeaderField: "Authorization")
         request.timeoutInterval = 60

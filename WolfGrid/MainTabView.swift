@@ -158,6 +158,9 @@ struct MainTabView: View {
                 }
             }
         }
+        .sheet(item: $uiState.pendingBusinessCardActivity) { route in
+            BusinessCardPushActivityView(route: route)
+        }
         .task(id: resumedCreatingCampaignId) {
             guard resumedCreatingCampaignId != nil else { return }
             while !Task.isCancelled, resumedCreatingCampaignId != nil {

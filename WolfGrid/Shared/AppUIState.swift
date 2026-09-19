@@ -24,6 +24,7 @@ struct PendingSalespersonDiallerListSelection: Identifiable, Equatable {
 
 @MainActor
 final class AppUIState: ObservableObject {
+    @Published var pendingBusinessCardActivity: BusinessCardPushRoute?
     @Published var showTabBar: Bool = true
     @Published private(set) var calendarTabPresentationDepth: Int = 0
     @Published var colorScheme: ColorScheme? = nil // nil = system default

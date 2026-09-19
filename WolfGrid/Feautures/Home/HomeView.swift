@@ -17,6 +17,7 @@ private enum HomeRoute: Hashable {
     case assignments
     case support
     case sales
+    case businessCard
 }
 
 private enum HomeGridTileIcon {
@@ -78,6 +79,8 @@ struct HomeView: View {
                         RoutesListView()
                     case .assignments:
                         CampaignAssignmentInboxView(assignmentBell: assignmentBell)
+                    case .businessCard:
+                        BusinessCardEditorView()
                     case .sales:
                         FieldSalesRootView()
                     case .support:
@@ -113,76 +116,72 @@ struct HomeView: View {
         Image(headerLogoName)
             .resizable()
             .scaledToFit()
-            .frame(maxWidth: 290, maxHeight: 88)
+            .frame(maxWidth: 320, maxHeight: 96)
             .frame(maxWidth: .infinity, alignment: .center)
             .accessibilityLabel("WolfGrid")
             .padding(.horizontal, 16)
-            .padding(.vertical, 2)
-            .offset(y: -12)
-            .padding(.bottom, -24)
+            .padding(.top, 8)
+            .padding(.bottom, 4)
     }
 
     private var homeGrid: some View {
-        ScrollView {
-            VStack(spacing: 0) {
-                if onboardingDemo.shouldShowPanel, let state = onboardingDemo.state {
-                    OnboardingDemoPanel(
-                        state: state,
-                        items: onboardingDemo.checklistItems,
-                        completedIDs: onboardingDemo.completedItemIDs,
-                        isSeeding: onboardingDemo.isSeeding,
-                        onDismiss: {
-                            Task { await onboardingDemo.dismiss() }
-                        },
-                        onTapItem: handleDemoChecklistTap
-                    )
-                    .padding(.horizontal, 20)
-                    .padding(.bottom, 24)
-                }
-
-                FieldSalesHomeModule()
-                    .padding(.horizontal, 20)
-                    .padding(.bottom, 24)
-
+        GeometryReader { geometry in
+            ScrollView {
                 VStack(spacing: 0) {
-                    LazyVGrid(
-                        columns: [
-                            GridItem(.flexible(), spacing: 16),
-                            GridItem(.flexible(), spacing: 16)
-                        ],
-                        spacing: 16
-                    ) {
-                        HomeGridTile(title: "Campaign", icon: .system("scope")) {
-                            selectedRoute = .campaigns
-                        }
-                        HomeGridTile(title: "Activity", icon: .system("figure.walk")) {
-                            selectedRoute = .activity
-                        }
-                        HomeGridTile(title: "Calendar", icon: .system("calendar")) {
-                            selectedRoute = .calendar
-                        }
-                        HomeGridTile(title: "Follow Up", icon: .system("arrow.uturn.right.circle.fill")) {
-                            selectedRoute = .followUp
-                        }
-                        HomeGridTile(title: "Appointments", icon: .system("calendar.badge.clock")) {
-                            selectedRoute = .appointments
-                        }
-                        HomeGridTile(title: "Stats", icon: .system("chart.bar.fill")) {
-                            selectedRoute = .stats
-                        }
-                        HomeGridTile(title: "Sales", icon: .system("dollarsign.circle.fill")) {
-                            selectedRoute = .sales
-                        }
-                        HomeGridTile(title: "Leaderboard", icon: .system("trophy.fill")) {
-                            selectedRoute = .leaderboard
-                        }
+                    if onboardingDemo.shouldShowPanel, let state = onboardingDemo.state {
+                        OnboardingDemoPanel(
+                            state: state,
+                            items: onboardingDemo.checklistItems,
+                            completedIDs: onboardingDemo.completedItemIDs,
+                            isSeeding: onboardingDemo.isSeeding,
+                            onDismiss: {
+                                Task { await onboardingDemo.dismiss() }
+                            },
+                            onTapItem: handleDemoChecklistTap
+                        )
+                        .padding(.horizontal, 20)
+                        .padding(.bottom, 24)
                     }
-                    .padding(.top, 4)
-                    .padding(.bottom, 24)
+
+                    VStack(spacing: 0) {
+                        LazyVGrid(
+                            columns: [
+                                GridItem(.flexible(), spacing: 16),
+                                GridItem(.flexible(), spacing: 16)
+                            ],
+                            spacing: 16
+                        ) {
+                            HomeGridTile(title: "Campaigns", icon: .system("scope")) {
+                                selectedRoute = .campaigns
+                            }
+                            HomeGridTile(title: "My Business Card", icon: .system("person.crop.rectangle")) { selectedRoute = .businessCard }
+                            HomeGridTile(title: "Activity", icon: .system("figure.walk")) {
+                                selectedRoute = .activity
+                            }
+                            HomeGridTile(title: "Calendar", icon: .system("calendar")) {
+                                selectedRoute = .calendar
+                            }
+                            HomeGridTile(title: "Follow Up", icon: .system("arrow.uturn.right.circle.fill")) {
+                                selectedRoute = .followUp
+                            }
+                            HomeGridTile(title: "Appointments", icon: .system("calendar.badge.clock")) {
+                                selectedRoute = .appointments
+                            }
+                            HomeGridTile(title: "Sales", icon: .system("dollarsign.circle.fill")) {
+                                selectedRoute = .sales
+                            }
+                            HomeGridTile(title: "Leaderboard", icon: .system("trophy.fill")) {
+                                selectedRoute = .leaderboard
+                            }
+                        }
+                        .padding(.vertical, 16)
+                    }
+                    .padding(.horizontal, 20)
+                    .offset(y: -12)
                 }
-                .padding(.horizontal, 20)
+                .frame(maxWidth: .infinity)
+                .frame(minHeight: geometry.size.height, alignment: .center)
             }
-            .frame(maxWidth: .infinity)
         }
         .background(HomeGradientBackground())
     }
