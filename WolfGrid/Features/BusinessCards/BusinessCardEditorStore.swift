@@ -110,6 +110,22 @@ struct BusinessCardDraft: Codable, Equatable {
         }
     }
 
+    /// Sharing must wait for publication, including a saved card from an older app.
+    func prepareForSharing() async throws {
+        while loading { try await Task.sleep(nanoseconds: 20_000_000) }
+        if !loaded { await load() }
+        guard loaded else { throw BusinessCardAPI.failure(status) }
+        guard card.hasDetails else { throw BusinessCardAPI.failure("Add your business card details first") }
+        debounce?.cancel()
+        debounce = nil
+        while isSaving { try await Task.sleep(nanoseconds: 20_000_000) }
+        try Task.checkCancellation()
+        await savePending()
+        guard saved == draft, saved?.published == true else {
+            throw BusinessCardAPI.failure(status)
+        }
+    }
+
     private func savePending() async {
         guard loaded, !isSaving else { return }
         isSaving = true

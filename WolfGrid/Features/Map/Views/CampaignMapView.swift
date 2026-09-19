@@ -1516,7 +1516,7 @@ struct CampaignMapView: View {
     @StateObject private var cardEngagement = BusinessCardEngagementStore()
     private static let manualAddressConfirmationRetryCount = 5
     private static let manualAddressConfirmationRetryDelayNs: UInt64 = 750_000_000
-    private static let standardMapAddressTapToleranceMeters: CLLocationDistance = 12
+    private static let standardMapAddressTapToleranceMeters: CLLocationDistance = 6
     private static let campaignOverviewCoordinatesPadding = UIEdgeInsets(top: 80, left: 40, bottom: 120, right: 40)
     private static let summarySnapshotPitch: Double = 60.25
     private static let summarySnapshotMaxZoom: Double = 16.35
@@ -1843,7 +1843,7 @@ struct CampaignMapView: View {
                     status: effectiveBuildingLayerStatus(gersId: gersId, addressIds: ids), scansTotal: effectiveScansTotal(for: building),
                     addressIds: ids, visitOwner: effectiveBuildingVisitOwnerState(gersId: gersId, addressIds: ids))
             }
-            refreshTownhomeStatusOverlay()
+            refreshTownhomeStatusOverlay(statusOnly: true)
         } catch { if !Task.isCancelled { workspaceCoverageStale = true } }
     }
 
@@ -1996,6 +1996,14 @@ struct CampaignMapView: View {
 
     private var isQuickStartStandardMode: Bool {
         quickStartEnabled || isCampaignStandardPinsMode
+    }
+
+    /// Standard Quick Start adds homes as the rep taps; building provisioning is optional.
+    private var isManualStandardQuickStart: Bool {
+        quickStartEnabled && usesStandardPinsRenderer
+            && activeRouteWorkContext == nil
+            && matchingPlannedFarmExecution == nil
+            && farmSessionStartContextProvider == nil
     }
 
     private var quickStartUsesGoogleMapsRenderer: Bool {
@@ -2544,7 +2552,7 @@ struct CampaignMapView: View {
         if sessionManager.sessionId != nil { return true }
         return showPreSessionStartButton
             && sessionManager.sessionId == nil
-            && !sessionTargets(for: effectivePreSessionMode).isEmpty
+            && (isManualStandardQuickStart || !sessionTargets(for: effectivePreSessionMode).isEmpty)
             && UUID(uuidString: campaignId) != nil
     }
 
@@ -2804,7 +2812,7 @@ struct CampaignMapView: View {
     }
 
     private func applyFeatureObservers<V: View>(to view: V) -> some View {
-        view
+        let observed = view
             .onChange(of: featuresService.isLoading) { _, isLoading in
                 refreshVisibleBuildingRenderMonitoring(reset: isLoading)
                 if !isLoading {
@@ -2882,6 +2890,12 @@ struct CampaignMapView: View {
                 }
                 guard quickStartEnabled else { return }
                 startQuickStartFlyrPreparationIfNeeded()
+            }
+        return observed
+            .onChange(of: usesStandardPinsRenderer) { _, isStandard in
+                if !isStandard {
+                    startQuickStartFlyrPreparationIfNeeded()
+                }
             }
     }
 
@@ -3490,7 +3504,7 @@ struct CampaignMapView: View {
                     campaignId: campaignId,
                     markers: standardMapMarkers,
                     pathCoordinates: sessionManager.pathCoordinates,
-                    boundaryCoordinates: campaignBoundaryCoordinates,
+                    boundaryCoordinates: quickStartEnabled ? [] : campaignBoundaryCoordinates,
                     fallbackCenter: fallbackMapCenter,
                     initialCamera: googleRendererCamera,
                     selectedCircleCenter: standardMapTapCircleCoordinate,
@@ -3504,12 +3518,13 @@ struct CampaignMapView: View {
                         layerManager = nil
                         LiveCampaignMapSnapshotStore.shared.setMapView(nil)
                     },
-                    onMarkerTap: { address in
-                        houseQuickStatusMenu = nil
-                        presentAddressSelection(address)
+                    onMarkerTap: { address, point in
+                        guard quickStartStandardTapTasks.isEmpty else { return }
+                        standardMapTapCircleCoordinate = coordinateForAddress(addressId: address.addressId)
+                        presentHouseQuickStatus(address: address, at: point)
                     },
-                    onMapTap: { coordinate in
-                        handleStandardMapTap(at: coordinate)
+                    onMapTap: { coordinate, point in
+                        handleStandardMapTap(at: coordinate, quickStatusPoint: point)
                     },
                     onMapLongPress: { coordinate, point in
                         handleStandardMapLongPress(at: coordinate, screenPoint: point)
@@ -3622,7 +3637,7 @@ struct CampaignMapView: View {
             )
             refreshLinkedAddressLayerStates(gersId: gersId, fallbackAddressId: addressId, fallbackStatus: status)
         }
-        refreshTownhomeStatusOverlay()
+        refreshTownhomeStatusOverlay(statusOnly: true)
         if let targetId = sessionTargetIdForAddress(addressId: addressId) {
             Task {
                 await sessionManager.markCompletionLocallyAfterPersistedOutcome(targetId)
@@ -3820,7 +3835,7 @@ struct CampaignMapView: View {
             if showPreSessionStartButton,
                !showLocationCard,
                sessionManager.sessionId == nil,
-               !sessionTargets(for: effectivePreSessionMode).isEmpty,
+               (isManualStandardQuickStart || !sessionTargets(for: effectivePreSessionMode).isEmpty),
                let campId = UUID(uuidString: campaignId) {
                 VStack(spacing: 10) {
                     preSessionStartButtons(campaignId: campId, geometry: geometry)
@@ -4494,7 +4509,7 @@ struct CampaignMapView: View {
         let isBusy = quickStartStartingMode != nil || pendingFlyerStart != nil || pendingFarmSessionType != nil
         let selectedMode = plannedStartContext?.sessionMode ?? (farmTypeProvider == nil ? preSessionSelectedMode : selectedFarmType.farmSessionMode)
         let selectedGoalType = effectivePreSessionGoalType
-        let hasTargets = !sessionTargets(for: selectedMode).isEmpty
+        let hasTargets = isManualStandardQuickStart || !sessionTargets(for: selectedMode).isEmpty
         let isStartingSelected = quickStartStartingMode == selectedMode
         let isStartingSolo = isStartingSelected && !quickStartStartingSharedLive
         let isStartingTeam = isStartingSelected && quickStartStartingSharedLive
@@ -4845,7 +4860,7 @@ struct CampaignMapView: View {
 
     private func preSessionGoalButton(isBusy: Bool, controlHeight: CGFloat) -> some View {
         return Button {
-            guard !isBusy, !sessionTargets(for: effectivePreSessionMode).isEmpty else { return }
+            guard !isBusy, (isManualStandardQuickStart || !sessionTargets(for: effectivePreSessionMode).isEmpty) else { return }
             HapticManager.light()
             showGoalSheet = true
         } label: {
@@ -5123,7 +5138,7 @@ struct CampaignMapView: View {
             ])
             return
         }
-        guard !sessionTargets(for: mode).isEmpty else {
+        guard isManualStandardQuickStart || !sessionTargets(for: mode).isEmpty else {
             PerfTrace.event("session_start", "start_from_pre_session_bar.skip", fields: [
                 "campaign": campaignId.uuidString,
                 "reason": "no_targets"
@@ -5263,7 +5278,7 @@ struct CampaignMapView: View {
         ])
         guard quickStartStartingMode == nil else { return }
         let targets = sessionTargets(for: mode)
-        guard !targets.isEmpty else {
+        guard isManualStandardQuickStart || !targets.isEmpty else {
             trace.end(status: "no_targets")
             return
         }
@@ -5271,7 +5286,9 @@ struct CampaignMapView: View {
             reason: "session_start_gate",
             campaignId: campaignId.uuidString
         )
-        prepareCampaignForFieldUse(campaignId: campaignId.uuidString)
+        if !isManualStandardQuickStart {
+            prepareCampaignForFieldUse(campaignId: campaignId.uuidString)
+        }
         HapticManager.medium()
         quickStartStartingMode = mode
         quickStartStartingSharedLive = enableSharedLiveCanvassing
@@ -5290,11 +5307,14 @@ struct CampaignMapView: View {
             }
         }
 
+        let requiresProvisionedTargets = !isManualStandardQuickStart
         Task {
             let gateTrace = PerfTrace.begin("session_start", "session_start_gate", fields: [
-                "campaign": campaignId.uuidString
+                "campaign": campaignId.uuidString,
+                "requiresProvisionedTargets": requiresProvisionedTargets
             ])
-            if let reason = await CampaignsAPI.shared.sessionStartBlockReason(campaignId: campaignId) {
+            if requiresProvisionedTargets,
+               let reason = await CampaignsAPI.shared.sessionStartBlockReason(campaignId: campaignId) {
                 gateTrace.end(status: "blocked", fields: [
                     "reason": reason
                 ])
@@ -5948,7 +5968,7 @@ struct CampaignMapView: View {
                     },
                     onHomeStateUpdated: { row in
                         applyHomeStateRow(row)
-                        refreshTownhomeStatusOverlay()
+                        refreshTownhomeStatusOverlay(statusOnly: true)
                     },
                     onInitialActionIntentApplied: { addressId in
                         houseCardInitialActionIntents[addressId] = nil
@@ -6099,7 +6119,7 @@ struct CampaignMapView: View {
                     },
                     onHomeStateUpdated: { row in
                         applyHomeStateRow(row)
-                        refreshTownhomeStatusOverlay()
+                        refreshTownhomeStatusOverlay(statusOnly: true)
                     },
                     onInitialActionIntentApplied: { addressId in
                         houseCardInitialActionIntents[addressId] = nil
@@ -7873,7 +7893,7 @@ struct CampaignMapView: View {
                     applyHomeStateRow(row)
                 }
                 applyCampaignCompletionShowcaseStatusesIfNeeded()
-                refreshTownhomeStatusOverlay()
+                refreshTownhomeStatusOverlay(statusOnly: true)
                 updateFilters()
                 applySessionVisitOverlayStatesIfNeeded()
             }
@@ -7881,7 +7901,7 @@ struct CampaignMapView: View {
         } catch {
             await MainActor.run {
                 applyCampaignCompletionShowcaseStatusesIfNeeded()
-                refreshTownhomeStatusOverlay()
+                refreshTownhomeStatusOverlay(statusOnly: true)
                 updateFilters()
                 applySessionVisitOverlayStatesIfNeeded()
             }
@@ -7938,8 +7958,17 @@ struct CampaignMapView: View {
         }
     }
 
-    private func refreshTownhomeStatusOverlay() {
+    private func refreshTownhomeStatusOverlay(statusOnly: Bool = false) {
         guard let manager = layerManager else { return }
+        let coveredAddressIds = Set((workspaceCoverage?.homes ?? []).filter(\.isLocked).map(\.address_id))
+        if statusOnly, manager.updateCachedTownhomeStatuses(
+            addressStatuses: addressStatuses,
+            addressStatusRows: addressStatusRows,
+            currentUserId: AuthManager.shared.user?.id,
+            workspaceCoveredAddressIds: coveredAddressIds
+        ) {
+            return
+        }
         manager.updateTownhomeStatusOverlay(
             buildings: visibleBuildingFeatures,
             addresses: visibleAddressFeatures,
@@ -7947,7 +7976,7 @@ struct CampaignMapView: View {
             addressStatuses: addressStatuses,
             addressStatusRows: addressStatusRows,
             currentUserId: AuthManager.shared.user?.id,
-            workspaceCoveredAddressIds: Set((workspaceCoverage?.homes ?? []).filter(\.isLocked).map(\.address_id))
+            workspaceCoveredAddressIds: coveredAddressIds
         )
     }
 
@@ -7956,7 +7985,7 @@ struct CampaignMapView: View {
         for row in rows.values {
             applyHomeStateRow(row)
         }
-        refreshTownhomeStatusOverlay()
+        refreshTownhomeStatusOverlay(statusOnly: true)
         applySessionVisitOverlayStatesIfNeeded()
     }
 
@@ -8146,7 +8175,7 @@ struct CampaignMapView: View {
             )
         )
         refreshLinkedAddressLayerStates(gersId: gersId, fallbackAddressId: addressId, fallbackStatus: status, scansTotal: scansTotal)
-        refreshTownhomeStatusOverlay()
+        refreshTownhomeStatusOverlay(statusOnly: true)
     }
 
     /// Returns ordered address UUIDs for a building from live card resolution or direct building feature IDs.
@@ -8849,7 +8878,7 @@ struct CampaignMapView: View {
                     visitOwner: effectiveLinkedAddressVisitOwnerState(addressId: addressId, baseStatus: effectiveStatus)
                 )
             }
-            refreshTownhomeStatusOverlay()
+            refreshTownhomeStatusOverlay(statusOnly: true)
         }
     }
 
@@ -8874,7 +8903,7 @@ struct CampaignMapView: View {
                 visitOwner: buildingStatus == "visited" ? "self" : nil
             )
             refreshLinkedAddressLayerStates(gersId: buildingId, scansTotal: 0)
-            refreshTownhomeStatusOverlay()
+            refreshTownhomeStatusOverlay(statusOnly: true)
         }
     }
 
@@ -9022,7 +9051,7 @@ struct CampaignMapView: View {
                 fallbackStatus: fallbackStatus,
                 scansTotal: 0
             )
-            refreshTownhomeStatusOverlay()
+            refreshTownhomeStatusOverlay(statusOnly: true)
         }
     }
 
@@ -10635,75 +10664,43 @@ struct CampaignMapView: View {
 
     private func handleStandardMapTap(
         at coordinate: CLLocationCoordinate2D,
-        quickStatusPoint: CGPoint? = nil
+        quickStatusPoint: CGPoint
     ) {
+        guard quickStartStandardTapTasks.isEmpty else { return }
         standardMapTapCircleCoordinate = coordinate
-
-        if quickStartEnabled || sessionManager.sessionId != nil {
-            if let address = nearestStandardMapPin(to: coordinate) {
-                houseQuickStatusMenu = nil
-                presentAddressSelection(address)
-                return
-            }
-            if let savedHome = nearestQuickStartSavedHome(to: coordinate) {
-                houseQuickStatusMenu = nil
-                presentAddressSelection(savedHome.address)
-                return
-            }
-
-            showLocationCard = false
-            selectedBuilding = nil
-            selectedAddress = nil
-            selectedAddressHasBuildingGeometry = true
-            selectedAddressIdForCard = nil
-
-            let taskID = UUID()
-            quickStartStandardTapTasks[taskID] = Task {
-                await createStandardSessionPin(at: coordinate, taskID: taskID)
-            }
-            return
-        }
-
         if let address = nearestStandardMapPin(to: coordinate) {
-            houseQuickStatusMenu = nil
-            presentAddressSelection(address)
+            presentHouseQuickStatus(address: address, at: quickStatusPoint)
+            return
+        }
+        if let home = nearestQuickStartSavedHome(to: coordinate) {
+            presentHouseQuickStatus(address: home.address, at: quickStatusPoint)
             return
         }
 
-        withAnimation {
-            showLocationCard = false
-        }
-        clearMoveHighlights()
+        houseQuickStatusMenu = nil
+        showLocationCard = false
         selectedBuilding = nil
         selectedAddress = nil
-        selectedAddressHasBuildingGeometry = true
+        selectedAddressHasBuildingGeometry = false
         selectedAddressIdForCard = nil
+        guard quickStartEnabled || sessionManager.sessionId != nil else { return }
+
+        let taskID = UUID()
+        quickStartStandardTapTasks[taskID] = Task {
+            await createStandardSessionPin(at: coordinate, taskID: taskID, quickStatusPoint: quickStatusPoint)
+        }
     }
 
     private func handleStandardMapLongPress(
         at coordinate: CLLocationCoordinate2D,
         screenPoint: CGPoint
     ) {
-        if quickStartEnabled || sessionManager.sessionId != nil {
-            if let address = nearestStandardMapPin(to: coordinate) {
-                presentHouseQuickStatus(address: address, at: screenPoint)
-                return
-            }
-            if let home = nearestQuickStartSavedHome(to: coordinate) {
-                presentHouseQuickStatus(address: home.address, at: screenPoint)
-                return
-            }
-            let taskID = UUID()
-            quickStartStandardTapTasks[taskID] = Task {
-                await createStandardSessionPin(at: coordinate, taskID: taskID, quickStatusPoint: screenPoint)
-            }
-            return
+        // Keep long press compatible, but a normal tap performs the same status action.
+        if quickStartEnabled || sessionManager.sessionId != nil || nearestStandardMapPin(to: coordinate) != nil {
+            handleStandardMapTap(at: coordinate, quickStatusPoint: screenPoint)
+        } else {
+            createManualPinAddress(at: coordinate, screenPoint: screenPoint)
         }
-        if let address = nearestStandardMapPin(to: coordinate) {
-            presentHouseQuickStatus(address: address, at: screenPoint)
-            return
-        }
-        createManualPinAddress(at: coordinate, screenPoint: screenPoint)
     }
 
     private func restoreMapboxCameraAfterRendererSwitchIfNeeded(on mapView: MapView) {
@@ -11354,7 +11351,7 @@ struct CampaignMapView: View {
 
     private func startQuickStartFlyrPreparationIfNeeded() {
         guard quickStartEnabled,
-              quickStartUsesGoogleMapsRenderer,
+              !quickStartUsesGoogleMapsRenderer,
               !hasStartedQuickStartFlyrPreparation,
               let campaignUUID = UUID(uuidString: campaignId) else {
             return
@@ -14280,7 +14277,7 @@ struct CampaignMapView: View {
         )
         let uniqueTargets = deduplicatedSessionTargets(targets)
         let targetIds = uniqueTargets.map(\.id)
-        guard !targetIds.isEmpty else {
+        guard isManualStandardQuickStart || !targetIds.isEmpty else {
             onFinished?()
             return
         }

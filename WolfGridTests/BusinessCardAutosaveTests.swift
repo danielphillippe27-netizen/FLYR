@@ -3,6 +3,46 @@ import XCTest
 @testable import WolfGrid
 
 @MainActor final class BusinessCardAutosaveTests: XCTestCase {
+    func testSharingPublishesExistingCardAndRejectsFailedSync() async throws {
+        var content = BusinessCardContent(); content.name = "Daniel"
+        var writes: [BusinessCardDraft] = []
+        let store = BusinessCardEditorStore(key: nil, read: {
+            BusinessCardDraft(card: content, published: false)
+        }, write: { writes.append($0) })
+        try await store.prepareForSharing()
+        XCTAssertEqual(writes.count, 1)
+        XCTAssertTrue(writes[0].published)
+        let failing = BusinessCardEditorStore(key: nil, read: {
+            BusinessCardDraft(card: content, published: false)
+        }, write: { _ in throw NSError(domain: "offline", code: 1) })
+        do {
+            try await failing.prepareForSharing()
+            XCTFail("Sharing must stop when publication fails")
+        } catch { XCTAssertTrue(failing.canRetry) }
+    }
+
+    func testExistingDetailsPublishWithoutEditingAndBlankCardStaysPrivate() async throws {
+        var content = BusinessCardContent()
+        content.phone = "2895550123"
+        var writes: [BusinessCardDraft] = []
+        let store = BusinessCardEditorStore(key: nil, delay: 1_000_000,
+            read: { BusinessCardDraft(card: content, published: false) },
+            write: { writes.append($0) })
+        await store.load()
+        store.flush()
+        try await Task.sleep(nanoseconds: 30_000_000)
+        XCTAssertEqual(writes.count, 1)
+        XCTAssertTrue(writes.last?.published == true)
+        XCTAssertEqual(store.status, "All changes saved · Published")
+        store.card = BusinessCardContent()
+        store.card.name = "  "
+        store.flush()
+        try await Task.sleep(nanoseconds: 30_000_000)
+        XCTAssertEqual(writes.count, 2)
+        XCTAssertFalse(writes.last!.published)
+        XCTAssertFalse(store.published)
+    }
+
     func testAutosaveSerializationRecoveryAndPartialLinks() async throws {
         let suite = "card-autosave-test-\(UUID())"
         let defaults = UserDefaults(suiteName: suite)!

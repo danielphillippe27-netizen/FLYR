@@ -1192,7 +1192,11 @@ struct NewCampaignScreen: View {
             }
 
             if finalProvisionStatus == .ready {
-                let addressesSaved = provisionResponse?.addressesSaved ?? workingCampaign.totalFlyers
+                // The accepted background response and draft counts predate geometry stops.
+                // Read the persisted stop count after map-ready before showing an empty alert.
+                let persistedStopCount = try? await CampaignsAPI.shared.fetchCampaignAddressCount(campaignId: campaign.id)
+                guard !Task.isCancelled else { return }
+                let addressesSaved = max(persistedStopCount ?? 0, provisionResponse?.addressesSaved ?? workingCampaign.totalFlyers)
                 let buildingsSaved = provisionResponse?.buildingsSaved ?? 0
                 print("🗺️ [CAMPAIGN DEBUG] Provision result: addresses=\(addressesSaved), buildings=\(buildingsSaved)")
                 workingCampaign.totalFlyers = max(workingCampaign.totalFlyers, addressesSaved)
@@ -1200,7 +1204,7 @@ struct NewCampaignScreen: View {
                 store.update(workingCampaign)
                 createdCampaign = workingCampaign
 
-                if addressesSaved == 0 {
+                if addressesSaved == 0 && persistedStopCount == 0 {
                     showCampaignReadinessOverlay = false
                     isProvisioningCampaign = false
                     showZeroHomeStandardModePrompt = true

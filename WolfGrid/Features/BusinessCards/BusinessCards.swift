@@ -310,10 +310,11 @@ struct BusinessCardSendView: View {
     private var interactionCount: Int { status.interactionCount }
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Button { showOptions = true } label: {
-                HStack(spacing: 10) {
+            Button { message = ""; showOptions = true } label: {
+                HStack(spacing: 8) {
                     Image(systemName: lastOpen == nil ? "person.crop.rectangle" : "checkmark.circle.fill")
-                    VStack(alignment: .leading, spacing: 4) {
+                        .frame(width: 20)
+                    VStack(spacing: 4) {
                         Text(busy ? "Preparing card…" : lastOpen != nil ? "Business Card opened" : sent ? "Business Card sent" : linkStatus ?? "Send Business Card")
                             .font(.system(size: 17, weight: .semibold))
                         if let opened = lastOpen {
@@ -325,14 +326,16 @@ struct BusinessCardSendView: View {
                             Text("Not opened yet").font(.caption)
                         }
                     }
-                    Spacer(minLength: 0)
-                    if busy { ProgressView().tint(ink) }
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 28)
+                    .padding(.vertical, 12)
+                    .frame(maxWidth: .infinity, minHeight: 44)
+                    .background(Color(cardHex: colorScheme == .dark ? "#352447" : "#EFE4FC"), in: RoundedRectangle(cornerRadius: 10))
+                    .overlay(alignment: .trailing) {
+                        if busy { ProgressView().tint(ink).padding(.trailing, 8) }
+                    }
                 }
                 .foregroundStyle(ink)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 12)
-                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                .background(Color(cardHex: colorScheme == .dark ? "#352447" : "#EFE4FC"), in: RoundedRectangle(cornerRadius: 10))
                 .opacity(canShare ? 1 : 0.45)
             }
             .buttonStyle(.plain)
@@ -425,6 +428,7 @@ struct BusinessCardSendView: View {
             let id: UUID
             if let saveLead { id = try await saveLead() } else if let contactID { id = contactID } else { throw BusinessCardAPI.failure("Save this lead first") }
             resolvedID = id
+            try await BusinessCardEditorStore.current().prepareForSharing()
             var body: [String: Any] = ["contactId": id.uuidString, "idempotencyKey": pendingKey.uuidString]
             if let addressID { body["addressId"] = addressID.uuidString }
             let value: BusinessCardShare = try await BusinessCardAPI.request("shares", body: body)

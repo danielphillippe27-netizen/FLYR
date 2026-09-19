@@ -1297,6 +1297,9 @@ final class MapLayerManager {
     private var lastAppliedDiamondParcelVisibility: Bool?
     private var diamondTerritoryBoundary: GeoJSONObject?
     private var diamondTerritoryBoundarySignature = "none"
+    private var cachedTownhomeOverlayData: Data?
+    private var cardEngagementRows: [BusinessCardEngagement] = []
+    private var cardBuildingIdentifiersByAddress: [UUID: Set<String>] = [:]
     private var buildingFeatureStateCache: [String: [String: Any]] = [:]
     private var addressFeatureStateCache: [String: [String: Any]] = [:]
     private var townhomeOverlayFeatureIdsByBuildingIdentifier: [String: Set<String>] = [:]
@@ -1365,6 +1368,7 @@ final class MapLayerManager {
     private func resetSourceSignaturesForStyleReload() {
         lastBuildingsSourceSignature = nil
         lastTownhomeOverlaySignature = nil
+        cachedTownhomeOverlayData = nil
 #if DEBUG
         lastTownhomeOverlayRenderedUnitCounts = [:]
 #endif
@@ -2132,8 +2136,14 @@ final class MapLayerManager {
         layer.symbolZElevate = .constant(true)
         layer.symbolElevationReference = .constant(.ground)
         layer.symbolZOffset = .expression(
-            Exp(.coalesce) {
-                Exp(.get) { "label_z_offset" }
+            Exp(.switchCase) {
+                Self.manualPinMarkerExpression
+                Exp(.coalesce) {
+                    Exp(.get) { "label_z_offset" }
+                    Self.addressNumberRoofClearance
+                }
+                // symbolZElevate already supplies the rendered rooftop height.
+                // Add only clearance, matching Android, rather than counting the roof twice.
                 Self.addressNumberRoofClearance
             }
         )
@@ -2802,6 +2812,15 @@ final class MapLayerManager {
     ) {
         guard let mapView = mapView else { return }
 
+        let cardLinks = Self.cardEngagementBuildingLinks(
+            buildings: buildings, addresses: addresses,
+            orderedAddressIdsByBuilding: orderedAddressIdsByBuilding
+        )
+        if cardLinks != cardBuildingIdentifiersByAddress {
+            cardBuildingIdentifiersByAddress = cardLinks
+            updateCardEngagement(cardEngagementRows)
+        }
+
         let data = Self.buildTownhomeStatusOverlayGeoJSON(
             buildings: buildings,
             addresses: addresses,
@@ -2818,6 +2837,31 @@ final class MapLayerManager {
             orderedAddressIdsByBuilding: orderedAddressIdsByBuilding
         )
 #endif
+        installTownhomeOverlay(data, on: mapView)
+    }
+
+    /// Returns false before geometry is available so the caller can rebuild.
+    /// Does not resolve visible geometry or building/address links on a status tap.
+    func updateCachedTownhomeStatuses(
+        addressStatuses: [UUID: AddressStatus],
+        addressStatusRows: [UUID: AddressStatusRow],
+        currentUserId: UUID?,
+        workspaceCoveredAddressIds: Set<UUID>
+    ) -> Bool {
+        guard let mapView, let cachedTownhomeOverlayData,
+              let data = Self.updatingTownhomeOverlayStatuses(
+                in: cachedTownhomeOverlayData,
+                addressStatuses: addressStatuses,
+                addressStatusRows: addressStatusRows,
+                currentUserId: currentUserId,
+                workspaceCoveredAddressIds: workspaceCoveredAddressIds
+              ) else { return false }
+        installTownhomeOverlay(data, on: mapView)
+        return true
+    }
+
+    private func installTownhomeOverlay(_ data: Data, on mapView: MapView) {
+        cachedTownhomeOverlayData = data
         let signature = Self.sourceSignature(for: data)
         guard lastTownhomeOverlaySignature != signature else { return }
 
@@ -2832,9 +2876,41 @@ final class MapLayerManager {
                 .count ?? 0
             print("✅ [MapLayer] Updated townhouse overlay source (\(overlayCount) features)")
             replayTownhomeOverlaySelectionStates(reason: "townhome_overlay_update")
+            replayCachedAddressFeatureStates(reason: "townhome_card_engagement_update")
         } catch {
             print("❌ [MapLayer] Error updating townhouse overlay: \(error)")
         }
+    }
+
+    /// Changes only state properties. Geometry, dividers, IDs and ordering are
+    /// retained exactly; a full geometry refresh replaces this snapshot.
+    static func updatingTownhomeOverlayStatuses(
+        in data: Data,
+        addressStatuses: [UUID: AddressStatus],
+        addressStatusRows: [UUID: AddressStatusRow] = [:],
+        currentUserId: UUID? = nil,
+        workspaceCoveredAddressIds: Set<UUID> = []
+    ) -> Data? {
+        guard var collection = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              var features = collection["features"] as? [[String: Any]] else { return nil }
+        var changed = false
+        for index in features.indices {
+            guard var properties = features[index]["properties"] as? [String: Any],
+                  let rawId = properties["address_id"] as? String,
+                  let addressId = UUID(uuidString: rawId) else { continue }
+            let covered = workspaceCoveredAddressIds.contains(addressId)
+            let status = covered ? "visited" : overlaySegmentStatus(for: addressStatuses[addressId])
+            let owner = covered ? "teammate" : overlayVisitOwner(for: addressStatusRows[addressId], currentUserId: currentUserId)
+            guard properties["segment_status"] as? String != status ||
+                  properties["visit_owner"] as? String != owner else { continue }
+            properties["segment_status"] = status
+            properties["visit_owner"] = owner
+            features[index]["properties"] = properties
+            changed = true
+        }
+        guard changed else { return data }
+        collection["features"] = features
+        return try? stableJSONData(withJSONObject: collection)
     }
 
     static func townhomeOverlayBuildingIdentifiers(from data: Data) -> Set<String> {
@@ -4594,8 +4670,26 @@ final class MapLayerManager {
     
     /// Update a building's feature state for instant color change (no re-render).
     /// Uses lowercase featureId so it matches promoteId values in the source (buildings use lowercase gers_id).
+    static func cardEngagementBuildingLinks(
+        buildings: [BuildingFeature], addresses: [AddressFeature],
+        orderedAddressIdsByBuilding: [String: [UUID]]
+    ) -> [UUID: Set<String>] {
+        var links: [UUID: Set<String>] = [:]
+        for building in labelBuildingContexts(buildings: buildings, addresses: addresses,
+                                              orderedAddressIdsByBuilding: orderedAddressIdsByBuilding) {
+            for address in building.orderedAddressIds {
+                links[address, default: []].formUnion(building.identifiers)
+            }
+        }
+        return links
+    }
+
     func updateCardEngagement(_ rows: [BusinessCardEngagement]) {
-        let buildings = Set(rows.compactMap { $0.building_id?.lowercased() })
+        cardEngagementRows = rows
+        var buildings = Set(rows.compactMap { $0.building_id?.lowercased() })
+        for row in rows {
+            buildings.formUnion(cardBuildingIdentifiersByAddress[row.address_id] ?? [])
+        }
         let addresses = Set(rows.map { $0.address_id.uuidString.lowercased() })
         for id in Set(buildingFeatureStateCache.keys).union(buildings) {
             var state = buildingFeatureStateCache[id] ?? [:]
@@ -4760,6 +4854,13 @@ final class MapLayerManager {
                     print("❌ [MapLayer] Error updating address feature state: \(error)")
                 }
             }
+        }
+
+        if mapView.mapboxMap.sourceExists(withId: Self.townhomeOverlaySourceId),
+           let engaged = state["card_engaged"] as? Bool {
+            mapView.mapboxMap.setFeatureState(sourceId: Self.townhomeOverlaySourceId,
+                sourceLayerId: nil, featureId: normalizedId,
+                state: ["card_engaged": engaged], callback: { _ in })
         }
 
         if mapView.mapboxMap.sourceExists(withId: Self.parcelsSourceId) {

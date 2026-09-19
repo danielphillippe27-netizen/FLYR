@@ -157,8 +157,8 @@ struct StandardCampaignGoogleMapView: UIViewRepresentable {
     let useDarkMapStyle: Bool
     let contentInsets: UIEdgeInsets
     let onReady: (() -> Void)?
-    let onMarkerTap: (MapLayerManager.AddressTapResult) -> Void
-    let onMapTap: (CLLocationCoordinate2D) -> Void
+    let onMarkerTap: (MapLayerManager.AddressTapResult, CGPoint) -> Void
+    let onMapTap: (CLLocationCoordinate2D, CGPoint) -> Void
     let onMapLongPress: (CLLocationCoordinate2D, CGPoint) -> Void
     let onCameraIdle: (StandardCampaignMapCamera) -> Void
     let onTripleTap: () -> Void
@@ -376,9 +376,10 @@ struct StandardCampaignGoogleMapView: UIViewRepresentable {
                 return
             }
 
-            let circle = tapCircle ?? GMSCircle(position: center, radius: 10)
+            let circle = tapCircle ?? GMSCircle(position: center, radius: 4)
             circle.position = center
-            circle.radius = 10
+            circle.radius = 4
+            circle.isTappable = false
             circle.fillColor = UIColor.systemRed.withAlphaComponent(0.16)
             circle.strokeColor = UIColor.systemRed.withAlphaComponent(0.9)
             circle.strokeWidth = 2
@@ -453,7 +454,13 @@ struct StandardCampaignGoogleMapView: UIViewRepresentable {
         }
 
         func mapView(_ mapView: GMSMapView, didTapAt coordinate: CLLocationCoordinate2D) {
-            parent.onMapTap(coordinate)
+            parent.onMapTap(coordinate, mapView.projection.point(for: coordinate))
+        }
+
+        func mapView(_ mapView: GMSMapView, didTapPOIWithPlaceID placeID: String, name: String, location: CLLocationCoordinate2D) {
+            // Google POI icons otherwise consume the tap instead of selecting a home.
+            mapView.selectedMarker = nil
+            parent.onMapTap(location, mapView.projection.point(for: location))
         }
 
         func mapView(_ mapView: GMSMapView, didLongPressAt coordinate: CLLocationCoordinate2D) {
@@ -474,7 +481,7 @@ struct StandardCampaignGoogleMapView: UIViewRepresentable {
                 return false
             }
 
-            parent.onMarkerTap(address)
+            parent.onMarkerTap(address, mapView.projection.point(for: marker.position))
             mapView.selectedMarker = nil
             return true
         }

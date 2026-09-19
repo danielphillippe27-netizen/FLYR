@@ -145,21 +145,6 @@ private struct WolfyHomeContent: View {
             HomeAccountControls()
         }
     }
-    private var streakSummary: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "flame.fill")
-                .font(.title3)
-                .foregroundStyle(Color.red)
-            Text(model.summary.stats.map { String($0.day_streak) } ?? "—")
-                .font(.subheadline.weight(.semibold))
-                .monospacedDigit()
-        }
-        .frame(maxWidth: .infinity)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Daily streak")
-        .accessibilityValue(model.summary.stats.map { "\($0.day_streak) days" } ?? "Unavailable")
-    }
-
     private var weeklyHeader: some View {
         HStack {
             eyebrow("This week")
@@ -184,10 +169,7 @@ private struct WolfyHomeContent: View {
         }
     }
     private var weeklyHero: some View {
-        VStack(spacing: 20) {
-            WolfyWeeklyRing(completed: weeklyDoors, target: weeklyGoal)
-            streakSummary
-        }
+        WolfyWeeklyRing(completed: weeklyDoors, target: weeklyGoal)
     }
     private var funnel: some View {
         ViewThatFits(in: .horizontal) {

@@ -267,6 +267,17 @@ final class BuildingDataServiceTests: XCTestCase {
             properties[MapLayerManager.promotedBuildingIdProperty] as? String,
             "standalone-building-1"
         )
+        let addressID = UUID()
+        let links = MapLayerManager.cardEngagementBuildingLinks(
+            buildings: [feature], addresses: [],
+            orderedAddressIdsByBuilding: ["Standalone-Building-1": [addressID]]
+        )
+        XCTAssertTrue(links[addressID]?.contains("standalone-building-1") == true,
+                      "Engagement must reach the promoted geometry ID even when its server building ID is an address alias")
+        XCTAssertTrue(MapLayerManager.cardEngagementBuildingLinks(
+            buildings: [], addresses: [], orderedAddressIdsByBuilding: [:]
+        ).isEmpty, "Removed geometry must not keep engagement associations")
+
     }
     
     // Note: These tests require a mock Supabase client for full testing
