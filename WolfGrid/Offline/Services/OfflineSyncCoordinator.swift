@@ -120,7 +120,7 @@ final class OfflineSyncCoordinator: ObservableObject {
                                 status: "blocked_upgrade",
                                 errorMessage: "CLIENT_UPGRADE_REQUIRED:\(currentBuild)"
                             )
-                        case "REVISION_CONFLICT", "TEAMMATE_STATUS_LOCKED", "OVERRIDE_REASON_REQUIRED":
+                        case "WORKSPACE_HOME_ALREADY_VISITED", "REVISION_CONFLICT", "TEAMMATE_STATUS_LOCKED", "OVERRIDE_REASON_REQUIRED":
                             let canonicalState: String?
                             if case .rejected(_, let state) = mutationError { canonicalState = state }
                             else { canonicalState = nil }

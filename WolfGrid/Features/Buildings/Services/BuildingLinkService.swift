@@ -2590,7 +2590,7 @@ final class BuildingLinkService {
                     print("⚠️ [BuildingLinkService] HTTP \(statusCode) API error: \(apiError.error)")
                 }
                 if [
-                    "CLIENT_UPGRADE_REQUIRED", "REVISION_CONFLICT", "TEAMMATE_STATUS_LOCKED",
+                    "CLIENT_UPGRADE_REQUIRED", "WORKSPACE_HOME_ALREADY_VISITED", "REVISION_CONFLICT", "TEAMMATE_STATUS_LOCKED",
                     "OVERRIDE_REASON_REQUIRED", "IDEMPOTENCY_KEY_REUSED"
                 ].contains(apiError.error) {
                     let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any]

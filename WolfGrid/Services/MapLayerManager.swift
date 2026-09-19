@@ -2797,7 +2797,8 @@ final class MapLayerManager {
         orderedAddressIdsByBuilding: [String: [UUID]],
         addressStatuses: [UUID: AddressStatus],
         addressStatusRows: [UUID: AddressStatusRow] = [:],
-        currentUserId: UUID? = nil
+        currentUserId: UUID? = nil,
+        workspaceCoveredAddressIds: Set<UUID> = []
     ) {
         guard let mapView = mapView else { return }
 
@@ -2807,7 +2808,8 @@ final class MapLayerManager {
             orderedAddressIdsByBuilding: orderedAddressIdsByBuilding,
             addressStatuses: addressStatuses,
             addressStatusRows: addressStatusRows,
-            currentUserId: currentUserId
+            currentUserId: currentUserId,
+            workspaceCoveredAddressIds: workspaceCoveredAddressIds
         ) ?? Self.encodedEmptyTownhomeOverlay()
 #if DEBUG
         logTownhomeOverlayUnitChanges(
@@ -2957,7 +2959,8 @@ final class MapLayerManager {
         orderedAddressIdsByBuilding: [String: [UUID]],
         addressStatuses: [UUID: AddressStatus],
         addressStatusRows: [UUID: AddressStatusRow] = [:],
-        currentUserId: UUID? = nil
+        currentUserId: UUID? = nil,
+        workspaceCoveredAddressIds: Set<UUID> = []
     ) -> Data? {
         let addressContextsById = overlayAddressContextsById(addresses)
 
@@ -3023,8 +3026,8 @@ final class MapLayerManager {
                     "address_id": address.id.uuidString.lowercased(),
                     "unit_index": index,
                     "unit_count": linkedAddresses.count,
-                    "segment_status": overlaySegmentStatus(for: addressStatuses[address.id]),
-                    "visit_owner": overlayVisitOwner(for: addressStatusRows[address.id], currentUserId: currentUserId),
+                    "segment_status": workspaceCoveredAddressIds.contains(address.id) ? "visited" : overlaySegmentStatus(for: addressStatuses[address.id]),
+                    "visit_owner": workspaceCoveredAddressIds.contains(address.id) ? "teammate" : overlayVisitOwner(for: addressStatusRows[address.id], currentUserId: currentUserId),
                     "height": height,
                     "height_m": height,
                     "min_height": base,

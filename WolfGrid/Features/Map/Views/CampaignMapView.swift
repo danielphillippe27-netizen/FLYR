@@ -1657,6 +1657,8 @@ struct CampaignMapView: View {
     /// Per-address visit statuses (populated from VisitsAPI and updated live via onStatusUpdated)
     @State private var addressStatuses: [UUID: AddressStatus] = [:]
     @State private var addressStatusRows: [UUID: AddressStatusRow] = [:]
+    @State private var workspaceCoverage: WorkspaceCoverageSnapshot?
+    @State private var workspaceCoverageStale = false
     @State private var campaignBoundaryCoordinates: [CLLocationCoordinate2D] = []
     @State private var cachedCampaignOverviewCoordinates: [CLLocationCoordinate2D] = []
     @State private var statusRefreshTask: Task<Void, Never>?
@@ -1799,6 +1801,50 @@ struct CampaignMapView: View {
 
     var body: some View {
         campaignMapContent
+            .task(id: campaignId) {
+                workspaceCoverage = nil
+                guard let id = UUID(uuidString: campaignId) else { return }
+                while !Task.isCancelled {
+                    await refreshWorkspaceCoverage(id)
+                    do { try await Task.sleep(for: .seconds(30)) } catch { return }
+                }
+            }
+            .overlay(alignment: .top) {
+                if workspaceCoverage?.enabled == true, let summary = workspaceCoverage?.summary {
+                    Text("Team coverage: \(summary.visited) visited elsewhere · \(summary.overlap) overlapping" + (workspaceCoverageStale ? " · Offline, may be outdated" : ""))
+                        .font(.caption).padding(8).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+                        .padding(.horizontal, 48).allowsHitTesting(false)
+                }
+            }
+    }
+
+    @MainActor private func refreshWorkspaceCoverage(_ id: UUID) async {
+        do {
+            let result = try await VisitsAPI.shared.workspaceCoverage(campaignId: id)
+            guard !Task.isCancelled, UUID(uuidString: campaignId) == id else { return }
+            let affectedIds = Set((workspaceCoverage?.homes ?? []).filter(\.isLocked).map(\.address_id))
+                .union(result.homes.filter(\.isLocked).map(\.address_id))
+            workspaceCoverage = result
+            workspaceCoverageStale = false
+            guard !affectedIds.isEmpty else { return }
+            for feature in visibleAddressFeatures {
+                guard let raw = feature.properties.id ?? feature.id, let addressId = UUID(uuidString: raw), affectedIds.contains(addressId) else { continue }
+                let base = addressStatuses[addressId] ?? .untouched
+                layerManager?.updateAddressState(addressId: raw,
+                    status: effectiveAddressLayerStatus(addressId: addressId, baseStatus: base),
+                    scansTotal: gersIdForAddress(addressId: addressId).map { effectiveScansTotal(for: $0) } ?? 0,
+                    visitOwner: effectiveVisitOwnerState(addressId: addressId, baseStatus: base))
+            }
+            for building in visibleBuildingFeatures {
+                guard let gersId = building.properties.canonicalBuildingIdentifier ?? building.id else { continue }
+                let ids = addressIdsForBuilding(gersId: gersId)
+                guard ids.contains(where: affectedIds.contains) else { continue }
+                updateBuildingLayerState(gersId: gersId,
+                    status: effectiveBuildingLayerStatus(gersId: gersId, addressIds: ids), scansTotal: effectiveScansTotal(for: building),
+                    addressIds: ids, visitOwner: effectiveBuildingVisitOwnerState(gersId: gersId, addressIds: ids))
+            }
+            refreshTownhomeStatusOverlay()
+        } catch { if !Task.isCancelled { workspaceCoverageStale = true } }
     }
 
     private var demoRecordingViewStyle: DemoRecordingViewStyle {
@@ -5870,6 +5916,7 @@ struct CampaignMapView: View {
                     showsReverseGeocodeCheckmark: resolvedAddrId.map { reverseGeocodedAddressIds.contains($0) } ?? false,
                     addressStatuses: addressStatuses,
                     addressStatusRows: addressStatusRows,
+                    workspaceCoverage: workspaceCoverage,
                     campaignMembersByUserId: sharedLiveCanvassingService.memberDirectory,
                     manualPinOwnerUserId: resolvedAddrId.flatMap { manualPinOwnerUserId(for: $0) },
                     sessionTargetIdForAddress: sessionTargetIdForAddress,
@@ -6008,6 +6055,7 @@ struct CampaignMapView: View {
                     showsReverseGeocodeCheckmark: reverseGeocodedAddressIds.contains(address.addressId),
                     addressStatuses: addressStatuses,
                     addressStatusRows: addressStatusRows,
+                    workspaceCoverage: workspaceCoverage,
                     campaignMembersByUserId: sharedLiveCanvassingService.memberDirectory,
                     manualPinOwnerUserId: manualPinOwnerUserId(for: address.addressId),
                     sessionTargetIdForAddress: sessionTargetIdForAddress,
@@ -7898,7 +7946,8 @@ struct CampaignMapView: View {
             orderedAddressIdsByBuilding: buildingAddressMap,
             addressStatuses: addressStatuses,
             addressStatusRows: addressStatusRows,
-            currentUserId: AuthManager.shared.user?.id
+            currentUserId: AuthManager.shared.user?.id,
+            workspaceCoveredAddressIds: Set((workspaceCoverage?.homes ?? []).filter(\.isLocked).map(\.address_id))
         )
     }
 
@@ -8393,6 +8442,7 @@ struct CampaignMapView: View {
     }
 
     private func effectiveAddressLayerStatus(addressId: UUID, baseStatus: AddressStatus) -> String {
+        if workspaceCoverage?.home(addressId)?.isLocked == true { return "visited" }
         let key = addressId.uuidString.lowercased()
         if sessionManager.pendingVisitedAddressIds.contains(key) {
             return "pending_visited"
@@ -8418,6 +8468,7 @@ struct CampaignMapView: View {
     }
 
     private func effectiveVisitOwnerState(addressId: UUID, baseStatus: AddressStatus) -> String? {
+        if workspaceCoverage?.home(addressId)?.isLocked == true { return "teammate" }
         if let pinOwner = manualPinOwnerUserId(for: addressId),
            let currentUserId = AuthManager.shared.user?.id,
            pinOwner != currentUserId {
@@ -8442,6 +8493,7 @@ struct CampaignMapView: View {
     }
 
     private func isAddressProtectedByTeammate(_ addressId: UUID) -> Bool {
+        if workspaceCoverage?.home(addressId)?.isLocked == true { return true }
         guard let currentUserId = AuthManager.shared.user?.id else { return false }
         if let pinOwner = manualPinOwnerUserId(for: addressId), pinOwner != currentUserId {
             return true
@@ -8457,6 +8509,7 @@ struct CampaignMapView: View {
         addressIds: [UUID],
         fallbackStatus: AddressStatus? = nil
     ) -> String {
+        if !addressIds.isEmpty && addressIds.allSatisfy({ workspaceCoverage?.home($0)?.isLocked == true }) { return "visited" }
         let key = gersId.lowercased()
         if sessionManager.pendingVisitedBuildingIds.contains(key) {
             return "pending_visited"
@@ -8485,6 +8538,7 @@ struct CampaignMapView: View {
         addressIds: [UUID],
         fallbackStatus: AddressStatus? = nil
     ) -> String? {
+        if !addressIds.isEmpty && addressIds.allSatisfy({ workspaceCoverage?.home($0)?.isLocked == true }) { return "teammate" }
         let effectiveStatus = effectiveBuildingLayerStatus(
             gersId: gersId,
             addressIds: addressIds,
@@ -15523,6 +15577,7 @@ struct LocationCardView: View {
     /// Per-address statuses for pill coloring in the multi-address list
     var addressStatuses: [UUID: AddressStatus] = [:]
     var addressStatusRows: [UUID: AddressStatusRow] = [:]
+    var workspaceCoverage: WorkspaceCoverageSnapshot? = nil
     var campaignMembersByUserId: [UUID: SharedCanvassingMember] = [:]
     var manualPinOwnerUserId: UUID?
     /// Resolves the session target that should receive completion credit for a specific address.
@@ -15620,7 +15675,7 @@ struct LocationCardView: View {
     private let locationCardDraftStoragePrefix = "wolfgrid.location_card_draft"
     private let legacyLocationCardDraftStoragePrefix = "flyr.location_card_draft"
 
-    init(gersId: String, campaignId: UUID, sessionId: UUID? = nil, farmExecutionContext: FarmExecutionContext? = nil, addressId: UUID? = nil, addressText: String? = nil, buildingIdentifiers: [String] = [], linkedAddressIds: [UUID] = [], preferredAddressId: UUID? = nil, buildingSource: String? = nil, addressSource: String? = nil, parcelId: String? = nil, campaignParcelId: String? = nil, hasParcelLink: Bool? = nil, hasBuildingGeometry: Bool = true, showsReverseGeocodeCheckmark: Bool = false, addressStatuses: [UUID: AddressStatus] = [:], addressStatusRows: [UUID: AddressStatusRow] = [:], campaignMembersByUserId: [UUID: SharedCanvassingMember] = [:], manualPinOwnerUserId: UUID? = nil, sessionTargetIdForAddress: ((UUID) -> String?)? = nil, actionRowStyle: LocationCardActionRowStyle = .campaignTools, farmAddressHistoryPreview: LocationCardAddressHistoryPreview? = nil, allowsManualLinkActions: Bool = true, quickStartContactBookMode: Bool = false, initialActionIntent: LocationCardInitialActionIntent? = nil, onSelectAddress: ((UUID?) -> Void)? = nil, onAddressesResolved: (([UUID]) -> Void)? = nil, onClose: @escaping () -> Void, onStatusUpdated: ((UUID, AddressStatus) -> Void)? = nil, onHomeStateUpdated: ((AddressStatusRow) -> Void)? = nil, onInitialActionIntentApplied: ((UUID) -> Void)? = nil, onToolsAction: ((LocationCardToolsAction) -> Void)? = nil) {
+    init(gersId: String, campaignId: UUID, sessionId: UUID? = nil, farmExecutionContext: FarmExecutionContext? = nil, addressId: UUID? = nil, addressText: String? = nil, buildingIdentifiers: [String] = [], linkedAddressIds: [UUID] = [], preferredAddressId: UUID? = nil, buildingSource: String? = nil, addressSource: String? = nil, parcelId: String? = nil, campaignParcelId: String? = nil, hasParcelLink: Bool? = nil, hasBuildingGeometry: Bool = true, showsReverseGeocodeCheckmark: Bool = false, addressStatuses: [UUID: AddressStatus] = [:], addressStatusRows: [UUID: AddressStatusRow] = [:], workspaceCoverage: WorkspaceCoverageSnapshot? = nil, campaignMembersByUserId: [UUID: SharedCanvassingMember] = [:], manualPinOwnerUserId: UUID? = nil, sessionTargetIdForAddress: ((UUID) -> String?)? = nil, actionRowStyle: LocationCardActionRowStyle = .campaignTools, farmAddressHistoryPreview: LocationCardAddressHistoryPreview? = nil, allowsManualLinkActions: Bool = true, quickStartContactBookMode: Bool = false, initialActionIntent: LocationCardInitialActionIntent? = nil, onSelectAddress: ((UUID?) -> Void)? = nil, onAddressesResolved: (([UUID]) -> Void)? = nil, onClose: @escaping () -> Void, onStatusUpdated: ((UUID, AddressStatus) -> Void)? = nil, onHomeStateUpdated: ((AddressStatusRow) -> Void)? = nil, onInitialActionIntentApplied: ((UUID) -> Void)? = nil, onToolsAction: ((LocationCardToolsAction) -> Void)? = nil) {
         self.gersId = gersId
         self.campaignId = campaignId
         self.sessionId = sessionId
@@ -15639,6 +15694,7 @@ struct LocationCardView: View {
         self.showsReverseGeocodeCheckmark = showsReverseGeocodeCheckmark
         self.addressStatuses = addressStatuses
         self.addressStatusRows = addressStatusRows
+        self.workspaceCoverage = workspaceCoverage
         self.campaignMembersByUserId = campaignMembersByUserId
         self.manualPinOwnerUserId = manualPinOwnerUserId
         self.sessionTargetIdForAddress = sessionTargetIdForAddress
@@ -15878,7 +15934,12 @@ struct LocationCardView: View {
         AuthManager.shared.user?.id
     }
 
+    private var currentWorkspaceHome: WorkspaceCoverageSnapshot.Home? {
+        workspaceCoverage?.home(editableAddress?.id ?? addressId)
+    }
+
     private var isHomeOwnedByTeammate: Bool {
+        if currentWorkspaceHome?.isLocked == true { return true }
         guard let currentUserId else { return false }
         if isManualPinCard,
            let manualPinOwnerUserId,
@@ -15890,6 +15951,7 @@ struct LocationCardView: View {
     }
 
     private var canOverrideTeammateStatus: Bool {
+        if currentWorkspaceHome?.isLocked == true { return workspaceCoverage?.canManage == true }
         guard isHomeOwnedByTeammate, let currentUserId else { return false }
         let role = campaignMembersByUserId[currentUserId]?.role.lowercased()
         return role == "owner" || role == "admin"
@@ -16217,11 +16279,13 @@ struct LocationCardView: View {
 
     private var lockedHomeMessage: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Locked to another user")
+            Text(currentWorkspaceHome?.isLocked == true ? "Already visited in another campaign" : "Locked to another user")
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundColor(cardText)
 
-            if let currentHomeUpdatedByLabel {
+            if let home = currentWorkspaceHome, home.isLocked {
+                Text(home.message).font(.system(size: 13)).foregroundColor(cardPlaceholder)
+            } else if let currentHomeUpdatedByLabel {
                 Text("This home is locked to \(currentHomeUpdatedByLabel). You can see the address and who hit it, but not the saved details.")
                     .font(.system(size: 13))
                     .foregroundColor(cardPlaceholder)
@@ -16255,6 +16319,9 @@ struct LocationCardView: View {
 
     private var rootCardView: some View {
         VStack(spacing: 0) {
+            if let home = currentWorkspaceHome, !home.isLocked {
+                Text(home.message).font(.caption).foregroundColor(cardPlaceholder).padding(12)
+            }
             if showToolsSheet {
                 attachedToolsMenu
                     .padding(.bottom, -4)
