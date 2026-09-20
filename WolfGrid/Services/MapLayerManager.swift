@@ -2131,7 +2131,10 @@ final class MapLayerManager {
             }
         )
         layer.symbolSpacing = .constant(32)
-        layer.symbolAvoidEdges = .constant(true)
+        // At door-knocking zoom every linked home needs a visible civic number.
+        // Let Mapbox draw the complete roof-label set instead of dropping whole
+        // rows while resolving collisions with the basemap and neighboring homes.
+        layer.symbolAvoidEdges = .constant(false)
         layer.symbolZOrder = .constant(.auto)
         layer.symbolZElevate = .constant(true)
         layer.symbolElevationReference = .constant(.ground)
@@ -2147,8 +2150,8 @@ final class MapLayerManager {
                 Self.addressNumberRoofClearance
             }
         )
-        layer.textAllowOverlap = .constant(false)
-        layer.textIgnorePlacement = .constant(false)
+        layer.textAllowOverlap = .constant(true)
+        layer.textIgnorePlacement = .constant(true)
         layer.textOptional = .constant(false)
         layer.textOcclusionOpacity = .constant(1.0)
         layer.textOpacity = .expression(Self.addressNumbersZoomOpacityExpression)

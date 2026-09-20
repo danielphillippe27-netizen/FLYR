@@ -5815,12 +5815,14 @@ struct CampaignMapView: View {
             )
             manager.updateAddressNumberLabelVisibility(isVisible: hasAddressNumbersLayer && shouldShowAddressNumbers)
         case .addresses:
-            // Keep hidden building layers installed across style reloads so the toggle can restore them.
+            // Address markers still need their physical context. Keep the real
+            // campaign footprints under the markers instead of turning the map
+            // into floating numbers and tiny dots over apparently empty lots.
             manager.includeBuildingsLayer = true
             manager.includeAddressesLayer = true
             manager.updateAddressModeZoomVisibility(isAddressMode: true)
             manager.setDiamondGeometryVisibility(
-                buildings: false,
+                buildings: shouldShowDiamondBuildings,
                 addresses: hasDiamondAddresses,
                 addressNumbers: shouldShowAddressNumbers,
                 // Do not let the unfiltered regional PMTiles layer restore empty parcels.
@@ -5841,13 +5843,19 @@ struct CampaignMapView: View {
             let hasAddressPoints = addressCount > 0
             print("🔍 [CampaignMap] addresses=\(addressCount) buildings=\(buildingCount) hasAddressPoints=\(hasAddressPoints)")
             if hasBuildingsLayer {
-                try? map.updateLayer(withId: MapLayerManager.buildingsLayerId, type: FillExtrusionLayer.self) { $0.visibility = .constant(.none) }
+                try? map.updateLayer(withId: MapLayerManager.buildingsLayerId, type: FillExtrusionLayer.self) {
+                    $0.visibility = .constant(shouldShowGeoJSONBuildings ? .visible : .none)
+                }
             }
             if hasBuildingGlowLayer {
-                try? map.updateLayer(withId: MapLayerManager.buildingsSelectedGlowLayerId, type: LineLayer.self) { $0.visibility = .constant(.none) }
+                try? map.updateLayer(withId: MapLayerManager.buildingsSelectedGlowLayerId, type: LineLayer.self) {
+                    $0.visibility = .constant(shouldShowGeoJSONBuildings ? .visible : .none)
+                }
             }
             if hasTownhomeOverlayLayer {
-                try? map.updateLayer(withId: MapLayerManager.townhomeOverlayLayerId, type: FillExtrusionLayer.self) { $0.visibility = .constant(.none) }
+                try? map.updateLayer(withId: MapLayerManager.townhomeOverlayLayerId, type: FillExtrusionLayer.self) {
+                    $0.visibility = .constant(visibleBuildingFeatures.isEmpty ? .none : .visible)
+                }
             }
             if hasAddressesLayer {
                 try? map.updateLayer(withId: MapLayerManager.addressesLayerId, type: FillExtrusionLayer.self) { $0.visibility = .constant(.visible) }
