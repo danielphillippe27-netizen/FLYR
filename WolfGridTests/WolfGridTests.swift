@@ -146,6 +146,26 @@ struct WolfGridTests {
         }
     }
 
+    @Test func reconciliationBundleAdoptionRevisionTracksCompletedBundle() throws {
+        let queued = try JSONDecoder().decode(
+            CanonicalMapReconciliation.self,
+            from: Data(#"{"status":"queued","run_id":"run-1"}"#.utf8)
+        )
+        let firstCompleted = try JSONDecoder().decode(
+            CanonicalMapReconciliation.self,
+            from: Data(#"{"status":"completed","run_id":"run-1","applied_bundle_signature":"bundle-1"}"#.utf8)
+        )
+        let nextCompleted = try JSONDecoder().decode(
+            CanonicalMapReconciliation.self,
+            from: Data(#"{"status":"completed","run_id":"run-2","applied_bundle_signature":"bundle-2"}"#.utf8)
+        )
+
+        #expect(queued.bundleAdoptionRevision == nil)
+        #expect(firstCompleted.bundleAdoptionRevision == "completed|run-1|bundle-1")
+        #expect(nextCompleted.bundleAdoptionRevision == "completed|run-2|bundle-2")
+        #expect(firstCompleted.bundleAdoptionRevision != nextCompleted.bundleAdoptionRevision)
+    }
+
     @Test func campaignHouseCountUsesAggregateBeforeAddressHydration() throws {
         var campaign = CampaignV2(
             name: "Count test",

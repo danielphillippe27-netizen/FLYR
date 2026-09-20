@@ -1680,7 +1680,7 @@ struct CampaignMapView: View {
     @StateObject private var offlineSyncCoordinator = OfflineSyncCoordinator.shared
     @State private var presentedSyncConflict: CampaignMutationConflict?
     @State private var dismissedMapQualityRunId: String?
-    @State private var lastAutoAdoptedReconciliationRunId: String?
+    @State private var lastAutoAdoptedReconciliationRevision: String?
     @State private var presentedOptimizationCompletionRunId: String?
     @State private var showMapOptimizationCompletedTag = false
     @State private var mapOptimizationCompletedTagTask: Task<Void, Never>?
@@ -2672,7 +2672,7 @@ struct CampaignMapView: View {
                 Task { await sessionChatStore.start() }
             }
             .onChange(of: campaignId) { _, _ in
-                lastAutoAdoptedReconciliationRunId = nil
+                lastAutoAdoptedReconciliationRevision = nil
                 presentedOptimizationCompletionRunId = nil
                 showMapOptimizationCompletedTag = false
                 mapOptimizationCompletedTagTask?.cancel()
@@ -2752,7 +2752,7 @@ struct CampaignMapView: View {
                     adoptCompletedReconciliationIfSafe()
                 }
             }
-            .onChange(of: featuresService.reconciliationStatus?.status) { _, _ in
+            .onChange(of: featuresService.reconciliationStatus?.bundleAdoptionRevision) { _, _ in
                 adoptCompletedReconciliationIfSafe()
                 presentOptimizationCompletionTagIfNeeded()
             }
@@ -6300,26 +6300,22 @@ struct CampaignMapView: View {
 
     private func adoptCompletedReconciliationIfSafe() {
         guard networkMonitor.isOnline,
-              sessionManager.sessionId == nil,
               let reconciliation = featuresService.reconciliationStatus,
-              ["completed", "review_needed"].contains(
-                reconciliation.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-              ),
-              let runId = reconciliation.runId,
-              lastAutoAdoptedReconciliationRunId != runId else {
+              let revision = reconciliation.bundleAdoptionRevision,
+              lastAutoAdoptedReconciliationRevision != revision else {
             return
         }
 
         // Mark before starting asynchronous work so a SwiftUI refresh cannot enqueue the same
         // adoption twice. Offline/user mutations always reach the server before the optimized
-        // bundle is downloaded, and active sessions retain their original map snapshot.
-        lastAutoAdoptedReconciliationRunId = runId
+        // bundle is downloaded. Session progress and statuses are stored independently, so the
+        // canonical building/address relationships can safely refresh while a session is active.
+        lastAutoAdoptedReconciliationRevision = revision
         Task {
             await offlineSyncCoordinator.processOutbox()
             await MainActor.run {
                 guard networkMonitor.isOnline,
-                      sessionManager.sessionId == nil,
-                      featuresService.reconciliationStatus?.runId == runId else {
+                      featuresService.reconciliationStatus?.bundleAdoptionRevision == revision else {
                     return
                 }
                 lastLoadedDataKey = nil

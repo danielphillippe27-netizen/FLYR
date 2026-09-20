@@ -152,6 +152,19 @@ struct CanonicalMapReconciliation: Codable, Sendable {
         ["not_started", "queued", "matching", "geocoding", "applying"]
             .contains(status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
     }
+
+    /// Changes whenever the map bundle that a client must adopt changes. Including the status
+    /// handles a run moving from queued to completed; including the run and bundle signature
+    /// handles consecutive completed reconciliation passes without an observed intermediate poll.
+    var bundleAdoptionRevision: String? {
+        let normalizedStatus = status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard ["completed", "review_needed"].contains(normalizedStatus),
+              let runId,
+              !runId.isEmpty else {
+            return nil
+        }
+        return [normalizedStatus, runId, appliedBundleSignature ?? ""].joined(separator: "|")
+    }
 }
 
 struct CanonicalMapReconciliationReport: Codable, Sendable {
