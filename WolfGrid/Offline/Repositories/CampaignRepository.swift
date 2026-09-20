@@ -2608,6 +2608,16 @@ final class CampaignRepository {
         )
     }
 
+    /// Same presence rule as getCampaignMapBundle, without loading or decoding map geometry.
+    func hasCampaignMapBundle(campaignId: String) async -> Bool {
+        (try? await dbQueue.read { db in
+            try !CachedBuildingRecord.filter(Column("campaign_id") == campaignId).isEmpty(db) ||
+                !CachedAddressRecord.filter(Column("campaign_id") == campaignId).isEmpty(db) ||
+                !CachedParcelRecord.filter(Column("campaign_id") == campaignId).isEmpty(db) ||
+                !CachedRoadRecord.filter(Column("campaign_id") == campaignId).isEmpty(db)
+        }) ?? false
+    }
+
     func getCampaignMapBundle(campaignId: String) async -> OfflineCampaignMapBundle? {
         try? await dbQueue.read { db in
             let buildingRecords = try CachedBuildingRecord

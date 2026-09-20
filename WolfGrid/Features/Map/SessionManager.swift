@@ -1558,6 +1558,9 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
             }
             throw SessionStartError.startAlreadyInFlight(campaignId: inFlight)
         }
+        // Claim the start before any suspension so another caller cannot pass the guard.
+        startInFlightCampaignId = campaignId
+        defer { startInFlightCampaignId = nil }
         if !skipProvisionGate,
            let blockReason = await CampaignsAPI.shared.sessionStartBlockReason(campaignId: campaignId) {
             trace.end(status: "campaign_blocked", fields: [
@@ -1565,8 +1568,6 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
             ])
             throw SessionStartError.campaignNotProvisioned(campaignId: campaignId, reason: blockReason)
         }
-        startInFlightCampaignId = campaignId
-        defer { startInFlightCampaignId = nil }
 
         let newSessionId = UUID()
         let sessionStartedAt = Date()

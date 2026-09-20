@@ -1551,6 +1551,7 @@ struct CampaignMapView: View {
         let farmExecutionContext: FarmExecutionContext?
         let enableSharedLiveCanvassing: Bool
         let sharedLiveSourceSessionId: UUID?
+        var gpsProximityEnabled: Bool
     }
 
     let campaignId: String
@@ -2481,18 +2482,19 @@ struct CampaignMapView: View {
                 isPresented: Binding(
                     get: { pendingGPSDisclaimerStart != nil },
                     set: { if !$0 { pendingGPSDisclaimerStart = nil } }
-                )
-            ) {
+                ),
+                presenting: pendingGPSDisclaimerStart
+            ) { request in
                 Button("Start with GPS On") {
-                    continuePendingGPSDisclaimerStart(useGPSProximity: true)
+                    continuePendingGPSDisclaimerStart(request, useGPSProximity: true)
                 }
                 Button("Start with GPS Off") {
-                    continuePendingGPSDisclaimerStart(useGPSProximity: false)
+                    continuePendingGPSDisclaimerStart(request, useGPSProximity: false)
                 }
                 Button("Cancel", role: .cancel) {
                     pendingGPSDisclaimerStart = nil
                 }
-            } message: {
+            } message: { _ in
                 Text("GPS sometimes drifts and can hit a nearby home. You can keep auto-hit on, turn it off for this session, and double-check when homes are close together.")
             }
             .sheet(item: $pendingManualAddressDraft, onDismiss: {
@@ -5196,7 +5198,8 @@ struct CampaignMapView: View {
             goalAmount: goalAmount,
             farmExecutionContext: farmExecutionContext,
             enableSharedLiveCanvassing: enableSharedLiveCanvassing,
-            sharedLiveSourceSessionId: sharedLiveSourceSessionId
+            sharedLiveSourceSessionId: sharedLiveSourceSessionId,
+            gpsProximityEnabled: effectiveGPSProximityEnabled
         )
 
         guard gpsProximityAvailableForCampaign && preSessionGPSProximityEnabled else {
@@ -5207,11 +5210,13 @@ struct CampaignMapView: View {
         pendingGPSDisclaimerStart = request
     }
 
-    private func continuePendingGPSDisclaimerStart(useGPSProximity: Bool) {
-        guard let request = pendingGPSDisclaimerStart else { return }
+    private func continuePendingGPSDisclaimerStart(_ request: PendingFlyerStart, useGPSProximity: Bool) {
+        // Use the alert's captured request: SwiftUI may clear its presentation binding first.
         pendingGPSDisclaimerStart = nil
         preSessionGPSProximityEnabled = useGPSProximity
-        continueSessionStart(request)
+        var confirmedRequest = request
+        confirmedRequest.gpsProximityEnabled = gpsProximityAvailableForCampaign && useGPSProximity
+        continueSessionStart(confirmedRequest)
     }
 
     @MainActor
@@ -5240,7 +5245,8 @@ struct CampaignMapView: View {
                 startPlannedFarmSession(
                     campaignId: request.campaignId,
                     context: farmExecutionContext,
-                    skipGPSDisclaimer: true
+                    skipGPSDisclaimer: true,
+                    gpsProximityEnabledOverride: request.gpsProximityEnabled
                 )
             } else {
                 startPreSessionWorkflow(
@@ -5249,7 +5255,8 @@ struct CampaignMapView: View {
                     goalType: request.goalType,
                     goalAmount: request.goalAmount,
                     enableSharedLiveCanvassing: request.enableSharedLiveCanvassing,
-                    sharedLiveSourceSessionId: request.sharedLiveSourceSessionId
+                    sharedLiveSourceSessionId: request.sharedLiveSourceSessionId,
+                    gpsProximityEnabled: request.gpsProximityEnabled
                 )
             }
         case .denied, .restricted:
@@ -5267,7 +5274,8 @@ struct CampaignMapView: View {
         goalType: GoalType,
         goalAmount: Int,
         enableSharedLiveCanvassing: Bool = false,
-        sharedLiveSourceSessionId: UUID? = nil
+        sharedLiveSourceSessionId: UUID? = nil,
+        gpsProximityEnabled: Bool
     ) {
         let trace = PerfTrace.begin("session_start", "start_pre_session_workflow", fields: [
             "campaign": campaignId.uuidString,
@@ -5330,7 +5338,7 @@ struct CampaignMapView: View {
             startBuildingSession(
                 campaignId: campaignId,
                 targets: targets,
-                gpsProximityEnabled: effectiveGPSProximityEnabled,
+                gpsProximityEnabled: gpsProximityEnabled,
                 mode: mode,
                 goalType: goalType,
                 enableSharedLiveCanvassing: enableSharedLiveCanvassing,
@@ -5353,9 +5361,11 @@ struct CampaignMapView: View {
     private func startPlannedFarmSession(
         campaignId: UUID,
         context: FarmExecutionContext,
-        skipGPSDisclaimer: Bool = false
+        skipGPSDisclaimer: Bool = false,
+        gpsProximityEnabledOverride: Bool? = nil
     ) {
         guard quickStartStartingMode == nil else { return }
+        let gpsProximityEnabled = gpsProximityEnabledOverride ?? effectiveGPSProximityEnabled
         let mode = context.sessionMode
         let targets = sessionTargets(for: mode)
         let goalType = mode.defaultGoalType
@@ -5388,7 +5398,8 @@ struct CampaignMapView: View {
                 goalAmount: goalAmount,
                 farmExecutionContext: context,
                 enableSharedLiveCanvassing: false,
-                sharedLiveSourceSessionId: nil
+                sharedLiveSourceSessionId: nil,
+                gpsProximityEnabled: gpsProximityEnabled
             )
             sessionManager.requestForegroundLocationAuthorization()
         case .authorizedWhenInUse, .authorizedAlways:
@@ -5416,7 +5427,7 @@ struct CampaignMapView: View {
                 startBuildingSession(
                     campaignId: campaignId,
                     targets: targets,
-                    gpsProximityEnabled: effectiveGPSProximityEnabled,
+                    gpsProximityEnabled: gpsProximityEnabled,
                     mode: mode,
                     goalType: goalType,
                     goalAmount: goalAmount,

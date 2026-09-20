@@ -1390,14 +1390,17 @@ final class CampaignsAPI {
     func sessionStartBlockReason(campaignId: UUID) async -> String? {
         if OfflineFirstConfig.isEnabled {
             let campaignIdString = campaignId.uuidString
-            let downloadState = await CampaignRepository.shared.getDownloadState(campaignId: campaignIdString)
-            let readiness = await CampaignDownloadService.shared.readiness(for: campaignIdString)
-            let mapReadiness = await CampaignDownloadService.shared.mapReadiness(for: campaignIdString)
-            let hasCachedBundle = await CampaignRepository.shared.getCampaignMapBundle(campaignId: campaignIdString) != nil
-            if downloadState?.isAvailableOffline == true ||
-                readiness?.isVerified == true ||
-                mapReadiness?.isMapUsable == true ||
-                hasCachedBundle {
+            // Prefer in-memory readiness; do not read the entire map just to check its presence.
+            if await CampaignDownloadService.shared.readiness(for: campaignIdString)?.isVerified == true {
+                return nil
+            }
+            if await CampaignDownloadService.shared.mapReadiness(for: campaignIdString)?.isMapUsable == true {
+                return nil
+            }
+            if await CampaignRepository.shared.getDownloadState(campaignId: campaignIdString)?.isAvailableOffline == true {
+                return nil
+            }
+            if await CampaignRepository.shared.hasCampaignMapBundle(campaignId: campaignIdString) {
                 return nil
             }
         }
@@ -1405,7 +1408,7 @@ final class CampaignsAPI {
         if !NetworkMonitor.shared.isOnline {
             let campaignIdString = campaignId.uuidString
             let downloadState = await CampaignRepository.shared.getDownloadState(campaignId: campaignIdString)
-            let hasCachedBundle = await CampaignRepository.shared.getCampaignMapBundle(campaignId: campaignIdString) != nil
+            let hasCachedBundle = await CampaignRepository.shared.hasCampaignMapBundle(campaignId: campaignIdString)
             if downloadState?.isAvailableOffline == true || hasCachedBundle {
                 return nil
             }
