@@ -129,9 +129,10 @@ struct BeaconControlSheet: View {
                     Button("Close") { dismiss() }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("Save") {
-                        saveAndDismiss()
+                    Button("Send") {
+                        sendBeaconLink()
                     }
+                    .disabled(selectedRecipients.isEmpty || beaconService.isBusy || isPreparingSend)
                 }
             }
             .sheet(isPresented: $showingContactPicker) {
@@ -386,11 +387,6 @@ struct BeaconControlSheet: View {
         hasLoadedState = true
     }
 
-    private func saveAndDismiss() {
-        persistDraft()
-        dismiss()
-    }
-
     private func persistDraft() {
         beaconService.updateDraft(recipients: selectedRecipients, message: messageText)
         guard !beaconService.isSessionAttached else { return }
@@ -422,6 +418,11 @@ struct BeaconControlSheet: View {
     private func sendBeaconLink() {
         localErrorMessage = nil
         persistDraft()
+
+        guard beaconService.isSessionAttached else {
+            localErrorMessage = "Start a session before sending your Beacon link. Your settings are ready for your next session."
+            return
+        }
 
         guard !selectedRecipients.isEmpty else {
             localErrorMessage = "Choose at least one safety contact first."

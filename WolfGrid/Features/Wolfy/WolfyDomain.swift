@@ -1,4 +1,53 @@
 import Foundation
+import UIKit
+
+enum WolfyColor: String, Codable, CaseIterable, Identifiable {
+    case classic, silver, charcoal, brown, arctic, auburn
+    case amber, blue, green, violet, black, darkBrown, rose
+    var id:String { rawValue }
+    var title:String { self == .darkBrown ? "Dark Brown" : rawValue.capitalized }
+    var uiColor:UIColor {
+        switch self {
+        case .classic: UIColor(red:0.96,green:0.97,blue:0.98,alpha:1)
+        case .silver: UIColor(red:0.62,green:0.69,blue:0.77,alpha:1)
+        case .charcoal: UIColor(red:0.33,green:0.36,blue:0.41,alpha:1)
+        case .brown: UIColor(red:0.57,green:0.39,blue:0.27,alpha:1)
+        case .arctic: UIColor(red:0.36,green:0.68,blue:0.83,alpha:1)
+        case .auburn: UIColor(red:0.72,green:0.34,blue:0.22,alpha:1)
+        case .amber: UIColor(red:0.95,green:0.64,blue:0.12,alpha:1)
+        case .blue: UIColor(red:0.16,green:0.48,blue:0.91,alpha:1)
+        case .green: UIColor(red:0.20,green:0.67,blue:0.43,alpha:1)
+        case .violet: UIColor(red:0.61,green:0.37,blue:0.84,alpha:1)
+        case .black: UIColor(red:0.08,green:0.09,blue:0.11,alpha:1)
+        case .darkBrown: UIColor(red:0.24,green:0.14,blue:0.09,alpha:1)
+        case .rose: UIColor(red:0.84,green:0.38,blue:0.45,alpha:1)
+        }
+    }
+}
+
+struct WolfyAppearance:Codable,Equatable {
+    var fur:WolfyColor = .classic
+    var eyes:WolfyColor = .amber
+    var nose:WolfyColor = .black
+    func normalized() -> Self {
+        var result=self
+        if nose == .brown { result.nose = .darkBrown }
+        else if nose != .black && nose != .darkBrown { result.nose = .black }
+        return result
+    }
+    static func saved(user:UUID,workspace:UUID) -> Self {
+        let key="wolfy.appearance.\(workspace).\(user)"
+        guard let data=UserDefaults.standard.data(forKey:key),
+              let value=try? JSONDecoder().decode(Self.self,from:data) else { return Self() }
+        let normalized=value.normalized()
+        if normalized != value { normalized.save(user:user,workspace:workspace) }
+        return normalized
+    }
+    func save(user:UUID,workspace:UUID) {
+        let key="wolfy.appearance.\(workspace).\(user)"
+        if let data=try? JSONEncoder().encode(normalized()) { UserDefaults.standard.set(data,forKey:key) }
+    }
+}
 
 struct WolfyAssetManifest: Decodable {
     struct Clip: Decodable { let name: String; let file: String; let loop: Bool; let duration: Double }
@@ -7,6 +56,7 @@ struct WolfyAssetManifest: Decodable {
     let compatibility: String
     let base: String
     let poster: String
+    let growthStages: [String: String]?
     let animations: [Clip]
     let files: [String: FileInfo]
 }
@@ -44,10 +94,19 @@ struct WolfySnapshot: Codable {
 }
 
 enum WolfyProgression {
-    /// The five supplied portraits follow the existing permanent-XP rank milestones.
+    /// Lifetime completed doors determine Wolfy's growth; spending XP never changes it.
+    static let growthDoorThresholds = [0, 100, 500, 2_500, 10_000]
+    static let growthStages = ["Pup", "Young Wolf", "Street Wolf", "Alpha", "Legend"]
+    /// Portrait store and XP rank retain their separate legacy level ladder.
     static let growthLevels = [1, 10, 25, 50, 100]
-    static func growthStage(xp: Int) -> Int {
-        growthLevels.filter { $0 <= level(xp: xp) }.count
+    static func growthStage(doors: Int) -> Int {
+        growthDoorThresholds.filter { max(0, doors) >= $0 }.count
+    }
+    static func growthStage(xp: Int) -> Int { growthLevels.filter { $0 <= level(xp: xp) }.count }
+    static func doorsUntilNextStage(doors: Int) -> Int? {
+        let stage = growthStage(doors: doors)
+        guard stage < growthDoorThresholds.count else { return nil }
+        return max(0, growthDoorThresholds[stage] - max(0, doors))
     }
     static func level(xp: Int) -> Int { min(100, 1 + Int(sqrt(Double(max(0, xp)) / 100))) }
     static func floorXP(level: Int) -> Int { max(0, level - 1) * max(0, level - 1) * 100 }

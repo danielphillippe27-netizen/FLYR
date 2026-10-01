@@ -158,6 +158,21 @@ struct SharedCanvassingTeammate: Identifiable, Equatable {
     }
 }
 
+struct SharedWolfyMapStyle: Decodable, Equatable {
+    let userId: UUID
+    let displayName: String
+    let appearance: WolfyAppearance?
+    let equipment: [String: String]?
+    let growthStage: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case userId = "user_id"
+        case displayName = "display_name"
+        case appearance, equipment
+        case growthStage = "growth_stage"
+    }
+}
+
 enum SharedLiveCanvassingStartOutcome: Equatable {
     case joined
     case continueSolo(reason: String)

@@ -25,11 +25,10 @@ struct WolfyMetrics: Decodable {
 struct WolfyHomeSummary {
     var sales: FieldSalesSnapshot?
     var metrics: WolfyMetrics?
+    var weeklyMetrics: WolfyMetrics?
     var goals: WolfyGoals?
     var stats: UserStats?
-    var rank: Int?
-    var followUps: [ActivityFeedItem]?
-    var appointments: [ActivityFeedItem]?
+    var overdueFollowUps: Int?
     var unavailable: [String] = []
 }
 
@@ -42,8 +41,19 @@ final class WolfyHomeModel: ObservableObject {
     @Published private(set) var assignmentsUnavailable = false
     private var loadingAssignments = false
     private var generation = UUID()
+    private var primaryUnavailable: [String] = []
+    private var secondaryUnavailable: [String] = []
     private var scopedUserID: UUID?
     private let client = SupabaseManager.shared.client
+
+    private struct LoadResult<Value> {
+        let value: Value?
+        let unavailable: String?
+    }
+
+    private struct CoachContextCounts: Decodable {
+        let overdue: Int
+    }
 
     func clear() {
         generation = UUID()
@@ -52,15 +62,21 @@ final class WolfyHomeModel: ObservableObject {
         assignmentsUnavailable = false
         updatedAt = nil
         isLoading = false
+        primaryUnavailable = []
+        secondaryUnavailable = []
     }
 
-    func load(userID: UUID, workspaceID: UUID) async {
+    /// Refreshes only the values required to render the weekly Home dashboard.
+    /// Secondary content deliberately does not extend pull-to-refresh.
+    func loadPrimary(userID: UUID, workspaceID: UUID) async {
         if !NetworkMonitor.shared.isOnline, updatedAt != nil { return }
         scopedUserID = userID
         let request = UUID()
         generation = request
         isLoading = true
-        var next = WolfyHomeSummary()
+        defer {
+            if generation == request { isLoading = false }
+        }
         let now = Date()
         let calendar = Calendar.current
         struct MetricsParams: Encodable {
@@ -69,46 +85,73 @@ final class WolfyHomeModel: ObservableObject {
             let p_week: Date
             let p_until: Date
         }
-        do {
-            next.metrics = try await client.rpc("wolfy_home_metrics", params: MetricsParams(
+
+        let weekStart = WolfyHomePolicy.weekStart(now: now)
+        async let metricsResult: LoadResult<WolfyMetrics> = capture("Today's activity") {
+            try await client.rpc("wolfy_home_metrics", params: MetricsParams(
                 p_workspace: workspaceID, p_day: calendar.startOfDay(for: now),
-                p_week: WolfyHomePolicy.weekStart(now: now), p_until: now
+                p_week: weekStart, p_until: now
             )).execute().value
-        } catch { next.unavailable.append("Today's activity") }
-        if generation == request { summary.metrics = next.metrics }
-        do {
-            let rows: [WolfyGoals] = try await client.from("user_profiles")
+        }
+        async let weeklyMetricsResult: LoadResult<WolfyMetrics> = capture("This week's activity") {
+            try await client.rpc("wolfy_home_metrics", params: MetricsParams(
+                p_workspace: workspaceID, p_day: weekStart,
+                p_week: weekStart, p_until: now
+            )).execute().value
+        }
+        async let goalsResult: LoadResult<WolfyGoals> = capture("Goals") {
+            let rows: [WolfyGoals] = try await self.client.from("user_profiles")
                 .select("daily_door_goal,weekly_door_goal,door_goal_days").eq("user_id", value: userID).execute().value
-            next.goals = rows.first ?? WolfyGoals()
-        } catch { next.unavailable.append("Goals") }
-        if generation == request { summary.goals = next.goals }
-        do { next.stats = try await StatsService.shared.fetchUserStats(userID: userID) }
-        catch { next.unavailable.append("XP and streak") }
-        do {
-            let rows = try await LeaderboardService.shared.fetchLeaderboard(metric: "doorknocks", timeframe: "weekly")
-            next.rank = rows.firstIndex { $0.id.lowercased() == userID.uuidString.lowercased() }.map { $0 + 1 }
-        } catch { next.unavailable.append("Leaderboard") }
-        do {
-            next.followUps = try await ActivityFeedService.shared.fetchItems(userId: userID, workspaceId: workspaceID, includeMembers: false, filter: .followUp, limit: 1000, strictRemote: true)
-                .filter { ($0.dueDate ?? .distantFuture) < calendar.startOfDay(for: calendar.date(byAdding: .day, value: 1, to: now)!) }
-                .sorted { ($0.dueDate ?? .distantFuture) < ($1.dueDate ?? .distantFuture) }
-        } catch { next.unavailable.append("Follow-ups") }
-        do {
-            next.appointments = try await ActivityFeedService.shared.fetchItems(userId: userID, workspaceId: workspaceID, includeMembers: false, filter: .appointments, limit: 1000, strictRemote: true)
-                .filter { ($0.dueDate ?? .distantPast) >= now }
-                .sorted { ($0.dueDate ?? .distantFuture) < ($1.dueDate ?? .distantFuture) }
-        } catch { next.unavailable.append("Appointments") }
-        do {
-            let gate = try await FieldSalesService.bootstrap(workspaceID)
-            if gate.enabled {
-                do { next.sales = try await FieldSalesService.snapshot(.init(p_workspace: workspaceID)) }
-                catch { next.unavailable.append("Sales") }
-            }
-        } catch { /* Sales remains gated when its backend is unavailable. */ }
+            return rows.first ?? WolfyGoals()
+        }
+        let (metrics, weeklyMetrics, goals) = await (metricsResult, weeklyMetricsResult, goalsResult)
         guard generation == request, !Task.isCancelled else { return }
-        summary = next
+        summary.metrics = metrics.value
+        summary.weeklyMetrics = weeklyMetrics.value
+        summary.goals = goals.value
+        primaryUnavailable = [metrics.unavailable, weeklyMetrics.unavailable, goals.unavailable].compactMap { $0 }
+        syncUnavailable()
         updatedAt = now
-        isLoading = false
+    }
+
+    /// Refreshes supporting Home content without holding the pull-to-refresh gesture open.
+    func loadSecondary(userID: UUID, workspaceID: UUID) async {
+        guard NetworkMonitor.shared.isOnline else { return }
+        let request = generation
+        async let statsResult: LoadResult<UserStats?> = capture("XP and streak") {
+            try await StatsService.shared.fetchUserStats(userID: userID)
+        }
+        async let overdueResult: LoadResult<Int> = capture("Follow-ups") {
+            struct Params: Encodable { let p_workspace: UUID; let p_timezone: String }
+            let context: CoachContextCounts = try await self.client.rpc(
+                "wolfy_coach_context",
+                params: Params(p_workspace: workspaceID, p_timezone: TimeZone.current.identifier)
+            ).execute().value
+            return context.overdue
+        }
+        async let salesResult: LoadResult<FieldSalesSnapshot?> = capture(nil) {
+            let gate = try await FieldSalesService.bootstrap(workspaceID)
+            guard gate.enabled else { return nil }
+            return try await FieldSalesService.snapshot(.init(p_workspace: workspaceID))
+        }
+        let (stats, overdue, sales) = await (statsResult, overdueResult, salesResult)
+        guard generation == request, !Task.isCancelled,
+              AuthManager.shared.user?.id == userID,
+              WorkspaceContext.shared.workspaceId == workspaceID else { return }
+        summary.stats = stats.value ?? nil
+        summary.overdueFollowUps = overdue.value
+        summary.sales = sales.value ?? nil
+        secondaryUnavailable = [stats.unavailable, overdue.unavailable, sales.unavailable].compactMap { $0 }
+        syncUnavailable()
+    }
+
+    private func capture<Value>(_ unavailable: String?, operation: () async throws -> Value) async -> LoadResult<Value> {
+        do { return LoadResult(value: try await operation(), unavailable: nil) }
+        catch { return LoadResult(value: nil, unavailable: unavailable) }
+    }
+
+    private func syncUnavailable() {
+        summary.unavailable = primaryUnavailable + secondaryUnavailable
     }
 
     func loadAssignments(userID: UUID, workspaceID: UUID) async {

@@ -53,6 +53,7 @@ final class SharedLiveCanvassingService: ObservableObject {
     @Published private(set) var liveCampaignId: UUID?
     @Published private(set) var teammates: [SharedCanvassingTeammate] = []
     @Published private(set) var memberDirectory: [UUID: SharedCanvassingMember] = [:]
+    @Published private(set) var peerWolfyStyles: [UUID: SharedWolfyMapStyle] = [:]
     @Published private(set) var homeStatesByAddressId: [UUID: AddressStatusRow] = [:]
     @Published private(set) var manualPinsByAddressId: [UUID: CampaignManualPinRealtimeRow] = [:]
     @Published private(set) var lastJoinError: String?
@@ -72,6 +73,13 @@ final class SharedLiveCanvassingService: ObservableObject {
     private var manualPinsStreamTask: Task<Void, Never>?
     private var assignmentsStreamTask: Task<Void, Never>?
     private var stalenessTask: Task<Void, Never>?
+    private var memberDirectoryRefreshTask: Task<Void, Never>?
+    private var lastMemberDirectoryRefresh = Date.distantPast
+    private var memberDirectoryRefreshGeneration = 0
+    private var peerStyleRefreshTask: Task<Void, Never>?
+    private var lastPeerStyleRefresh = Date.distantPast
+    private var peerStyleRefreshGeneration = 0
+    private var wardrobeObserver: NSObjectProtocol?
 
     private var currentCampaignId: UUID?
     private var currentSessionId: UUID?
@@ -88,7 +96,13 @@ final class SharedLiveCanvassingService: ObservableObject {
     private var lastTeamPresenceSessionId: UUID?
     private var lastTeamPresenceUserId: UUID?
 
-    private init() {}
+    private init() {
+        wardrobeObserver = NotificationCenter.default.addObserver(
+            forName: .wolfyWardrobeDidChange, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in await self?.publishOwnWolfyStyle() }
+        }
+    }
 
     #if DEBUG
     func publishE2EPresence(
@@ -224,7 +238,13 @@ final class SharedLiveCanvassingService: ObservableObject {
             isJoined = true
             lastJoinError = nil
             inviteAvailability = .available
+            recomputeTeammates(now: Date())
             startStalenessLoop()
+            Task { [weak self] in
+                guard let self, self.currentCampaignId == campaignId else { return }
+                await self.prepareAndPublishOwnWolfyStyle()
+                self.refreshPeerWolfyStylesIfNeeded(now: Date(), force: true)
+            }
         } catch {
             let normalizedError = normalizeJoinError(error)
             lastJoinError = normalizedError.localizedDescription
@@ -479,6 +499,15 @@ final class SharedLiveCanvassingService: ObservableObject {
         currentCampaignId = nil
         currentSessionId = nil
         currentUserId = nil
+        memberDirectoryRefreshTask?.cancel()
+        memberDirectoryRefreshTask = nil
+        lastMemberDirectoryRefresh = .distantPast
+        memberDirectoryRefreshGeneration += 1
+        peerStyleRefreshTask?.cancel()
+        peerStyleRefreshTask = nil
+        lastPeerStyleRefresh = .distantPast
+        peerStyleRefreshGeneration += 1
+        peerWolfyStyles = [:]
         presenceRows = [:]
         teammates = []
         memberDirectory = [:]
@@ -850,6 +879,132 @@ final class SharedLiveCanvassingService: ObservableObject {
             now: now,
             config: stalenessConfig
         )
+        refreshMemberDirectoryForNewTeammatesIfNeeded(now: now)
+        refreshPeerWolfyStylesIfNeeded(now: now)
+    }
+
+    private func prepareAndPublishOwnWolfyStyle() async {
+        guard let user = currentUserId,
+              let workspace = WorkspaceContext.shared.workspaceId,
+              AuthManager.shared.user?.id == user else { return }
+        let economy = WolfyEconomyStore(user: user, workspace: workspace)
+        await economy.refresh()
+        await publishOwnWolfyStyle()
+    }
+
+    private func publishOwnWolfyStyle() async {
+        guard isJoined, NetworkMonitor.shared.isOnline,
+              let user = currentUserId,
+              let workspace = WorkspaceContext.shared.workspaceId,
+              AuthManager.shared.user?.id == user else { return }
+        // Recreate the store so changes made by the Den's own store are read from
+        // its persisted snapshot and pending equipment cache.
+        let economy = WolfyEconomyStore(user: user, workspace: workspace)
+        struct Params: Encodable {
+            let p_workspace: UUID
+            let p_appearance: WolfyAppearance
+            let p_equipment: [String: String]
+            let p_growth_stage: Int
+        }
+        let stage = UserDefaults.standard.integer(forKey: "wolfy.growth.\(workspace).\(user)")
+        let params = Params(
+            p_workspace: workspace,
+            p_appearance: WolfyAppearance.saved(user: user, workspace: workspace),
+            p_equipment: economy.effectiveEquipment,
+            p_growth_stage: min(5, max(1, stage))
+        )
+        do {
+            _ = try await client.rpc("wolfy_publish_map_style", params: params).execute()
+        } catch {
+            print("⚠️ [SharedLive] Could not publish Wolfy map style: \(error)")
+        }
+    }
+
+    private func refreshPeerWolfyStylesIfNeeded(now: Date, force: Bool = false) {
+        guard isJoined, !teammates.isEmpty,
+              peerStyleRefreshTask == nil,
+              force || now.timeIntervalSince(lastPeerStyleRefresh) >= 15,
+              let campaignId = currentCampaignId,
+              let userId = currentUserId else { return }
+        lastPeerStyleRefresh = now
+        let refreshGeneration = peerStyleRefreshGeneration
+        peerStyleRefreshTask = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                if self.peerStyleRefreshGeneration == refreshGeneration {
+                    self.peerStyleRefreshTask = nil
+                }
+            }
+            do {
+                let response = try await self.client.rpc(
+                    "wolfy_campaign_map_styles",
+                    params: ["p_campaign": campaignId]
+                ).execute()
+                let rows = try JSONDecoder().decode([SharedWolfyMapStyle].self, from: response.data)
+                guard !Task.isCancelled, self.currentCampaignId == campaignId,
+                      self.currentUserId == userId else { return }
+                self.peerWolfyStyles = Dictionary(uniqueKeysWithValues: rows.map { ($0.userId, $0) })
+                var directory = self.memberDirectory
+                for row in rows where row.userId != userId {
+                    let member = directory[row.userId]
+                    guard member?.displayName != row.displayName else { continue }
+                    directory[row.userId] = SharedCanvassingMember(
+                        userId: row.userId, role: member?.role ?? "member", displayName: row.displayName,
+                        email: member?.email, avatarURL: member?.avatarURL,
+                        createdAt: member?.createdAt ?? Date()
+                    )
+                }
+                if directory != self.memberDirectory {
+                    self.memberDirectory = directory
+                    self.recomputeTeammates(now: Date())
+                }
+            } catch {
+                print("⚠️ [SharedLive] Could not load teammate Wolfy styles: \(error)")
+            }
+        }
+    }
+
+    private func refreshMemberDirectoryForNewTeammatesIfNeeded(now: Date) {
+        guard isJoined,
+              memberDirectoryRefreshTask == nil,
+              now.timeIntervalSince(lastMemberDirectoryRefresh) >= 30,
+              teammates.contains(where: { teammate in
+                  let name = memberDirectory[teammate.userId]?.displayName ?? ""
+                  return name.isEmpty || name == "Rep \(teammate.userId.uuidString.prefix(4))"
+              }),
+              let campaignId = currentCampaignId,
+              let currentUser = AuthManager.shared.user,
+              currentUser.id == currentUserId else { return }
+        lastMemberDirectoryRefresh = now
+        let refreshGeneration = memberDirectoryRefreshGeneration
+        memberDirectoryRefreshTask = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                if self.memberDirectoryRefreshGeneration == refreshGeneration {
+                    self.memberDirectoryRefreshTask = nil
+                }
+            }
+            guard let directory = try? await self.fetchMemberDirectory(campaignId: campaignId, currentUser: currentUser),
+                  !Task.isCancelled,
+                  self.currentCampaignId == campaignId,
+                  self.currentUserId == currentUser.id else { return }
+            self.memberDirectory = self.directoryWithPeerNames(directory)
+            self.recomputeTeammates(now: Date())
+        }
+    }
+
+    private func directoryWithPeerNames(
+        _ directory: [UUID: SharedCanvassingMember]
+    ) -> [UUID: SharedCanvassingMember] {
+        var result = directory
+        for (userId, style) in peerWolfyStyles where userId != currentUserId {
+            guard let member = result[userId], member.displayName != style.displayName else { continue }
+            result[userId] = SharedCanvassingMember(
+                userId: userId, role: member.role, displayName: style.displayName,
+                email: member.email, avatarURL: member.avatarURL, createdAt: member.createdAt
+            )
+        }
+        return result
     }
 
     private func startStalenessLoop() {

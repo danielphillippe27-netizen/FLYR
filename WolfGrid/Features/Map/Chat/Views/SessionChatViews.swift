@@ -169,6 +169,7 @@ private struct SessionChatRoomRow: View {
 struct SessionChatRoomView: View {
     let sessionId: UUID
     let campaignId: UUID
+    var isLiveMapSession = false
     @StateObject private var store = SessionChatStore.shared
     @StateObject private var audio = SessionChatAudioController.shared
     @State private var draft = ""
@@ -177,17 +178,34 @@ struct SessionChatRoomView: View {
 
     private var messages: [SessionChatMessage] { store.messagesBySession[sessionId] ?? [] }
     private var room: SessionChatRoom? { store.rooms.first(where: { $0.sessionId == sessionId }) }
-    private var canSend: Bool { room?.canSend ?? false }
+    private var canSend: Bool { store.canSendBySession[sessionId] ?? room?.canSend ?? false }
+    private var isConnecting: Bool {
+        store.loadingSessions.contains(sessionId)
+            || (store.roomErrorBySession[sessionId] == nil
+                && store.canSendBySession[sessionId] == nil
+                && (room == nil || isLiveMapSession))
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             if !canSend {
-                Text("This session has ended. Messages are read-only.")
+                if let error = store.roomErrorBySession[sessionId], !isConnecting {
+                    HStack {
+                        Text("Chat unavailable: \(error)")
+                        Spacer()
+                        Button("Retry") { Task { await store.roomDidAppear(sessionId: sessionId) } }
+                    }
                     .font(.footnote.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 9)
+                    .padding(10)
                     .background(Color.secondary.opacity(0.12))
+                } else {
+                    Text(isConnecting ? "Connecting to team chat…" : "This session has ended. Messages are read-only.")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 9)
+                        .background(Color.secondary.opacity(0.12))
+                }
             }
             messageList
             if canSend { composer }
@@ -223,7 +241,7 @@ struct SessionChatRoomView: View {
                         ContentUnavailableView(
                             "No Messages Yet",
                             systemImage: "bubble.left",
-                            description: Text(canSend ? "Start the team conversation." : "No messages were sent in this session.")
+                            description: Text(isConnecting ? "Checking this live session." : (canSend ? "Start the team conversation." : "No messages were sent in this session."))
                         ).padding(.top, 80)
                     }
                     ForEach(messages) { message in
@@ -258,25 +276,33 @@ struct SessionChatRoomView: View {
                         if value.count > 1_000 { draft = String(value.prefix(1_000)) }
                     }
                 Button {
-                    if !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        let text = draft
-                        draft = ""
-                        Task { await store.sendText(sessionId: sessionId, campaignId: campaignId, text: text) }
-                    } else {
-                        Task {
-                            do {
-                                if audio.isRecording { audio.stopRecording() } else { try await audio.startRecording() }
-                            } catch { sendError = error.localizedDescription }
-                        }
+                    Task {
+                        do {
+                            if audio.isRecording { audio.stopRecording() } else { try await audio.startRecording() }
+                        } catch { sendError = error.localizedDescription }
                     }
                 } label: {
-                    Image(systemName: draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "mic.fill" : "arrow.up.circle.fill")
-                        .font(.system(size: 30, weight: .semibold))
+                    Image(systemName: audio.isRecording ? "stop.circle.fill" : "mic.fill")
+                        .font(.system(size: 25, weight: .semibold))
                         .foregroundStyle(.red)
                         .frame(width: 38, height: 38)
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel(draft.isEmpty ? "Record voice note" : "Send message")
+                .accessibilityLabel(audio.isRecording ? "Stop recording" : "Record voice note")
+                Button {
+                    let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !text.isEmpty else { return }
+                    draft = ""
+                    Task { await store.sendText(sessionId: sessionId, campaignId: campaignId, text: text) }
+                } label: {
+                    Image(systemName: "arrow.up.circle.fill")
+                        .font(.system(size: 30, weight: .semibold))
+                        .foregroundStyle(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? Color.secondary : Color.red)
+                        .frame(width: 38, height: 38)
+                }
+                .buttonStyle(.plain)
+                .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .accessibilityLabel("Send message")
             }
         }
         .padding(.horizontal, 12).padding(.vertical, 9)

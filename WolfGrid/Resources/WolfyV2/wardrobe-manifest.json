@@ -1,0 +1,148 @@
+{
+  "version": 1,
+  "mesh": "wardrobe-mesh.bin",
+  "bytes": 3190720,
+  "sha256": "bab3a574cc4b34b0642bf2c4e2f6a70ad10fa3f20939aafea5bf1092e9c3a257",
+  "items": {
+    "alpha_jacket": {
+      "vertexOffset": 0,
+      "indexOffset": 43008,
+      "indexCount": 672
+    },
+    "backpack": {
+      "vertexOffset": 45696,
+      "indexOffset": 88704,
+      "indexCount": 672
+    },
+    "bandana": {
+      "vertexOffset": 91392,
+      "indexOffset": 134400,
+      "indexCount": 672
+    },
+    "basic_collar": {
+      "vertexOffset": 137088,
+      "indexOffset": 235392,
+      "indexCount": 1536
+    },
+    "beanie": {
+      "vertexOffset": 241536,
+      "indexOffset": 284544,
+      "indexCount": 672
+    },
+    "blue_aura": {
+      "vertexOffset": 287232,
+      "indexOffset": 385536,
+      "indexCount": 1536
+    },
+    "cap": {
+      "vertexOffset": 391680,
+      "indexOffset": 477696,
+      "indexCount": 1344
+    },
+    "clipboard": {
+      "vertexOffset": 483072,
+      "indexOffset": 485376,
+      "indexCount": 36
+    },
+    "crucifix_chain": {
+      "vertexOffset": 485568,
+      "indexOffset": 669120,
+      "indexCount": 2868
+    },
+    "diamond_studs": {
+      "vertexOffset": 680640,
+      "indexOffset": 852672,
+      "indexCount": 2688
+    },
+    "glasses": {
+      "vertexOffset": 863424,
+      "indexOffset": 1103040,
+      "indexCount": 3744
+    },
+    "gloves": {
+      "vertexOffset": 1118016,
+      "indexOffset": 1161024,
+      "indexCount": 672
+    },
+    "gold_chain": {
+      "vertexOffset": 1163712,
+      "indexOffset": 1262016,
+      "indexCount": 1536
+    },
+    "gold_hoops": {
+      "vertexOffset": 1268160,
+      "indexOffset": 1464768,
+      "indexCount": 3072
+    },
+    "hard_hat": {
+      "vertexOffset": 1477056,
+      "indexOffset": 1563072,
+      "indexCount": 1344
+    },
+    "headset": {
+      "vertexOffset": 1568448,
+      "indexOffset": 1654464,
+      "indexCount": 1344
+    },
+    "hi_vis": {
+      "vertexOffset": 1659840,
+      "indexOffset": 1702848,
+      "indexCount": 672
+    },
+    "midnight_cap": {
+      "vertexOffset": 1705536,
+      "indexOffset": 1834560,
+      "indexCount": 2016
+    },
+    "neon_glow": {
+      "vertexOffset": 1842624,
+      "indexOffset": 2334144,
+      "indexCount": 7680
+    },
+    "rose_bow": {
+      "vertexOffset": 2364864,
+      "indexOffset": 2493888,
+      "indexCount": 2016
+    },
+    "silver_chain": {
+      "vertexOffset": 2501952,
+      "indexOffset": 2600256,
+      "indexCount": 1536
+    },
+    "storm_jacket": {
+      "vertexOffset": 2606400,
+      "indexOffset": 2649408,
+      "indexCount": 672
+    },
+    "street_shades": {
+      "vertexOffset": 2652096,
+      "indexOffset": 2732736,
+      "indexCount": 1260
+    },
+    "sunglasses": {
+      "vertexOffset": 2737792,
+      "indexOffset": 2977408,
+      "indexCount": 3744
+    },
+    "tablet": {
+      "vertexOffset": 2992384,
+      "indexOffset": 2994688,
+      "indexCount": 36
+    },
+    "tool_belt": {
+      "vertexOffset": 2994880,
+      "indexOffset": 3093184,
+      "indexCount": 1536
+    },
+    "white_sneakers": {
+      "vertexOffset": 3099328,
+      "indexOffset": 3142336,
+      "indexCount": 672
+    },
+    "work_boots": {
+      "vertexOffset": 3145024,
+      "indexOffset": 3188032,
+      "indexCount": 672
+    }
+  }
+}

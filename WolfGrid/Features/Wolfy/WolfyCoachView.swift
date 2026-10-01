@@ -13,7 +13,7 @@ struct WolfyCoachView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     HStack(spacing: 14) {
-                        WolfyPocketPet().frame(width: 44, height: 50)
+                        Image(systemName:"pawprint.fill").font(.title2).frame(width:44,height:50).foregroundStyle(.secondary)
                         VStack(alignment: .leading, spacing: 5) {
                             Text("Ask Wolfy").font(.title2.weight(.semibold))
                             Text("Ask me about your performance.").font(.subheadline).foregroundStyle(.secondary)

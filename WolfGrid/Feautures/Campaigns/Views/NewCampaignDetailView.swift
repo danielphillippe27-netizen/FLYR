@@ -278,19 +278,22 @@ struct NewCampaignDetailView: View {
                                 .contentShape(Rectangle())
                         }
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .disabled(!CampaignAreaPreview.hasMapData(campaign: hook.item, center: mapCenter, territoryBoundary: territoryBoundary))
                         
-                        VStack {
-                            Spacer()
-                            HStack {
+                        if CampaignAreaPreview.hasMapData(campaign: hook.item, center: mapCenter, territoryBoundary: territoryBoundary) {
+                            VStack {
                                 Spacer()
-                                Image(systemName: "arrow.up.left.and.arrow.down.right")
-                                    .font(.flyrCaption)
-                                    .foregroundColor(.white)
-                                    .padding(8)
-                                    .background(Color.black.opacity(0.5))
-                                    .clipShape(Circle())
+                                HStack {
+                                    Spacer()
+                                    Image(systemName: "arrow.up.left.and.arrow.down.right")
+                                        .font(.flyrCaption)
+                                        .foregroundColor(.white)
+                                        .padding(8)
+                                        .background(Color.black.opacity(0.5))
+                                        .clipShape(Circle())
+                                }
+                                .padding(8)
                             }
-                            .padding(8)
                         }
                     }
                 }
@@ -1987,6 +1990,18 @@ private struct CampaignAreaPreview: View {
     let territoryBoundary: [CLLocationCoordinate2D]
     @Environment(\.colorScheme) private var colorScheme
 
+    static func hasMapData(
+        campaign: CampaignV2?,
+        center: CLLocationCoordinate2D?,
+        territoryBoundary: [CLLocationCoordinate2D]
+    ) -> Bool {
+        !territoryBoundary.filter(CLLocationCoordinate2DIsValid).isEmpty
+            || !(campaign?.addresses.compactMap(\.coordinate).filter(CLLocationCoordinate2DIsValid).isEmpty ?? true)
+            || (center.map(CLLocationCoordinate2DIsValid) ?? false)
+    }
+
+    @State private var shimmerOffset: CGFloat = -1.2
+
     private var coordinates: [CLLocationCoordinate2D] {
         let validBoundary = territoryBoundary.filter(CLLocationCoordinate2DIsValid)
         if !validBoundary.isEmpty {
@@ -2006,39 +2021,95 @@ private struct CampaignAreaPreview: View {
 
     var body: some View {
         ZStack {
-            TerritoryPreviewMapView(
-                center: center,
-                polygon: previewPolygon,
-                useDarkStyle: colorScheme == .dark,
-                height: 260,
-                showsCenterMarker: false
-            )
-
-            VStack {
-                Spacer()
-                HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(campaign?.name ?? "Campaign Area")
-                            .font(.caption.weight(.semibold))
-                            .foregroundColor(.white)
-                            .lineLimit(1)
-                        Text(previewSubtitle)
-                            .font(.caption2)
-                            .foregroundColor(.white.opacity(0.82))
-                    }
-                    Spacer()
-                }
-                .padding(12)
-                .background(
-                    LinearGradient(
-                        colors: [.black.opacity(0), .black.opacity(0.68)],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
+            if Self.hasMapData(campaign: campaign, center: center, territoryBoundary: territoryBoundary) {
+                TerritoryPreviewMapView(
+                    center: center,
+                    polygon: previewPolygon,
+                    useDarkStyle: colorScheme == .dark,
+                    height: 260,
+                    showsCenterMarker: false
                 )
+            } else {
+                loadingMapSkeleton
+            }
+
+            if Self.hasMapData(campaign: campaign, center: center, territoryBoundary: territoryBoundary) {
+                VStack {
+                    Spacer()
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(campaign?.name ?? "Campaign Area")
+                                .font(.caption.weight(.semibold))
+                                .foregroundColor(.white)
+                                .lineLimit(1)
+                            Text(previewSubtitle)
+                                .font(.caption2)
+                                .foregroundColor(.white.opacity(0.82))
+                        }
+                        Spacer()
+                    }
+                    .padding(12)
+                    .background(
+                        LinearGradient(
+                            colors: [.black.opacity(0), .black.opacity(0.68)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
+                }
             }
         }
         .background(Color.bgSecondary)
+    }
+
+    private var loadingMapSkeleton: some View {
+        GeometryReader { geometry in
+            ZStack {
+                Color(colorScheme == .dark ? .systemGray5 : .systemGray6)
+
+                // Soft blocks and road channels suggest a map without showing unrelated geography.
+                ForEach(0..<12, id: \.self) { index in
+                    let column = index % 4
+                    let row = index / 4
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(Color.primary.opacity(colorScheme == .dark ? 0.07 : 0.045))
+                        .frame(width: geometry.size.width * 0.15, height: geometry.size.height * 0.16)
+                        .position(
+                            x: geometry.size.width * (0.12 + CGFloat(column) * 0.25),
+                            y: geometry.size.height * (0.16 + CGFloat(row) * 0.34)
+                        )
+                }
+
+                Path { path in
+                    path.move(to: CGPoint(x: -20, y: geometry.size.height * 0.34))
+                    path.addLine(to: CGPoint(x: geometry.size.width + 20, y: geometry.size.height * 0.52))
+                    path.move(to: CGPoint(x: geometry.size.width * 0.58, y: -20))
+                    path.addLine(to: CGPoint(x: geometry.size.width * 0.42, y: geometry.size.height + 20))
+                    path.move(to: CGPoint(x: -20, y: geometry.size.height * 0.78))
+                    path.addLine(to: CGPoint(x: geometry.size.width + 20, y: geometry.size.height * 0.68))
+                }
+                .stroke(Color(.systemBackground).opacity(0.9), style: StrokeStyle(lineWidth: 13, lineCap: .round))
+
+                LinearGradient(
+                    colors: [.clear, Color(.systemBackground).opacity(0.52), .clear],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+                .frame(width: geometry.size.width * 0.72)
+                .rotationEffect(.degrees(-18))
+                .offset(x: shimmerOffset * geometry.size.width)
+                .blendMode(.screen)
+            }
+            .clipped()
+            .onAppear {
+                shimmerOffset = -1.2
+                withAnimation(.linear(duration: 1.35).repeatForever(autoreverses: false)) {
+                    shimmerOffset = 1.2
+                }
+            }
+        }
+        .accessibilityLabel("Loading campaign map")
+        .accessibilityAddTraits(.updatesFrequently)
     }
 
     private var previewSubtitle: String {

@@ -26,6 +26,14 @@ struct LeaderboardView: View {
             if onboardingDemo.shouldShowPanel, onboardingDemo.state?.rolePath == .teamOwner {
                 teamDemoNudge
             }
+            if auth.user?.email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "daniel.phillippe27@gmail.com" {
+                Label("Demo leaderboard · Sample names and scores", systemImage: "sparkles")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+            }
             if vm.isLoading {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)

@@ -365,10 +365,15 @@ struct CampaignMutationConflict: Identifiable, Equatable, Sendable {
     let id: String
     let campaignId: String
     let operation: OutboxOperation
+    let reasonCode: String?
     let canonicalRevision: Int?
     let canonicalActorUserId: UUID?
     let canonicalStateJSON: String?
     let draftPayloadJSON: String
+
+    var acceptsLatestServerStatusAutomatically: Bool {
+        operation == .upsertAddressStatus && reasonCode == "REVISION_CONFLICT"
+    }
 
     enum Attribution: Equatable, Sendable {
         case currentUser
@@ -413,6 +418,7 @@ enum CampaignMutationConflictResolver {
             id: entry.id,
             campaignId: campaignId,
             operation: operation,
+            reasonCode: entry.errorMessage?.split(separator: "|", maxSplits: 1).first.map(String.init),
             canonicalRevision: canonicalRevision(from: canonicalJSON),
             canonicalActorUserId: canonicalActorUserId(from: canonicalJSON),
             canonicalStateJSON: canonicalJSON,
@@ -610,20 +616,26 @@ final class OutboxRepository {
         }) ?? []
     }
 
-    func discardConflictAndUseServer(id: String, at date: Date = Date()) async {
+    @discardableResult
+    func discardConflictAndUseServer(id: String, at date: Date = Date()) async -> Bool {
         let resolvedAt = OfflineDateCodec.string(from: date)
-        try? await dbQueue.write { db in
-            try db.execute(
-                sql: """
-                UPDATE sync_outbox
-                SET status = 'discarded_server',
-                    synced_at = ?,
-                    retry_after = NULL,
-                    error_message = NULL
-                WHERE id = ? AND status = 'conflict' AND synced_at IS NULL
-                """,
-                arguments: [resolvedAt, id]
-            )
+        do {
+            return try await dbQueue.write { db in
+                try db.execute(
+                    sql: """
+                    UPDATE sync_outbox
+                    SET status = 'discarded_server',
+                        synced_at = ?,
+                        retry_after = NULL,
+                        error_message = NULL
+                    WHERE id = ? AND status = 'conflict' AND synced_at IS NULL
+                    """,
+                    arguments: [resolvedAt, id]
+                )
+                return db.changesCount > 0
+            }
+        } catch {
+            return false
         }
     }
 

@@ -1,6 +1,7 @@
 import Foundation
 import CoreLocation
 import Combine
+import Supabase
 
 private enum OutboxProcessingError: LocalizedError {
     case unsupportedOperation(String)
@@ -24,6 +25,7 @@ final class OfflineSyncCoordinator: ObservableObject {
     @Published private(set) var pendingCount = 0
     @Published private(set) var lastSyncAt: Date?
     @Published private(set) var conflicts: [CampaignMutationConflict] = []
+    @Published private(set) var automaticallyAcceptedStatusRows: [UUID: AddressStatusRow] = [:]
 
     private let outboxRepository = OutboxRepository.shared
     private let campaignRepository = CampaignRepository.shared
@@ -35,6 +37,7 @@ final class OfflineSyncCoordinator: ObservableObject {
     private let maxRetryAttempts = 8
     private var cancellables = Set<AnyCancellable>()
     private var processingTask: Task<Void, Never>?
+    private var automaticStatusConflictTask: Task<Void, Never>?
 
     private init() {
         networkMonitor.$isOnline
@@ -43,6 +46,7 @@ final class OfflineSyncCoordinator: ObservableObject {
                 guard let self else { return }
                 if isOnline {
                     self.scheduleProcessOutbox()
+                    self.scheduleAutomaticStatusConflictResolution()
                 }
             }
             .store(in: &cancellables)
@@ -51,7 +55,68 @@ final class OfflineSyncCoordinator: ObservableObject {
 
     func refreshPendingCount() async {
         pendingCount = await outboxRepository.pendingCount()
-        conflicts = await outboxRepository.fetchConflicts()
+        let allConflicts = await outboxRepository.fetchConflicts()
+        conflicts = allConflicts.filter { !$0.acceptsLatestServerStatusAutomatically }
+        if allConflicts.contains(where: \.acceptsLatestServerStatusAutomatically) {
+            scheduleAutomaticStatusConflictResolution()
+        }
+    }
+
+    private func scheduleAutomaticStatusConflictResolution() {
+        guard networkMonitor.isOnline, processingTask == nil,
+              automaticStatusConflictTask == nil else { return }
+        automaticStatusConflictTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            let statusConflicts = await self.outboxRepository.fetchConflicts()
+                .filter(\.acceptsLatestServerStatusAutomatically)
+            var needsRetry = false
+            var resolvedAny = false
+            for conflict in statusConflicts where self.networkMonitor.isOnline {
+                if await self.acceptLatestServerStatus(for: conflict) { resolvedAny = true }
+                else { needsRetry = true }
+            }
+            self.automaticStatusConflictTask = nil
+            self.pendingCount = await self.outboxRepository.pendingCount()
+            if resolvedAny { self.scheduleProcessOutbox() }
+            if needsRetry, self.networkMonitor.isOnline {
+                Task { @MainActor [weak self] in
+                    try? await Task.sleep(nanoseconds: 15_000_000_000)
+                    self?.scheduleAutomaticStatusConflictResolution()
+                }
+            }
+        }
+    }
+
+    @discardableResult
+    private func acceptLatestServerStatus(for conflict: CampaignMutationConflict) async -> Bool {
+        guard networkMonitor.isOnline,
+              conflict.acceptsLatestServerStatusAutomatically,
+              let campaignId = UUID(uuidString: conflict.campaignId),
+              let payload = OfflineJSONCodec.decode(
+                AddressStatusOutboxPayload.self, from: conflict.draftPayloadJSON
+              ) else { return false }
+        let addressIds = Set(payload.addressIds.compactMap(UUID.init(uuidString:)))
+        guard !addressIds.isEmpty else { return false }
+
+        do {
+            let response = try await SupabaseManager.shared.client
+                .from("address_statuses")
+                .select()
+                .eq("campaign_id", value: campaignId.uuidString)
+                .execute()
+            let rows = try JSONDecoder.supabaseDates.decode([AddressStatusRow].self, from: response.data)
+                .filter { addressIds.contains($0.addressId) }
+            guard Set(rows.map(\.addressId)) == addressIds,
+                  await campaignRepository.upsertStatuses(rows: rows, preserveDirty: false),
+                  await outboxRepository.discardConflictAndUseServer(id: conflict.id) else { return false }
+            VisitsAPI.shared.invalidateStatusCache(campaignId: campaignId)
+            automaticallyAcceptedStatusRows = Dictionary(uniqueKeysWithValues: rows.map { ($0.addressId, $0) })
+            await SharedLiveCanvassingService.shared.observeCampaign(campaignId: campaignId)
+            return true
+        } catch {
+            print("⚠️ [OfflineSync] Could not accept latest home status yet: \(error)")
+            return false
+        }
     }
 
     func useServerVersion(for conflict: CampaignMutationConflict) async {
@@ -129,6 +194,11 @@ final class OfflineSyncCoordinator: ObservableObject {
                                 status: "conflict",
                                 errorMessage: [mutationError.code, canonicalState].compactMap { $0 }.joined(separator: "|")
                             )
+                            if mutationError.code == "REVISION_CONFLICT",
+                               entry.operation == OutboxOperation.upsertAddressStatus.rawValue,
+                               let conflict = (await outboxRepository.fetchConflicts()).first(where: { $0.id == entry.id }) {
+                                _ = await acceptLatestServerStatus(for: conflict)
+                            }
                         default:
                             await outboxRepository.markPaused(
                                 id: entry.id,

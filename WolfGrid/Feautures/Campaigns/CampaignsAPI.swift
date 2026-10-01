@@ -67,10 +67,6 @@ struct TerritoryBoundaryUpdate: Encodable {
 }
 
 /// Payload for campaigns.update(status).
-struct CampaignStatusUpdate: Encodable {
-    let status: String
-}
-
 /// Payload for campaigns.update(name/title/type).
 struct CampaignDetailsUpdate: Encodable {
     let name: String
@@ -1004,16 +1000,38 @@ final class CampaignsAPI {
 
     /// Update campaign status (e.g. archive).
     func updateCampaignStatus(campaignId: UUID, status: CampaignStatus) async throws {
-        let payload = CampaignStatusUpdate(status: status.rawValue)
-        _ = try await client
-            .from("campaigns")
-            .update(payload)
-            .eq("id", value: campaignId.uuidString)
-            .execute()
+        guard status == .archived else {
+            throw NSError(domain: "CampaignsAPI", code: 400, userInfo: [NSLocalizedDescriptionKey: "This campaign action is not supported."])
+        }
+        try await archiveCampaignThroughBackend(campaignId: campaignId)
 
         try await verifyCampaignStatus(campaignId: campaignId, expectedStatus: status)
         await CampaignRepository.shared.updateCachedCampaignStatus(campaignId: campaignId, status: status)
         print("✅ [API] Updated campaign \(campaignId) status to \(status.rawValue)")
+    }
+
+    private func archiveCampaignThroughBackend(campaignId: UUID) async throws {
+        let url = Config.backendAPIURL
+            .appendingPathComponent("api")
+            .appendingPathComponent("campaigns")
+            .appendingPathComponent(campaignId.uuidString)
+        var request = URLRequest(url: url)
+        request.httpMethod = "PATCH"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let session = try await client.auth.session
+        request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["status": CampaignStatus.archived.rawValue])
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw NSError(domain: "CampaignsAPI", code: -1, userInfo: [NSLocalizedDescriptionKey: "Campaign archiving did not receive a valid server response."])
+        }
+        guard (200...299).contains(http.statusCode) else {
+            let message = Self.extractMessageFromErrorBody(data) ?? "Campaign could not be archived. Please try again."
+            throw NSError(domain: "CampaignsAPI", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: message])
+        }
     }
 
     func deleteCampaign(campaignId: UUID) async throws {
@@ -1388,25 +1406,24 @@ final class CampaignsAPI {
 
     /// `nil` = allowed to start session; non-nil = user-facing reason to block.
     func sessionStartBlockReason(campaignId: UUID) async -> String? {
-        if OfflineFirstConfig.isEnabled {
-            let campaignIdString = campaignId.uuidString
-            // Prefer in-memory readiness; do not read the entire map just to check its presence.
-            if await CampaignDownloadService.shared.readiness(for: campaignIdString)?.isVerified == true {
-                return nil
-            }
-            if await CampaignDownloadService.shared.mapReadiness(for: campaignIdString)?.isMapUsable == true {
-                return nil
-            }
-            if await CampaignRepository.shared.getDownloadState(campaignId: campaignIdString)?.isAvailableOffline == true {
-                return nil
-            }
-            if await CampaignRepository.shared.hasCampaignMapBundle(campaignId: campaignIdString) {
-                return nil
-            }
+        let campaignIdString = campaignId.uuidString
+        // Session startup is local-first in every build configuration. A valid local
+        // campaign/map cache is sufficient; provisioning refresh must not hold the
+        // Start button hostage on a slow or unavailable connection.
+        if await CampaignDownloadService.shared.readiness(for: campaignIdString)?.isVerified == true {
+            return nil
+        }
+        if await CampaignDownloadService.shared.mapReadiness(for: campaignIdString)?.isMapUsable == true {
+            return nil
+        }
+        if await CampaignRepository.shared.getDownloadState(campaignId: campaignIdString)?.isAvailableOffline == true {
+            return nil
+        }
+        if await CampaignRepository.shared.hasCampaignMapBundle(campaignId: campaignIdString) {
+            return nil
         }
 
         if !NetworkMonitor.shared.isOnline {
-            let campaignIdString = campaignId.uuidString
             let downloadState = await CampaignRepository.shared.getDownloadState(campaignId: campaignIdString)
             let hasCachedBundle = await CampaignRepository.shared.hasCampaignMapBundle(campaignId: campaignIdString)
             if downloadState?.isAvailableOffline == true || hasCachedBundle {

@@ -12,6 +12,8 @@ final class SessionChatStore: ObservableObject {
     @Published private(set) var loadingSessions: Set<UUID> = []
     @Published private(set) var errorMessage: String?
     @Published private(set) var nextMessageCursorBySession: [UUID: String] = [:]
+    @Published private(set) var canSendBySession: [UUID: Bool] = [:]
+    @Published private(set) var roomErrorBySession: [UUID: String] = [:]
 
     private let api = SessionChatAPI.shared
     private let cache = SessionChatCacheRepository.shared
@@ -40,6 +42,7 @@ final class SessionChatStore: ObservableObject {
     func resetForAccountChange() async {
         let previousUser = startedUserId
         rooms=[];messagesBySession=[:];nextMessageCursorBySession=[:]
+        canSendBySession=[:];roomErrorBySession=[:]
         foregroundSessionId=nil;startedUserId=nil;loadingRooms=false;loadingSessions=[];errorMessage=nil
         if let previousUser { await cache.pausePending(userId: previousUser) }
         await stopRealtime()
@@ -70,6 +73,10 @@ final class SessionChatStore: ObservableObject {
             let response = try await api.fetchRooms()
             guard userId == AuthManager.shared.user?.id else { return }
             rooms = sortRooms(response.rooms)
+            for room in response.rooms {
+                canSendBySession[room.sessionId] = room.canSend
+                roomErrorBySession.removeValue(forKey: room.sessionId)
+            }
             await cache.upsertRooms(response.rooms, userId: userId)
             errorMessage = nil
         } catch {
@@ -94,6 +101,8 @@ final class SessionChatStore: ObservableObject {
             let response = try await api.fetchMessages(sessionId: sessionId)
             guard userId == AuthManager.shared.user?.id else { return }
             nextMessageCursorBySession[sessionId] = response.nextCursor
+            canSendBySession[sessionId] = response.canSend
+            roomErrorBySession.removeValue(forKey: sessionId)
             let delivered = response.messages.map { message -> SessionChatMessage in
                 var copy = message
                 copy.deliveryState = .delivered
@@ -106,6 +115,7 @@ final class SessionChatStore: ObservableObject {
             if foregroundSessionId == sessionId { await markRead(sessionId: sessionId) }
         } catch {
             errorMessage = error.localizedDescription
+            roomErrorBySession[sessionId] = error.localizedDescription
         }
         loadingSessions.remove(sessionId)
     }
@@ -137,6 +147,15 @@ final class SessionChatStore: ObservableObject {
     func roomDidAppear(sessionId: UUID) async {
         foregroundSessionId = sessionId
         await loadMessages(sessionId: sessionId)
+        if roomErrorBySession[sessionId] != nil,
+           SessionManager.shared.isActive,
+           SessionManager.shared.activeSharedLiveSessionId == sessionId {
+            // Session creation and participant registration finish in the background.
+            // Retry the chat read before treating a newly joined room as unavailable.
+            try? await Task.sleep(for: .seconds(1))
+            await loadMessages(sessionId: sessionId, refresh: true)
+        }
+        await loadRooms()
         await markRead(sessionId: sessionId)
     }
 

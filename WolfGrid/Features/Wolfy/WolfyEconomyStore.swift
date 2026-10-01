@@ -2,6 +2,8 @@ import Foundation
 import Combine
 import Supabase
 
+extension Notification.Name { static let wolfyWardrobeDidChange = Notification.Name("wolfyWardrobeDidChange") }
+
 @MainActor final class WolfyEconomyStore: ObservableObject {
     @Published var celebration: WolfyReward?
     @Published var snapshot: WolfySnapshot? {
@@ -9,6 +11,7 @@ import Supabase
             if let snapshot, let data=try? JSONEncoder().encode(snapshot) {
                 UserDefaults.standard.set(data,forKey:"wolfy.snapshot.\(workspace).\(user)")
             }
+            NotificationCenter.default.post(name:.wolfyWardrobeDidChange,object:nil)
         }
     }
     @Published var error: String?
@@ -17,17 +20,39 @@ import Supabase
     let workspace: UUID
     private let client = SupabaseManager.shared.client
     private var cacheKey: String { "wolfy.equipment.\(workspace).\(user)" }
+    private static let bundledWardrobe: [WolfyCatalogItem] = {
+        guard let url=WolfyAssetLoader.url("wolfy_manifest.json"),
+              let data=try? Data(contentsOf:url),
+              let json=try? JSONSerialization.jsonObject(with:data) as? [String:Any],
+              let entries=json["items"] as? [[String:Any]] else { return [] }
+        return entries.compactMap { entry -> WolfyCatalogItem? in
+            guard (entry["asset"] as? String)?.hasPrefix("embedded:") == true else { return nil }
+            var value=entry
+            value["required_level"]=entry["requiredLevel"]
+            value["render_kind"]="model3d"
+            value["price_currency"]="coins"
+            return (try? JSONSerialization.data(withJSONObject:value)).flatMap { try? JSONDecoder().decode(WolfyCatalogItem.self,from:$0) }
+        }
+    }()
     init(user: UUID, workspace: UUID) {
         self.user = user; self.workspace = workspace
         if let data=UserDefaults.standard.data(forKey:"wolfy.snapshot.\(workspace).\(user)") {
-            snapshot=try? JSONDecoder().decode(WolfySnapshot.self,from:data)
+            // Restoring the cache is not a wardrobe change. Assigning through
+            // snapshot here invokes didSet and posts a notification, which can
+            // recursively create another store from the map marker observer.
+            _snapshot = Published(initialValue: try? JSONDecoder().decode(WolfySnapshot.self,from:data))
         }
+    }
+    var catalog: [WolfyCatalogItem] {
+        let remote=snapshot?.catalog ?? []
+        let ids=Set(remote.map(\.id))
+        return remote + Self.bundledWardrobe.filter { !ids.contains($0.id) }
     }
     var effectiveEquipment: [String:String] {
         var result=snapshot?.equipped ?? [:]
         for (id,enabled) in UserDefaults.standard.dictionary(forKey:cacheKey) as? [String:Bool] ?? [:] {
-            guard let item=snapshot?.catalog?.first(where:{$0.id==id}),snapshot?.owned.contains(id)==true else { continue }
-            if enabled { result[item.category]=id } else if result[item.category]==id { result.removeValue(forKey:item.category) }
+            guard let item=catalog.first(where:{$0.id==id}) else { continue }
+            if enabled { result[item.category]=id } else { result.removeValue(forKey:item.category) }
         }
         return result
     }
@@ -66,24 +91,30 @@ import Supabase
         error = nil
     }
     func equip(_ item: WolfyCatalogItem, enabled: Bool) async throws {
-        guard snapshot?.owned.contains(item.id) == true else { throw failure("This item is not owned.") }
-        // Only queue previously confirmed ownership; the server rechecks it on replay.
-        if !NetworkMonitor.shared.isOnline {
-            var pending = UserDefaults.standard.dictionary(forKey: cacheKey) as? [String: Bool] ?? [:]
-            if enabled {
-                pending=pending.filter { id,_ in snapshot?.catalog?.first(where:{$0.id==id})?.category != item.category }
-            }
-            pending[item.id] = enabled
-            UserDefaults.standard.set(pending, forKey: cacheKey)
-            return
+        guard item.render_kind == "model3d" else { throw failure("This accessory cannot be equipped here.") }
+        var pending = UserDefaults.standard.dictionary(forKey: cacheKey) as? [String: Bool] ?? [:]
+        if enabled {
+            pending=pending.filter { id,_ in catalog.first(where:{$0.id==id})?.category != item.category }
         }
+        pending[item.id] = enabled
+        UserDefaults.standard.set(pending, forKey: cacheKey)
+        NotificationCenter.default.post(name:.wolfyWardrobeDidChange,object:nil)
+        guard NetworkMonitor.shared.isOnline else { return }
         struct Params: Encodable { let p_workspace: UUID; let p_user: UUID; let p_item: String; let p_equipped: Bool }
-        snapshot = try await client.rpc("wolfy_equip", params: Params(p_workspace: workspace,p_user: user,p_item: item.id,p_equipped: enabled)).execute().value
+        do {
+            snapshot = try await client.rpc("wolfy_equip", params: Params(p_workspace: workspace,p_user: user,p_item: item.id,p_equipped: enabled)).execute().value
+            pending = UserDefaults.standard.dictionary(forKey: cacheKey) as? [String: Bool] ?? [:]
+            pending.removeValue(forKey:item.id)
+            UserDefaults.standard.set(pending,forKey:cacheKey)
+        } catch {
+            // Keep the optimistic local choice visible and retry it during refresh.
+            throw error
+        }
     }
     private func flushEquipment() async {
         guard NetworkMonitor.shared.isOnline, let pending = UserDefaults.standard.dictionary(forKey: cacheKey) as? [String: Bool] else { return }
         for (id, enabled) in pending {
-            guard let item = snapshot?.catalog?.first(where: { $0.id == id }), snapshot?.owned.contains(id) == true else { continue }
+            guard let item = catalog.first(where: { $0.id == id }) else { continue }
             do {
                 try await equip(item, enabled: enabled)
                 var remaining = UserDefaults.standard.dictionary(forKey: cacheKey) as? [String: Bool] ?? [:]

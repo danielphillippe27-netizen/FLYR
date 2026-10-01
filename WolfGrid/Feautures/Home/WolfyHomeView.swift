@@ -17,7 +17,6 @@ struct WolfyHomeView: View {
 private struct WolfyHomeContent: View {
     let userID: UUID
     let workspaceID: UUID
-    @EnvironmentObject private var uiState: AppUIState
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @StateObject private var model = WolfyHomeModel()
@@ -26,9 +25,11 @@ private struct WolfyHomeContent: View {
     @ObservedObject private var network = NetworkMonitor.shared
     @AppStorage private var salesHome: Bool
     @State private var editingGoals = false
-    @State private var askingWolfy = false
-    @State private var chatHeight: PresentationDetent = .medium
     @AppStorage("wolfy.haptics") private var haptics = true
+
+    private var isFounderDemo: Bool {
+        AuthManager.shared.user?.email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "daniel.phillippe27@gmail.com"
+    }
 
     init(userID: UUID, workspaceID: UUID) {
         self.userID = userID
@@ -36,28 +37,51 @@ private struct WolfyHomeContent: View {
         _salesHome = AppStorage(wrappedValue: false, "wolfy.home.sales.\(userID.uuidString)")
     }
 
-    private var overdue: Int { model.summary.followUps?.filter { ($0.dueDate ?? .distantFuture) < Date() }.count ?? 0 }
     private var weeklyDoors: Int? {
         weekFact("doors").flatMap { $0.value }.flatMap(Int.init) ?? model.summary.metrics?.weekly_doors
     }
-    private var weeklyGoal: Int? { model.summary.goals?.weekly_door_goal }
-    private var recommendation: String {
-        if overdue > 0 { return "\(overdue) follow-ups are overdue. Handle those before your next block." }
-        guard let doors = weeklyDoors else { return "Refresh your activity to see what to focus on next." }
-        guard let target = weeklyGoal else { return "Set a weekly target to give your next block a direction." }
-        if doors >= target { return "Weekly goal complete. Finish strong with your follow-ups." }
-        let delta = WolfyHomePolicy.weeklyPaceDelta(target: target, completed: doors, now: Date())
-        let advice = coach.brief.flatMap { brief -> String? in
-            guard brief.source == "ai", let text = brief.recommendation, !text.isEmpty, text.count <= 120 else { return nil }
-            return text
-        }
-        if delta > 0 { return "You're \(delta) doors ahead of pace. \(advice ?? "Keep your next block focused.")" }
-        if delta < 0 { return "You're \(-delta) doors behind pace. Aim for \(WolfyHomePolicy.pace(target: target, completed: doors, days: WolfyHomePolicy.remainingDays(now: Date()))) doors today." }
-        return "You're on pace this week. Your next block keeps it moving."
-    }
+    private var weeklyGoal: Int? { isFounderDemo ? 300 : model.summary.goals?.weekly_door_goal }
     private func weekFact(_ key: String) -> WolfyKPIFact? {
-        // Home always shows personal data, even if chat is switched to team scope.
-        coach.homeReport?.facts.first { $0.id == "scope.week.\(key)" }
+        if isFounderDemo, let sample = demoWeekFacts[key] {
+            return WolfyKPIFact(
+                id: "scope.week.\(key)", label: sample.label, value: sample.value,
+                display: sample.value, unit: "count", period: "week", group: "activity",
+                source: "demo", note: nil
+            )
+        }
+        if let metrics = model.summary.weeklyMetrics {
+            let values: [String: Int] = [
+                "doors": metrics.weekly_doors,
+                "conversations": metrics.conversations,
+                "leads": metrics.leads,
+                "appointments": metrics.appointments
+            ]
+            let rates: [String: (Int, Int)] = [
+                "conversation_rate": (metrics.conversations, metrics.weekly_doors),
+                "lead_per_conversation": (metrics.leads, metrics.conversations),
+                "appointment_per_lead": (metrics.appointments, metrics.leads)
+            ]
+            let value: String?
+            if let count = values[key] { value = String(count) }
+            else if let (numerator, denominator) = rates[key], denominator > 0 {
+                value = String(Double(numerator) * 100 / Double(denominator))
+            } else { value = nil }
+            if let value {
+                return WolfyKPIFact(
+                    id: "scope.week.\(key)", label: key, value: value,
+                    display: value, unit: rates[key] == nil ? "count" : "percent",
+                    period: "week", group: "activity", source: "wolfy_home_metrics", note: nil
+                )
+            }
+        }
+        // Keep the verified report as a fallback when the direct weekly request is unavailable.
+        return coach.homeReport?.facts.first { $0.id == "scope.week.\(key)" }
+    }
+    private var demoWeekFacts: [String: (label: String, value: String)] {
+        ["doors": ("Doors", "186"), "conversations": ("Conversations", "31"),
+         "leads": ("Leads", "8"), "appointments": ("Appointments", "3"),
+         "conversation_rate": ("Answer rate", "17"), "lead_per_conversation": ("Lead rate", "26"),
+         "appointment_per_lead": ("Appointment rate", "38")]
     }
     private var greeting: String {
         let hour = Calendar.current.component(.hour, from: Date())
@@ -68,13 +92,17 @@ private struct WolfyHomeContent: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 32) {
+                VStack(alignment: .leading, spacing: 20) {
                     header
+                    if isFounderDemo {
+                        Label("Demo data · Sample activity and scores", systemImage: "sparkles")
+                            .font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                    }
                     if !network.isOnline {
                         Label("Offline · Showing last synced activity", systemImage: "wifi.slash")
                             .font(.caption).foregroundStyle(.secondary)
                     }
-                    VStack(spacing: 20) {
+                    VStack(spacing: 14) {
                         weeklyHeader
                         if salesHome {
                             FieldSalesCommissionHomeView(refreshToken: model.summary.sales?.as_of, showsHeader: false)
@@ -83,8 +111,11 @@ private struct WolfyHomeContent: View {
                             funnel
                         }
                     }
-                    Divider()
-                    wolfy
+                    if isFounderDemo { demoActivity }
+                    VStack(spacing: 8) {
+                        Divider()
+                        wolfy
+                    }
                     if !model.summary.unavailable.isEmpty {
                         HStack(alignment: .top) {
                             Label("Some data couldn't refresh. Check your connection.", systemImage: "wifi.exclamationmark")
@@ -100,20 +131,6 @@ private struct WolfyHomeContent: View {
             .toolbar(.hidden, for: .navigationBar)
             .refreshable { await refresh() }
             .sheet(isPresented: $editingGoals) { WolfyGoalEditor(model: model) }
-            .sheet(isPresented: $askingWolfy) {
-                NavigationStack {
-                    WolfyCoachView(coach: coach, user: userID, workspace: workspaceID, summary: model.summary)
-                        .toolbar {
-                            ToolbarItem(placement: .cancellationAction) {
-                                Button { askingWolfy = false } label: { Image(systemName: "xmark") }
-                                    .accessibilityLabel("Close Ask Wolfy")
-                            }
-                        }
-                }
-                .presentationDetents([.height(280), .medium, .large], selection: $chatHeight)
-                .presentationDragIndicator(.visible)
-                .presentationCornerRadius(28)
-            }
             .onReceive(NotificationCenter.default.publisher(for: .fieldSalesChanged)) { _ in Task { await refresh() } }
             .onChange(of: weeklyDoors) { old, new in
                 guard haptics, let old, let new, let goal = weeklyGoal,
@@ -121,7 +138,6 @@ private struct WolfyHomeContent: View {
                 if new >= goal { UINotificationFeedbackGenerator().notificationOccurred(.success) }
                 else { UIImpactFeedbackGenerator(style: .soft).impactOccurred() }
             }
-            .onChange(of: editingGoals) { _, editing in if !editing { Task { await coach.refresh(user: userID, workspace: workspaceID) } } }
         }
         .tint(Color.primary)
         .task {
@@ -139,7 +155,8 @@ private struct WolfyHomeContent: View {
         HStack(alignment: .top, spacing: 16) {
             VStack(alignment: .leading, spacing: 8) {
                 Text(greeting).font(.system(.title, design: .default, weight: .semibold))
-                Text(Date(), format: .dateTime.weekday(.wide).month(.wide).day()).font(.subheadline).foregroundStyle(.secondary)
+                Text(Date(), format: .dateTime.weekday(.wide).month(.wide).day())
+                    .font(.subheadline).foregroundStyle(.secondary)
             }
             Spacer(minLength: 0)
             HomeAccountControls()
@@ -147,7 +164,7 @@ private struct WolfyHomeContent: View {
     }
     private var weeklyHeader: some View {
         HStack {
-            eyebrow("This week")
+            Text("THIS WEEK").font(.caption.weight(.semibold)).tracking(2).foregroundStyle(.secondary)
             Spacer()
             if model.isLoading { ProgressView().controlSize(.small) }
             Menu {
@@ -170,6 +187,30 @@ private struct WolfyHomeContent: View {
     }
     private var weeklyHero: some View {
         WolfyWeeklyRing(completed: weeklyDoors, target: weeklyGoal)
+    }
+    private var demoActivity: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("RECENT ACTIVITY").font(.caption.weight(.semibold)).tracking(1.5).foregroundStyle(.secondary)
+                .padding(.bottom, 10)
+            demoActivityRow("Morgan Bell", detail: "Appointment booked", time: "Today · 10:42 AM", icon: "calendar.badge.checkmark")
+            Divider()
+            demoActivityRow("Whitby North", detail: "12 conversations · 4 leads", time: "Today · 9:18 AM", icon: "bubble.left.and.bubble.right")
+            Divider()
+            demoActivityRow("Brooklin West", detail: "38 doors knocked", time: "Yesterday · 4:36 PM", icon: "door.left.hand.open")
+        }
+        .padding(16)
+        .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 16))
+    }
+    private func demoActivityRow(_ title: String, detail: String, time: String, icon: String) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon).foregroundStyle(.secondary).frame(width: 24)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).font(.subheadline.weight(.medium))
+                Text(detail).font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 8)
+            Text(time).font(.caption2).foregroundStyle(.secondary).multilineTextAlignment(.trailing)
+        }.padding(.vertical, 10)
     }
     private var funnel: some View {
         ViewThatFits(in: .horizontal) {
@@ -197,31 +238,9 @@ private struct WolfyHomeContent: View {
             .accessibilityHint("This week. Activity ratios compare counts, not matched lead conversion.")
     }
     private var wolfy: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            HStack(alignment: .top, spacing: 18) {
-                WolfyHomeCompanion(user: userID, workspace: workspaceID, summary: model.summary, active: session.isActive, insight: recommendation, coach: coach) { uiState.selectedTabIndex = 1 }
-                    .frame(width: 48)
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("Wolfy").font(.title3.weight(.semibold))
-                    Text(recommendation).font(.body).lineSpacing(3).fixedSize(horizontal: false, vertical: true)
-                    if coach.loading { ProgressView("Checking your performance…").font(.caption) }
-                    else if coach.brief == nil, coach.error != nil {
-                        Text("AI unavailable · Based on synced activity").font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-            }
-            Button { chatHeight = .medium; askingWolfy = true } label: {
-                HStack(spacing: 12) {
-                    Image(systemName: "bubble.left")
-                    Text("Ask Wolfy about your performance…")
-                        .font(.headline).lineLimit(1).minimumScaleFactor(0.7)
-                    Spacer()
-                    Image(systemName: "plus").font(.subheadline)
-                }.foregroundStyle(.secondary)
-                    .padding(.horizontal, 20).padding(.vertical, 16).frame(maxWidth: .infinity)
-                    .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 18))
-            }.buttonStyle(.plain)
-        }
+        WolfyHomeCompanion(user:userID,workspace:workspaceID,summary:model.summary,
+                           active:session.isActive)
+            .frame(maxWidth:.infinity,alignment:.center)
     }
     private var campaignCTA: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -276,15 +295,15 @@ private struct WolfyHomeContent: View {
         let label = assignment.assignedToUserId == nil ? "Team assignment" : assignment.status.lowercased() == "assigned" ? "New assignment" : "Assigned to you"
         return assignment.zoneIndex.map { "\(label) · Zone \($0)" } ?? label
     }
-    private func eyebrow(_ title: String) -> some View {
-        Text(title.uppercased()).font(.caption.weight(.semibold)).tracking(2).foregroundStyle(.secondary)
-    }
     private func refresh() async {
-        async let home: () = model.load(userID: userID, workspaceID: workspaceID)
-        async let insight: () = coach.refresh(user: userID, workspace: workspaceID)
+        async let home: () = model.loadPrimary(userID: userID, workspaceID: workspaceID)
         async let performance: () = coach.refreshHomeReport(user: userID, workspace: workspaceID)
-        async let assignments: () = model.loadAssignments(userID: userID, workspaceID: workspaceID)
-        _ = await (home, insight, performance, assignments)
+        _ = await (home, performance)
+        Task {
+            async let supporting: () = model.loadSecondary(userID: userID, workspaceID: workspaceID)
+            async let assignments: () = model.loadAssignments(userID: userID, workspaceID: workspaceID)
+            _ = await (supporting, assignments)
+        }
     }
 }
 

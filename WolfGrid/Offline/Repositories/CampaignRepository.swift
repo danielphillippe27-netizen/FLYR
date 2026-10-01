@@ -2054,43 +2054,49 @@ final class CampaignRepository {
         }
     }
 
-    func upsertStatuses(rows: [AddressStatusRow], preserveDirty: Bool = true) async {
+    @discardableResult
+    func upsertStatuses(rows: [AddressStatusRow], preserveDirty: Bool = true) async -> Bool {
         let now = Date()
-        try? await dbQueue.write { db in
-            for row in rows {
-                let recordId = cacheScopedId(campaignId: row.campaignId.uuidString, entityId: row.addressId.uuidString)
-                if preserveDirty,
-                   let existing = try CachedAddressStatusRecord.fetchOne(db, key: recordId),
-                   existing.dirty != 0 {
-                    continue
+        do {
+            try await dbQueue.write { db in
+                for row in rows {
+                    let recordId = cacheScopedId(campaignId: row.campaignId.uuidString, entityId: row.addressId.uuidString)
+                    if preserveDirty,
+                       let existing = try CachedAddressStatusRecord.fetchOne(db, key: recordId),
+                       existing.dirty != 0 {
+                        continue
+                    }
+
+                    let record = CachedAddressStatusRecord(
+                        id: recordId,
+                        campaignId: row.campaignId.uuidString,
+                        addressId: row.addressId.uuidString,
+                        buildingId: nil,
+                        status: row.status.rawValue,
+                        outcome: row.status.persistedRPCValue,
+                        notes: row.notes,
+                        payloadJSON: OfflineJSONCodec.encode(row),
+                        updatedAt: OfflineDateCodec.string(from: row.updatedAt),
+                        dirty: 0
+                    )
+                    try record.save(db)
                 }
 
-                let record = CachedAddressStatusRecord(
-                    id: recordId,
-                    campaignId: row.campaignId.uuidString,
-                    addressId: row.addressId.uuidString,
-                    buildingId: nil,
-                    status: row.status.rawValue,
-                    outcome: row.status.persistedRPCValue,
-                    notes: row.notes,
-                    payloadJSON: OfflineJSONCodec.encode(row),
-                    updatedAt: OfflineDateCodec.string(from: row.updatedAt),
-                    dirty: 0
-                )
-                try record.save(db)
+                let affectedCampaignIds = Set(rows.map(\.campaignId.uuidString))
+                for campaignId in affectedCampaignIds {
+                    try db.execute(
+                        sql: """
+                        UPDATE campaign_downloads
+                        SET last_synced_at = ?
+                        WHERE campaign_id = ?
+                        """,
+                        arguments: [OfflineDateCodec.string(from: now), campaignId]
+                    )
+                }
             }
-
-            let affectedCampaignIds = Set(rows.map(\.campaignId.uuidString))
-            for campaignId in affectedCampaignIds {
-                try db.execute(
-                    sql: """
-                    UPDATE campaign_downloads
-                    SET last_synced_at = ?
-                    WHERE campaign_id = ?
-                    """,
-                    arguments: [OfflineDateCodec.string(from: now), campaignId]
-                )
-            }
+            return true
+        } catch {
+            return false
         }
     }
 

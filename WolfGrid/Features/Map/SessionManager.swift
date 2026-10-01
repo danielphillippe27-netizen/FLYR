@@ -322,6 +322,12 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
     private let outboxRepository = OutboxRepository.shared
     private var headingSubscriptions = Set<AnyCancellable>()
     private var lastLocation: CLLocation?
+    private var lastMeaningfulMovementAt: Date?
+    private var lastMeaningfulMovementLocation: CLLocation?
+    private let inactivityLimit: TimeInterval = 10 * 60
+    private let inactivityLocationAccuracyMeters: Double = 25
+    private let inactivityMinimumMovementMeters: Double = 20
+    private let inactivityStorageKey = "activeSessionMovement"
     private let minPathMovementMeters: Double = 3.0
     private let maxHorizontalAccuracy: Double = 15.0
     private let minSpeed: Double = 0.2
@@ -610,6 +616,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
 
     @objc private func handleElapsedTimerTick() {
         guard startTime != nil else { return }
+        if endIfInactive() { return }
         if sessionId != nil && isPaused {
             elapsedTime = currentActiveElapsedTime(referenceDate: pauseStartTime ?? Date())
             return
@@ -647,6 +654,81 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
                 )
             }
         }
+    }
+
+    private func beginMovementTracking(sessionId: UUID, startedAt: Date) {
+        lastMeaningfulMovementAt = startedAt
+        lastMeaningfulMovementLocation = nil
+        saveMovementTracking(sessionId: sessionId)
+    }
+
+    private func saveMovementTracking(sessionId: UUID) {
+        guard let lastMeaningfulMovementAt else { return }
+        var state: [String: Any] = [
+            "sessionId": sessionId.uuidString,
+            "lastMovementAt": lastMeaningfulMovementAt.timeIntervalSince1970
+        ]
+        if let location = lastMeaningfulMovementLocation {
+            state["latitude"] = location.coordinate.latitude
+            state["longitude"] = location.coordinate.longitude
+            state["accuracy"] = location.horizontalAccuracy
+        }
+        UserDefaults.standard.set(state, forKey: inactivityStorageKey)
+    }
+
+    private func restoreMovementTracking(sessionId: UUID, startedAt: Date, fallback: CLLocation?) {
+        let state = UserDefaults.standard.dictionary(forKey: inactivityStorageKey)
+        if state?["sessionId"] as? String == sessionId.uuidString,
+           let timestamp = state?["lastMovementAt"] as? TimeInterval {
+            lastMeaningfulMovementAt = min(Date(), max(startedAt, Date(timeIntervalSince1970: timestamp)))
+            if let latitude = state?["latitude"] as? Double,
+               let longitude = state?["longitude"] as? Double,
+               let accuracy = state?["accuracy"] as? Double {
+                lastMeaningfulMovementLocation = CLLocation(
+                    coordinate: CLLocationCoordinate2D(latitude: latitude, longitude: longitude),
+                    altitude: 0,
+                    horizontalAccuracy: accuracy,
+                    verticalAccuracy: -1,
+                    timestamp: lastMeaningfulMovementAt ?? startedAt
+                )
+            } else {
+                lastMeaningfulMovementLocation = fallback
+            }
+        } else {
+            lastMeaningfulMovementLocation = fallback
+            lastMeaningfulMovementAt = fallback.map { max(startedAt, $0.timestamp) } ?? startedAt
+            saveMovementTracking(sessionId: sessionId)
+        }
+    }
+
+    private func recordMeaningfulMovement(_ location: CLLocation) {
+        guard let sid = sessionId, !isPaused,
+              location.horizontalAccuracy >= 0,
+              location.horizontalAccuracy <= inactivityLocationAccuracyMeters,
+              abs(location.timestamp.timeIntervalSinceNow) <= 30 else { return }
+        if let previous = lastMeaningfulMovementLocation {
+            let minimumDistance = max(
+                inactivityMinimumMovementMeters,
+                previous.horizontalAccuracy + location.horizontalAccuracy
+            )
+            guard location.distance(from: previous) >= minimumDistance else { return }
+        }
+        lastMeaningfulMovementAt = location.timestamp
+        lastMeaningfulMovementLocation = location
+        saveMovementTracking(sessionId: sid)
+    }
+
+    @discardableResult
+    private func endIfInactive(ignorePaused: Bool = false) -> Bool {
+        guard sessionId != nil, isActive, (ignorePaused || !isPaused), !isEndingSession,
+              let lastMeaningfulMovementAt else { return false }
+        let cutoff = lastMeaningfulMovementAt.addingTimeInterval(inactivityLimit)
+        guard Date() >= cutoff else { return false }
+        activeSecondsAccumulator = currentActiveElapsedTime(referenceDate: cutoff)
+        activeSegmentStartTime = nil
+        elapsedTime = activeSecondsAccumulator
+        Task { await stopBuildingSession(presentSummary: false, endedAt: cutoff) }
+        return true
     }
 
     private func publishTeamLivePresence(
@@ -1035,6 +1117,16 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         refreshCompletedBuildingSnapshot()
         serverCompletedCount = nil
         startTime = snapshot.startedAt
+        let lastSavedLocation = snapshot.points.last.map { point in
+            CLLocation(
+                coordinate: point.coordinate,
+                altitude: point.altitude ?? 0,
+                horizontalAccuracy: point.accuracy ?? -1,
+                verticalAccuracy: -1,
+                timestamp: point.timestamp
+            )
+        }
+        restoreMovementTracking(sessionId: snapshot.id, startedAt: snapshot.startedAt, fallback: lastSavedLocation)
         pathCoordinates = snapshot.points.filter(\.accepted).map(\.coordinate)
         distanceMeters = snapshot.distanceMeters
         lastLocation = nil
@@ -1089,6 +1181,11 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         source: String
     ) async {
         buildingCentroids = [:]
+
+        if !wasPaused, endIfInactive(ignorePaused: true) {
+            print("⏱️ [SessionManager] Ending inactive restored \(source) session \(sid)")
+            return
+        }
 
         if isStaleOpenSession {
             staleActiveSessionNeedsResolution = true
@@ -1476,6 +1573,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         resetAutoCompleteDwell()
         lastAutoCompleteTime = nil
         startTime = sessionStartedAt
+        beginMovementTracking(sessionId: newSessionId, startedAt: sessionStartedAt)
         pathCoordinates = []
         distanceMeters = 0
         elapsedTime = 0
@@ -1646,6 +1744,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         resetAutoCompleteDwell()
         lastAutoCompleteTime = nil
         startTime = sessionStartedAt
+        beginMovementTracking(sessionId: newSessionId, startedAt: sessionStartedAt)
         pathCoordinates = []
         distanceMeters = 0
         elapsedTime = 0
@@ -2419,6 +2518,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
                 print("⚠️ [SessionManager] Could not replay completion events for restore: \(error)")
             }
             startTime = session.start_time
+            restoreMovementTracking(sessionId: sid, startedAt: session.start_time, fallback: nil)
             pathCoordinates = session.pathCoordinates
             lastLocation = nil
             segmentBreaks = []
@@ -2478,6 +2578,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         staleActiveSessionNeedsResolution = false
         isPaused = restoredServerPausedAfterStalePrompt
         activeSegmentStartTime = isPaused ? nil : Date()
+        if !isPaused, endIfInactive(ignorePaused: true) { return }
         if !isPaused {
             requestAuthorizationAndStartLocation(for: sessionMode)
             presentBackgroundLocationUpgradePromptIfNeeded()
@@ -2561,6 +2662,9 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         staleActiveSessionNeedsResolution = false
         sessionRestoredThisLaunch = false
         sessionId = nil
+        lastMeaningfulMovementAt = nil
+        lastMeaningfulMovementLocation = nil
+        UserDefaults.standard.removeObject(forKey: inactivityStorageKey)
         campaignId = nil
         routeAssignmentId = nil
         currentFarmExecutionContext = nil
@@ -2619,6 +2723,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
     /// Persist active session snapshot when app transitions to background/inactive.
     func appDidEnterBackground() async {
         guard sessionId != nil, isActive else { return }
+        if endIfInactive() { return }
         await queueProgressSync(force: true)
         await syncLiveActivity(forceStart: false)
     }
@@ -2626,6 +2731,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
     /// Re-arm location updates and flush pending sync when app returns to foreground.
     func appDidBecomeActive() async {
         guard sessionId != nil, isActive else { return }
+        if endIfInactive() { return }
         if !isPaused {
             startLocationUpdatesIfAuthorized()
         }
@@ -2719,6 +2825,11 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         isPaused = false
         pauseStartTime = nil
         activeSegmentStartTime = Date()
+        if let sid = sessionId {
+            lastMeaningfulMovementAt = Date()
+            lastMeaningfulMovementLocation = nil
+            saveMovementTracking(sessionId: sid)
+        }
         elapsedTime = activeSecondsAccumulator
         if !isDemoSession {
             startLocationUpdatesIfAuthorized()
@@ -2760,7 +2871,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
     }
 
     /// Stop building session and persist (update existing session row, then update user stats)
-    func stopBuildingSession(presentSummary: Bool = true) async {
+    func stopBuildingSession(presentSummary: Bool = true, endedAt: Date = Date()) async {
         guard let sid = sessionId, !isEndingSession else {
             // #region agent log
             _debugLogDoors(location: "SessionManager.stopBuildingSession", message: "early return no sessionId", data: [:], hypothesisId: "H1")
@@ -2770,6 +2881,17 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         staleActiveSessionNeedsResolution = false
         if let ending = endInFlightSessionId, ending == sid {
             return
+        }
+        let sessionEndTime: Date
+        if !isPaused, let lastMeaningfulMovementAt {
+            sessionEndTime = min(endedAt, lastMeaningfulMovementAt.addingTimeInterval(inactivityLimit))
+            if sessionEndTime < endedAt {
+                activeSecondsAccumulator = currentActiveElapsedTime(referenceDate: sessionEndTime)
+                activeSegmentStartTime = nil
+                elapsedTime = activeSecondsAccumulator
+            }
+        } else {
+            sessionEndTime = endedAt
         }
         isEndingSession = true
         endInFlightSessionId = sid
@@ -2821,7 +2943,6 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         let finalAutoCompleteEnabled = autoCompleteEnabled
         let finalFarmExecutionContext = currentFarmExecutionContext
         let finalState = makeOfflineSessionStateSnapshot(activeSeconds: activeSecs)
-        let sessionEndTime = Date()
         let completedHomeCoordinates = mergedCompletedHomeCoordinatesForShareCard()
         let liveMapSnapshot = LiveCampaignMapSnapshotStore.shared.captureSnapshot()
         let snapshot = SessionSummaryData(
@@ -2847,6 +2968,9 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         }
 
         sessionId = nil
+        lastMeaningfulMovementAt = nil
+        lastMeaningfulMovementLocation = nil
+        UserDefaults.standard.removeObject(forKey: inactivityStorageKey)
         campaignId = nil
         routeAssignmentId = nil
         currentFarmExecutionContext = nil
@@ -3286,6 +3410,9 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
             }
             return
         }
+
+        if endIfInactive() { return }
+        recordMeaningfulMovement(location)
 
         let secondaryRejectionReason = sessionGPSFilter.rejectionReason(
             location: location,

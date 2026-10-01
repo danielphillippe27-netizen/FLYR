@@ -26,7 +26,6 @@ private struct SessionActionCardStyle: ButtonStyle {
 
 struct SessionStartView: View {
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var entitlementsService: EntitlementsService
     @EnvironmentObject private var uiState: AppUIState
     @ObservedObject private var workspaceContext = WorkspaceContext.shared
@@ -209,7 +208,7 @@ struct SessionStartView: View {
                     .lineLimit(2)
                     .minimumScaleFactor(0.85)
             }
-            .foregroundStyle(colorScheme == .dark ? Color.white : Color.black)
+            .foregroundStyle(.white)
             .padding(.horizontal, 6)
             .frame(maxWidth: .infinity, minHeight: 96)
         }

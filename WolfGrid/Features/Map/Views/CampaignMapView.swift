@@ -2271,7 +2271,11 @@ struct CampaignMapView: View {
     }
 
     private var standardPinsMarkers: [StandardCampaignMapMarker] {
-        visibleAddressFeatures.filter(isManualPinAddressFeature).compactMap { feature in
+        visibleAddressFeatures.filter { feature in
+            guard let address = addressTapResult(from: feature) else { return false }
+            let status = addressStatuses[address.addressId] ?? .untouched
+            return isManualPinAddressFeature(feature) || (status != .none && status != .untouched)
+        }.compactMap { feature in
             guard let address = addressTapResult(from: feature),
                   let point = feature.geometry.asPoint,
                   point.count >= 2 else {
@@ -2453,7 +2457,7 @@ struct CampaignMapView: View {
                 if let sessionId = teamChatSessionId,
                    let campaignId = UUID(uuidString: campaignId) {
                     NavigationStack {
-                        SessionChatRoomView(sessionId: sessionId, campaignId: campaignId)
+                        SessionChatRoomView(sessionId: sessionId, campaignId: campaignId, isLiveMapSession: sessionManager.isActive)
                     }
                 }
             }
@@ -2977,6 +2981,12 @@ struct CampaignMapView: View {
                 }
                 applySessionVisitOverlayStates()
             }
+            .onChange(of: sessionManager.activeSharedLiveSessionId) { _, _ in
+                refreshVisibleTeammatePresence()
+            }
+            .onChange(of: sessionManager.isActive) { _, _ in
+                refreshVisibleTeammatePresence()
+            }
             .onReceive(Timer.publish(every: 2.0, on: .main, in: .common).autoconnect()) { _ in
                 guard sessionManager.sessionId != nil else { return }
                 updateSessionPathOnMap()
@@ -3015,7 +3025,10 @@ struct CampaignMapView: View {
                 }
             }
             .onReceive(sharedLiveCanvassingService.$teammates) { teammates in
-                layerManager?.updateTeammatePresence(teammates)
+                refreshVisibleTeammatePresence()
+            }
+            .onReceive(sharedLiveCanvassingService.$peerWolfyStyles) { _ in
+                refreshVisibleTeammatePresence()
             }
             .onReceive(sharedLiveCanvassingService.$homeStatesByAddressId) { rows in
                 if activeFarmCycleNumber != nil {
@@ -3025,9 +3038,37 @@ struct CampaignMapView: View {
                     applyRemoteHomeStateRows(rows)
                 }
             }
+            .onReceive(offlineSyncCoordinator.$automaticallyAcceptedStatusRows) { rows in
+                guard !rows.isEmpty else { return }
+                guard activeFarmCycleNumber == nil else {
+                    scheduleLoadedStatusesRefresh(forceRefresh: true)
+                    return
+                }
+                for row in rows.values where row.campaignId.uuidString.caseInsensitiveCompare(campaignId) == .orderedSame {
+                    applyHomeStateRow(row, forceServer: true)
+                }
+                refreshTownhomeStatusOverlay(statusOnly: true)
+                applySessionVisitOverlayStatesIfNeeded()
+            }
             .onReceive(sharedLiveCanvassingService.$manualPinsByAddressId) { rows in
                 applyRemoteManualPinRows(rows)
             }
+    }
+
+    private func visibleTeammates(from teammates: [SharedCanvassingTeammate]) -> [SharedCanvassingTeammate] {
+        guard sessionManager.isActive,
+              let sharedSessionId = sessionManager.activeSharedLiveSessionId,
+              let localUserId = AuthManager.shared.user?.id else { return [] }
+        return teammates.filter {
+            $0.sessionId == sharedSessionId && $0.userId != localUserId
+        }
+    }
+
+    private func refreshVisibleTeammatePresence() {
+        layerManager?.updateTeammatePresence(
+            visibleTeammates(from: sharedLiveCanvassingService.teammates),
+            wolfyStyles: sharedLiveCanvassingService.peerWolfyStyles
+        )
     }
 
     private var teamChatSessionId: UUID? {
@@ -3512,6 +3553,7 @@ struct CampaignMapView: View {
                     selectedCircleCenter: standardMapTapCircleCoordinate,
                     showUserLocation: sessionManager.sessionId != nil && !sessionManager.isDemoSession,
                     userLocation: sessionManager.currentLocation,
+                    followUserLocation: sessionManager.sessionId != nil && campaignMapCameraMode != .idle,
                     useSatelliteMap: true,
                     useDarkMapStyle: colorScheme == .dark,
                     contentInsets: standardPinsMapInsets,
@@ -3533,6 +3575,9 @@ struct CampaignMapView: View {
                     },
                     onCameraIdle: { camera in
                         googleRendererCamera = camera
+                    },
+                    onUserMapInteraction: {
+                        handleCampaignMapUserInteraction()
                     },
                     onTripleTap: {
                         exitWideDemoFromTripleTap()
@@ -3749,12 +3794,10 @@ struct CampaignMapView: View {
                     if quickStartEnabled {
                         quickStartContactBookButton
                     }
-                    if !usesStandardPinsRenderer {
-                        HStack(spacing: 0) {
-                            Spacer(minLength: 0)
-                            campaignMapLocationControls
-                                .frame(width: sessionManager.isDemoSession ? 70 : 64, alignment: .center)
-                        }
+                    HStack(spacing: 0) {
+                        Spacer(minLength: 0)
+                        campaignMapLocationControls
+                            .frame(width: sessionManager.isDemoSession ? 70 : 64, alignment: .center)
                     }
                 }
                 .padding(.top, mapTopControlsPinnedTopPadding)
@@ -3791,6 +3834,9 @@ struct CampaignMapView: View {
                         }
                         if !usesStandardPinsRenderer {
                             FlyrMapPitchBearingControl(onCameraDrag: handleCampaignMapPitchBearingDrag)
+                        }
+                        if !Config.googleMapsAPIKey.isEmpty && !Config.mapboxAccessToken.isEmpty {
+                            campaignMapDimensionToggle
                         }
                     }
                 }
@@ -3880,9 +3926,30 @@ struct CampaignMapView: View {
     private var campaignMapLocationControls: some View {
         VStack(spacing: 10) {
             campaignMapCameraControl
-            FlyrMapPitchBearingControl(onCameraDrag: handleCampaignMapPitchBearingDrag)
+            if !usesStandardPinsRenderer {
+                FlyrMapPitchBearingControl(onCameraDrag: handleCampaignMapPitchBearingDrag)
+            }
+            if !Config.googleMapsAPIKey.isEmpty && !Config.mapboxAccessToken.isEmpty {
+                campaignMapDimensionToggle
+            }
             campaignMapAddBuildingHintButton
         }
+    }
+
+    private var campaignMapDimensionToggle: some View {
+        Button {
+            HapticManager.light()
+            session2DMapBinding.wrappedValue.toggle()
+        } label: {
+            Text(usesStandardPinsRenderer ? "3D" : "2D")
+                .font(.system(size: 16, weight: .bold, design: .rounded))
+                .foregroundColor(.white)
+                .frame(width: 52, height: 44)
+                .contentShape(Rectangle())
+                .shadow(color: .black.opacity(0.34), radius: 3, x: 0, y: 1)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(usesStandardPinsRenderer ? "Switch to 3D map" : "Switch to 2D map")
     }
 
     private var campaignMapAddBuildingHintButton: some View {
@@ -3940,7 +4007,7 @@ struct CampaignMapView: View {
         case .idle:
             return "Center map on my location"
         case .centered:
-            return "Start 3D GPS follow"
+            return usesStandardPinsRenderer ? "Following my location" : "Start 3D GPS follow"
         case .heading3D:
             return "Return to centered map"
         }
@@ -3973,7 +4040,7 @@ struct CampaignMapView: View {
     }
 
     private func handleCampaignMapCameraControlTapped() {
-        guard sessionManager.sessionId != nil, !usesStandardPinsRenderer else { return }
+        guard sessionManager.sessionId != nil else { return }
         HapticManager.light()
 
         switch sessionManager.locationAuthorizationStatus {
@@ -3992,6 +4059,11 @@ struct CampaignMapView: View {
         guard let location = sessionManager.currentLocation else {
             locationPermissionAlertMessage = campaignMapCameraLocationUnavailableMessage
             showLocationPermissionAlert = true
+            return
+        }
+
+        if usesStandardPinsRenderer {
+            campaignMapCameraMode = .centered
             return
         }
 
@@ -4031,8 +4103,7 @@ struct CampaignMapView: View {
 
     private func enableDefaultCampaignLocationFollowIfNeeded() {
         guard let sessionId = sessionManager.sessionId,
-              campaignMapFollowInitializedSessionId != sessionId,
-              !usesStandardPinsRenderer else {
+              campaignMapFollowInitializedSessionId != sessionId else {
             return
         }
 
@@ -6564,7 +6635,10 @@ struct CampaignMapView: View {
             updateSummarySnapshotCamera()
             updateSessionPathOnMap()
             updateDemoTargetPulseOnMap()
-            manager.updateTeammatePresence(sharedLiveCanvassingService.teammates)
+            manager.updateTeammatePresence(
+                visibleTeammates(from: sharedLiveCanvassingService.teammates),
+                wolfyStyles: sharedLiveCanvassingService.peerWolfyStyles
+            )
             // Apply current display mode so buildings vs circle extrusions match toggle
             lastLayerVisibilitySignature = nil
             scheduleLayerVisibilityReassert()
@@ -8078,21 +8152,26 @@ struct CampaignMapView: View {
         }
     }
 
-    private func applyHomeStateRow(_ row: AddressStatusRow) {
-        if let current = addressStatusRows[row.addressId], current.updatedAt > row.updatedAt {
+    private func applyHomeStateRow(_ row: AddressStatusRow, forceServer: Bool = false) {
+        if !forceServer,
+           let current = addressStatusRows[row.addressId],
+           (current.revision > row.revision ||
+            (current.revision == row.revision && current.updatedAt > row.updatedAt)) {
             return
         }
 
         addressStatusRows[row.addressId] = row
+        if forceServer {
+            sessionManager.reconcileVisitedAddressMetric(addressId: row.addressId, status: row.status)
+        }
         let gersId = gersIdForAddress(addressId: row.addressId)
         // A home-state row belongs to one campaign address. Townhomes share a
         // building, but their address/parcel colors must remain independent.
         let visualAddressIds = [row.addressId]
         for addressId in visualAddressIds {
-            addressStatuses[addressId] = AddressStatus.preferredForDisplay(
-                current: addressStatuses[addressId],
-                incoming: row.status
-            )
+            addressStatuses[addressId] = forceServer
+                ? row.status
+                : AddressStatus.preferredForDisplay(current: addressStatuses[addressId], incoming: row.status)
         }
 
         for addressId in visualAddressIds {
@@ -16467,6 +16546,9 @@ struct LocationCardView: View {
                     notes: notesText.isEmpty ? nil : notesText,
                     overrideReason: reason
                 )
+                if currentDisplayedHomeStatus != managerOverrideStatus {
+                    WolfyHomeStatusFeedback.didUpdate(managerOverrideStatus)
+                }
                 onStatusUpdated?(address.id, managerOverrideStatus)
                 if let row { onHomeStateUpdated?(row) }
                 showManagerOverrideSheet = false
@@ -18632,11 +18714,15 @@ struct LocationCardView: View {
     @MainActor
     private func persistStatusAction(_ address: ResolvedAddress, status: AddressStatus) {
         guard !isPersistingStatusAction else { return }
+        let previousStatus = displayedStatus(for: address) ?? .untouched
         isPersistingStatusAction = true
         Task { @MainActor in
             defer { isPersistingStatusAction = false }
             do {
                 try await logVisitStatus(address, status: status)
+                if previousStatus != status {
+                    WolfyHomeStatusFeedback.didUpdate(status)
+                }
             } catch {
                 contactSaveError = error.localizedDescription
             }

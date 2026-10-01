@@ -7,7 +7,7 @@ import SwiftUI
     init() {
         let store=WolfyEconomyStore(user:UUID(uuidString:"00000000-0000-0000-0000-000000000001")!,workspace:UUID(uuidString:"00000000-0000-0000-0000-000000000002")!)
         if let url=WolfyAssetLoader.url("wolfy_manifest.json"),let data=try? Data(contentsOf:url),let manifest=try? JSONSerialization.jsonObject(with:data) as? [String:Any],let items=manifest["items"] as? [[String:Any]] {
-            let legacyCatalog=items.map { item -> [String:Any] in var copy=item;copy["required_level"]=item["requiredLevel"];return copy }
+            let legacyCatalog=items.map { item -> [String:Any] in var copy=item;copy["required_level"]=item["requiredLevel"];copy["render_kind"]="model3d";copy["price_currency"]="coins";return copy }
             let catalog=legacyCatalog + WolfyPortraitAccessory.all.map { definition -> [String:Any] in
                 ["id":definition.id,"name":definition.name,"category":definition.slot,"socket":"portrait_"+definition.slot,"rarity":"common","price":definition.price,"required_level":1,"asset":definition.key,"render_kind":"portrait","price_currency":"xp"]
             }
@@ -27,7 +27,7 @@ import SwiftUI
             } else if ProcessInfo.processInfo.arguments.contains("--wolfy-accessory-review") {
                 WolfyAccessoryReviewView()
             } else if ProcessInfo.processInfo.arguments.contains("--wolfy-den") {
-                WolfyDenView(economy:economy,mood:WolfyMood(state:.focused,energy:75,happiness:75,health:90),insight:"Preview: two follow-ups are due. Review them before your next campaign.",work:{})
+                WolfyDenView(economy:economy,lifetimeDoors:2_500)
             } else if ProcessInfo.processInfo.arguments.contains("--wolfy-store") {
                 NavigationStack { WolfyPortraitStoreView(economy:economy) }
             } else { WolfyLaboratoryView() }
@@ -80,12 +80,32 @@ struct WolfyLaboratoryView: View {
                 }.padding()
             }.navigationTitle("Wolfy Laboratory")
                 .task {
+                    if ProcessInfo.processInfo.arguments.contains("--wolfy-color-review") {
+                        await character.load()
+                        character.setAppearance(WolfyAppearance(fur:.arctic,eyes:.green,nose:.darkBrown))
+                    }
+                    if let itemID=ProcessInfo.processInfo.arguments.first(where:{$0.hasPrefix("--wolfy-item=")})?.replacingOccurrences(of:"--wolfy-item=",with:""),
+                       let item=catalog.first(where:{$0.id==itemID}) {
+                        character.setGrowthStage(2)
+                        await character.load()
+                        try? await character.preview(item)
+                        if ProcessInfo.processInfo.arguments.contains("--wolfy-side-review") {
+                            character.rotate(.pi / 2)
+                        }
+                    }
                     if ProcessInfo.processInfo.arguments.contains("--wolfy-demo") {
                         await character.load()
                         try? await Task.sleep(for:.seconds(4))
                         character.trigger(.sale)
                         try? await Task.sleep(for:.seconds(4))
-                        if let item=catalog.first(where:{$0.id=="cap"}) { try? await character.preview(item);character.trigger(.customizing) }
+                        if let item=catalog.first(where:{$0.id=="cap"}) {
+                            try? await character.preview(item)
+                            character.trigger(.customizing)
+                            if ProcessInfo.processInfo.arguments.contains("--wolfy-demo-remove") {
+                                try? await Task.sleep(for:.seconds(4))
+                                try? await character.preview(item,enabled:false)
+                            }
+                        }
                     }
                 }
         }

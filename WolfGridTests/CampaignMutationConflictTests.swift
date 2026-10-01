@@ -137,6 +137,44 @@ final class CampaignMutationConflictTests: XCTestCase {
         XCTAssertEqual(rebased.notes, "offline draft")
     }
 
+    func testOnlyHomeRevisionConflictsAcceptLatestServerAutomatically() throws {
+        let payload = AddressStatusOutboxPayload(
+            campaignId: campaignId,
+            addressIds: [addressId],
+            buildingId: nil,
+            status: "talked",
+            notes: nil,
+            sessionId: nil,
+            sessionTargetId: nil,
+            sessionEventType: nil,
+            latitude: nil,
+            longitude: nil,
+            occurredAt: "2026-07-16T10:00:00Z",
+            farmExecutionContext: nil,
+            baseRevisions: [addressId: 0],
+            overrideReason: nil
+        )
+        let payloadJSON = try XCTUnwrap(OfflineJSONCodec.encode(payload))
+        let revision = try XCTUnwrap(CampaignMutationConflictResolver.conflict(from: makeEntry(
+            operation: .upsertAddressStatus,
+            payloadJSON: payloadJSON,
+            canonicalRevision: 1
+        )))
+        let teammateLock = try XCTUnwrap(CampaignMutationConflictResolver.conflict(from: makeEntry(
+            operation: .upsertAddressStatus,
+            payloadJSON: payloadJSON,
+            canonicalRevision: 1,
+            reasonCode: "TEAMMATE_STATUS_LOCKED"
+        )))
+        let pinMove = try XCTUnwrap(CampaignMutationConflictResolver.conflict(from: makeMoveConflictEntry(
+            baseRevision: 0, canonicalRevision: 1
+        )))
+
+        XCTAssertTrue(revision.acceptsLatestServerStatusAutomatically)
+        XCTAssertFalse(teammateLock.acceptsLatestServerStatusAutomatically)
+        XCTAssertFalse(pinMove.acceptsLatestServerStatusAutomatically)
+    }
+
     func testMalformedCanonicalStateCannotSilentlyReapply() throws {
         let payload = MoveAddressOutboxPayload(
             campaignId: campaignId,
@@ -187,7 +225,8 @@ final class CampaignMutationConflictTests: XCTestCase {
     private func makeEntry(
         operation: OutboxOperation,
         payloadJSON: String,
-        canonicalRevision: Int
+        canonicalRevision: Int,
+        reasonCode: String = "REVISION_CONFLICT"
     ) throws -> OutboxEntry {
         let canonicalState = """
         {"id":"\(addressId)","revision":\(canonicalRevision),"formatted":"Server version"}
@@ -207,7 +246,7 @@ final class CampaignMutationConflictTests: XCTestCase {
             syncedAt: nil,
             retryAfter: nil,
             retryCount: 1,
-            errorMessage: "REVISION_CONFLICT|\(canonicalState)",
+            errorMessage: "\(reasonCode)|\(canonicalState)",
             deadLetteredAt: nil
         )
     }

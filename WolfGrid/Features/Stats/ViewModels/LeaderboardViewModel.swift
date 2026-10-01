@@ -194,6 +194,72 @@ final class LeaderboardViewModel: ObservableObject {
         isLoading = true
         errorMessage = nil
         defer { isLoading = false }
+
+        if AuthManager.shared.user?.email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "daniel.phillippe27@gmail.com" {
+            let demoRows: [(String, Int, Int, Int, Double)] = [
+                ("Priya Shah", 248, 42, 11, 18.6),
+                ("Marcus Bell", 221, 38, 9, 16.2),
+                ("Olivia Chen", 203, 34, 8, 15.4),
+                ("Daniel Phillippe", 186, 31, 8, 14.1),
+                ("Noah Bennett", 172, 29, 7, 13.7),
+                ("Amina Hassan", 159, 27, 6, 12.3),
+                ("Ethan Walker", 144, 24, 6, 11.8),
+                ("Sophia Martin", 131, 21, 5, 10.9),
+                ("James Carter", 118, 19, 4, 9.6),
+                ("Maya Patel", 96, 16, 4, 8.4),
+                ("Liam Foster", 73, 12, 3, 6.2),
+                ("Emma Clarke", 51, 8, 2, 4.8),
+            ]
+            let userID = AuthManager.shared.user?.id.uuidString ?? "demo-daniel"
+            let multiplier: Double
+            switch timeRange {
+            case .daily: multiplier = 0.2
+            case .weekly: multiplier = 1
+            case .monthly: multiplier = 4
+            case .allTime: multiplier = 18
+            }
+            let rows = demoRows.enumerated().map { index, row -> LeaderboardUser in
+                let id = row.0 == "Daniel Phillippe" ? userID : "demo-rep-\(index + 1)"
+                func snapshot(_ scale: Double) -> MetricSnapshot {
+                    MetricSnapshot(
+                        leads: max(0, Int(Double(row.3) * scale)),
+                        conversations: max(0, Int(Double(row.2) * scale)),
+                        distance: row.4 * scale,
+                        doorknocks: max(0, Int(Double(row.1) * scale))
+                    )
+                }
+                return LeaderboardUser(
+                    id: id, name: row.0, avatarUrl: nil, countryCode: "CA",
+                    brokerage: "Phillippe Group", rank: index + 1,
+                    doorknocks: Int(Double(row.1) * multiplier),
+                    leads: Int(Double(row.3) * multiplier),
+                    conversations: Int(Double(row.2) * multiplier),
+                    distance: row.4 * multiplier,
+                    daily: snapshot(0.2), weekly: snapshot(1), monthly: snapshot(4),
+                    allTime: snapshot(18),
+                    pending: MetricSnapshot(leads: index % 3 == 0 ? 1 : 0, conversations: index % 2 == 0 ? 2 : 1, distance: 0.6, doorknocks: 6 + (index * 3))
+                )
+            }
+            let sorted = rows.sorted { left, right in
+                let l = left.value(for: metric.rawValue, timeframe: timeRange.rawValue)
+                let r = right.value(for: metric.rawValue, timeframe: timeRange.rawValue)
+                return l == r ? left.name < right.name : l > r
+            }
+            users = sorted.enumerated().map { index, user in
+                LeaderboardUser(
+                    id: user.id, name: user.name, avatarUrl: user.avatarUrl,
+                    countryCode: user.countryCode, brokerage: user.brokerage, rank: index + 1,
+                    doorknocks: user.doorknocks, leads: user.leads, conversations: user.conversations,
+                    distance: user.distance, daily: user.daily, weekly: user.weekly,
+                    monthly: user.monthly, allTime: user.allTime, pending: user.pending
+                )
+            }
+            currentUserRank = sorted.firstIndex { $0.id == userID }.map { $0 + 1 }
+            currentUserProfile = nil
+            currentUserProfileImageURL = nil
+            currentUserBrokerage = "Phillippe Group"
+            return
+        }
         
         do {
             let workspaceIdForTeam = (scope == .team) ? WorkspaceContext.shared.workspaceId : nil

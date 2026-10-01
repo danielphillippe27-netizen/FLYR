@@ -79,6 +79,7 @@ final class MapLayerManager {
     static let teammatePresenceSourceId = "campaign-teammate-presence-source"
     static let teammatePresenceCircleLayerId = "campaign-teammate-presence-circles"
     static let teammatePresenceLabelLayerId = "campaign-teammate-presence-labels"
+    static let teammatePresenceNameLayerId = "campaign-teammate-presence-names"
     
     static let roadsSourceId = "roads-source"
     static let roadsLayerId = "roads-line"
@@ -1336,6 +1337,7 @@ final class MapLayerManager {
     private var lastAddressNumbersSourceSignature: Int?
     private var lastAddressNumbersVisible: Bool?
     private var lastTeammatePresenceSignature: Int?
+    private var teammateWolfRenderers: [UUID: WolfyMapPrototypeRenderer] = [:]
     private var isInteractionQualityModeActive = false
     
     // MARK: - Init
@@ -2468,9 +2470,21 @@ final class MapLayerManager {
             }
         )
 
+        var names = SymbolLayer(id: Self.teammatePresenceNameLayerId, source: Self.teammatePresenceSourceId)
+        names.textField = .expression(Exp(.get) { "display_name" })
+        names.textColor = .constant(StyleColor(.white))
+        names.textHaloColor = .constant(StyleColor(.black))
+        names.textHaloWidth = .constant(1.5)
+        names.textSize = .constant(12)
+        names.textAnchor = .constant(.top)
+        names.textOffset = .constant([0, 4.5])
+        names.textAllowOverlap = .constant(true)
+        names.textIgnorePlacement = .constant(true)
+
         do {
             try mapView.mapboxMap.addLayer(circles)
             try mapView.mapboxMap.addLayer(labels)
+            try mapView.mapboxMap.addLayer(names)
         } catch {
             print("❌ [MapLayer] Error adding teammate presence layers: \(error)")
         }
@@ -3182,6 +3196,14 @@ final class MapLayerManager {
                 buildings: buildings,
                 orderedAddressIdsByBuilding: orderedAddressIdsByBuilding
             )
+            #if DEBUG
+            let generatedLabelCount = (try? JSONSerialization.jsonObject(with: labelPointData) as? [String: Any])
+                .flatMap { $0["features"] as? [[String: Any]] }?.count ?? 0
+            print(
+                "🧪 [MAP_LABELS] addresses=\(addresses.count) buildings=\(buildings.count) " +
+                "explicitLinks=\(orderedAddressIdsByBuilding.count) generated=\(generatedLabelCount)"
+            )
+            #endif
             let labelSignature = Self.sourceSignature(for: labelPointData)
             guard lastAddressNumbersSourceSignature != labelSignature else { return }
             let labelGeoJSON = try JSONDecoder().decode(GeoJSONObject.self, from: labelPointData)
@@ -3371,9 +3393,38 @@ final class MapLayerManager {
         updateManualAddressPreview(coordinate: nil)
     }
 
-    func updateTeammatePresence(_ teammates: [SharedCanvassingTeammate]) {
+    func updateTeammatePresence(
+        _ teammates: [SharedCanvassingTeammate],
+        wolfyStyles: [UUID: SharedWolfyMapStyle] = [:]
+    ) {
         guard let mapView = mapView else { return }
         guard mapView.mapboxMap.sourceExists(withId: Self.teammatePresenceSourceId) else { return }
+
+        let activeIDs = Set(teammates.map(\.userId))
+        for id in teammateWolfRenderers.keys.filter({ !activeIDs.contains($0) }) {
+            teammateWolfRenderers[id]?.setVisible(false)
+            try? mapView.mapboxMap.removeLayer(withId: "campaign-peer-wolf-\(id.uuidString.lowercased())")
+            teammateWolfRenderers.removeValue(forKey: id)
+        }
+        for teammate in teammates {
+            let id = "campaign-peer-wolf-\(teammate.userId.uuidString.lowercased())"
+            let coordinate = CLLocationCoordinate2D(latitude: teammate.latitude, longitude: teammate.longitude)
+            if !mapView.mapboxMap.layerExists(withId: id) {
+                let renderer = WolfyMapPrototypeRenderer(origin: coordinate, drawAboveBuildings: true)
+                if (try? mapView.mapboxMap.addCustomLayer(withId: id, layerHost: renderer, layerPosition: nil)) != nil {
+                    teammateWolfRenderers[teammate.userId] = renderer
+                }
+            }
+            if let renderer = teammateWolfRenderers[teammate.userId] {
+                let style = wolfyStyles[teammate.userId]
+                renderer.setAppearance(style?.appearance ?? WolfyAppearance())
+                renderer.setEquipment(style?.equipment ?? [:])
+                renderer.setGrowthStage(style?.growthStage ?? 1)
+                renderer.updateLocation(coordinate, heading: nil, speed: 0, animated: true)
+                renderer.setVisible(true)
+            }
+        }
+        mapView.mapboxMap.triggerRepaint()
 
         let collection: [String: Any] = [
             "type": "FeatureCollection",
@@ -3387,6 +3438,7 @@ final class MapLayerManager {
                     ],
                     "properties": [
                         "initials": teammate.initials,
+                        "display_name": teammate.displayName,
                         "freshness": teammate.freshness == .stale ? "stale" : "live",
                         "presence_status": teammate.presenceStatus.rawValue,
                         "opacity": teammate.opacity
@@ -7492,6 +7544,12 @@ final class MapLayerManager {
         try? mapView.mapboxMap.removeLayer(withId: Self.manualAddressPreviewLayerId)
         try? mapView.mapboxMap.removeLayer(withId: Self.teammatePresenceCircleLayerId)
         try? mapView.mapboxMap.removeLayer(withId: Self.teammatePresenceLabelLayerId)
+        try? mapView.mapboxMap.removeLayer(withId: Self.teammatePresenceNameLayerId)
+        for (id, renderer) in teammateWolfRenderers {
+            renderer.setVisible(false)
+            try? mapView.mapboxMap.removeLayer(withId: "campaign-peer-wolf-\(id.uuidString.lowercased())")
+        }
+        teammateWolfRenderers.removeAll()
         try? mapView.mapboxMap.removeLayer(withId: Self.parcelsLineLayerId)
         try? mapView.mapboxMap.removeLayer(withId: Self.parcelsFillLayerId)
         try? mapView.mapboxMap.removeLayer(withId: Self.roadsLayerId)

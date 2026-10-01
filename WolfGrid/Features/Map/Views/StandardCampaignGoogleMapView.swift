@@ -153,6 +153,7 @@ struct StandardCampaignGoogleMapView: UIViewRepresentable {
     let selectedCircleCenter: CLLocationCoordinate2D?
     let showUserLocation: Bool
     var userLocation: CLLocation? = nil
+    let followUserLocation: Bool
     let useSatelliteMap: Bool
     let useDarkMapStyle: Bool
     let contentInsets: UIEdgeInsets
@@ -161,6 +162,7 @@ struct StandardCampaignGoogleMapView: UIViewRepresentable {
     let onMapTap: (CLLocationCoordinate2D, CGPoint) -> Void
     let onMapLongPress: (CLLocationCoordinate2D, CGPoint) -> Void
     let onCameraIdle: (StandardCampaignMapCamera) -> Void
+    let onUserMapInteraction: () -> Void
     let onTripleTap: () -> Void
 
     func makeCoordinator() -> Coordinator {
@@ -201,6 +203,7 @@ struct StandardCampaignGoogleMapView: UIViewRepresentable {
             context.coordinator.syncBoundary(on: mapView)
             context.coordinator.syncTapCircle(on: mapView)
             context.coordinator.updateCameraIfNeeded(on: mapView)
+            context.coordinator.updateFollowCameraIfNeeded(on: mapView)
             onReady?()
         }
 
@@ -222,6 +225,7 @@ struct StandardCampaignGoogleMapView: UIViewRepresentable {
         context.coordinator.syncBoundary(on: uiView)
         context.coordinator.syncTapCircle(on: uiView)
         context.coordinator.updateCameraIfNeeded(on: uiView)
+        context.coordinator.updateFollowCameraIfNeeded(on: uiView)
     }
 
     private func applyTheme(to mapView: GMSMapView) {
@@ -250,6 +254,7 @@ struct StandardCampaignGoogleMapView: UIViewRepresentable {
         private var lastPath: [CLLocationCoordinate2D] = []
         private var lastBoundary: [CLLocationCoordinate2D] = []
         private var wolfMarker: GMSMarker?
+        private var lastFollowCoordinate: CLLocationCoordinate2D?
         private static let wolfIcon: UIImage? = {
             guard let asset = UIImage(named: "WolfyStage1") else { return nil }
             return UIGraphicsImageRenderer(size: CGSize(width: 52, height: 52)).image { _ in
@@ -442,6 +447,24 @@ struct StandardCampaignGoogleMapView: UIViewRepresentable {
             mapView.moveCamera(GMSCameraUpdate.fit(bounds))
         }
 
+        func updateFollowCameraIfNeeded(on mapView: GMSMapView) {
+            guard parent.followUserLocation,
+                  let location = parent.userLocation,
+                  CLLocationCoordinate2DIsValid(location.coordinate) else {
+                lastFollowCoordinate = nil
+                return
+            }
+            if let previous = lastFollowCoordinate,
+               CLLocation(latitude: previous.latitude, longitude: previous.longitude).distance(from: location) < 1.5 {
+                return
+            }
+            lastFollowCoordinate = location.coordinate
+            mapView.animate(to: GMSCameraPosition(
+                target: location.coordinate,
+                zoom: max(mapView.camera.zoom, 17.2)
+            ))
+        }
+
         private var fallbackCenterChanged: Bool {
             switch (lastFallbackCenter, parent.fallbackCenter) {
             case (nil, nil):
@@ -469,6 +492,10 @@ struct StandardCampaignGoogleMapView: UIViewRepresentable {
 
         func mapView(_ mapView: GMSMapView, idleAt position: GMSCameraPosition) {
             parent.onCameraIdle(StandardCampaignMapCamera(center: position.target, zoom: position.zoom))
+        }
+
+        func mapView(_ mapView: GMSMapView, willMove gesture: Bool) {
+            if gesture { parent.onUserMapInteraction() }
         }
 
         @objc func handleTripleTap(_ gesture: UITapGestureRecognizer) {

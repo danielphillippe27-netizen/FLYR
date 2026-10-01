@@ -671,6 +671,636 @@
       "active": true,
       "sortOrder": 24,
       "bundled": true
+    },
+    {
+      "id": "street_shades",
+      "name": "Midnight Aviators",
+      "description": "Midnight Aviators \u2022 cosmetic only",
+      "category": "face",
+      "socket": "socket_face",
+      "rarity": "common",
+      "price": 0,
+      "requiredLevel": 1,
+      "asset": "embedded:street_shades",
+      "thumbnail": "accessory_street_shades.png",
+      "compatibility": [
+        "wolfy-v1"
+      ],
+      "active": true,
+      "sortOrder": 25,
+      "bundled": true
+    },
+    {
+      "id": "crucifix_chain",
+      "name": "Hanging Jesus Chain",
+      "description": "Hanging Jesus Chain \u2022 cosmetic only",
+      "category": "neck",
+      "socket": "socket_neck",
+      "rarity": "common",
+      "price": 0,
+      "requiredLevel": 1,
+      "asset": "embedded:crucifix_chain",
+      "thumbnail": "accessory_crucifix_chain.png",
+      "compatibility": [
+        "wolfy-v1"
+      ],
+      "active": true,
+      "sortOrder": 26,
+      "bundled": true
+    },
+    {
+      "id": "midnight_cap",
+      "name": "Midnight Baseball Cap",
+      "description": "Midnight Baseball Cap \u2022 cosmetic only",
+      "category": "head",
+      "socket": "socket_head",
+      "rarity": "common",
+      "price": 0,
+      "requiredLevel": 1,
+      "asset": "embedded:midnight_cap",
+      "thumbnail": "accessory_midnight_cap.png",
+      "compatibility": [
+        "wolfy-v1"
+      ],
+      "active": true,
+      "sortOrder": 27,
+      "bundled": true
+    },
+    {
+      "id": "gold_hoops",
+      "name": "Gold Hoop Earrings",
+      "description": "Gold Hoop Earrings \u2022 cosmetic only",
+      "category": "ears",
+      "socket": "socket_head",
+      "rarity": "common",
+      "price": 0,
+      "requiredLevel": 1,
+      "asset": "embedded:gold_hoops",
+      "thumbnail": "accessory_gold_hoops.png",
+      "compatibility": [
+        "wolfy-v1"
+      ],
+      "active": true,
+      "sortOrder": 28,
+      "bundled": true
+    },
+    {
+      "id": "diamond_studs",
+      "name": "Diamond Stud Earrings",
+      "description": "Diamond Stud Earrings \u2022 cosmetic only",
+      "category": "ears",
+      "socket": "socket_head",
+      "rarity": "common",
+      "price": 0,
+      "requiredLevel": 1,
+      "asset": "embedded:diamond_studs",
+      "thumbnail": "accessory_diamond_studs.png",
+      "compatibility": [
+        "wolfy-v1"
+      ],
+      "active": true,
+      "sortOrder": 29,
+      "bundled": true
+    },
+    {
+      "id": "rose_bow",
+      "name": "Rose Bow",
+      "description": "Rose Bow \u2022 cosmetic only",
+      "category": "head",
+      "socket": "socket_head",
+      "rarity": "common",
+      "price": 0,
+      "requiredLevel": 1,
+      "asset": "embedded:rose_bow",
+      "thumbnail": "accessory_rose_bow.png",
+      "compatibility": [
+        "wolfy-v1"
+      ],
+      "active": true,
+      "sortOrder": 30,
+      "bundled": true
+    },
+    {
+      "id": "neon_glow",
+      "name": "Neon Glow",
+      "description": "Bright cyan glow and floating sparks",
+      "category": "auras",
+      "socket": "socket_aura",
+      "rarity": "common",
+      "price": 0,
+      "requiredLevel": 1,
+      "asset": "embedded:neon_glow",
+      "thumbnail": "accessory_neon_glow.png",
+      "compatibility": [
+        "wolfy-v1"
+      ],
+      "active": true,
+      "sortOrder": 31,
+      "bundled": true
+    },
+    {
+      "id": "pink_basic_collar",
+      "name": "Pink Basic Collar",
+      "description": "Free pink cosmetic accessory",
+      "category": "neck",
+      "socket": "socket_neck",
+      "rarity": "common",
+      "price": 0,
+      "requiredLevel": 1,
+      "asset": "embedded:pink_basic_collar",
+      "thumbnail": "accessory_pink_basic_collar.png",
+      "compatibility": [
+        "wolfy-v1"
+      ],
+      "active": true,
+      "sortOrder": 32,
+      "bundled": true
+    },
+    {
+      "id": "pink_bandana",
+      "name": "Pink Bandana",
+      "description": "Free pink cosmetic accessory",
+      "category": "neck",
+      "socket": "socket_neck",
+      "rarity": "common",
+      "price": 0,
+      "requiredLevel": 1,
+      "asset": "embedded:pink_bandana",
+      "thumbnail": "accessory_pink_bandana.png",
+      "compatibility": [
+        "wolfy-v1"
+      ],
+      "active": true,
+      "sortOrder": 33,
+      "bundled": true
+    },
+    {
+      "id": "pink_chain",
+      "name": "Pink Chain",
+      "description": "Free pink cosmetic accessory",
+      "category": "neck",
+      "socket": "socket_neck",
+      "rarity": "common",
+      "price": 0,
+      "requiredLevel": 1,
+      "asset": "embedded:pink_chain",
+      "thumbnail": "accessory_pink_chain.png",
+      "compatibility": [
+        "wolfy-v1"
+      ],
+      "active": true,
+      "sortOrder": 34,
+      "bundled": true
+    },
+    {
+      "id": "pink_gold_chain",
+      "name": "Pink Heavy Chain",
+      "description": "Free pink cosmetic accessory",
+      "category": "neck",
+      "socket": "socket_neck",
+      "rarity": "epic",
+      "price": 0,
+      "requiredLevel": 1,
+      "asset": "embedded:pink_gold_chain",
+      "thumbnail": "accessory_pink_gold_chain.png",
+      "compatibility": [
+        "wolfy-v1"
+      ],
+      "active": true,
+      "sortOrder": 35,
+      "bundled": true
+    },
+    {
+      "id": "pink_cap",
+      "name": "Pink WolfGrid Cap",
+      "description": "Free pink cosmetic accessory",
+      "category": "head",
+      "socket": "socket_head",
+      "rarity": "common",
+      "price": 0,
+      "requiredLevel": 1,
+      "asset": "embedded:pink_cap",
+      "thumbnail": "accessory_pink_cap.png",
+      "compatibility": [
+        "wolfy-v1"
+      ],
+      "active": true,
+      "sortOrder": 36,
+      "bundled": true
+    },
+    {
+      "id": "pink_beanie",
+      "name": "Pink Beanie",
+      "description": "Free pink cosmetic accessory",
+      "category": "head",
+      "socket": "socket_head",
+      "rarity": "common",
+      "price": 0,
+      "requiredLevel": 1,
+      "asset": "embedded:pink_beanie",
+      "thumbnail": "accessory_pink_beanie.png",
+      "compatibility": [
+        "wolfy-v1"
+      ],
+      "active": true,
+      "sortOrder": 37,
+      "bundled": true
+    },
+    {
+      "id": "pink_hard_hat",
+      "name": "Pink Roofing Hard Hat",
+      "description": "Free pink cosmetic accessory",
+      "category": "head",
+      "socket": "socket_head",
+      "rarity": "rare",
+      "price": 0,
+      "requiredLevel": 1,
+      "asset": "embedded:pink_hard_hat",
+      "thumbnail": "accessory_pink_hard_hat.png",
+      "compatibility": [
+        "wolfy-v1"
+      ],
+      "active": true,
+      "sortOrder": 38,
+      "bundled": true
+    },
+    {
+      "id": "pink_glasses",
+      "name": "Pink Glasses",
+      "description": "Free pink cosmetic accessory",
+      "category": "face",
+      "socket": "socket_face",
+      "rarity": "common",
+      "price": 0,
+      "requiredLevel": 1,
+      "asset": "embedded:pink_glasses",
+      "thumbnail": "accessory_pink_glasses.png",
+      "compatibility": [
+        "wolfy-v1"
+      ],
+      "active": true,
+      "sortOrder": 39,
+      "bundled": true
+    },
+    {
+      "id": "pink_sunglasses",
+      "name": "Pink Sunglasses",
+      "description": "Free pink cosmetic accessory",
+      "category": "face",
+      "socket": "socket_face",
+      "rarity": "common",
+      "price": 0,
+      "requiredLevel": 1,
+      "asset": "embedded:pink_sunglasses",
+      "thumbnail": "accessory_pink_sunglasses.png",
+      "compatibility": [
+        "wolfy-v1"
+      ],
+      "active": true,
+      "sortOrder": 40,
+      "bundled": true
+    },
+    {
+      "id": "pink_headset",
+      "name": "Pink Headset",
+      "description": "Free pink cosmetic accessory",
+      "category": "head",
+      "socket": "socket_head",
+      "rarity": "rare",
+      "price": 0,
+      "requiredLevel": 1,
+      "asset": "embedded:pink_headset",
+      "thumbnail": "accessory_pink_headset.png",
+      "compatibility": [
+        "wolfy-v1"
+      ],
+      "active": true,
+      "sortOrder": 41,
+      "bundled": true
+    },
+    {
+      "id": "pink_clipboard",
+      "name": "Pink Clipboard",
+      "description": "Free pink cosmetic accessory",
+      "category": "hands",
+      "socket": "socket_hand_l",
+      "rarity": "rare",
+      "price": 0,
+      "requiredLevel": 1,
+      "asset": "embedded:pink_clipboard",
+      "thumbnail": "accessory_pink_clipboard.png",
+      "compatibility": [
+        "wolfy-v1"
+      ],
+      "active": true,
+      "sortOrder": 42,
+      "bundled": true
+    },
+    {
+      "id": "pink_tablet",
+      "name": "Pink Sales Tablet",
+      "description": "Free pink cosmetic accessory",
+      "category": "hands",
+      "socket": "socket_hand_l",
+      "rarity": "epic",
+      "price": 0,
+      "requiredLevel": 1,
+      "asset": "embedded:pink_tablet",
+      "thumbnail": "accessory_pink_tablet.png",
+      "compatibility": [
+        "wolfy-v1"
+      ],
+      "active": true,
+      "sortOrder": 43,
+      "bundled": true
+    },
+    {
+      "id": "pink_backpack",
+      "name": "Pink WolfGrid Backpack",
+      "description": "Free pink cosmetic accessory",
+      "category": "back",
+      "socket": "socket_back",
+      "rarity": "rare",
+      "price": 0,
+      "requiredLevel": 1,
+      "asset": "embedded:pink_backpack",
+      "thumbnail": "accessory_pink_backpack.png",
+      "compatibility": [
+        "wolfy-v1"
+      ],
+      "active": true,
+      "sortOrder": 44,
+      "bundled": true
+    },
+    {
+      "id": "pink_hi_vis",
+      "name": "Pink Vest",
+      "description": "Free pink cosmetic accessory",
+      "category": "outerwear",
+      "socket": "socket_chest",
+      "rarity": "rare",
+      "price": 0,
+      "requiredLevel": 1,
+      "asset": "embedded:pink_hi_vis",
+      "thumbnail": "accessory_pink_hi_vis.png",
+      "compatibility": [
+        "wolfy-v1"
+      ],
+      "active": true,
+      "sortOrder": 45,
+      "bundled": true
+    },
+    {
+      "id": "pink_storm_jacket",
+      "name": "Pink Storm Jacket",
+      "description": "Free pink cosmetic accessory",
+      "category": "outerwear",
+      "socket": "socket_chest",
+      "rarity": "rare",
+      "price": 0,
+      "requiredLevel": 1,
+      "asset": "embedded:pink_storm_jacket",
+      "thumbnail": "accessory_pink_storm_jacket.png",
+      "compatibility": [
+        "wolfy-v1"
+      ],
+      "active": true,
+      "sortOrder": 46,
+      "bundled": true
+    },
+    {
+      "id": "pink_alpha_jacket",
+      "name": "Pink Alpha Bomber",
+      "description": "Free pink cosmetic accessory",
+      "category": "outerwear",
+      "socket": "socket_chest",
+      "rarity": "epic",
+      "price": 0,
+      "requiredLevel": 1,
+      "asset": "embedded:pink_alpha_jacket",
+      "thumbnail": "accessory_pink_alpha_jacket.png",
+      "compatibility": [
+        "wolfy-v1"
+      ],
+      "active": true,
+      "sortOrder": 47,
+      "bundled": true
+    },
+    {
+      "id": "pink_tool_belt",
+      "name": "Pink Tool Belt",
+      "description": "Free pink cosmetic accessory",
+      "category": "waist",
+      "socket": "socket_waist",
+      "rarity": "rare",
+      "price": 0,
+      "requiredLevel": 1,
+      "asset": "embedded:pink_tool_belt",
+      "thumbnail": "accessory_pink_tool_belt.png",
+      "compatibility": [
+        "wolfy-v1"
+      ],
+      "active": true,
+      "sortOrder": 48,
+      "bundled": true
+    },
+    {
+      "id": "pink_blue_aura",
+      "name": "Pink Aura",
+      "description": "Free pink cosmetic accessory",
+      "category": "auras",
+      "socket": "socket_aura",
+      "rarity": "epic",
+      "price": 0,
+      "requiredLevel": 1,
+      "asset": "embedded:pink_blue_aura",
+      "thumbnail": "accessory_pink_blue_aura.png",
+      "compatibility": [
+        "wolfy-v1"
+      ],
+      "active": true,
+      "sortOrder": 49,
+      "bundled": true
+    },
+    {
+      "id": "pink_white_sneakers",
+      "name": "Pink Sneakers",
+      "description": "Free pink cosmetic accessory",
+      "category": "feet",
+      "socket": "socket_feet",
+      "rarity": "common",
+      "price": 0,
+      "requiredLevel": 1,
+      "asset": "embedded:pink_white_sneakers",
+      "thumbnail": "accessory_pink_white_sneakers.png",
+      "compatibility": [
+        "wolfy-v1"
+      ],
+      "active": true,
+      "sortOrder": 50,
+      "bundled": true
+    },
+    {
+      "id": "pink_work_boots",
+      "name": "Pink Premium Work Boots",
+      "description": "Free pink cosmetic accessory",
+      "category": "feet",
+      "socket": "socket_feet",
+      "rarity": "rare",
+      "price": 0,
+      "requiredLevel": 1,
+      "asset": "embedded:pink_work_boots",
+      "thumbnail": "accessory_pink_work_boots.png",
+      "compatibility": [
+        "wolfy-v1"
+      ],
+      "active": true,
+      "sortOrder": 51,
+      "bundled": true
+    },
+    {
+      "id": "pink_gloves",
+      "name": "Pink Work Gloves",
+      "description": "Free pink cosmetic accessory",
+      "category": "hands",
+      "socket": "socket_hand_r",
+      "rarity": "common",
+      "price": 0,
+      "requiredLevel": 1,
+      "asset": "embedded:pink_gloves",
+      "thumbnail": "accessory_pink_gloves.png",
+      "compatibility": [
+        "wolfy-v1"
+      ],
+      "active": true,
+      "sortOrder": 52,
+      "bundled": true
+    },
+    {
+      "id": "pink_street_shades",
+      "name": "Pink Midnight Aviators",
+      "description": "Free pink cosmetic accessory",
+      "category": "face",
+      "socket": "socket_face",
+      "rarity": "common",
+      "price": 0,
+      "requiredLevel": 1,
+      "asset": "embedded:pink_street_shades",
+      "thumbnail": "accessory_pink_street_shades.png",
+      "compatibility": [
+        "wolfy-v1"
+      ],
+      "active": true,
+      "sortOrder": 53,
+      "bundled": true
+    },
+    {
+      "id": "pink_crucifix_chain",
+      "name": "Pink Hanging Jesus Chain",
+      "description": "Free pink cosmetic accessory",
+      "category": "neck",
+      "socket": "socket_neck",
+      "rarity": "common",
+      "price": 0,
+      "requiredLevel": 1,
+      "asset": "embedded:pink_crucifix_chain",
+      "thumbnail": "accessory_pink_crucifix_chain.png",
+      "compatibility": [
+        "wolfy-v1"
+      ],
+      "active": true,
+      "sortOrder": 54,
+      "bundled": true
+    },
+    {
+      "id": "pink_midnight_cap",
+      "name": "Pink Midnight Baseball Cap",
+      "description": "Free pink cosmetic accessory",
+      "category": "head",
+      "socket": "socket_head",
+      "rarity": "common",
+      "price": 0,
+      "requiredLevel": 1,
+      "asset": "embedded:pink_midnight_cap",
+      "thumbnail": "accessory_pink_midnight_cap.png",
+      "compatibility": [
+        "wolfy-v1"
+      ],
+      "active": true,
+      "sortOrder": 55,
+      "bundled": true
+    },
+    {
+      "id": "pink_gold_hoops",
+      "name": "Pink Hoop Earrings",
+      "description": "Free pink cosmetic accessory",
+      "category": "ears",
+      "socket": "socket_head",
+      "rarity": "common",
+      "price": 0,
+      "requiredLevel": 1,
+      "asset": "embedded:pink_gold_hoops",
+      "thumbnail": "accessory_pink_gold_hoops.png",
+      "compatibility": [
+        "wolfy-v1"
+      ],
+      "active": true,
+      "sortOrder": 56,
+      "bundled": true
+    },
+    {
+      "id": "pink_diamond_studs",
+      "name": "Pink Stud Earrings",
+      "description": "Free pink cosmetic accessory",
+      "category": "ears",
+      "socket": "socket_head",
+      "rarity": "common",
+      "price": 0,
+      "requiredLevel": 1,
+      "asset": "embedded:pink_diamond_studs",
+      "thumbnail": "accessory_pink_diamond_studs.png",
+      "compatibility": [
+        "wolfy-v1"
+      ],
+      "active": true,
+      "sortOrder": 57,
+      "bundled": true
+    },
+    {
+      "id": "pink_rose_bow",
+      "name": "Pink Rose Bow",
+      "description": "Free pink cosmetic accessory",
+      "category": "head",
+      "socket": "socket_head",
+      "rarity": "common",
+      "price": 0,
+      "requiredLevel": 1,
+      "asset": "embedded:pink_rose_bow",
+      "thumbnail": "accessory_pink_rose_bow.png",
+      "compatibility": [
+        "wolfy-v1"
+      ],
+      "active": true,
+      "sortOrder": 58,
+      "bundled": true
+    },
+    {
+      "id": "pink_neon_glow",
+      "name": "Pink Neon Glow",
+      "description": "Free pink cosmetic accessory",
+      "category": "auras",
+      "socket": "socket_aura",
+      "rarity": "common",
+      "price": 0,
+      "requiredLevel": 1,
+      "asset": "embedded:pink_neon_glow",
+      "thumbnail": "accessory_pink_neon_glow.png",
+      "compatibility": [
+        "wolfy-v1"
+      ],
+      "active": true,
+      "sortOrder": 59,
+      "bundled": true
     }
   ],
   "files": {
@@ -873,6 +1503,33 @@
     "work_boots.usdz": {
       "sha256": "c219ed5424cc15c33c4c1377449638d9b4ce92df9ec70b2c7185753ad8a928d5",
       "bytes": 24969
+    },
+    "wolfy_stage_pup.usdz": {
+      "bytes": 2098604,
+      "sha256": "31b2bd0d1ea269d24897cd3193042e3af40d769df14932221ec7bfcca77f6970"
+    },
+    "wolfy_stage_young.usdz": {
+      "bytes": 2081348,
+      "sha256": "619535f330c8a65bb9a05fa83da10a3b511251e8ee4f68953c2da063e3c6cdfb"
+    },
+    "wolfy_stage_street.usdz": {
+      "bytes": 2206839,
+      "sha256": "5e7158e7ce1502628ecfffafc1482bb03de8f298173ce8413141a0a2c214d774"
+    },
+    "wolfy_stage_alpha.usdz": {
+      "bytes": 2358108,
+      "sha256": "a71f9875125354da7172683fd6996f00fab7d9f0e30e49e874fe49b76050e4cf"
+    },
+    "wolfy_stage_legend.usdz": {
+      "bytes": 2255039,
+      "sha256": "88252da3719be5738988637572875f30f02ad6575a932d81ba0f5b2ec289c3f5"
     }
+  },
+  "growthStages": {
+    "pup": "wolfy_stage_pup.usdz",
+    "young": "wolfy_stage_young.usdz",
+    "street": "wolfy_stage_street.usdz",
+    "alpha": "wolfy_stage_alpha.usdz",
+    "legend": "wolfy_stage_legend.usdz"
   }
 }

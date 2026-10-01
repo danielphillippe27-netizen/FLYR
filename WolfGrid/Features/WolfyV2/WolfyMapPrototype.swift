@@ -15,6 +15,17 @@ final class WolfyMapPrototypeRenderer: NSObject, CustomLayerHost {
         let version: Int; let prototype: Bool; let vertices: Int; let indices: Int
         let bones: [String]; let mesh: String; let clips: [String: Clip]; let files: [String: File]
     }
+    private struct WardrobeManifest: Decodable {
+        struct Item: Decodable { let vertexOffset: Int; let indexOffset: Int; let indexCount: Int }
+        let version: Int; let mesh: String; let bytes: Int; let sha256: String; let items: [String:Item]
+    }
+    private struct StageResource {
+        let manifest: Manifest
+        let mesh: MTLBuffer
+        let animation: [String: [Float]]
+        let wardrobe: WardrobeManifest
+        let wardrobeMesh: MTLBuffer
+    }
     private let log = Logger(subsystem: "WolfGrid", category: "WolfyMapPrototype")
     private let lock = NSLock()
     private var selectedClip = "walk"
@@ -29,9 +40,10 @@ final class WolfyMapPrototypeRenderer: NSObject, CustomLayerHost {
     var isReady: Bool { lock.lock(); defer { lock.unlock() }; return ready }
     private var pipeline: MTLRenderPipelineState?
     private var depth: MTLDepthStencilState?
-    private var mesh: MTLBuffer?
-    private var manifest: Manifest?
-    private var animation: [String: [Float]] = [:]
+    private var equippedItemIDs: [String] = []
+    private var appearance = WolfyAppearance()
+    private var growthStage = 1
+    private var stages: [Int: StageResource] = [:]
     private var epoch = CACurrentMediaTime()
     private var frameCount = 0
     private var lastFrameIndex = -1
@@ -47,6 +59,17 @@ final class WolfyMapPrototypeRenderer: NSObject, CustomLayerHost {
         if selectedClip != clip { selectedClip = clip; clipStartedAt = CACurrentMediaTime() }
     }
     func setVisible(_ value: Bool) { lock.lock(); visible = value; lock.unlock() }
+    func setEquipment(_ equipment: [String:String]) {
+        lock.lock(); equippedItemIDs = Array(equipment.values).sorted(); lock.unlock()
+    }
+    func setAppearance(_ value: WolfyAppearance) { lock.lock(); appearance=value; lock.unlock() }
+    func setGrowthStage(_ value: Int) { lock.lock(); growthStage=min(5,max(1,value)); lock.unlock() }
+    private static func color(_ color: WolfyColor, defaultColor: WolfyColor) -> SIMD4<Float> {
+        guard color != defaultColor else { return .zero }
+        var r:CGFloat=0,g:CGFloat=0,b:CGFloat=0,a:CGFloat=0
+        color.uiColor.getRed(&r,green:&g,blue:&b,alpha:&a)
+        return SIMD4(Float(r),Float(g),Float(b),1)
+    }
     /// Live campaign marker uses the same quadruped mesh as the map preview.
     func updateLocation(_ coordinate: CLLocationCoordinate2D, heading: Double?, speed: Double, animated: Bool) {
         lock.lock(); defer { lock.unlock() }
@@ -65,21 +88,31 @@ final class WolfyMapPrototypeRenderer: NSObject, CustomLayerHost {
     }
     func renderingWillStart(_ device: MTLDevice, colorPixelFormat: UInt, depthStencilPixelFormat: UInt) {
         do {
-            let m = try JSONDecoder().decode(Manifest.self, from: Data(contentsOf: Self.url("pup-manifest.json")))
-            guard m.version == 2, m.prototype, m.bones.count <= 64, m.vertices > 0, m.indices > 0 else { throw CocoaError(.fileReadCorruptFile) }
-            func verified(_ name: String) throws -> Data {
+            func verified(_ name: String, in m: Manifest) throws -> Data {
                 let d = try Data(contentsOf: Self.url(name))
                 guard let info = m.files[name], d.count == info.bytes,
                       SHA256.hash(data: d).map({ String(format:"%02x",$0) }).joined() == info.sha256 else { throw CocoaError(.fileReadCorruptFile) }
                 return d
             }
-            let data = try verified(m.mesh)
-            guard data.count == m.vertices * 64 + m.indices * 4 else { throw CocoaError(.fileReadCorruptFile) }
-            mesh = data.withUnsafeBytes { bytes in device.makeBuffer(bytes: bytes.baseAddress!, length: bytes.count) }
-            for (name, clip) in m.clips {
-                let data = try verified(clip.file)
-                guard clip.frames > 0, clip.duration > 0, data.count == clip.frames * m.bones.count * 64 else { throw CocoaError(.fileReadCorruptFile) }
-                animation[name] = data.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
+            for (index,name) in ["pup","young","street","alpha","legend"].enumerated() {
+                let m = try JSONDecoder().decode(Manifest.self, from: Data(contentsOf: Self.url("\(name)-manifest.json")))
+                guard m.version == 2, m.prototype, m.bones.count <= 64, m.vertices > 0, m.indices > 0 else { throw CocoaError(.fileReadCorruptFile) }
+                let data = try verified(m.mesh, in:m)
+                guard data.count == m.vertices * 64 + m.indices * 4,
+                      let mesh = data.withUnsafeBytes({ bytes in device.makeBuffer(bytes: bytes.baseAddress!, length: bytes.count) }) else { throw CocoaError(.fileReadCorruptFile) }
+                var clips: [String:[Float]] = [:]
+                for (clipName,clip) in m.clips {
+                    let bytes = try verified(clip.file, in:m)
+                    guard clip.frames > 0, clip.duration > 0, bytes.count == clip.frames * m.bones.count * 64 else { throw CocoaError(.fileReadCorruptFile) }
+                    clips[clipName] = bytes.withUnsafeBytes { Array($0.bindMemory(to:Float.self)) }
+                }
+                let wardrobe = try JSONDecoder().decode(WardrobeManifest.self, from: Data(contentsOf: Self.url("wardrobe-\(name)-manifest.json")))
+                let wardrobeData = try Data(contentsOf: Self.url(wardrobe.mesh))
+                guard wardrobe.version == 1, wardrobeData.count == wardrobe.bytes,
+                      SHA256.hash(data:wardrobeData).map({ String(format:"%02x",$0) }).joined() == wardrobe.sha256,
+                      wardrobe.items.values.allSatisfy({ $0.vertexOffset >= 0 && $0.indexOffset > $0.vertexOffset && $0.indexCount > 0 && $0.indexOffset + $0.indexCount * 4 <= wardrobeData.count }),
+                      let wardrobeMesh = wardrobeData.withUnsafeBytes({ device.makeBuffer(bytes:$0.baseAddress!,length:$0.count) }) else { throw CocoaError(.fileReadCorruptFile) }
+                stages[index+1] = StageResource(manifest:m,mesh:mesh,animation:clips,wardrobe:wardrobe,wardrobeMesh:wardrobeMesh)
             }
             let library = try device.makeLibrary(source: Self.shader, options: nil)
             let p = MTLRenderPipelineDescriptor()
@@ -91,7 +124,7 @@ final class WolfyMapPrototypeRenderer: NSObject, CustomLayerHost {
             pipeline = try device.makeRenderPipelineState(descriptor: p)
             let d = MTLDepthStencilDescriptor(); d.depthCompareFunction = .lessEqual; d.isDepthWriteEnabled = true
             depth = device.makeDepthStencilState(descriptor: d)
-            manifest = m; epoch = CACurrentMediaTime()
+            epoch = CACurrentMediaTime()
             lock.lock(); ready = true; lock.unlock()
         } catch {
             failure = "Prototype assets or Metal pipeline unavailable"
@@ -101,12 +134,15 @@ final class WolfyMapPrototypeRenderer: NSObject, CustomLayerHost {
     func render(_ parameters: CustomLayerRenderParameters, mtlCommandBuffer: MTLCommandBuffer, mtlRenderPassDescriptor: MTLRenderPassDescriptor) {
         lock.lock()
         let clipName = selectedClip, isVisible = visible, origin = origin, heading = heading
+        let equippedItemIDs = equippedItemIDs, growthStage = growthStage
+        let appearance = appearance
         let minimumMapScale = minimumMapScale, animated = animated
         let clipStartedAt = clipStartedAt
         lock.unlock()
-        guard isVisible, let m = manifest, let pipeline, let mesh, let depth,
-              let clip = m.clips[clipName], let samples = animation[clipName],
+        guard isVisible, let resource = stages[growthStage], let pipeline, let depth,
+              let clip = resource.manifest.clips[clipName], let samples = resource.animation[clipName],
               let texture = mtlRenderPassDescriptor.colorAttachments[0].texture else { return }
+        let m = resource.manifest, mesh = resource.mesh
         let progress = animated ? (CACurrentMediaTime() - clipStartedAt).truncatingRemainder(dividingBy: clip.duration) / clip.duration * Double(clip.frames) : 0
         let first = Int(progress) % clip.frames, second = (first + 1) % clip.frames
         frameCount += 1; lastFrameIndex = first
@@ -120,7 +156,9 @@ final class WolfyMapPrototypeRenderer: NSObject, CustomLayerHost {
         for c in 0..<4 { for r in 0..<4 { projection[c][r] = values[c*4+r] } }
         let projected = Projection.project(origin, zoomScale: CGFloat(pow(2, parameters.zoom)))
         let naturalScale = 1 / Projection.metersPerPoint(for: origin.latitude, zoom: CGFloat(parameters.zoom))
-        let scale = max(naturalScale, minimumMapScale)
+        // Keep the existing map-zoom response and minimum-size floor, then
+        // apply the requested 1.5x avatar size uniformly at every zoom level.
+        let scale = max(naturalScale, minimumMapScale) * 1.5
         // The source mesh faces negative Y; Mapbox's projected Y points south.
         let angle = (180 - heading) * Double.pi / 180
         var model = matrix_identity_double4x4
@@ -141,13 +179,25 @@ final class WolfyMapPrototypeRenderer: NSObject, CustomLayerHost {
         encoder.setVertexBytes(&mvp, length: MemoryLayout<simd_float4x4>.stride, index: 1)
         var foregroundDepth: Float = drawAboveBuildings ? 1 : 0
         encoder.setVertexBytes(&foregroundDepth, length: MemoryLayout<Float>.stride, index: 3)
+        var furColor=Self.color(appearance.fur,defaultColor:.classic)
+        var eyeColor=Self.color(appearance.eyes,defaultColor:.amber)
+        var noseColor=Self.color(appearance.nose,defaultColor:.black)
+        encoder.setVertexBytes(&furColor,length:MemoryLayout<SIMD4<Float>>.stride,index:4)
+        encoder.setVertexBytes(&eyeColor,length:MemoryLayout<SIMD4<Float>>.stride,index:5)
+        encoder.setVertexBytes(&noseColor,length:MemoryLayout<SIMD4<Float>>.stride,index:6)
         bones.withUnsafeBytes { encoder.setVertexBytes($0.baseAddress!, length: $0.count, index: 2) }
         encoder.drawIndexedPrimitives(type: .triangle, indexCount: m.indices, indexType: .uint32, indexBuffer: mesh, indexBufferOffset: m.vertices * 64)
+        for id in equippedItemIDs {
+            guard let item = resource.wardrobe.items[id] else { continue }
+            encoder.setVertexBuffer(resource.wardrobeMesh, offset:item.vertexOffset, index:0)
+            encoder.drawIndexedPrimitives(type:.triangle, indexCount:item.indexCount, indexType:.uint32,
+                                          indexBuffer:resource.wardrobeMesh, indexBufferOffset:item.indexOffset)
+        }
         encoder.endEncoding()
     }
     func renderingWillEnd() {
         lock.lock(); ready = false; lock.unlock()
-        pipeline = nil; mesh = nil; animation.removeAll(); manifest = nil
+        pipeline = nil; stages.removeAll()
     }
     private static let shader = """
     #include <metal_stdlib>
@@ -156,16 +206,30 @@ final class WolfyMapPrototypeRenderer: NSObject, CustomLayerHost {
     struct Raster { float4 position [[position]]; float3 normal; float4 color; };
     vertex Raster wolfy_vertex(uint id [[vertex_id]], device const Vertex *vertices [[buffer(0)]],
                               constant float4x4 &mvp [[buffer(1)]], constant float4x4 *bones [[buffer(2)]],
-                              constant float &foregroundDepth [[buffer(3)]]) {
+                              constant float &foregroundDepth [[buffer(3)]],
+                              constant float4 &furColor [[buffer(4)]], constant float4 &eyeColor [[buffer(5)]],
+                              constant float4 &noseColor [[buffer(6)]]) {
         Vertex v = vertices[id];
         float4x4 skin = bones[uint(v.joint.x)] * (1.0-v.joint.z) + bones[uint(v.joint.y)] * v.joint.z;
         Raster out; out.position = mvp * skin * v.position;
         // Preserve self-depth while placing the local avatar in front of building depth.
         out.position.z *= mix(1.0, 0.00001, foregroundDepth);
-        out.normal = normalize((skin * v.normal).xyz); out.color = v.color; return out;
+        out.normal = normalize((skin * v.normal).xyz);
+        float3 c=v.color.rgb;
+        // Home's RealityKit character uses the light coat tint across its
+        // continuous body surface. The Metal source encodes that same surface
+        // as a dark-to-cream vertex gradient, so recolor the whole range.
+        if (c.r>=.19 && c.r<=.81 && c.g>=.25 && c.g<=.87 && c.b>=.29 && c.b<=.87) {
+            float3 coat = furColor.a>0 ? furColor.rgb : float3(.96,.97,.98);
+            float marking = clamp((c.r-.20)/.59,0.0,1.0);
+            c=mix(coat*.96,min(coat*1.04,float3(1.0)),marking);
+        }
+        if (eyeColor.a>0 && distance(c,float3(1,.56,.07))<.08) c=eyeColor.rgb;
+        if (noseColor.a>0 && v.position.y<-.73 && distance(c,float3(.025,.035,.045))<.04) c=noseColor.rgb;
+        out.color=float4(c,v.color.a); return out;
     }
     fragment float4 wolfy_fragment(Raster in [[stage_in]]) {
-        float lighting = .40 + .60 * max(0.0, dot(normalize(in.normal),normalize(float3(-.5,-.6,1))));
+        float lighting = .76 + .24 * max(0.0, dot(normalize(in.normal),normalize(float3(-.5,-.6,1))));
         return float4(in.color.rgb * lighting,1);
     }
     """
@@ -194,6 +258,12 @@ struct WolfyMapPrototypeView: UIViewRepresentable {
         private var captureTasks: [DispatchWorkItem] = []
         func install(_ map: MapView, origin: CLLocationCoordinate2D) {
             self.map = map; renderer = WolfyMapPrototypeRenderer(origin: origin)
+            if let item = ProcessInfo.processInfo.arguments.first(where:{$0.hasPrefix("--map-accessory=")})?.replacingOccurrences(of:"--map-accessory=",with:"") {
+                renderer?.setEquipment(["preview":item])
+            }
+            if ProcessInfo.processInfo.arguments.contains("--map-color-review") {
+                renderer?.setAppearance(WolfyAppearance(fur:.arctic,eyes:.green,nose:.darkBrown))
+            }
             loaded = map.mapboxMap.onStyleLoaded.observe { [weak self] _ in
                 guard let self, let renderer = self.renderer else { return }
                 do {
@@ -207,7 +277,7 @@ struct WolfyMapPrototypeView: UIViewRepresentable {
                     var wall = FillExtrusionLayer(id: "wolfy-occlusion-wall", source: source.id)
                     wall.fillExtrusionHeight = .constant(2)
                     wall.fillExtrusionColor = .constant(StyleColor(.systemGray))
-                    wall.fillExtrusionOpacity = .constant(1)
+                    wall.fillExtrusionOpacity = .constant(ProcessInfo.processInfo.arguments.contains("--map-no-wall") ? 0 : 1)
                     try map.mapboxMap.addLayer(wall)
                     if ProcessInfo.processInfo.arguments.contains("--campaign-wolf-verification") {
                         var locationSource = GeoJSONSource(id: "verification-location")
