@@ -95,6 +95,11 @@ export function ProContactsView() {
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
+  const [phone, setPhone] = useState('');
+  const [company, setCompany] = useState('');
+  const [address, setAddress] = useState('');
+  const [notes, setNotes] = useState('');
+  const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
   const [converting, setConverting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -176,21 +181,39 @@ export function ProContactsView() {
   }
 
   async function create() {
-    if (!currentWorkspaceId || !name.trim()) return;
-    const response = await fetch('/api/salesperson/leads', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workspaceId: currentWorkspaceId, name: name.trim(), email: email.trim() || null }),
-    });
-    const data = await response.json();
-    if (!response.ok) {
-      setError(data.error || 'Unable to create contact.');
-      return;
+    if (!currentWorkspaceId || !name.trim() || saving) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const response = await fetch('/api/salesperson/leads', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          workspaceId: currentWorkspaceId,
+          name: name.trim(),
+          email: email.trim() || null,
+          phone: phone.trim() || null,
+          company: company.trim() || null,
+          address: address.trim() || null,
+          notes: notes.trim() || null,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Unable to create contact.');
+      setCreating(false);
+      setName('');
+      setEmail('');
+      setPhone('');
+      setCompany('');
+      setAddress('');
+      setNotes('');
+      await load();
+      setSelected(data.lead as SalesLead);
+    } catch (createError) {
+      setError(createError instanceof Error ? createError.message : 'Unable to create contact.');
+    } finally {
+      setSaving(false);
     }
-    setCreating(false);
-    setName('');
-    setEmail('');
-    await load();
   }
 
   async function createContactFromLead(lead: SalesLead) {
@@ -270,9 +293,22 @@ export function ProContactsView() {
 
         {creating && mode === 'contacts' ? (
           <div className="mb-4 space-y-2 rounded-lg border p-3">
-            <Input value={name} onChange={(event) => setName(event.target.value)} placeholder="Full name" />
-            <Input value={email} onChange={(event) => setEmail(event.target.value)} placeholder="Email" type="email" />
-            <Button className="w-full" onClick={() => void create()}>Create contact</Button>
+            <Input value={name} onChange={(event) => setName(event.target.value)} placeholder="Full name *" aria-label="Full name" required />
+            <Input value={email} onChange={(event) => setEmail(event.target.value)} placeholder="Email" aria-label="Email" type="email" />
+            <Input value={phone} onChange={(event) => setPhone(event.target.value)} placeholder="Phone number" aria-label="Phone number" type="tel" autoComplete="tel" />
+            <Input value={company} onChange={(event) => setCompany(event.target.value)} placeholder="Company" aria-label="Company" />
+            <Input value={address} onChange={(event) => setAddress(event.target.value)} placeholder="Address" aria-label="Address" autoComplete="street-address" />
+            <textarea
+              value={notes}
+              onChange={(event) => setNotes(event.target.value)}
+              placeholder="Notes"
+              aria-label="Notes"
+              rows={3}
+              className="flex w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            />
+            <Button className="w-full" disabled={!name.trim() || saving} onClick={() => void create()}>
+              {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : null} Create contact
+            </Button>
           </div>
         ) : null}
 
@@ -322,7 +358,14 @@ export function ProContactsView() {
           <>
             <div className="mb-6">
               <h2 className="text-2xl font-semibold">{selected.name}</h2>
-              <p className="text-sm text-muted-foreground">{selected.email || selected.phone || selected.address || 'No contact details'}</p>
+              <div className="mt-2 space-y-1 text-sm text-muted-foreground">
+                {selected.company ? <p>{selected.company}</p> : null}
+                {selected.email ? <p><a className="hover:underline" href={`mailto:${selected.email}`}>{selected.email}</a></p> : null}
+                {selected.phone ? <p><a className="hover:underline" href={`tel:${selected.phone}`}>{selected.phone}</a></p> : null}
+                {selected.address ? <p className="whitespace-pre-wrap">{selected.address}</p> : null}
+                {selected.notes ? <p className="whitespace-pre-wrap"><span className="font-medium text-foreground">Notes:</span> {selected.notes}</p> : null}
+                {!selected.company && !selected.email && !selected.phone && !selected.address && !selected.notes ? <p>No contact details</p> : null}
+              </div>
               {selectedWebsite ? (
                 <a
                   className="mt-3 inline-flex max-w-full items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium text-primary hover:bg-muted hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"

@@ -14,6 +14,7 @@ import {
   Library,
   ListChecks,
   Menu,
+  MoreHorizontal,
   MessageCircleMore,
   PhoneCall,
   PlayCircle,
@@ -31,16 +32,19 @@ const navigation = [
   { href: '/inbox', label: 'Inbox', icon: Inbox },
   { href: '/sales/pipeline', label: 'Pipeline', icon: KanbanSquare },
   { href: '/follow-up', label: 'Follow Up', icon: ListChecks },
-  { href: '/meetings', label: 'Meetings', icon: CalendarDays },
-  { href: '/booking', label: 'Booking', icon: CalendarPlus },
   { href: '/dialer', label: 'Dialler', icon: PhoneCall },
-  { href: '/saved-content', label: 'Saved Content', icon: Library },
-  { href: '/scripts', label: 'Scripts', icon: FileText },
   { href: '/leads', label: 'Contacts', icon: Users },
   { href: '/scraper', label: 'Add Leads', icon: Plus },
+  { href: '/social', label: 'Social', icon: MessageCircleMore },
+];
+
+const moreNavigation = [
+  { href: '/meetings', label: 'Meetings', icon: CalendarDays },
+  { href: '/booking', label: 'Booking', icon: CalendarPlus },
+  { href: '/saved-content', label: 'Saved Content', icon: Library },
+  { href: '/scripts', label: 'Scripts', icon: FileText },
   { href: '/demo-center', label: 'Demo', icon: PlayCircle },
   { href: '/stats', label: 'Performance', icon: BarChart3 },
-  { href: '/social', label: 'Social', icon: MessageCircleMore },
   { href: '/settings', label: 'Settings', icon: Settings },
 ];
 
@@ -48,55 +52,60 @@ function WorkspaceChrome({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const [mobileOpen, setMobileOpen] = useState(false);
 
-  const sidebar = (
+  const isActive = (href: string) => pathname === href || pathname.startsWith(`${href}/`);
+  const sidebar = (compact: boolean) => (
     <>
-      <div className="flex h-20 items-center border-b border-white/10 px-5">
-        <Link href="/home" className="text-xl font-black tracking-[-0.06em] text-white">
-          WOLF<span className="text-red-500">GRID</span>
+      <div className={cn('flex h-20 shrink-0 items-center border-b border-white/10', compact ? 'justify-center' : 'px-5')}>
+        <Link href="/home" aria-label="WolfGrid Sales home" className="text-xl font-black tracking-[-0.06em] text-white">
+          {compact ? <>W<span className="text-red-500">G</span></> : <>WOLF<span className="text-red-500">GRID</span></>}
         </Link>
-        <span className="ml-3 rounded-full bg-white/10 px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-white/60">
-          Sales
-        </span>
-        <button
-          type="button"
-          className="ml-auto rounded-md p-2 text-white/70 md:hidden"
-          onClick={() => setMobileOpen(false)}
-          aria-label="Close navigation"
+        {!compact && <>
+          <span className="ml-3 rounded-full bg-white/10 px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-white/60">Sales</span>
+          <button type="button" className="ml-auto rounded-md p-2 text-white/70" onClick={() => setMobileOpen(false)} aria-label="Close navigation">
+            <X className="h-5 w-5" />
+          </button>
+        </>}
+      </div>
+      <nav aria-label="Sales navigation" className="flex flex-1 flex-col gap-2 px-3 py-5">
+        {navigation.map(({ href, label, icon: Icon }) => (
+          <Link
+            key={href}
+            href={href}
+            aria-label={label}
+            aria-current={isActive(href) ? 'page' : undefined}
+            onClick={() => setMobileOpen(false)}
+            className={cn('group relative flex min-h-11 shrink-0 items-center rounded-xl text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500', compact ? 'justify-center' : 'gap-3 px-3', isActive(href) ? 'bg-white/10 text-white' : 'text-white/55 hover:bg-white/[0.06] hover:text-white')}
+          >
+            <Icon aria-hidden="true" className={cn('h-5 w-5', isActive(href) && 'text-red-500')} />
+            {compact ? <span aria-hidden="true" className="pointer-events-none absolute left-full z-50 ml-3 whitespace-nowrap rounded-lg bg-[#292a2e] px-3 py-2 text-sm text-white shadow-lg opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">{label}</span> : label}
+          </Link>
+        ))}
+        <details
+          className="group/more relative mt-auto"
+          onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) event.currentTarget.open = false; }}
+          onKeyDown={(event) => { if (event.key === 'Escape') { event.currentTarget.open = false; event.currentTarget.querySelector('summary')?.focus(); } }}
         >
-          <X className="h-5 w-5" />
-        </button>
-      </div>
-      <nav className="flex flex-1 flex-col gap-1 overflow-y-auto px-3 py-5">
-        {navigation.map(({ href, label, icon: Icon }) => {
-          const active = pathname === href || pathname.startsWith(`${href}/`);
-          return (
-            <Link
-              key={href}
-              href={href}
-              onClick={() => setMobileOpen(false)}
-              className={cn(
-                'flex min-h-11 items-center gap-3 rounded-lg px-3 text-sm font-medium transition-colors',
-                active
-                  ? 'bg-white/10 text-white'
-                  : 'text-white/55 hover:bg-white/[0.06] hover:text-white'
-              )}
-            >
-              <Icon className={cn('h-[18px] w-[18px]', active && 'text-red-500')} />
-              {label}
-            </Link>
-          );
-        })}
+          <summary aria-label="More" className={cn('group relative flex min-h-11 cursor-pointer list-none items-center rounded-xl text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 [&::-webkit-details-marker]:hidden', compact ? 'justify-center' : 'gap-3 px-3', moreNavigation.some(({ href }) => isActive(href)) ? 'bg-white/10 text-white' : 'text-white/55 hover:bg-white/[0.06] hover:text-white')}>
+            <MoreHorizontal aria-hidden="true" className="h-5 w-5" />
+            {compact ? <span aria-hidden="true" className="pointer-events-none absolute left-full z-50 ml-3 whitespace-nowrap rounded-lg bg-[#292a2e] px-3 py-2 text-white shadow-lg opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100 group-open/more:hidden">More</span> : 'More'}
+          </summary>
+          <div className={cn('absolute bottom-0 z-50 w-56 rounded-xl border border-white/10 bg-[#1c1d21] p-2 shadow-xl', compact ? 'left-full ml-3' : 'left-0 mb-14')}>
+            <p className="px-3 py-2 text-xs font-semibold uppercase tracking-wider text-white/40">More</p>
+            {moreNavigation.map(({ href, label, icon: Icon }) => (
+              <Link key={href} href={href} aria-current={isActive(href) ? 'page' : undefined} onClick={(event) => { event.currentTarget.closest('details')?.removeAttribute('open'); setMobileOpen(false); }} className={cn('flex min-h-10 items-center gap-3 rounded-lg px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500', isActive(href) ? 'bg-white/10 text-white' : 'text-white/70 hover:bg-white/10 hover:text-white')}>
+                <Icon aria-hidden="true" className={cn('h-[18px] w-[18px]', isActive(href) && 'text-red-500')} />{label}
+              </Link>
+            ))}
+          </div>
+        </details>
       </nav>
-      <div className="border-t border-white/10 px-5 py-4 text-[11px] text-white/35">
-        sales.wolfgrid.app
-      </div>
     </>
   );
 
   return (
     <div className="min-h-screen bg-gray-50 text-foreground">
-      <aside className="fixed inset-y-0 left-0 z-40 hidden w-56 flex-col bg-[#101115] md:flex">
-        {sidebar}
+      <aside className="fixed inset-y-0 left-0 z-40 hidden w-[72px] flex-col bg-[#101115] md:flex">
+        {sidebar(true)}
       </aside>
       {mobileOpen ? (
         <>
@@ -107,11 +116,11 @@ function WorkspaceChrome({ children }: { children: ReactNode }) {
             aria-label="Close navigation"
           />
           <aside className="fixed inset-y-0 left-0 z-50 flex w-72 flex-col bg-[#101115] md:hidden">
-            {sidebar}
+            {sidebar(false)}
           </aside>
         </>
       ) : null}
-      <div className="min-h-screen md:pl-56">
+      <div className="min-h-screen md:pl-[72px]">
         <header className="sticky top-0 z-30 flex h-16 items-center border-b border-border bg-white/95 px-4 backdrop-blur md:px-6">
           <button
             type="button"
