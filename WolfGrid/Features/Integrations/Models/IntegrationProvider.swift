@@ -20,6 +20,7 @@ func normalizedDisplayString(_ rawValue: String?) -> String? {
 
 /// CRM integration provider types
 enum IntegrationProvider: String, Codable, CaseIterable, Identifiable {
+    case kimicoco = "kimicoco"
     case boldtrail = "boldtrail"
     case fub = "fub"
     case kvcore = "kvcore"
@@ -36,6 +37,7 @@ enum IntegrationProvider: String, Codable, CaseIterable, Identifiable {
     
     var displayName: String {
         switch self {
+        case .kimicoco: return "KimiCoco"
         case .boldtrail: return "BoldTrail / kvCORE"
         case .fub: return "Follow Up Boss"
         case .kvcore: return "KVCore"
@@ -52,6 +54,7 @@ enum IntegrationProvider: String, Codable, CaseIterable, Identifiable {
     
     var icon: String {
         switch self {
+        case .kimicoco: return "person.crop.circle.badge.checkmark"
         case .boldtrail: return "person.crop.circle.badge.checkmark"
         case .fub: return "person.2.fill"
         case .kvcore: return "key.fill"
@@ -66,6 +69,7 @@ enum IntegrationProvider: String, Codable, CaseIterable, Identifiable {
     
     var logoName: String {
         switch self {
+        case .kimicoco: return "WolfGridLogo"
         case .boldtrail: return "kvcore_logo"
         case .fub: return "fub_logo"
         case .kvcore: return "kvcore_logo"
@@ -78,6 +82,7 @@ enum IntegrationProvider: String, Codable, CaseIterable, Identifiable {
     
     var description: String {
         switch self {
+        case .kimicoco: return "Send contacts, notes, appointments, and follow-ups to KimiCoco"
         case .boldtrail: return "Token-based BoldTrail / kvCORE lead sync"
         case .fub: return "Real estate CRM and lead management"
         case .kvcore: return "Real estate marketing platform"
@@ -96,7 +101,7 @@ enum IntegrationProvider: String, Codable, CaseIterable, Identifiable {
         switch self {
         case .boldtrail:
             return .token
-        case .kvcore, .jobnimbus, .acculynx, .rooflink:
+        case .kimicoco, .kvcore, .jobnimbus, .acculynx, .rooflink:
             return .apiKey
         case .fub, .hubspot, .monday, .companycam, .jobber:
             return .oauth
@@ -107,7 +112,7 @@ enum IntegrationProvider: String, Codable, CaseIterable, Identifiable {
 
     var syncLane: SyncLane {
         switch self {
-        case .fub:
+        case .fub, .kimicoco:
             return .native
         case .boldtrail, .kvcore, .hubspot, .monday, .jobnimbus, .companycam, .jobber, .acculynx, .rooflink:
             return .providerPipeline

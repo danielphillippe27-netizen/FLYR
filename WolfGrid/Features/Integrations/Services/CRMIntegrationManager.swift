@@ -535,7 +535,7 @@ actor CRMIntegrationManager {
     // MARK: - Disconnect
     
     func disconnect(userId: UUID, provider: IntegrationProvider) async throws {
-        if [.jobnimbus, .companycam, .jobber, .acculynx, .rooflink].contains(provider) {
+        if [.kimicoco, .jobnimbus, .companycam, .jobber, .acculynx, .rooflink].contains(provider) {
             _ = try await invokeBackendRoute(
                 path: "/api/integrations/\(provider.rawValue)/disconnect",
                 method: "POST",

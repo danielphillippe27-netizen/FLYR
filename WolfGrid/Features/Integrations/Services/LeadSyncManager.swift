@@ -154,6 +154,19 @@ actor LeadSyncManager {
                     print("⚠️ [LeadSyncManager] Secure FUB push error: \(error.localizedDescription)")
                 }
 
+                // KimiCoco stores the selected appointment and task with the saved contact.
+                // Its durable server queue keeps interrupted transfers pending.
+                do {
+                    let status = try await Self.pushKimiCocoLead(enriched, appointment: appointment, task: task)
+                    excludeProvider("kimicoco")
+                    if status == "synced" { anySecureSuccess = true }
+                    if status == "needs_attention" { explicitFailure = true }
+                } catch {
+                    explicitFailure = true
+                    excludeProvider("kimicoco")
+                    print("⚠️ [LeadSyncManager] KimiCoco transfer needs attention")
+                }
+
                 // BoldTrail secure push (workspace-scoped connection on WolfGrid web backend routes).
                 do {
                     _ = try await BoldTrailPushLeadAPI.shared.pushLead(enriched)
@@ -355,4 +368,41 @@ actor LeadSyncManager {
             taskDate
         ].joined(separator: "|")
     }
+    private static func pushKimiCocoLead(
+        _ lead: LeadModel,
+        appointment: LeadSyncAppointment?,
+        task: LeadSyncTask?
+    ) async throws -> String? {
+        let base = (Bundle.main.object(forInfoDictionaryKey: "WOLFGRID_API_URL") as? String)?
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/")) ?? "https://wolfgrid.app"
+        guard let url = URL(string: "\(base)/api/integrations/kimicoco/push-lead") else { return nil }
+        let session = try await SupabaseManager.shared.client.auth.session
+        var body: [String: Any] = ["id": lead.id.uuidString, "automatic": true]
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let appointment {
+            var item: [String: Any] = ["date": formatter.string(from: appointment.date)]
+            if let title = appointment.title { item["title"] = title }
+            if let notes = appointment.notes { item["notes"] = notes }
+            body["appointment"] = item
+        }
+        if let task {
+            body["task"] = ["title": task.title, "due_date": formatter.string(from: task.dueDate)]
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 60
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+        if http.statusCode == 404 { return nil }
+        let result = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        guard (200...299).contains(http.statusCode) else {
+            throw NSError(domain: "KimiCocoSync", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: "KimiCoco transfer needs attention"])
+        }
+        return result?["status"] as? String
+    }
+
 }
