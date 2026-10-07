@@ -8,7 +8,6 @@ import { Card, CardContent, CardHeader } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useWorkspace } from '@/lib/workspace-context';
 import { HomeHeaderRow } from './HomeHeaderRow';
-import { SalespersonMessenger } from './SalespersonMessenger';
 
 type ProfilePayload = {
   first_name?: string | null;
@@ -196,7 +195,6 @@ export function SalespersonCallHomeView() {
         />
       </div>
 
-      <SalespersonMessenger />
     </div>
   );
 }

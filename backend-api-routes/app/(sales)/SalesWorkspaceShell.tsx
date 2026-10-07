@@ -30,15 +30,15 @@ import { cn } from '@/lib/utils';
 const navigation = [
   { href: '/home', label: 'Home', icon: Home },
   { href: '/inbox', label: 'Inbox', icon: Inbox },
-  { href: '/sales/pipeline', label: 'Pipeline', icon: KanbanSquare },
   { href: '/follow-up', label: 'Follow Up', icon: ListChecks },
   { href: '/dialer', label: 'Dialler', icon: PhoneCall },
   { href: '/leads', label: 'Contacts', icon: Users },
   { href: '/scraper', label: 'Add Leads', icon: Plus },
-  { href: '/social', label: 'Social', icon: MessageCircleMore },
 ];
 
 const moreNavigation = [
+  { href: '/sales/pipeline', label: 'Pipeline', icon: KanbanSquare },
+  { href: '/social', label: 'Social', icon: MessageCircleMore },
   { href: '/meetings', label: 'Meetings', icon: CalendarDays },
   { href: '/booking', label: 'Booking', icon: CalendarPlus },
   { href: '/saved-content', label: 'Saved Content', icon: Library },
