@@ -28,7 +28,6 @@ import { DialerRuntimeProvider } from '@/components/dialer/DialerRuntimeProvider
 import { cn } from '@/lib/utils';
 
 const navigation = [
-  { href: '/home', label: 'Home', icon: Home },
   { href: '/inbox', label: 'Inbox', icon: Inbox },
   { href: '/follow-up', label: 'Follow Up', icon: ListChecks },
   { href: '/dialer', label: 'Dialler', icon: PhoneCall },
@@ -37,6 +36,7 @@ const navigation = [
 ];
 
 const moreNavigation = [
+  { href: '/home', label: 'Home', icon: Home },
   { href: '/sales/pipeline', label: 'Pipeline', icon: KanbanSquare },
   { href: '/social', label: 'Social', icon: MessageCircleMore },
   { href: '/meetings', label: 'Meetings', icon: CalendarDays },
