@@ -67,6 +67,7 @@ function WorkspaceChrome({ children }: { children: ReactNode }) {
         </>}
       </div>
       <nav aria-label="Sales navigation" className="flex flex-1 flex-col gap-2 px-3 py-5">
+        <div className={cn("flex flex-col gap-2", compact && "flex-1 justify-center")} >
         {navigation.map(({ href, label, icon: Icon }) => (
           <Link
             key={href}
@@ -80,6 +81,7 @@ function WorkspaceChrome({ children }: { children: ReactNode }) {
             {compact ? <span aria-hidden="true" className="pointer-events-none absolute left-full z-50 ml-3 whitespace-nowrap rounded-lg bg-[#292a2e] px-3 py-2 text-sm text-white shadow-lg opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">{label}</span> : label}
           </Link>
         ))}
+        </div>
         <details
           className="group/more relative mt-auto"
           onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) event.currentTarget.open = false; }}
