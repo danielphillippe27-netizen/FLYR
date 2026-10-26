@@ -40,8 +40,7 @@ type ContactLike = {
   id?: unknown;
 };
 
-const FOLLOW_UP_DELAY_MS = 24 * 60 * 60 * 1000;
-const DEFAULT_DEMO_DESTINATION_PATH = '/demo-1';
+const DEFAULT_DEMO_DESTINATION_PATH = '/demo1';
 
 function cleanText(value: string | null | undefined): string | null {
   const trimmed = value?.trim();
@@ -145,13 +144,8 @@ export async function recordDemoLinkOpen(params: {
 }): Promise<void> {
   const now = new Date();
   const openedAt = params.link.opened_at ?? now.toISOString();
-  const followUpDueAt = new Date(now.getTime() + FOLLOW_UP_DELAY_MS).toISOString();
   const metadata = getTrackingMetadata(params.request);
   const openCount = Math.max(0, Number(params.link.open_count ?? 0)) + 1;
-  const shouldCreateFollowUp =
-    !params.link.converted_at &&
-    !params.link.follow_up_created_at &&
-    Boolean(params.link.dialler_lead_id);
 
   const { error: updateError } = await params.admin
     .from('salesperson_demo_links')
@@ -159,12 +153,6 @@ export async function recordDemoLinkOpen(params: {
       opened_at: openedAt,
       last_opened_at: now.toISOString(),
       open_count: openCount,
-      ...(shouldCreateFollowUp
-        ? {
-            follow_up_due_at: followUpDueAt,
-            follow_up_created_at: now.toISOString(),
-          }
-        : {}),
     })
     .eq('id', params.link.id);
 
@@ -193,79 +181,10 @@ export async function recordDemoLinkOpen(params: {
   await recordDemoOpenInPipeline({
     admin: params.admin,
     link: params.link,
-    followUpDueAt,
     openedAt: now.toISOString(),
   });
 
-  if (!shouldCreateFollowUp || !params.link.dialler_lead_id) return;
-
-  const { error: leadError } = await params.admin
-    .from('sales_leads')
-    .update({
-      follow_up_name: 'Opened demo, no signup',
-      follow_up_at: followUpDueAt,
-      demo_link_follow_up_id: params.link.id,
-      updated_at: now.toISOString(),
-    })
-    .eq('id', params.link.dialler_lead_id)
-    .is('follow_up_at', null);
-
-  if (leadError) {
-    console.warn('[demo-link-tracking] failed to create demo open follow-up', leadError);
-  }
-
-  await params.admin
-    .from('sales_activities')
-    .insert({
-      sales_lead_id: params.link.dialler_lead_id,
-      workspace_id: params.link.workspace_id,
-      activity_type: 'demo_opened',
-      note: `Opened tracked demo link. Auto follow-up scheduled for ${new Date(followUpDueAt).toLocaleString()}.`,
-      occurred_at: now.toISOString(),
-      metadata: {
-        demoLinkId: params.link.id,
-        followUpDueAt,
-        legacyContactId: params.link.contact_id,
-      },
-    })
-    .then(({ error }) => {
-      if (error) {
-        console.warn('[demo-link-tracking] failed to log demo open sales activity', error);
-      }
-    });
-
-  if (!params.link.contact_id) return;
-
-  const { error: contactError } = await params.admin
-    .from('contacts')
-    .update({
-      follow_up_at: followUpDueAt,
-      reminder_date: followUpDueAt,
-      demo_link_follow_up_id: params.link.id,
-      status: 'follow_up',
-      updated_at: now.toISOString(),
-    })
-    .eq('id', params.link.contact_id)
-    .is('follow_up_at', null);
-
-  if (contactError) {
-    console.warn('[demo-link-tracking] failed to create contact follow-up', contactError);
-  }
-
-  await params.admin
-    .from('contact_activities')
-    .insert({
-      contact_id: params.link.contact_id,
-      type: 'note',
-      note: `Opened tracked demo link. Auto follow-up scheduled for ${new Date(followUpDueAt).toLocaleString()}.`,
-      timestamp: now.toISOString(),
-    })
-    .then(({ error }) => {
-      if (error) {
-        console.warn('[demo-link-tracking] failed to log demo open activity', error);
-      }
-    });
-
+  // Reminder timing belongs to the accepted send, never a link click.
 }
 
 export function buildDemoLinkDestination(link: DemoLinkRow, request: NextRequest): URL {
@@ -418,4 +337,3 @@ export async function markConvertedDemoLinks(params: {
     convertedWorkspaceId: params.convertedWorkspaceId,
   });
 }
-

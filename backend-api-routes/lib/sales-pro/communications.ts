@@ -138,6 +138,32 @@ export async function appendCommunication(admin: Admin, input: CommunicationInpu
     if (existing.error) throw existing.error;
     if (existing.data) {
       if (existing.data.actor_user_id !== (input.actorUserId ?? null)) throw new Error('Provider event belongs to a different communication owner.');
+      // A delivery callback can arrive before the send request is persisted.
+      // Attach its original message content so the demo trigger still runs.
+      if (input.direction === 'outbound' && ['sms', 'email'].includes(input.channel)
+        && existing.data.event_kind !== 'demo_sent' && containsDemoLink(input.body)) {
+        const hydrated = await admin.from('communication_events').update({
+          event_kind: 'demo_sent', body: input.body, subject: input.subject ?? existing.data.subject,
+          sales_lead_id: input.leadId ?? existing.data.sales_lead_id,
+          sales_contact_id: input.contactId ?? existing.data.sales_contact_id,
+          status: existing.data.status,
+        }).eq('id', existing.data.id).eq('workspace_id', input.workspaceId)
+          .eq('actor_user_id', input.actorUserId).select('*').single();
+        if (hydrated.error) throw hydrated.error;
+        return { threadId: hydrated.data.thread_id, event: hydrated.data };
+      }
+      // Telnyx callbacks refer to the same message as the initial send. Update
+      // its delivery state without recording a second send or restarting tasks.
+      const terminal = ['delivered', 'failed', 'undelivered', 'rejected', 'canceled', 'cancelled'];
+      if (input.provider === 'telnyx' && input.direction === 'outbound' && input.status
+        && input.status !== existing.data.status && !terminal.includes(existing.data.status)
+        && ['sent', 'sent_to_carrier', ...terminal].includes(input.status)) {
+        const updated = await admin.from('communication_events').update({ status: input.status })
+          .eq('id', existing.data.id).eq('workspace_id', input.workspaceId)
+          .eq('actor_user_id', input.actorUserId).select('*').single();
+        if (updated.error) throw updated.error;
+        return { threadId: updated.data.thread_id, event: updated.data };
+      }
       return { threadId: existing.data.thread_id, event: existing.data };
     }
   }

@@ -11,6 +11,9 @@ test('demo links match actual WolfGrid destinations, not lookalike domains or dr
   assert.equal(containsDemoLink('Demo: https://wolfgrid.app/demo-2?ref=HUGHES.'), true);
   assert.equal(containsDemoLink('https://wolfgrid.app.evil.example/demo100'), false);
   assert.equal(containsDemoLink('Demo prepared'), false);
+  assert.equal(containsDemoLink('https://wolfgrid.app/s/REP?campaign=roofing&redirect=%2Fdemo1'), true);
+  assert.equal(containsDemoLink('https://wolfgrid.app/s/REP?redirect=https%3A%2F%2Fevil.example%2Fdemo1'), false);
+  assert.equal(containsDemoLink('https://wolfgrid.app/s/REP?redirect=%2Fpricing'), false);
 });
 
 test('counts each accepted send once across webhook, canonical and legacy copies; excludes failures and inbound', () => {

@@ -111,7 +111,7 @@ export async function POST(request: NextRequest) {
     await appendCommunication(admin, {
       workspaceId, contactId: salesContact?.id ?? null, leadId: salesLead?.id ?? null, actorUserId: ownerUserId,
       channel: "sms", direction, eventKind: eventType, provider: "telnyx",
-      providerEventId: data.id, providerThreadId: payload.id, body: payload.text ?? "",
+      providerEventId: payload.id, providerThreadId: payload.id, body: payload.text ?? "",
       fromAddress: from, toAddresses: [to], status: payloadStatus(eventType, payload),
       occurredAt: payload.received_at ?? payload.sent_at ?? data.occurred_at ?? undefined,
       attachments: payload.media ?? [], metadata: { ownershipVerified: true, providerMessageId: payload.id },

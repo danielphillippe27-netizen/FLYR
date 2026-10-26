@@ -8,6 +8,7 @@ export async function GET(request: NextRequest) {
   if (context instanceof NextResponse) return context;
   const status = cleanText(request.nextUrl.searchParams.get('status')) ?? 'open';
   let query = context.admin.from('sales_tasks').select('*,sales_leads(id,name,phone,email),sales_contacts(id,name,phone,email)').eq('workspace_id', context.workspaceId).eq('assigned_user_id', context.userId).eq('sales_contacts.owner_user_id', context.userId).eq('sales_contacts.workspace_id', context.workspaceId).eq('sales_leads.assigned_user_id', context.userId).eq('sales_leads.workspace_id', context.workspaceId).order('due_at', { ascending: true }).limit(clampLimit(request.nextUrl.searchParams.get('limit'), 100, 300));
+  if (request.nextUrl.searchParams.get('category') === 'manual') query = query.neq('task_type', 'demo_follow_up');
   if (status !== 'all') query = query.eq('status', status);
   const { data, error } = await query;
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
@@ -71,7 +72,11 @@ export async function PATCH(request: NextRequest) {
   catch { return NextResponse.json({ error: 'Linked record not found.' }, { status: 404 }); }
   const updates: Record<string, unknown> = {};
   if (cleanText(body.title)) updates.title = cleanText(body.title);
-  if ('dueAt' in body) updates.due_at = cleanText(body.dueAt);
+  if ('dueAt' in body) {
+    const dueAt = cleanText(body.dueAt);
+    if (dueAt && Number.isNaN(Date.parse(dueAt))) return NextResponse.json({ error: 'Choose a valid follow-up date.' }, { status: 400 });
+    updates.due_at = dueAt;
+  }
   if (body.status === 'open' || body.status === 'completed' || body.status === 'dismissed') {
     updates.status = body.status; updates.completed_at = body.status === 'completed' ? new Date().toISOString() : null;
   }

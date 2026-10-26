@@ -668,7 +668,8 @@ export async function POST(request: NextRequest) {
         }
       }
       const sent = await sendManagedEmail({ admin, workspaceId, userId: context!.user.id, senderEmail: context!.user.email, contactId, leadId: requestedLead?.id ?? lead?.id ?? null, to, subject: clean(payload.subject) ?? "Following up", body });
-      return NextResponse.json({ sent: true, emailId: sent.event?.provider_event_id ?? null });
+      return NextResponse.json({ sent: true, emailId: sent.event?.provider_event_id ?? null,
+        warning: sent.event?.metadata?.demoFollowUpTaskId ? "Demo sent. Your reminder is in Follow Up → Demo." : null });
     }
 
     if (!body && !attachments.length) {
@@ -687,7 +688,8 @@ export async function POST(request: NextRequest) {
         ? await admin.from("sales_leads").select("id").eq("workspace_id", workspaceId).eq("assigned_user_id", context!.user.id).eq("sales_contact_id", salesContact.id).order("updated_at", { ascending: false }).limit(1).maybeSingle()
         : { data: null };
       const sentCanonical = await sendManagedSms({ admin, workspaceId, userId: context!.user.id, contactId: salesContact?.id ?? contactId, leadId: requestedLead?.id ?? lead?.id ?? null, to: phone, body: body ?? "", attachments });
-      return NextResponse.json({ message: sentCanonical.event, warning: null });
+      return NextResponse.json({ message: sentCanonical.event,
+        warning: sentCanonical.event?.metadata?.demoFollowUpTaskId ? "Demo sent. Your reminder is in Follow Up → Demo." : null });
     }
     const contact = contactId ? await getContactForWorkspace(admin, contactId, workspaceId, context!.user.id) : null;
     if (contactId && !contact) return NextResponse.json({ error: "Contact not found." }, { status: 404 });
@@ -716,6 +718,8 @@ export async function POST(request: NextRequest) {
       created_at: now,
       updated_at: now,
     };
+
+    await appendCommunication(admin, { workspaceId, actorUserId: context!.user.id, channel: "sms", direction: "outbound", eventKind: "sms_sent", provider: "telnyx", providerEventId: providerMessageId, body, fromAddress: from, toAddresses: [phone], status });
 
     const { data, error } = await admin
       .from("dialer_messages")
@@ -766,8 +770,6 @@ export async function POST(request: NextRequest) {
     }
 
 
-
-    await appendCommunication(admin, { workspaceId, actorUserId: context!.user.id, channel: "sms", direction: "outbound", eventKind: "sms_sent", provider: "telnyx", providerEventId: providerMessageId, body, fromAddress: from, toAddresses: [phone], status });
 
     return NextResponse.json({
       message: publicMessage(data as Record<string, unknown>),

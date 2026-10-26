@@ -1,7 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { normalizePhoneNumber } from '@/lib/dialer/phone';
 import {
-  ACTIVE_PIPELINE_STAGES,
   estimatedMonthlyValueForSeats,
 } from '@/lib/sales-pipeline/constants';
 import type {
@@ -75,10 +74,6 @@ function nextStageOnDemoOpen(current?: string | null): SalesPipelineStage {
     return 'demo_sent';
   }
   return current as SalesPipelineStage;
-}
-
-function isActiveStage(value?: string | null): boolean {
-  return ACTIVE_PIPELINE_STAGES.has((value ?? 'new_lead') as SalesPipelineStage);
 }
 
 async function findLeadForDemoLink(
@@ -215,14 +210,10 @@ async function loadSalespersonByReferralCode(
 export async function recordDemoOpenInPipeline(params: {
   admin: SupabaseAdmin;
   link: DemoLinkLike;
-  followUpDueAt: string;
   openedAt: string;
 }): Promise<void> {
   const lead = await findLeadForDemoLink(params.admin, params.link);
   if (!lead?.id) return;
-
-  const title = 'Follow up - opened demo, no signup';
-  const nextTaskShouldChange = isActiveStage(lead.pipeline_stage);
 
   const { error } = await params.admin
     .from('sales_leads')
@@ -230,13 +221,6 @@ export async function recordDemoOpenInPipeline(params: {
       pipeline_stage: nextStageOnDemoOpen(lead.pipeline_stage),
       last_touch_at: params.openedAt,
       last_touch_summary: 'Opened tracked demo link',
-      ...(nextTaskShouldChange
-        ? {
-            next_task_title: title,
-            next_task_type: 'demo_follow_up',
-            next_follow_up_at: params.followUpDueAt,
-          }
-        : {}),
     })
     .eq('id', lead.id).eq('workspace_id',lead.workspace_id).eq('assigned_user_id',lead.assigned_user_id);
 
@@ -249,10 +233,9 @@ export async function recordDemoOpenInPipeline(params: {
     lead,
     type: 'demo_opened',
     title: 'Demo opened',
-    body: `Tracked demo link opened. Follow-up due ${new Date(params.followUpDueAt).toLocaleString()}.`,
+    body: 'Tracked demo link clicked. The send-based follow-up date is unchanged.',
     metadata: {
       demoLinkId: params.link.id,
-      followUpDueAt: params.followUpDueAt,
     },
   });
 }

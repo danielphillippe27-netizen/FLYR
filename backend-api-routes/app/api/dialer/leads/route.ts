@@ -308,7 +308,7 @@ export async function PATCH(request: NextRequest) {
     if (body.sendDemoEmail === true) {
       try {
         const handle = normalizeDemoEmailHandle(context.salesperson?.demo_email_handle);
-        await sendManagedEmail({
+        const sent = await sendManagedEmail({
           admin: context.admin, workspaceId: context.workspaceId, userId: context.requestUser.id,
           contactId: data.sales_contact_id, leadId: data.id, to: data.email,
           subject: 'Your WolfGrid demo', body: `Watch the WolfGrid demo: ${SALES_DEMO_URL}`,
@@ -318,6 +318,9 @@ export async function PATCH(request: NextRequest) {
             replyTo: context.salesperson?.demo_email_reply_to,
           },
         });
+        if (sent?.event?.metadata?.demoFollowUpTaskId) {
+          warning = [warning, 'Demo sent. Your reminder is in Follow Up → Demo.'].filter(Boolean).join(' ');
+        }
       } catch (sendError) {
         console.error('[dialer/leads] demo email failed', sendError);
         return NextResponse.json({ lead: shapeLead(data as SalesLead), error: 'Contact saved, but the demo email could not be confirmed. Check your Inbox before retrying.', demoEmailSent: false }, { status: 502 });

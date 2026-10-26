@@ -1,4 +1,5 @@
 import { getSalespersonSmsFromNumber } from '@/lib/dialer/salesperson-settings';
+import { recordLegacyDemoSend } from '@/lib/sales-pro/demo-send';
 import { NextResponse, type NextRequest } from "next/server";
 import { createAdminClient } from "@/lib/supabase/server";
 import { resolveDialerWorkspace } from "../../../_utils";
@@ -131,6 +132,13 @@ export async function POST(request: NextRequest, routeContext: RouteContext) {
     const from = normalizePhone(sent?.from?.phone_number) ?? senderNumber;
     const providerMessageId = sent?.id ?? null;
     const status = sent?.to?.[0]?.status ?? "queued";
+    const demoNotice = await recordLegacyDemoSend(createAdminClient(), {
+      workspaceId: resolved.context!.workspace!.id, actorUserId: resolved.context!.user.id,
+      leadId: resolved.contact ? null : leadId, legacyContactId: resolved.contact?.id,
+      channel: 'sms', direction: 'outbound', eventKind: 'sms_sent', provider: 'telnyx',
+      providerEventId: providerMessageId, body, fromAddress: from, toAddresses: [to], status,
+      metadata: { recipientName: resolved.contact?.full_name ?? null },
+    });
     const optimisticMessage = outboundMessageFromTelnyx({
       workspaceId: resolved.context!.workspace!.id,
       contactId: resolved.contact?.id ?? null,
@@ -144,7 +152,7 @@ export async function POST(request: NextRequest, routeContext: RouteContext) {
     if (!resolved.contact) {
       return NextResponse.json({
         message: publicMessage(optimisticMessage),
-        warning: sent?.errors?.length ? "Text queued with Telnyx warnings." : null,
+        warning: [demoNotice, sent?.errors?.length ? "Text queued with Telnyx warnings." : null].filter(Boolean).join(' ') || null,
       });
     }
 
@@ -178,7 +186,7 @@ export async function POST(request: NextRequest, routeContext: RouteContext) {
       console.warn("[dialer/leads/sms] message storage failed", error.message);
       return NextResponse.json({
         message: publicMessage(optimisticMessage),
-        warning: "Text sent, but message history is unavailable.",
+        warning: [demoNotice, "Text sent, but message history is unavailable."].filter(Boolean).join(' '),
       });
     }
 
@@ -197,7 +205,7 @@ export async function POST(request: NextRequest, routeContext: RouteContext) {
 
     return NextResponse.json({
       message: publicMessage(data as Record<string, unknown>),
-      warning: sent?.errors?.length ? "Text queued with Telnyx warnings." : null,
+      warning: [demoNotice, sent?.errors?.length ? "Text queued with Telnyx warnings." : null].filter(Boolean).join(' ') || null,
     });
   } catch (error) {
     console.error("[dialer/leads/sms] POST", error);

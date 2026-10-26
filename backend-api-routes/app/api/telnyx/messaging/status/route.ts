@@ -98,6 +98,15 @@ export async function POST(request: NextRequest) {
     console.error('[telnyx/messaging/status] failed to update follow-up', updateError);
   }
 
+  if (status && followup.user_id) {
+    const { error } = await admin.from('communication_events').update({ status })
+      .eq('workspace_id', followup.workspace_id).eq('actor_user_id', followup.user_id)
+      .eq('provider', 'telnyx').eq('provider_event_id', messageId)
+      .eq('direction', 'outbound')
+      .in('status', ['queued', 'accepted', 'sending', 'sent_to_carrier', 'sent']);
+    if (error) return NextResponse.json({ error: 'Demo delivery status could not be saved.' }, { status: 500 });
+  }
+
   return NextResponse.json({ ok: true });
 }
 

@@ -1,4 +1,5 @@
 import { getSalespersonSmsFromNumber } from '@/lib/dialer/salesperson-settings';
+import { recordLegacyDemoSend } from '@/lib/sales-pro/demo-send';
 import { NextRequest, NextResponse } from 'next/server';
 import type { DialerCall, DialerSmsFollowup } from '@/types/database';
 import { getDialerRequestContext } from '@/lib/dialer/server';
@@ -183,6 +184,13 @@ export async function POST(
       to: call.to_number_e164,
       body: messageBody,
     });
+    const demoNotice = await recordLegacyDemoSend(context.admin, {
+      workspaceId: context.workspaceId, actorUserId: context.requestUser.id,
+      leadId: salesLeadId || null, legacyContactId: contactId,
+      channel: 'sms', direction: 'outbound', eventKind: 'sms_sent',
+      provider: message.provider, providerEventId: message.messageId,
+      body: messageBody, fromAddress: fromNumber, toAddresses: [call.to_number_e164], status: message.status,
+    });
 
     const insertPayload = {
       workspace_id: context.workspaceId,
@@ -230,7 +238,7 @@ export async function POST(
     if (insertError) {
       console.error('[dialer/sms] failed to save follow-up text', insertError);
       return NextResponse.json(
-        { followup: null, warning: 'Text sent, but WolfGrid could not save the follow-up record.' },
+        { followup: null, warning: [demoNotice, 'Text sent, but WolfGrid could not save the follow-up record.'].filter(Boolean).join(' ') },
         { status: 201 }
       );
     }
@@ -243,7 +251,7 @@ export async function POST(
       console.warn('[dialer/sms] failed to update contact last_contacted', contactError);
     }
 
-    return NextResponse.json({ followup: followup as DialerSmsFollowup }, { status: 201 });
+    return NextResponse.json({ followup: followup as DialerSmsFollowup, warning: demoNotice }, { status: 201 });
   } catch (error) {
     console.error('[dialer/sms] failed to send follow-up text', error);
     return NextResponse.json(

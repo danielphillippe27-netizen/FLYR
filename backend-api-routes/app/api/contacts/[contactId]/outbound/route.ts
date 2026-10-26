@@ -1,4 +1,5 @@
 import { getSalespersonSmsFromNumber } from '@/lib/dialer/salesperson-settings';
+import { recordLegacyDemoSend } from '@/lib/sales-pro/demo-send';
 import { NextRequest, NextResponse } from 'next/server';
 import { Resend } from 'resend';
 import { resolveUserFromRequest } from '@/app/api/_utils/request-user';
@@ -139,6 +140,13 @@ async function sendText(
       to: normalizedPhone.e164,
       body,
     });
+    const demoNotice = await recordLegacyDemoSend(auth.admin, {
+      workspaceId: auth.workspaceId, actorUserId: auth.requestUser.id, legacyContactId: auth.contact.id,
+      channel: 'sms', direction: 'outbound', eventKind: 'sms_sent', provider: message.provider,
+      providerEventId: message.messageId, body, fromAddress: fromNumber,
+      toAddresses: [normalizedPhone.e164], status: message.status,
+      metadata: { recipientName: auth.contact.full_name },
+    });
 
     const insertPayload = {
       workspace_id: auth.workspaceId,
@@ -183,12 +191,12 @@ async function sendText(
     if (insertError) {
       console.error('[contacts/outbound] failed to save text follow-up', insertError);
       return NextResponse.json(
-        { sent: true, warning: 'Text sent, but WolfGrid could not save the text record.' },
+        { sent: true, warning: [demoNotice, 'Text sent, but WolfGrid could not save the text record.'].filter(Boolean).join(' ') },
         { status: 201 }
       );
     }
 
-    return NextResponse.json({ sent: true, followup: followup as DialerSmsFollowup }, { status: 201 });
+    return NextResponse.json({ sent: true, followup: followup as DialerSmsFollowup, warning: demoNotice }, { status: 201 });
   } catch (error) {
     console.error('[contacts/outbound] failed to send text', error);
     return NextResponse.json(
@@ -243,6 +251,12 @@ async function sendEmail(
       const message = error.message?.trim() || 'Failed to send the email.';
       return NextResponse.json({ error: message }, { status: error.statusCode ?? 500 });
     }
+    const demoNotice = await recordLegacyDemoSend(auth.admin, {
+      workspaceId: auth.workspaceId, actorUserId: auth.requestUser.id, legacyContactId: auth.contact.id,
+      channel: 'email', direction: 'outbound', eventKind: 'email_sent', provider: 'resend',
+      providerEventId: data?.id, body, subject: emailSubject, fromAddress: from,
+      toAddresses: [recipient], status: 'sent', metadata: { recipientName: auth.contact.full_name },
+    });
 
     const [{ error: activityError }, { error: contactError }] = await Promise.all([
       auth.admin.from('contact_activities').insert({
@@ -263,7 +277,7 @@ async function sendEmail(
       console.warn('[contacts/outbound] failed to update contact after email', contactError);
     }
 
-    return NextResponse.json({ sent: true, emailId: typeof data?.id === 'string' ? data.id : null }, { status: 201 });
+    return NextResponse.json({ sent: true, emailId: typeof data?.id === 'string' ? data.id : null, warning: demoNotice }, { status: 201 });
   } catch (error) {
     console.error('[contacts/outbound] failed to send email', error);
     return NextResponse.json(
