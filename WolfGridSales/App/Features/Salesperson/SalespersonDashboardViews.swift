@@ -6996,6 +6996,7 @@ struct SalespersonEmailComposer: View {
     let onCancel: () -> Void
     let onSend: () -> Void
     @FocusState private var focusedField: Field?
+    @State private var validationMessage: String?
 
     private enum Field {
         case recipient
@@ -7046,7 +7047,7 @@ struct SalespersonEmailComposer: View {
                 }
                 .accessibilityLabel("Email templates")
 
-                Button(action: onSend) {
+                Button(action: send) {
                     if isSending {
                         ProgressView()
                             .frame(width: 30, height: 38)
@@ -7056,7 +7057,7 @@ struct SalespersonEmailComposer: View {
                             .frame(width: 30, height: 38)
                     }
                 }
-                .disabled(!canSend)
+                .disabled(isSending)
                 .accessibilityLabel("Send email")
             }
             .overlay {
@@ -7067,6 +7068,16 @@ struct SalespersonEmailComposer: View {
             .foregroundStyle(.primary)
             .padding(.horizontal, 18)
             .padding(.vertical, 10)
+
+            if let visibleError = (validationMessage ?? errorMessage)?.nilIfEmpty {
+                Label(visibleError, systemImage: "exclamationmark.circle.fill")
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 10)
+                    .accessibilityIdentifier("emailSendError")
+            }
 
             composeRow(label: "To") {
                 if recipientIsEditable {
@@ -7132,14 +7143,6 @@ struct SalespersonEmailComposer: View {
                         .padding(.top, 18)
                         .padding(.bottom, 16)
 
-                    if let errorMessage = errorMessage?.nilIfEmpty {
-                        Text(errorMessage)
-                            .font(.footnote)
-                            .foregroundStyle(.red)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 20)
-                            .padding(.bottom, 12)
-                    }
                 }
             }
             .scrollDismissesKeyboard(.interactively)
@@ -7162,6 +7165,11 @@ struct SalespersonEmailComposer: View {
                 .accessibilityLabel("Hide keyboard")
             }
         }
+        .onChange(of: recipient) { _, _ in validationMessage = nil }
+        .onChange(of: messageBody) { _, _ in validationMessage = nil }
+        .onChange(of: errorMessage) { _, newError in
+            if newError?.nilIfEmpty != nil { focusedField = nil }
+        }
         .onAppear {
             focusedField = recipientIsEditable && recipient.isEmpty ? .recipient : .subject
         }
@@ -7171,12 +7179,30 @@ struct SalespersonEmailComposer: View {
         AuthManager.shared.user?.email.nilIfEmpty ?? "WolfGrid Mail"
     }
 
-    private var canSend: Bool {
-        !isSending
-            && recipient.trimmingCharacters(in: .whitespacesAndNewlines).contains("@")
-            && recipient.trimmingCharacters(in: .whitespacesAndNewlines).contains(".")
-            && !subject.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && !messageBody.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    private func send() {
+        guard !isSending else { return }
+        focusedField = nil
+        let trimmedRecipient = recipient.trimmingCharacters(in: .whitespacesAndNewlines)
+        let parts = trimmedRecipient.split(separator: "@", omittingEmptySubsequences: false)
+        guard parts.count == 2,
+              !parts[0].isEmpty,
+              parts[1].contains("."),
+              !parts[1].hasPrefix("."),
+              !parts[1].hasSuffix("."),
+              !trimmedRecipient.contains(where: \.isWhitespace) else {
+            validationMessage = "Enter a complete email address, such as name@outlook.com."
+            return
+        }
+        guard !messageBody.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            validationMessage = "Write an email before sending it."
+            return
+        }
+        validationMessage = nil
+        recipient = trimmedRecipient
+        if subject.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            subject = "Following up"
+        }
+        onSend()
     }
 
     private func composeRow<Content: View>(
