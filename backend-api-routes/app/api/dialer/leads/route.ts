@@ -2,6 +2,7 @@ import { normalizePhoneNumber, phoneMarketFromCountryCode } from '@/lib/dialer/p
 import { NextRequest, NextResponse } from 'next/server';
 import { getDialerRequestContext, type DialerRequestContext } from '@/lib/dialer/server';
 import { ensureSalespersonLeadMaster } from '@/lib/sales-leads/master-list';
+import { refreshGooglePlaceDetails } from '@/lib/sales-leads/google-place-details';
 import type { DiallerLeadDisposition, SalesLead, SalesLeadState } from '@/types/database';
 
 import { sendManagedEmail } from '@/lib/sales-pro/communications';
@@ -44,6 +45,11 @@ function shapeLead(row: SalesLead) {
     role: clean(metadata.role) ?? clean(metadata.jobTitle) ?? clean(metadata.job_title) ?? clean(metadata.title),
     email: clean(row.email),
     timezone: clean(metadata.timezone) ?? clean(metadata.timeZone) ?? clean(metadata.time_zone),
+    google_place_id: clean(metadata.googlePlaceId) ?? (
+      ['google_places', 'd2d_job_signals'].includes(row.source ?? '') ? clean(row.external_id) : null
+    ),
+    google_rating: typeof metadata.googleRating === 'number' ? metadata.googleRating : null,
+    google_rating_count: typeof metadata.googleReviewCount === 'number' ? metadata.googleReviewCount : null,
     list_id: list.listId,
     list_name: list.listName,
     called_at: row.last_attempted_at ?? null,
@@ -94,6 +100,14 @@ export async function GET(request: NextRequest) {
     if (error) throw error;
 
     const rows = (data ?? []) as SalesLead[];
+    if (request.nextUrl.searchParams.get('refreshGoogleRating') === '1' && focusedIds.length === 1) {
+      const index = rows.findIndex((row) => row.id === focusedIds[0]);
+      if (index >= 0) rows[index] = await refreshGooglePlaceDetails({
+        admin: context.admin,
+        workspaceId: context.workspaceId,
+        userId: context.requestUser.id,
+      }, rows[index]);
+    }
     const phoneFor = (row: SalesLead) => normalizePhoneNumber(
       row.phone_e164 || row.phone, phoneMarketFromCountryCode(row.phone_country_code)
     ).e164;
