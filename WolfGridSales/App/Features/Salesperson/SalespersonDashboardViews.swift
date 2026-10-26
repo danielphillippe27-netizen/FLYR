@@ -8488,6 +8488,7 @@ private struct SalespersonPhoneKeypadGrid: View {
 private struct SalespersonManualDialPad: View {
     @Environment(\.dismiss) private var dismiss
     @State private var number = ""
+    @FocusState private var isNumberFocused: Bool
     @State private var isCalling = false
     @State private var validationMessage: String?
     let onCall: (String) async -> Bool
@@ -8497,12 +8498,20 @@ private struct SalespersonManualDialPad: View {
             ScrollView {
                 VStack(spacing: 24) {
                     HStack(spacing: 12) {
-                        Text(number.isEmpty ? "Enter a phone number" : number)
+                        TextField("Phone number", text: $number)
                             .font(.system(size: 30, weight: .medium, design: .rounded))
-                            .foregroundStyle(number.isEmpty ? .secondary : .primary)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.5)
+                            .textContentType(.telephoneNumber)
+                            .keyboardType(.phonePad)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .multilineTextAlignment(.center)
+                            .focused($isNumberFocused)
+                            .disabled(isCalling)
                             .frame(maxWidth: .infinity, minHeight: 48)
+                            .accessibilityLabel("Phone number")
+                            .onChange(of: number) { _, _ in
+                                validationMessage = nil
+                            }
 
                         Button {
                             guard !number.isEmpty else { return }
@@ -8523,6 +8532,15 @@ private struct SalespersonManualDialPad: View {
                         .accessibilityLabel("Delete digit")
                     }
                     .padding(.horizontal, 8)
+
+                    PasteButton(payloadType: String.self) { values in
+                        guard !isCalling, let pastedNumber = values.first else { return }
+                        number = pastedNumber.trimmingCharacters(in: .whitespacesAndNewlines)
+                        validationMessage = nil
+                        isNumberFocused = false
+                    }
+                    .disabled(isCalling)
+                    .accessibilityLabel("Paste phone number")
 
                     SalespersonPhoneKeypadGrid(
                         isEnabled: !isCalling,
@@ -8565,6 +8583,10 @@ private struct SalespersonManualDialPad: View {
             .navigationTitle("Manual Call")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Done") { isNumberFocused = false }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") { dismiss() }
                         .disabled(isCalling)
@@ -8574,6 +8596,7 @@ private struct SalespersonManualDialPad: View {
     }
 
     private func append(_ digit: String) {
+        isNumberFocused = false
         guard number.count < 18 else { return }
         if digit == "+" {
             guard number.isEmpty else { return }
@@ -8588,6 +8611,7 @@ private struct SalespersonManualDialPad: View {
             validationMessage = "Enter a valid phone number."
             return
         }
+        isNumberFocused = false
         isCalling = true
         Task {
             let didStart = await onCall(number)
