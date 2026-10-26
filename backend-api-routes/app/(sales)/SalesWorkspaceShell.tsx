@@ -67,7 +67,7 @@ function WorkspaceChrome({ children }: { children: ReactNode }) {
         </>}
       </div>
       <nav aria-label="Sales navigation" className="flex flex-1 flex-col gap-2 px-3 py-5">
-        <div className={cn("flex flex-col gap-2", compact && "flex-1 justify-center")} >
+        <div className="flex flex-col gap-2">
         {navigation.map(({ href, label, icon: Icon }) => (
           <Link
             key={href}
@@ -105,10 +105,7 @@ function WorkspaceChrome({ children }: { children: ReactNode }) {
   );
 
   return (
-    <div className="min-h-screen bg-gray-50 text-foreground">
-      <aside className="fixed inset-y-0 left-0 z-40 hidden w-[72px] flex-col bg-[#101115] md:flex">
-        {sidebar(true)}
-      </aside>
+    <div className="min-h-screen bg-gray-50 text-foreground dark:bg-background">
       {mobileOpen ? (
         <>
           <button
@@ -122,8 +119,8 @@ function WorkspaceChrome({ children }: { children: ReactNode }) {
           </aside>
         </>
       ) : null}
-      <div className="min-h-screen md:pl-[72px]">
-        <header className="sticky top-0 z-30 flex h-16 items-center border-b border-border bg-white/95 px-4 backdrop-blur md:px-6">
+      <div className="min-h-screen">
+        <header className="sticky top-0 z-30 flex h-16 items-center border-b border-border bg-white/95 px-4 backdrop-blur md:px-6 dark:bg-card/95">
           <button
             type="button"
             className="mr-3 rounded-md border border-border p-2 md:hidden"
@@ -136,11 +133,30 @@ function WorkspaceChrome({ children }: { children: ReactNode }) {
             <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">WolfGrid</p>
             <p className="text-sm font-semibold">Salesperson workspace</p>
           </div>
-          <div className="ml-auto flex items-center gap-2 rounded-full border border-border bg-white px-3 py-1.5 text-xs text-muted-foreground">
-            <span className="h-2 w-2 rounded-full bg-emerald-500" /> Live
-          </div>
+          <nav aria-label="Sales navigation" className="ml-auto hidden items-center gap-1 md:flex">
+            {navigation.map(({ href, label, icon: Icon }) => (
+              <Link key={href} href={href} aria-label={label} aria-current={isActive(href) ? 'page' : undefined}
+                title={label} className={cn('flex h-10 items-center gap-2 rounded-lg px-3 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500', isActive(href) ? 'bg-red-50 text-red-600' : 'text-muted-foreground hover:bg-muted hover:text-foreground')}>
+                <Icon aria-hidden="true" className="h-4 w-4" /><span className="hidden lg:inline">{label}</span>
+              </Link>
+            ))}
+            <details className="relative"
+              onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) event.currentTarget.open = false; }}
+              onKeyDown={(event) => { if (event.key === 'Escape') { event.currentTarget.open = false; event.currentTarget.querySelector('summary')?.focus(); } }}>
+              <summary aria-label="More navigation" className="flex h-10 cursor-pointer list-none items-center gap-2 rounded-lg px-3 text-sm text-muted-foreground hover:bg-muted focus-visible:ring-2 focus-visible:ring-red-500 [&::-webkit-details-marker]:hidden"><MoreHorizontal className="h-5 w-5" /><span className="hidden lg:inline">More</span></summary>
+              <div className="absolute right-0 top-full z-50 mt-2 w-56 rounded-xl border bg-popover p-2 text-popover-foreground shadow-xl">
+                {moreNavigation.map(({ href, label, icon: Icon }) => (
+                  <Link key={href} href={href} aria-current={isActive(href) ? 'page' : undefined}
+                    onClick={(event) => event.currentTarget.closest('details')?.removeAttribute('open')}
+                    className={cn('flex min-h-10 items-center gap-3 rounded-lg px-3 text-sm hover:bg-muted', isActive(href) && 'bg-red-50 text-red-600')}>
+                    <Icon className="h-4 w-4" aria-hidden="true" />{label}
+                  </Link>
+                ))}
+              </div>
+            </details>
+          </nav>
         </header>
-        <main className="min-h-[calc(100vh-4rem)]">{children}</main>
+        <main data-sales-workspace-content className="min-w-0 min-h-[calc(100vh-4rem)]">{children}</main>
       </div>
     </div>
   );

@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Bell,
   Loader2,
@@ -10,13 +10,15 @@ import {
   RefreshCw,
   Send,
 } from 'lucide-react';
+import { STORMS_DEMO_TITLE, STORMS_DEMO_SUBJECT, stormsDemoBody } from '@/lib/email/storms-demo';
+import { EmailComposer } from './EmailComposer';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { useWorkspace } from '@/lib/workspace-context';
 import type { SalesLead } from '@/types/database';
 
-type InboxSource = 'all' | 'sms' | 'email' | 'call';
+type InboxSource = 'all' | 'sms' | 'email';
 
 type InboxContact = {
   id: string;
@@ -86,7 +88,6 @@ const sourceOptions: Array<{ value: InboxSource; label: string }> = [
   { value: 'all', label: 'All' },
   { value: 'sms', label: 'Messages' },
   { value: 'email', label: 'Email' },
-  { value: 'call', label: 'Calls' },
 ];
 
 function clean(value: string | null | undefined) {
@@ -266,28 +267,34 @@ export function ProInboxView() {
   const [threads, setThreads] = useState<InboxThread[]>([]);
   const [selected, setSelected] = useState<InboxThread | null>(null);
   const [source, setSource] = useState<InboxSource>('all');
+  const [composingEmail, setComposingEmail] = useState(false);
   const [reply, setReply] = useState('');
   const [emailSubject, setEmailSubject] = useState('Following up');
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const knownLeads = useRef<SalesLead[]>([]);
+  const leadWorkspace = useRef(currentWorkspaceId);
+  const lastLeadsFetchAt = useRef(0);
+  const lastEmailSyncAt = useRef(0);
+  const emailSyncInFlight = useRef(false);
+  const requestSequence = useRef(0);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (syncEmail = false) => {
     if (!currentWorkspaceId) {
       setLoading(false);
       return;
     }
-    setLoading(true);
+    const requestId = ++requestSequence.current;
+    if (!syncEmail) setLoading(true);
     try {
       const workspace = encodeURIComponent(currentWorkspaceId);
-      const [inboxResponse, leadsResponse] = await Promise.all([
-        fetch(`/api/inbox?workspaceId=${workspace}&source=${source}&status=open&limit=200`, { cache: 'no-store' }),
-        fetch(`/api/salesperson/leads?workspaceId=${workspace}`, { cache: 'no-store' }),
-      ]);
+      const inboxResponse = await fetch(`/api/inbox?workspaceId=${workspace}&source=${source}&status=open&limit=200&syncEmail=${syncEmail ? '1' : '0'}`, { cache: 'no-store' });
       const inboxPayload = (await inboxResponse.json().catch(() => ({}))) as InboxPayload;
-      const leadsPayload = (await leadsResponse.json().catch(() => ({}))) as LeadsPayload;
       if (!inboxResponse.ok) throw new Error(inboxPayload.error || 'Unable to load the inbox.');
-      const nextThreads = consolidateThreads(resolveContacts(inboxPayload.threads ?? [], leadsResponse.ok ? leadsPayload.leads ?? [] : []));
+      if (requestId !== requestSequence.current) return;
+      const rawThreads = inboxPayload.threads ?? [];
+      const nextThreads = consolidateThreads(resolveContacts(rawThreads, knownLeads.current));
       setThreads(nextThreads);
       setSelected((current) => {
         if (!current) return null;
@@ -297,18 +304,44 @@ export function ProInboxView() {
           ?? null;
       });
       setError(null);
+      if (Date.now() - lastLeadsFetchAt.current > 60_000) {
+        lastLeadsFetchAt.current = Date.now();
+        void fetch(`/api/salesperson/leads?workspaceId=${workspace}`, { cache: 'no-store' })
+          .then(async (response) => response.ok ? ((await response.json()) as LeadsPayload).leads ?? [] : [])
+          .then((leads) => {
+            if (leadWorkspace.current !== currentWorkspaceId) return;
+            knownLeads.current = leads;
+            if (requestId !== requestSequence.current) return;
+            setThreads(consolidateThreads(resolveContacts(rawThreads, leads)));
+          })
+          .catch(() => { lastLeadsFetchAt.current = 0; });
+      }
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : 'Unable to load the inbox.');
+      if (requestId === requestSequence.current) setError(loadError instanceof Error ? loadError.message : 'Unable to load the inbox.');
     } finally {
-      setLoading(false);
+      if (requestId === requestSequence.current && !syncEmail) setLoading(false);
     }
   }, [currentWorkspaceId, source]);
 
   useEffect(() => {
-    void load();
-    const timer = window.setInterval(() => void load(), 10_000);
+    leadWorkspace.current = currentWorkspaceId;
+    knownLeads.current = [];
+    lastLeadsFetchAt.current = 0;
+    lastEmailSyncAt.current = 0;
+  }, [currentWorkspaceId]);
+
+  useEffect(() => {
+    void (async () => {
+      await load();
+      if ((source === 'all' || source === 'email') && Date.now() - lastEmailSyncAt.current > 30_000) {
+        lastEmailSyncAt.current = Date.now();
+        emailSyncInFlight.current = true;
+        try { await load(true); } finally { emailSyncInFlight.current = false; }
+      }
+    })();
+    const timer = window.setInterval(() => { if (!emailSyncInFlight.current) void load(); }, 10_000);
     return () => window.clearInterval(timer);
-  }, [load]);
+  }, [load, source]);
 
   const unreadTotal = useMemo(() => threads.reduce((total, thread) => total + thread.unreadCount, 0), [threads]);
 
@@ -375,6 +408,7 @@ export function ProInboxView() {
 
   return (
     <div className="grid min-h-[calc(100vh-4rem)] lg:grid-cols-[390px_1fr]">
+      {composingEmail && <EmailComposer open onOpenChange={setComposingEmail} onSent={() => void load()} />}
       <aside className="min-h-0 border-r bg-background">
         <div className="border-b px-4 pb-3 pt-4">
           <div className="flex items-center justify-between">
@@ -383,13 +417,16 @@ export function ProInboxView() {
                 <h1 className="text-2xl font-semibold tracking-tight">Inbox</h1>
                 {unreadTotal ? <span className="rounded-full bg-primary px-2 py-0.5 text-xs font-semibold text-primary-foreground">{unreadTotal}</span> : null}
               </div>
-              <p className="text-xs text-muted-foreground">Messages, email, and calls</p>
+              <p className="text-xs text-muted-foreground">Messages and email</p>
             </div>
+            <div className="flex items-center gap-2">
+            <Button variant="outline" size="sm" onClick={() => setComposingEmail(true)}><Mail className="h-4 w-4" /> New email</Button>
             <Button size="icon" variant="outline" onClick={() => void load()} disabled={loading} aria-label="Refresh inbox">
               <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
             </Button>
+            </div>
           </div>
-          <div className="mt-4 grid grid-cols-4 rounded-lg bg-muted p-1">
+          <div className="mt-4 grid grid-cols-3 rounded-lg bg-muted p-1">
             {sourceOptions.map((option) => (
               <button
                 key={option.value}
@@ -409,7 +446,7 @@ export function ProInboxView() {
           ) : threads.length ? threads.map((thread) => (
             <ThreadRow key={thread.id} thread={thread} selected={selected?.id === thread.id} onClick={() => void openThread(thread)} />
           )) : (
-            <div className="grid min-h-52 place-items-center text-sm text-muted-foreground">No {source === 'all' ? 'messages yet' : source === 'sms' ? 'messages' : source === 'email' ? 'email' : 'calls'}.</div>
+            <div className="grid min-h-52 place-items-center text-sm text-muted-foreground">No {source === 'all' ? 'messages or email yet' : source === 'sms' ? 'messages' : 'email'}.</div>
           )}
         </div>
       </aside>
@@ -515,6 +552,7 @@ function ConversationPane({
               <Input className="h-7 border-0 px-1 shadow-none focus-visible:ring-0" value={emailSubject} onChange={(event) => setEmailSubject(event.target.value)} />
             </div>
           ) : null}
+          <Button type="button" variant="outline" size="sm" className="mb-2" disabled={!canReply || sending} onClick={() => { setReply(stormsDemoBody(thread.contact?.fullName)); if (isEmail) setEmailSubject(STORMS_DEMO_SUBJECT); }}>{STORMS_DEMO_TITLE}</Button>
           <div className="flex items-end gap-2">
             <Textarea
               value={reply}

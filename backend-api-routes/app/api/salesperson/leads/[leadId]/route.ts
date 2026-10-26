@@ -94,6 +94,7 @@ export async function PATCH(
     const updates: Record<string, unknown> = { updated_at: new Date().toISOString() };
     if ('name' in body) updates.name = clean(body.name) ?? 'Unnamed lead';
     if ('company' in body) updates.company = clean(body.company);
+    if ('address' in body) updates.address = clean(body.address);
     if ('notes' in body) updates.notes = clean(body.notes);
 
     if ('email' in body) {
@@ -126,18 +127,22 @@ export async function PATCH(
       }
     }
 
-    const { data: updated, error: updateError } = await admin
+    let updateQuery = admin
       .from('sales_leads')
       .update(updates)
       .eq('workspace_id', workspaceId)
       .eq('id', leadId)
-      .select(LEAD_SELECT)
-      .single();
+      .eq('assigned_user_id', requestUser.id);
+    if (typeof body.expectedUpdatedAt === 'string') {
+      updateQuery = updateQuery.eq('updated_at', body.expectedUpdatedAt);
+    }
+    const { data: updated, error: updateError } = await updateQuery.select(LEAD_SELECT).maybeSingle();
+    if (!updateError && !updated) return NextResponse.json({ error: 'This contact changed on another screen. Reload the saved notes before saving.' }, { status: 409 });
     if (updateError) throw new Error(updateError.message);
 
     if (before.sales_contact_id) {
       const contactUpdates: Record<string, unknown> = { updated_at: updates.updated_at };
-      for (const key of ['name', 'company', 'phone', 'phone_e164', 'email', 'email_normalized']) {
+      for (const key of ['name', 'company', 'phone', 'phone_e164', 'email', 'email_normalized', 'address']) {
         if (key in updates) contactUpdates[key] = updates[key];
       }
       if (Object.keys(contactUpdates).length > 1) {

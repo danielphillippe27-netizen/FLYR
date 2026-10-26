@@ -7,6 +7,7 @@ export interface AddressSuggestion {
   id: string;
   title: string;
   subtitle: string;
+  fullAddress: string;
   coordinate: {
     latitude: number;
     longitude: number;
@@ -70,7 +71,8 @@ export class MapboxAutocompleteService {
   static async searchAddresses(
     query: string,
     proximity?: UserLocation,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    includePlaces = false
   ): Promise<AddressSuggestion[]> {
     const mapboxToken = process.env.NEXT_PUBLIC_MAPBOX_TOKEN;
 
@@ -84,7 +86,7 @@ export class MapboxAutocompleteService {
     // Build query parameters
     const params = new URLSearchParams({
       access_token: mapboxToken,
-      types: 'address',
+      types: includePlaces ? 'address,place,locality' : 'address',
       autocomplete: 'true',
       fuzzyMatch: 'true',
       limit: '8',
@@ -200,6 +202,7 @@ export class MapboxAutocompleteService {
       id: feature.id,
       title,
       subtitle,
+      fullAddress: feature.place_name,
       coordinate: {
         latitude,
         longitude,
@@ -276,4 +279,3 @@ export class MapboxAutocompleteService {
     return parts.join(', ').trim();
   }
 }
-

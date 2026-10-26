@@ -441,7 +441,7 @@ export async function GET(request: NextRequest) {
     const contactId = clean(request.nextUrl.searchParams.get("contactId"));
     const limit = Math.min(Math.max(Number(request.nextUrl.searchParams.get("limit") ?? 75) || 75, 1), 200);
 
-    if (source === "all" || source === "email") {
+    if (request.nextUrl.searchParams.get("syncEmail") === "1" && (source === "all" || source === "email")) {
       await syncICloudInbox(admin, workspaceId, context!.user.id).catch((error) => {
         console.warn("[inbox] iCloud sync failed", error instanceof Error ? error.message : error);
       });
@@ -452,7 +452,7 @@ export async function GET(request: NextRequest) {
       .select("*,sales_contacts(id,name,phone,email,address),communication_events(*)")
       .eq("workspace_id", workspaceId).eq("assigned_user_id", context!.user.id).eq("sales_contacts.owner_user_id", context!.user.id).eq("sales_contacts.workspace_id", workspaceId).neq("status", "archived")
       .order("latest_event_at", { ascending: false })
-      .limit(source === "all" ? limit : Math.min(limit * 4, 800));
+      .limit(Math.min(limit * 4, 800));
     if (contactId) canonicalQuery = canonicalQuery.eq("sales_contact_id", contactId);
     const { data: canonicalThreads, error: canonicalError } = await canonicalQuery;
     if (canonicalError) {
@@ -462,7 +462,7 @@ export async function GET(request: NextRequest) {
         const contact = row.sales_contacts;
         const matchingEvents = [...(row.communication_events ?? [])]
           .filter((event) => event.actor_user_id === context!.user.id && event.workspace_id === workspaceId)
-          .filter((event) => source === "all" || (source === "call" ? ["call", "voicemail"].includes(event.channel) : event.channel === source))
+          .filter((event) => source === "all" ? ["sms", "email"].includes(event.channel) : (source === "call" ? ["call", "voicemail"].includes(event.channel) : event.channel === source))
           .sort((left, right) => Date.parse(left.occurred_at) - Date.parse(right.occurred_at));
         if (!matchingEvents.length) return null;
         const events: InboxEvent[] = await Promise.all(matchingEvents.map(async (event) => ({
@@ -518,7 +518,7 @@ export async function GET(request: NextRequest) {
 
     // Legacy contact activities have no communication owner; never expose them in a personal inbox.
 
-    if (source === "all" || source === "call") {
+    if (source === "call") {
       let query = admin
         .from("dialer_calls")
         .select("*")
@@ -764,6 +764,8 @@ export async function POST(request: NextRequest) {
           if (error) console.warn("[inbox] reply contact activity failed", error.message);
         });
     }
+
+
 
     await appendCommunication(admin, { workspaceId, actorUserId: context!.user.id, channel: "sms", direction: "outbound", eventKind: "sms_sent", provider: "telnyx", providerEventId: providerMessageId, body, fromAddress: from, toAddresses: [phone], status });
 

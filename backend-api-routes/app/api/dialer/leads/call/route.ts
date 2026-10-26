@@ -5,7 +5,7 @@ import { getDialerRequestContext, type DialerRequestContext } from '@/lib/dialer
 import { getDialerTelecomProvider } from '@/lib/dialer/env';
 import { resolveOutboundCallerId } from '@/lib/dialer/caller-id';
 import { normalizePhoneNumber, phoneMarketFromCountryCode } from '@/lib/dialer/phone';
-import { incrementMasterLeadAttemptForDiallerLead } from '@/lib/sales-leads/master-list';
+
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -188,12 +188,14 @@ export async function POST(request: NextRequest) {
     .eq('id', sessionLead.id);
 
   if (diallerLead) {
-    await incrementMasterLeadAttemptForDiallerLead(
-      context.admin,
-      diallerLead,
-      now,
-      context.salesperson?.id ?? null
-    );
+    // This route reads sales_leads directly; its owner column is assigned_user_id.
+    // The legacy helper expects user_id and can silently miss this record.
+    const { error: attemptError } = await context.admin.from('sales_leads')
+      .update({ last_attempted_at: now, attempt_count: ((diallerLead as DiallerLead & { attempt_count?: number }).attempt_count ?? 0) + 1,
+        lead_state: 'attempting', updated_at: now })
+      .eq('id', diallerLead.id).eq('workspace_id', context.workspaceId)
+      .eq('assigned_user_id', context.requestUser.id);
+    if (attemptError) console.warn('[dialer/leads/call] call saved but lead timestamp update failed', attemptError);
   }
 
   return NextResponse.json({

@@ -29,6 +29,8 @@ type DialerRuntimeContextValue = {
   setDiallerLeads: Dispatch<SetStateAction<DiallerLead[]>>;
   activeLeadId: string | null;
   setActiveLeadId: Dispatch<SetStateAction<string | null>>;
+  remoteCallActive: boolean;
+  setRemoteCallActive: Dispatch<SetStateAction<boolean>>;
   activeCallId: string | null;
   setActiveCallId: Dispatch<SetStateAction<string | null>>;
   activeCallIsDoubleDial: boolean;
@@ -150,6 +152,7 @@ export function DialerRuntimeProvider({ children }: { children: ReactNode }) {
   const [diallerRunning, setDiallerRunning] = useState(false);
   const [startingCall, setStartingCall] = useState(false);
   const [isPlacingNextCall, setIsPlacingNextCall] = useState(false);
+  const [remoteCallActive, setRemoteCallActive] = useState(false);
   const completedDiallerLeadIdsRef = useRef<Set<string>>(new Set());
   const callWasConnectedRef = useRef(false);
 
@@ -363,6 +366,8 @@ export function DialerRuntimeProvider({ children }: { children: ReactNode }) {
     () => ({
       device,
       tabId,
+      remoteCallActive,
+      setRemoteCallActive,
       diallerLeads,
       setDiallerLeads,
       activeLeadId,
@@ -383,6 +388,7 @@ export function DialerRuntimeProvider({ children }: { children: ReactNode }) {
       isPlacingNextCall,
     }),
     [
+      remoteCallActive,
       activeCallId,
       activeCallIsDoubleDial,
       activeLeadId,

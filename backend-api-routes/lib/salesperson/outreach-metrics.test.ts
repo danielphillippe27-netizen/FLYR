@@ -4,6 +4,10 @@ import { containsDemoLink, countPersonalOutreach, loadPersonalOutreach } from '.
 
 test('demo links match actual WolfGrid destinations, not lookalike domains or draft labels', () => {
   assert.equal(containsDemoLink('Watch https://wolfgrid.app/demo100'), true);
+  assert.equal(containsDemoLink('Demo: https://wolfgrid.app/features/storms'), true);
+  assert.equal(containsDemoLink('https://wolfgrid.app.evil.example/features/storms'), false);
+  assert.equal(containsDemoLink('https://wolfgrid.app/features/storms/other'), false);
+  assert.equal(containsDemoLink('Watch https://wolfgrid.app/demo1'), true);
   assert.equal(containsDemoLink('Demo: https://wolfgrid.app/demo-2?ref=HUGHES.'), true);
   assert.equal(containsDemoLink('https://wolfgrid.app.evil.example/demo100'), false);
   assert.equal(containsDemoLink('Demo prepared'), false);

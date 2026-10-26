@@ -1,22 +1,15 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { ArrowLeft, ExternalLink, Globe2, List, Loader2, Plus, Search, UserRound } from 'lucide-react';
+import { ActivityLogs } from './ActivityLogs';
+import { ContactDetailsDialog } from './ContactDetailsDialog';
+import { EmailComposer } from './EmailComposer';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { useWorkspace } from '@/lib/workspace-context';
 import type { SalesLead } from '@/types/database';
-
-type TimelineItem = {
-  id: string;
-  timelineKind: string;
-  activity_type?: string;
-  note?: string;
-  subject?: string;
-  body?: string;
-  occurred_at: string;
-  channel?: string;
-};
 
 type LeadList = {
   id: string;
@@ -86,12 +79,16 @@ function leadWebsiteLink(lead: SalesLead): { href: string; label: string } | nul
 
 export function ProContactsView() {
   const { currentWorkspaceId } = useWorkspace();
+  const searchParams = useSearchParams();
+  const requestedLeadId = searchParams.get('leadId');
+  const openedRequest = useRef('');
   const [leads, setLeads] = useState<SalesLead[]>([]);
   const [selected, setSelected] = useState<SalesLead | null>(null);
-  const [timeline, setTimeline] = useState<TimelineItem[]>([]);
   const [query, setQuery] = useState('');
   const [mode, setMode] = useState<ViewMode>('contacts');
   const [selectedListId, setSelectedListId] = useState<string | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [emailOpen, setEmailOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
@@ -157,6 +154,18 @@ export function ProContactsView() {
       .sort((a, b) => Date.parse(b.newestAt) - Date.parse(a.newestAt));
   }, [leads]);
 
+  useEffect(() => {
+    const key = `${currentWorkspaceId}:${requestedLeadId}`;
+    if (!requestedLeadId || openedRequest.current === key) return;
+    const lead = leads.find(item => item.id === requestedLeadId);
+    if (!lead) return;
+    openedRequest.current = key;
+    setSelected(lead);
+    setMode(isContact(lead) ? 'contacts' : 'lists');
+    setSelectedListId(isContact(lead) ? null : lead.list_id?.trim() || listTitle(lead).toLowerCase());
+    setQuery('');
+  }, [currentWorkspaceId, requestedLeadId, leads]);
+
   const visibleLists = useMemo(() => {
     if (!normalizedQuery) return leadLists;
     return leadLists.filter((group) =>
@@ -172,12 +181,7 @@ export function ProContactsView() {
 
   async function open(lead: SalesLead) {
     setSelected(lead);
-    setTimeline([]);
-    if (!currentWorkspaceId) return;
-    const params = new URLSearchParams({ workspaceId: currentWorkspaceId, leadId: lead.id });
-    const response = await fetch(`/api/crm/timeline?${params}`);
-    const data = await response.json();
-    if (response.ok) setTimeline(data.timeline ?? []);
+
   }
 
   async function create() {
@@ -243,7 +247,6 @@ export function ProContactsView() {
     setMode(nextMode);
     setSelectedListId(null);
     setSelected(null);
-    setTimeline([]);
     setCreating(false);
     setQuery('');
   }
@@ -342,7 +345,7 @@ export function ProContactsView() {
         ) : (
           <div className="space-y-2">
             {visibleLists.length ? visibleLists.map((group) => (
-              <button key={group.id} onClick={() => { setSelectedListId(group.id); setSelected(null); setTimeline([]); setQuery(''); }} className="w-full rounded-lg border p-3 text-left hover:bg-muted">
+              <button key={group.id} onClick={() => { setSelectedListId(group.id); setSelected(null); setQuery(''); }} className="w-full rounded-lg border p-3 text-left hover:bg-muted">
                 <p className="font-semibold">{group.title}</p>
                 <p className="mt-1 text-xs text-muted-foreground">
                   {group.leads.length} leads · {group.leads.filter((lead) => Boolean(lead.phone)).length} dialable · {new Date(group.newestAt).toLocaleDateString()}
@@ -357,7 +360,20 @@ export function ProContactsView() {
         {selected ? (
           <>
             <div className="mb-6">
-              <h2 className="text-2xl font-semibold">{selected.name}</h2>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <h2 className="text-2xl font-semibold">{selected.name}</h2>
+                <div className="flex gap-2">
+                  <Button variant="outline" onClick={() => setEmailOpen(true)}>Email</Button>
+                  <Button onClick={() => setEditing(true)}>Edit details</Button>
+                </div>
+              </div>
+              {editing && currentWorkspaceId && <ContactDetailsDialog key={selected.id} contact={selected} workspaceId={currentWorkspaceId}
+                onClose={() => setEditing(false)} onSaved={(updated) => {
+                  setSelected((current) => current ? { ...current, ...updated } : updated);
+                  setLeads((current) => current.map((lead) => lead.id === updated.id ? { ...lead, ...updated } : lead));
+                }} />}
+              {emailOpen && <EmailComposer key={selected.id} open onOpenChange={setEmailOpen} initialTo={selected.email ?? ''} leadId={selected.id} />}
+
               <div className="mt-2 space-y-1 text-sm text-muted-foreground">
                 {selected.company ? <p>{selected.company}</p> : null}
                 {selected.email ? <p><a className="hover:underline" href={`mailto:${selected.email}`}>{selected.email}</a></p> : null}
@@ -390,18 +406,7 @@ export function ProContactsView() {
                 <span>Next follow-up: {selected.next_follow_up_at ? new Date(selected.next_follow_up_at).toLocaleString() : 'Not set'}</span>
               </div>
             </div>
-            <h3 className="mb-3 font-semibold">Timeline</h3>
-            <div className="space-y-3">
-              {timeline.length ? timeline.map((item) => (
-                <div key={`${item.timelineKind}-${item.id}`} className="rounded-lg border bg-card p-3">
-                  <div className="flex justify-between gap-3">
-                    <p className="font-medium">{item.subject || item.channel || item.activity_type || item.timelineKind}</p>
-                    <time className="text-xs text-muted-foreground">{new Date(item.occurred_at).toLocaleString()}</time>
-                  </div>
-                  {item.body || item.note ? <p className="mt-1 whitespace-pre-wrap text-sm text-muted-foreground">{item.body || item.note}</p> : null}
-                </div>
-              )) : <p className="text-sm text-muted-foreground">No activity yet.</p>}
-            </div>
+            {currentWorkspaceId && <ActivityLogs key={selected.id} workspaceId={currentWorkspaceId} leadId={selected.id} />}
           </>
         ) : (
           <div className="grid min-h-96 place-items-center text-muted-foreground">

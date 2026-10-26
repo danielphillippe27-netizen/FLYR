@@ -120,6 +120,7 @@ export function InboxPageView() {
         source: sourceFilter,
         status: statusFilter,
         limit: '100',
+        syncEmail: '1',
       });
       const response = await fetch(`/api/inbox?${params.toString()}`, { credentials: 'include' });
       const payload = (await response.json().catch(() => ({}))) as InboxPayload;
@@ -328,4 +329,3 @@ export function InboxPageView() {
     </div>
   );
 }
-

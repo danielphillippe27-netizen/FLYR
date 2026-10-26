@@ -63,7 +63,7 @@ function inbox(tables: Record<string, any[]>, userId = 'daniel-hughes') {
     '@/lib/dialer/salesperson-settings': {},
   });
 }
-const event = (id: string, user: string) => ({ id, actor_user_id: user, workspace_id: 'shared', channel: 'call', direction: 'inbound', event_kind: 'call', occurred_at: '2026-09-09T01:00:00Z', body: id });
+const event = (id: string, user: string) => ({ id, actor_user_id: user, workspace_id: 'shared', channel: 'sms', direction: 'inbound', event_kind: 'sms_received', occurred_at: '2026-09-09T01:00:00Z', body: id });
 test('first-time user sees none of another workspace member’s canonical or fallback communications', async () => {
   const tables = {
     communication_threads: [{ id: 'private-thread', workspace_id: 'shared', assigned_user_id: 'other', communication_events: [event('secret', 'other')] }],
@@ -83,6 +83,16 @@ test('mixed legacy threads never return another user’s nested events', async (
   const body = await res.json();
   assert.equal(body.threads.length, 1);
   assert.deepEqual(body.threads[0].events.map((e: any) => e.id), ['mine']);
+});
+test('all inbox omits call events while preserving messages in the same thread', async () => {
+  const tables = { communication_threads: [{ id: 'mixed', workspace_id: 'shared', assigned_user_id: 'daniel-hughes', communication_events: [
+    event('text', 'daniel-hughes'),
+    { ...event('call', 'daniel-hughes'), channel: 'call', event_kind: 'call', occurred_at: '2026-09-09T02:00:00Z' },
+  ] }] };
+  const res = await inbox(tables).GET(new NextRequest('https://example.test/api/inbox'));
+  const body = await res.json();
+  assert.deepEqual(body.threads[0].events.map((e: any) => e.id), ['text']);
+  assert.equal(body.threads[0].latestSource, 'sms');
 });
 test('foreign event, thread and SMS IDs cannot be marked read or changed', async () => {
   const tables = {

@@ -6,15 +6,18 @@ import { getClientAsync } from '@/lib/supabase/client';
 import { useWorkspace } from '@/lib/workspace-context';
 import { useDialerRuntime } from './DialerRuntimeProvider';
 import type { SharedActiveCall } from '@/lib/dialer/active-call';
+import { CallCompanionPanel } from './CallCompanionPanel';
 import { normalizePhoneNumber } from '@/lib/dialer/phone';
 
 /** Display-only companion: never replaces the local SDK's call or controls. */
 export function SharedActiveCallBar() {
   const { currentWorkspaceId } = useWorkspace();
-  const { device, activeLeadSnapshot } = useDialerRuntime();
+  const { device, activeLeadSnapshot, setRemoteCallActive } = useDialerRuntime();
   const [deviceId] = useState(() => crypto.randomUUID());
   const [userId, setUserId] = useState<string | null>(null);
   const [result, setResult] = useState<{ scope: string; calls: SharedActiveCall[]; unavailable: boolean } | null>(null);
+  const [workspaceCall, setWorkspaceCall] = useState<{ scope: string; call: SharedActiveCall } | null>(null);
+  const dismissedCall = useRef<string | null>(null);
   const [now, setNow] = useState(Date.now);
   const local = useRef({ device, activeLeadSnapshot });
   const callScope = useRef<{ id: string; scope: string } | null>(null);
@@ -94,8 +97,22 @@ export function SharedActiveCallBar() {
 
   const calls = result?.scope === scope ? result.calls.filter(call => Date.parse(call.expiresAt) > now) : [];
   const unavailable = result?.scope === scope && result.unavailable;
-  if (!calls.length && !(unavailable && device.isInCall)) return null;
-  return (
+  const companion = workspaceCall?.scope === scope ? workspaceCall.call : null;
+  const incoming = calls.find(call => call.platform === 'ios');
+  useEffect(() => {
+    setRemoteCallActive(Boolean(incoming));
+    return () => setRemoteCallActive(false);
+  }, [Boolean(incoming), scope, setRemoteCallActive]);
+  useEffect(() => {
+    if (incoming && !companion && !device.isInCall && !device.hasIncomingCall && dismissedCall.current !== `${scope}:${incoming.id}`) {
+      setWorkspaceCall({ scope, call: incoming });
+    }
+  }, [incoming?.id, scope, Boolean(companion), device.isInCall, device.hasIncomingCall]);
+  const liveCompanion = companion && calls.find(call => call.deviceId === companion.deviceId && call.id === companion.id);
+  return (<>
+    {companion && currentWorkspaceId && <CallCompanionPanel key={`${scope}:${companion.id}`} call={liveCompanion || companion}
+      active={Boolean(liveCompanion)} workspaceId={currentWorkspaceId} onClose={() => { dismissedCall.current = `${scope}:${companion.id}`; setWorkspaceCall(null); }} />}
+    {(calls.length > 0 || (unavailable && device.isInCall)) && !companion && (
     <aside aria-label="Calls on your other devices" className="fixed bottom-20 right-4 z-[65] w-[min(calc(100vw-2rem),22rem)] rounded-lg border border-neutral-200 bg-white p-4 text-neutral-950 shadow-lg sm:bottom-4">
       {unavailable ? <p role="status" className="text-sm">Call sync unavailable. Your call can continue.</p> : calls.map(call => (
         <div key={call.deviceId} className="flex items-start gap-3 py-1">
@@ -103,11 +120,12 @@ export function SharedActiveCallBar() {
           <div className="min-w-0">
             <p className="text-xs text-neutral-500">Calling on {call.platform === 'ios' ? 'iPhone' : 'web'}</p>
             <p className="truncate font-semibold">{call.name}</p>
+            {call.platform === 'ios' && <button className="mt-1 text-sm font-medium underline" onClick={() => setWorkspaceCall({ scope, call })}>Open call workspace</button>}
             {call.phone && call.phone !== call.name ? <p className="text-sm">{call.phone}</p> : null}
             <p className="text-xs text-neutral-500">{call.phase === 'connected' ? 'Connected' : 'Connecting'}{call.connectedAt ? ` · ${Math.floor(Math.max(0, now - Date.parse(call.connectedAt)) / 60000)}:${String(Math.floor(Math.max(0, now - Date.parse(call.connectedAt)) / 1000) % 60).padStart(2, '0')}` : ''}</p>
           </div>
         </div>
       ))}
-    </aside>
-  );
+    </aside>)}
+  </>);
 }

@@ -9,7 +9,7 @@ export function containsDemoLink(body: string | null | undefined): boolean {
     try {
       const url = new URL(candidate.replace(/[),.!;]+$/, ''));
       return ['wolfgrid.app', 'www.wolfgrid.app'].includes(url.hostname.toLowerCase())
-        && /^\/(demo100|demo-1|demo-2|d\/[^/]+)\/?$/.test(url.pathname);
+        && /^\/(demo1|demo100|demo-1|demo-2|d\/[^/]+)\/?$/.test(url.pathname);
     } catch { return false; }
   });
 }

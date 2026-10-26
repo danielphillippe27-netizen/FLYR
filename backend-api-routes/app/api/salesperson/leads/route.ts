@@ -6,6 +6,7 @@ import {
 } from '@/app/api/_utils/workspace';
 import { createAdminClient } from '@/lib/supabase/server';
 import { ensureSalespersonLeadMaster } from '@/lib/sales-leads/master-list';
+import { refreshGooglePlaceDetails } from '@/lib/sales-leads/google-place-details';
 import type { SalesLead } from '@/types/database';
 
 export const runtime = 'nodejs';
@@ -214,6 +215,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ leads: [], workspaceId: null } satisfies LeadListResponse);
     }
 
+    const focusedLeadId = readString(request.nextUrl.searchParams.get('leadId'));
     let query = admin
       .from('sales_leads')
       .select(
@@ -222,13 +224,25 @@ export async function GET(request: NextRequest) {
       .eq('workspace_id', workspaceId)
       .order('created_at', { ascending: false });
 
+    if (focusedLeadId) query = query.eq('id', focusedLeadId);
+
     query = query.eq('assigned_user_id', requestUser.id);
 
     const { data, error } = await query.limit(2000);
     if (error) throw error;
 
+    const leads = (data ?? []) as SalesLead[];
+    if (focusedLeadId && request.nextUrl.searchParams.get('refreshGoogleRating') === '1') {
+      const index = leads.findIndex((lead) => lead.id === focusedLeadId);
+      if (index >= 0) leads[index] = await refreshGooglePlaceDetails({
+        admin,
+        workspaceId,
+        userId: requestUser.id,
+      }, leads[index]);
+    }
+
     return NextResponse.json({
-      leads: ((data ?? []) as SalesLead[]).map(withListMetadata),
+      leads: leads.map(withListMetadata),
       workspaceId,
     } satisfies LeadListResponse);
   } catch (error) {

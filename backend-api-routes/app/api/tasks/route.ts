@@ -11,7 +11,20 @@ export async function GET(request: NextRequest) {
   if (status !== 'all') query = query.eq('status', status);
   const { data, error } = await query;
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json({ tasks: data ?? [] });
+  // iPhone follow-ups are calendar events; web follow-ups use sales_tasks.
+  // Expose both sources so each screen sees the same action queue.
+  const calendar = status === 'open' || status === 'all'
+    ? await context.admin.from('calendar_events').select('id,title,start_at,notes,contact_name')
+      .eq('workspace_id', context.workspaceId).eq('user_id', context.userId)
+      .eq('event_type', 'follow_up').is('deleted_at', null)
+      .order('start_at', { ascending: true }).limit(clampLimit(request.nextUrl.searchParams.get('limit'), 100, 300))
+    : { data: [], error: null };
+  if (calendar.error) return NextResponse.json({ error: 'Unable to load iPhone follow-ups.' }, { status: 503 });
+  const mirrored = (calendar.data ?? []).map(event => ({
+    id: `calendar:${event.id}`, title: event.title, due_at: event.start_at, notes: event.notes,
+    task_type: 'follow_up', status: 'open', sales_contacts: event.contact_name ? { name: event.contact_name } : null,
+  }));
+  return NextResponse.json({ tasks: [...(data ?? []), ...mirrored].sort((a, b) => Date.parse(a.due_at ?? '') - Date.parse(b.due_at ?? '')) });
 }
 
 export async function POST(request: NextRequest) {
@@ -39,6 +52,17 @@ export async function PATCH(request: NextRequest) {
   const body = await request.json().catch(() => ({}));
   const id = cleanText(body.id);
   if (!id) return NextResponse.json({ error: 'Task id is required.' }, { status: 400 });
+  if (id.startsWith('calendar:')) {
+    if (body.status !== 'completed' && body.status !== 'dismissed') return NextResponse.json({ error: 'Complete or dismiss this follow-up from the queue.' }, { status: 400 });
+    const { data, error } = await context.admin.from('calendar_events').update({ deleted_at: new Date().toISOString() })
+      .eq('id', id.slice('calendar:'.length)).eq('workspace_id', context.workspaceId)
+      .eq('user_id', context.userId).eq('event_type', 'follow_up').is('deleted_at', null)
+      .select('id').maybeSingle();
+    if (error) return NextResponse.json({ error: 'Unable to complete follow-up.' }, { status: 500 });
+    if (!data) return NextResponse.json({ error: 'Follow-up not found.' }, { status: 404 });
+    return NextResponse.json({ task: { id, status: body.status } });
+  }
+
   const { data: existing, error: lookupError } = await context.admin.from('sales_tasks').select('sales_contact_id,sales_lead_id')
     .eq('workspace_id', context.workspaceId).eq('assigned_user_id', context.userId).eq('id', id).maybeSingle();
   if (lookupError) return NextResponse.json({ error: 'Unable to load task.' }, { status: 500 });

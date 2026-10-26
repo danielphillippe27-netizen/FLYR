@@ -1,4 +1,5 @@
 import { GetObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { addressSourcePoint } from '@/app/api/campaigns/_utils/address-source-point';
 import { defaultProvider } from '@aws-sdk/credential-provider-node';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { VectorTile } from '@mapbox/vector-tile';
@@ -445,7 +446,7 @@ function usaAddressPmtilesKey(config: BedrockCountryConfig, regionCode?: string 
   if (config.country !== 'usa') return layerKey(config, 'addresses', 'addresses.pmtiles');
   const state = regionCode?.trim().toUpperCase();
   if (!state || !USA_ADDRESS_REGIONS.has(state)) return null;
-  return `${prefix(config)}/addresses/pmtiles_by_state/state=${state}/addresses.pmtiles`;
+  return layerKey(config, 'addresses', `pmtiles_by_state/state=${state}/addresses.pmtiles`);
 }
 
 function usaBuildingPmtilesKey(config: BedrockCountryConfig, regionCode?: string | null) {
@@ -1381,8 +1382,7 @@ function normalizePmtilesAddress(
   const coordinates = feature.geometry?.coordinates;
   if (!Array.isArray(coordinates) || coordinates.length < 2) return null;
 
-  const lon = Number(coordinates[0]);
-  const lat = Number(coordinates[1]);
+  const [lon, lat] = addressSourcePoint(feature.properties, [Number(coordinates[0]), Number(coordinates[1])]);
   if (!Number.isFinite(lon) || !Number.isFinite(lat)) return null;
 
   const props = feature.properties ?? {};
@@ -1491,8 +1491,7 @@ async function loadAddressesFromPmtiles(options: {
         const coordinates = feature.geometry?.coordinates;
         if (!Array.isArray(coordinates) || coordinates.length < 2) continue;
 
-        const lon = Number(coordinates[0]);
-        const lat = Number(coordinates[1]);
+        const [lon, lat] = addressSourcePoint(feature.properties, [Number(coordinates[0]), Number(coordinates[1])]);
         if (!Number.isFinite(lon) || !Number.isFinite(lat)) continue;
         if (
           lon < options.bbox[0] ||
@@ -2085,7 +2084,7 @@ export class BedrockCountryService {
       },
       join_key: 'address_id',
       sources: {
-        addresses: this.config.defaultSource,
+        addresses: env(this.config, 'ADDRESS_SOURCE') || this.config.defaultSource,
       },
       minzoom: 12,
       maxzoom: 18,

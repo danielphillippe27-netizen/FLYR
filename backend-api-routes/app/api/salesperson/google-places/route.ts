@@ -362,6 +362,10 @@ async function saveScraperResults(params: {
         masterMetadataById.set(existingMaster.row.id, {
           ...(existingMaster.row.metadata ?? {}),
           listName,
+          ...(lead.placeId ? { googlePlaceId: lead.placeId } : {}),
+          ...(lead.googleMapsUrl ? { googleMapsUrl: lead.googleMapsUrl } : {}),
+          ...(lead.rating != null ? { googleRating: lead.rating } : {}),
+          ...(lead.userRatingCount != null ? { googleReviewCount: lead.userRatingCount } : {}),
         });
         leadsForDialer.set(leadKey, lead);
 
@@ -499,6 +503,10 @@ async function saveScraperResults(params: {
       masterMetadataById.set(masterResult.row.id, {
         ...(masterResult.row.metadata ?? {}),
         listName,
+        ...(lead.placeId ? { googlePlaceId: lead.placeId } : {}),
+        ...(lead.googleMapsUrl ? { googleMapsUrl: lead.googleMapsUrl } : {}),
+        ...(lead.rating != null ? { googleRating: lead.rating } : {}),
+        ...(lead.userRatingCount != null ? { googleReviewCount: lead.userRatingCount } : {}),
       });
     }
   });

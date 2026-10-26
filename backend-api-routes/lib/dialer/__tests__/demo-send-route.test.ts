@@ -27,7 +27,7 @@ function harness(options: { failSend?: boolean; unauthorized?: boolean; dnc?: bo
     '@/lib/dialer/server': { getDialerRequestContext: async () => options.unauthorized ? NextResponse.json({ error: 'Unauthorized' }, { status: 401 }) : context },
     '@/lib/sales-leads/master-list': {},
     '@/lib/sales-pro/communications': { sendManagedEmail: async (input: any) => { sends.push(input); if (options.failSend) throw new Error('provider failure'); } },
-    '@/lib/email/demo': { SALES_DEMO_URL: 'https://wolfgrid.app/demo100' },
+    '@/lib/email/demo': { SALES_DEMO_URL: 'https://wolfgrid.app/demo1' },
     '@/lib/dialer/demo-email-handle': { DEMO_EMAIL_DOMAIN: 'wolfgrid.app', DEMO_EMAIL_HANDLE_PATTERN: /^[a-z]+$/, normalizeDemoEmailHandle: (value: string) => value },
   };
   const source = readFileSync(new URL('../../../app/api/dialer/leads/route.ts', import.meta.url), 'utf8');
@@ -48,7 +48,7 @@ test('save and send uses the saved recipient and authenticated salesperson signa
   assert.equal(h.sends[0].demo.senderName, 'Alex Sales');
   assert.equal(h.sends[0].demo.senderAddress, 'alex@wolfgrid.app');
   assert.equal(h.sends[0].demo.replyTo, 'reply@example.com');
-  assert.ok(h.sends[0].body.includes('https://wolfgrid.app/demo100'));
+  assert.ok(h.sends[0].body.includes('https://wolfgrid.app/demo1'));
 });
 
 test('ordinary save does not send an email', async () => {

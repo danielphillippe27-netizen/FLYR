@@ -62,7 +62,7 @@ test('Last lead does not wrap into an automatic call', async () => {
   assert.equal(h.requests.length, 0);
 });
 
-test('demo messages always use demo100, including legacy audience requests', async () => {
+test('demo messages always use demo1, including legacy audience requests', async () => {
   const { NextRequest, NextResponse } = require('next/server');
   const source = readFileSync(new URL('../../../app/api/dialer/leads/[leadId]/demo-message/route.ts', import.meta.url), 'utf8');
   const output = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
@@ -72,7 +72,7 @@ test('demo messages always use demo100, including legacy audience requests', asy
     require: (id: string) => id === '../../../_utils' ? { resolveDialerWorkspace: async () => ({ response: null, context: { user: { id: 'hughes' }, workspace: { id: 'sales' } } }) }
       : id === '@/lib/supabase/server' ? { createAdminClient: () => ({}) }
       : id === '@/lib/dialer/salesperson-settings' ? { resolveSalespersonForUser: async () => ({ full_name: 'Daniel Hughes' }) }
-      : id === '@/lib/email/demo' ? { SALES_DEMO_URL: 'https://wolfgrid.app/demo100' } : require(id),
+      : id === '@/lib/email/demo' ? { SALES_DEMO_URL: 'https://wolfgrid.app/demo1' } : require(id),
   });
   for (const offer of ['solo', 'team', 'brokerage']) {
     const response = await module.exports.POST(new NextRequest('https://sales.wolfgrid.app/api/dialer/leads/one/demo-message', {
@@ -80,9 +80,9 @@ test('demo messages always use demo100, including legacy audience requests', asy
     }), { params: Promise.resolve({ leadId: 'one' }) });
     assert.equal(response.status, 200);
     const body = await response.json();
-    assert.equal(body.demoUrl, 'https://wolfgrid.app/demo100');
-    assert.ok(body.textBody.includes('https://wolfgrid.app/demo100'));
-    assert.ok(body.emailBody.includes('https://wolfgrid.app/demo100'));
+    assert.equal(body.demoUrl, 'https://wolfgrid.app/demo1');
+    assert.ok(body.textBody.includes('https://wolfgrid.app/demo1'));
+    assert.ok(body.emailBody.includes('https://wolfgrid.app/demo1'));
     assert.ok(body.emailBody.includes('Daniel Hughes'));
     assert.equal(body.tracked, false);
   }

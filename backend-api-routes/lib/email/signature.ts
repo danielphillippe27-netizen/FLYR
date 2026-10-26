@@ -1,4 +1,7 @@
-const DANIEL_EMAIL = 'daniel@wolfgrid.app';
+const SIGNATURE_IDENTITIES = [
+  { email: 'daniel@wolfgrid.app', name: 'Daniel Phillippe', title: 'Founder' },
+  { email: 'christian@wolfgrid.app', name: 'Christian Phillippe', title: 'Head of Sales' },
+];
 
 type SocialLink = {
   name: string;
@@ -49,9 +52,10 @@ function socialLinks(): SocialLink[] {
   ];
 }
 
-function isDanielSender(fromAddress: string | null | undefined): boolean {
+function signatureIdentity(fromAddress: string | null | undefined) {
   const normalized = fromAddress?.trim().toLowerCase();
-  return normalized === DANIEL_EMAIL || normalized?.endsWith(`<${DANIEL_EMAIL}>`) === true;
+  return SIGNATURE_IDENTITIES.find((identity) => normalized === identity.email ||
+    normalized?.endsWith(`<${identity.email}>`) === true);
 }
 
 function websiteLabel(value: string): string {
@@ -69,7 +73,8 @@ export function brandedEmailContent(
   const trimmedBody = body.trim();
   const escapedBody = escapeHtml(trimmedBody).replaceAll(/\r?\n/g, '<br>');
 
-  if (!isDanielSender(fromAddress)) {
+  const identity = signatureIdentity(fromAddress);
+  if (!identity) {
     return {
       text: trimmedBody,
       html: `<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;font-size:15px;line-height:1.55;color:#18181b">${escapedBody}</div>`,
@@ -81,9 +86,9 @@ export function brandedEmailContent(
   const socials = socialLinks();
   const socialText = socials.map((social) => `${social.name}: ${social.url}`).join('\n');
   const textSignature = [
-    'Daniel Phillippe',
-    'Founder · WolfGrid',
-    `${website} | ${DANIEL_EMAIL}`,
+    identity.name,
+    `${identity.title} · WolfGrid`,
+    `${website} | ${identity.email}`,
     socialText,
   ].join('\n');
   const socialIcons = socials.map((social) => `
@@ -100,15 +105,15 @@ export function brandedEmailContent(
           <tr>
             <td width="3" bgcolor="#ef2b2d" style="width:3px;background-color:#ef2b2d;font-size:0;line-height:0">&nbsp;</td>
             <td style="padding-left:13px">
-              <div style="font-size:15px;line-height:20px;font-weight:700;color:#18181b">Daniel Phillippe</div>
+              <div style="font-size:15px;line-height:20px;font-weight:700;color:#18181b">${escapeHtml(identity.name)}</div>
               <div style="font-size:12px;line-height:18px;color:#52525b">
-                Founder <span style="color:#a1a1aa">&middot;</span>
+                ${escapeHtml(identity.title)} <span style="color:#a1a1aa">&middot;</span>
                 <a href="${escapeHtml(websiteUrl)}" style="font-weight:600;color:#ef2b2d;text-decoration:none">WolfGrid</a>
               </div>
               <div style="font-size:12px;line-height:18px;color:#52525b">
                 <a href="${escapeHtml(websiteUrl)}" style="color:#52525b;text-decoration:none">${escapeHtml(website)}</a>
                 <span style="color:#a1a1aa">&nbsp;|&nbsp;</span>
-                <a href="mailto:${DANIEL_EMAIL}" style="color:#52525b;text-decoration:none">${DANIEL_EMAIL}</a>
+                <a href="mailto:${identity.email}" style="color:#52525b;text-decoration:none">${identity.email}</a>
               </div>
               <div style="margin-top:9px;line-height:18px;white-space:nowrap">${socialIcons}</div>
             </td>

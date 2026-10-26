@@ -1088,6 +1088,10 @@ export interface DiallerLead {
   is_starred?: boolean;
   notes?: string | null;
   called_at?: string | null;
+  last_contacted_at?: string | null;
+  last_touch_at?: string | null;
+  last_attempted_at?: string | null;
+  shared_call_history?: { last_called_at: string; last_called_by: string } | null;
   created_at: string;
   updated_at: string;
 }

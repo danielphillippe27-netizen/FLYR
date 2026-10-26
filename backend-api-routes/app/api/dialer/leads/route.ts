@@ -2,6 +2,7 @@ import { normalizePhoneNumber, phoneMarketFromCountryCode } from '@/lib/dialer/p
 import { NextRequest, NextResponse } from 'next/server';
 import { getDialerRequestContext, type DialerRequestContext } from '@/lib/dialer/server';
 import { ensureSalespersonLeadMaster } from '@/lib/sales-leads/master-list';
+import { refreshGooglePlaceDetails } from '@/lib/sales-leads/google-place-details';
 import type { DiallerLeadDisposition, SalesLead, SalesLeadState } from '@/types/database';
 
 import { sendManagedEmail } from '@/lib/sales-pro/communications';
@@ -44,6 +45,11 @@ function shapeLead(row: SalesLead) {
     role: clean(metadata.role) ?? clean(metadata.jobTitle) ?? clean(metadata.job_title) ?? clean(metadata.title),
     email: clean(row.email),
     timezone: clean(metadata.timezone) ?? clean(metadata.timeZone) ?? clean(metadata.time_zone),
+    google_place_id: clean(metadata.googlePlaceId) ?? (
+      ['google_places', 'd2d_job_signals'].includes(row.source ?? '') ? clean(row.external_id) : null
+    ),
+    google_rating: typeof metadata.googleRating === 'number' ? metadata.googleRating : null,
+    google_rating_count: typeof metadata.googleReviewCount === 'number' ? metadata.googleReviewCount : null,
     list_id: list.listId,
     list_name: list.listName,
     called_at: row.last_attempted_at ?? null,
@@ -84,16 +90,27 @@ export async function GET(request: NextRequest) {
       .select('*')
       .eq('workspace_id', context.workspaceId)
       .order('created_at', { ascending: false })
+      .order('id', { ascending: true })
       .limit(2000);
     query = scopeQuery(query, context);
     query = focusedIds.length > 0
       ? query.in('id', focusedIds).neq('lead_state', 'archived')
-      : query.in('lead_state', ACTIVE_QUEUE_STATES);
+      : request.nextUrl.searchParams.get('includeCompleted') === '1'
+        ? query.neq('lead_state', 'archived')
+        : query.in('lead_state', ACTIVE_QUEUE_STATES);
 
     const { data, error } = await query;
     if (error) throw error;
 
     const rows = (data ?? []) as SalesLead[];
+    if (request.nextUrl.searchParams.get('refreshGoogleRating') === '1' && focusedIds.length === 1) {
+      const index = rows.findIndex((row) => row.id === focusedIds[0]);
+      if (index >= 0) rows[index] = await refreshGooglePlaceDetails({
+        admin: context.admin,
+        workspaceId: context.workspaceId,
+        userId: context.requestUser.id,
+      }, rows[index]);
+    }
     const phoneFor = (row: SalesLead) => normalizePhoneNumber(
       row.phone_e164 || row.phone, phoneMarketFromCountryCode(row.phone_country_code)
     ).e164;
@@ -192,6 +209,16 @@ export async function PATCH(request: NextRequest) {
       }
     }
 
+    const followUpAt = clean(body.followUpAt) ?? clean(body.follow_up_at);
+    if (body.createNotification === true && (!followUpAt || !Number.isFinite(Date.parse(followUpAt)))) {
+      return NextResponse.json({ error: 'Choose a valid follow-up date.' }, { status: 400 });
+    }
+
+    const checksNotes = 'notes' in body && typeof body.expectedNotes === 'string';
+    if (checksNotes && clean(body.expectedNotes) !== clean(existing.notes)) {
+      return NextResponse.json({ error: 'Notes changed on your other screen. Reopen this contact to load the saved notes.' }, { status: 409 });
+    }
+
     const updates: Record<string, unknown> = { updated_at: new Date().toISOString() };
     if (typeof body.isStarred === 'boolean') updates.is_starred = body.isStarred;
     if (typeof body.is_starred === 'boolean') updates.is_starred = body.is_starred;
@@ -220,14 +247,49 @@ export async function PATCH(request: NextRequest) {
       updates.next_follow_up_at = clean(body.followUpAt) ?? clean(body.follow_up_at);
     }
 
-    const { data, error } = await context.admin
-      .from('sales_leads')
-      .update(updates)
-      .eq('id', existing.id)
-      .eq('workspace_id', context.workspaceId)
-      .select('*')
-      .single();
+    let updateQuery = context.admin.from('sales_leads').update(updates)
+      .eq('id', existing.id).eq('workspace_id', context.workspaceId)
+      .eq('assigned_user_id', context.requestUser.id);
+    if (checksNotes) updateQuery = existing.notes == null
+      ? updateQuery.is('notes', null) : updateQuery.eq('notes', existing.notes);
+    const { data, error } = await updateQuery.select('*').single();
+    if (checksNotes && error?.code === 'PGRST116') {
+      return NextResponse.json({ error: 'Notes changed on your other screen. Reopen this contact to load the saved notes.' }, { status: 409 });
+    }
     if (error) throw error;
+
+    if (body.createNotification === true && followUpAt) {
+      // One current follow-up per lead; retries and reschedules reuse its task.
+      const events = context.admin.from('calendar_events');
+      const { data: previous, error: lookupError } = await events
+        .select('id').eq('source_kind', 'sales_lead_follow_up').eq('source_id', existing.id)
+        .eq('event_type', 'follow_up').eq('user_id', context.requestUser.id)
+        .eq('workspace_id', context.workspaceId).maybeSingle();
+      const startAt = new Date(followUpAt);
+      const event = {
+        user_id: context.requestUser.id,
+        workspace_id: context.workspaceId,
+        source_kind: 'sales_lead_follow_up',
+        source_id: existing.id,
+        event_type: 'follow_up',
+        title: clean(body.followUpName) ?? `Follow up with ${clean(existing.company) ?? clean(existing.name) ?? 'Lead'}`,
+        contact_name: clean(existing.name) ?? clean(existing.company),
+        start_at: startAt.toISOString(),
+        end_at: new Date(startAt.getTime() + 30 * 60_000).toISOString(),
+        notes: 'notes' in body ? clean(body.notes) : existing.notes,
+        color_key: 'blue',
+        deleted_at: null,
+        updated_at: new Date().toISOString(),
+      };
+      const saved = lookupError ? { error: lookupError } : previous
+        ? await events.update(event).eq('id', previous.id)
+          .eq('user_id', context.requestUser.id).eq('workspace_id', context.workspaceId)
+        : await events.insert(event);
+      if (saved.error) {
+        console.error('[dialer/leads] follow-up task save failed', saved.error);
+        return NextResponse.json({ error: 'Lead saved, but the follow-up task could not be saved. Please try again.' }, { status: 502 });
+      }
+    }
 
     let warning: string | null = null;
     if ('email' in body && existing.sales_contact_id) {

@@ -26,6 +26,7 @@ type CreateMeetingBody = {
   attendeePhoneNumbers?: unknown;
   timeZone?: unknown;
   contactId?: unknown;
+  leadId?: unknown;
   contactName?: unknown;
   workspaceId?: unknown;
 };
@@ -103,6 +104,12 @@ export async function POST(request: NextRequest) {
     if (legacy.error || crm.error) return NextResponse.json({error:'Contact lookup failed.'},{status:500});
     if (!legacy.data && !crm.data) return NextResponse.json({error:'Contact not found.'},{status:404});
   }
+  const leadId = text(body.leadId, 64);
+  if (leadId) {
+    const lead = await admin.from('sales_leads').select('id').eq('id', leadId).eq('workspace_id', workspace.workspaceId).eq('assigned_user_id', user.id).maybeSingle();
+    if (lead.error) return NextResponse.json({ error: 'Lead lookup failed.' }, { status: 500 });
+    if (!lead.data) return NextResponse.json({ error: 'Lead not found.' }, { status: 404 });
+  }
   const accessToken = await zoomAccessTokenForUser(admin, user.id).catch(() => null);
   if (!accessToken) return NextResponse.json({ error: 'Connect Zoom before creating a meeting.', code: 'zoom_not_connected' }, { status: 409 });
   let zoomMeeting: Awaited<ReturnType<typeof createZoomMeeting>> | null = null;
@@ -138,6 +145,16 @@ export async function POST(request: NextRequest) {
     if (zoomMeeting) await deleteZoomMeeting(accessToken, String(zoomMeeting.id)).catch(() => undefined);
     console.error('[meetings/create]', error);
     return NextResponse.json({ error: error instanceof Error ? error.message : 'Could not create the Zoom meeting.' }, { status: 502 });
+  }
+
+  if (leadId) {
+    const activity = await admin.from('sales_activities').insert({
+      workspace_id: workspace.workspaceId, sales_lead_id: leadId, actor_user_id: user.id,
+      activity_type: 'meeting', occurred_at: savedMeeting.created_at ?? new Date().toISOString(),
+      note: `${title} · ${startAt.toISOString()}${body.notes ? `\n${text(body.notes, 4000)}` : ''}`,
+      metadata: { calendar_event_id: savedMeeting.id },
+    });
+    if (activity.error) console.error('[meetings/activity]', activity.error.message);
   }
 
   const invitation = {
