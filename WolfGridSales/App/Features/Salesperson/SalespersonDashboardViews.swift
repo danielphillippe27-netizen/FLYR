@@ -6910,6 +6910,22 @@ private struct SalespersonEmailSocialLink: Identifiable {
 private struct SalespersonEmailSignaturePreview: View {
     let senderEmail: String
 
+    private var signatureName: String {
+        switch senderEmail.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "christian@wolfgrid.app": return "Christian Phillippe"
+        case "daniel@wolfgrid.app": return "Daniel Phillippe"
+        default: return "WolfGrid Sales"
+        }
+    }
+
+    private var signatureTitle: String {
+        switch senderEmail.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "christian@wolfgrid.app": return "Head of Sales"
+        case "daniel@wolfgrid.app": return "Founder"
+        default: return "Sales"
+        }
+    }
+
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             Capsule()
@@ -6917,11 +6933,11 @@ private struct SalespersonEmailSignaturePreview: View {
                 .frame(width: 3, height: 106)
 
             VStack(alignment: .leading, spacing: 4) {
-                Text("Daniel Phillippe")
+                Text(signatureName)
                     .font(.system(size: 15, weight: .bold))
 
                 HStack(spacing: 5) {
-                    Text("Founder")
+                    Text(signatureTitle)
                         .foregroundStyle(.secondary)
                     Circle()
                         .fill(Color.secondary.opacity(0.7))
@@ -6965,7 +6981,7 @@ private struct SalespersonEmailSignaturePreview: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Email signature: Daniel Phillippe, Founder at WolfGrid, wolfgrid.app, \(senderEmail), with Instagram, YouTube, LinkedIn, and Facebook links.")
+        .accessibilityLabel("Email signature: \(signatureName), \(signatureTitle) at WolfGrid, wolfgrid.app, \(senderEmail), with Instagram, YouTube, LinkedIn, and Facebook links.")
     }
 }
 
