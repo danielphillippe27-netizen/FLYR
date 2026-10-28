@@ -379,6 +379,9 @@ struct CanonicalCampaignMapBundle: Codable, Sendable {
     let builtAt: String?
     let expiresAt: String?
     let updatedAt: String?
+    var tiles: CanonicalCampaignTiles? = nil
+    var canonicalSignature: String? = nil
+    var storageFormat: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case campaignId = "campaign_id"
@@ -401,6 +404,9 @@ struct CanonicalCampaignMapBundle: Codable, Sendable {
         case builtAt = "built_at"
         case expiresAt = "expires_at"
         case updatedAt = "updated_at"
+        case tiles
+        case canonicalSignature = "canonical_signature"
+        case storageFormat = "schema"
     }
 }
 
@@ -701,7 +707,9 @@ final class BuildingLinkService {
 
     private func fetchCanonicalCampaignMapBundleUncoalesced(
         campaignId: String,
-        localSignature: String?
+        localSignature: String?,
+        preferTiles: Bool = true,
+        tileAttempt: Int = 0
     ) async throws -> CampaignMapBundleFetchResult {
         let encodedCampaignId = encodedPathComponent(campaignId)
         guard var components = URLComponents(string: "\(baseURL)/api/campaigns/\(encodedCampaignId)/map-bundle") else {
@@ -711,20 +719,54 @@ final class BuildingLinkService {
            !signature.isEmpty {
             components.queryItems = [URLQueryItem(name: "signature", value: signature)]
         }
+        if preferTiles {
+            components.queryItems = (components.queryItems ?? []) + [
+                URLQueryItem(name: "format", value: "tiles-v3"), URLQueryItem(name: "platform", value: "ios")
+            ]
+        }
         guard let url = components.url else {
             throw BuildingLinkError.invalidURL
         }
 
         print("🧪 [MAP_DEBUG] canonical_map_bundle_fetch_start campaign=\(campaignId) signature=\(localSignature ?? "none")")
-        let (data, response) = try await authorizedDataRequest(
-            url: url,
-            timeoutInterval: 30,
-            suppressHTTPWarning: true
-        )
+        let requestTrace = PerfTrace.begin("campaign_open", "map_bundle_http", fields: ["campaign": campaignId])
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await authorizedDataRequest(
+                url: url,
+                timeoutInterval: 30,
+                suppressHTTPWarning: true
+            )
+        } catch {
+            requestTrace.end(status: "error", fields: ["error": error.localizedDescription])
+            throw error
+        }
         guard let httpResponse = response as? HTTPURLResponse else {
+            requestTrace.end(status: "invalid_response")
             throw BuildingLinkError.fetchFailed
         }
+        requestTrace.end(status: "received", fields: [
+            "httpStatus": httpResponse.statusCode,
+            "bytes": data.count,
+            "serverTiming": httpResponse.value(forHTTPHeaderField: "Server-Timing") ?? "unavailable"
+        ])
 
+        if preferTiles && httpResponse.statusCode == 409 {
+            let status = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["status"] as? String
+            if status == "disabled" || status == "unavailable" && !(String(data: data, encoding: .utf8)?.contains("tiles-v3") ?? false) {
+                // Existing campaigns are deliberately outside the no-backfill rollout.
+                return try await fetchCanonicalCampaignMapBundleUncoalesced(campaignId: campaignId,
+                    localSignature: localSignature, preferTiles: false)
+            }
+            if status == "preparing", tileAttempt < 90 {
+                try await Task.sleep(for: .seconds(2))
+                try Task.checkCancellation()
+                return try await fetchCanonicalCampaignMapBundleUncoalesced(campaignId: campaignId,
+                    localSignature: localSignature, tileAttempt: tileAttempt + 1)
+            }
+            throw CampaignTileReadinessError(status: status ?? "unavailable")
+        }
         if httpResponse.statusCode == 304 {
             print("🧪 [MAP_DEBUG] canonical_map_bundle_not_modified campaign=\(campaignId)")
             return .notModified
@@ -737,10 +779,33 @@ final class BuildingLinkService {
             throw BuildingLinkError.fetchFailed
         }
 
+        let decodeTrace = PerfTrace.begin("campaign_open", "map_bundle_decode", fields: [
+            "campaign": campaignId, "bytes": data.count
+        ])
         let bundle: CanonicalCampaignMapBundle
         do {
-            bundle = try JSONDecoder().decode(CanonicalCampaignMapBundle.self, from: data)
+            let schema = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["schema"] as? String
+            if schema == "tiles-v3" {
+                let compact = try Self.decodeCompactCampaignMapBundle(data, campaignId: campaignId)
+                let session = try await supabaseClient.auth.session
+                let userId = session.user.id
+                let workspaceId = await MainActor.run { WorkspaceContext.shared.workspaceId }
+                let geometryURL = try await CanonicalTilePackageStore.shared.downloadExactGeometry(compact.tiles)
+                try Task.checkCancellation()
+                guard try await supabaseClient.auth.session.user.id == userId,
+                      await MainActor.run(body: { WorkspaceContext.shared.workspaceId }) == workspaceId else {
+                    throw CancellationError()
+                }
+                let index = try await CanonicalCompactCampaignStore.shared.save(data: data, campaignId: campaignId,
+                    userId: userId.uuidString, workspaceId: workspaceId?.uuidString, geometryURL: geometryURL)
+                bundle = try index.fieldBundle()
+                CanonicalTileHTTP.shared.registerIfPresent(compact.tiles)
+            } else {
+                bundle = try JSONDecoder().decode(CanonicalCampaignMapBundle.self, from: data)
+            }
+            decodeTrace.end(status: "success")
         } catch {
+            decodeTrace.end(status: "error")
             print(
                 "❌ [BuildingLinkService] map-bundle decode failed campaign=\(campaignId) " +
                 "error=\(String(reflecting: error))"
@@ -753,6 +818,30 @@ final class BuildingLinkService {
             "parcels=\(bundle.parcels.features.count) links=\(bundle.links.count) status=\(bundle.linksStatus ?? "unknown")"
         )
         return .bundle(bundle)
+    }
+
+    /// Fetch compact field metadata independently of the legacy bundle. A 409
+    /// means this campaign has not been opted into compact tiles yet.
+    func fetchCompactCampaignMapBundle(campaignId: String) async throws -> (Data, CanonicalCompactCampaign)? {
+        let encodedCampaignId = encodedPathComponent(campaignId)
+        guard var components = URLComponents(string: "\(baseURL)/api/campaigns/\(encodedCampaignId)/map-bundle") else {
+            throw BuildingLinkError.invalidURL
+        }
+        components.queryItems = [URLQueryItem(name: "format", value: "tiles-v3"),
+                                 URLQueryItem(name: "platform", value: "ios")]
+        guard let url = components.url else { throw BuildingLinkError.invalidURL }
+        let (data, response) = try await authorizedDataRequest(url: url, timeoutInterval: 30, suppressHTTPWarning: true)
+        guard let response = response as? HTTPURLResponse else { throw BuildingLinkError.fetchFailed }
+        if response.statusCode == 409 { return nil }
+        guard response.statusCode == 200 else { throw BuildingLinkError.fetchFailed }
+        return (data, try Self.decodeCompactCampaignMapBundle(data, campaignId: campaignId))
+    }
+
+    static func decodeCompactCampaignMapBundle(_ data: Data, campaignId: String) throws -> CanonicalCompactCampaign {
+        let compact = try JSONDecoder().decode(CanonicalCompactCampaign.self, from: data)
+        guard compact.schema == "tiles-v3", compact.campaignId.caseInsensitiveCompare(campaignId) == .orderedSame,
+              compact.tiles.geometryPack != nil else { throw BuildingLinkError.fetchFailed }
+        return compact
     }
 
     func fetchCampaignReconciliationStatus(campaignId: String) async throws -> CanonicalMapReconciliation? {
@@ -1298,7 +1387,7 @@ final class BuildingLinkService {
             let distanceMeters = addressLocation.distance(from: seedLocation)
             guard distanceMeters <= radiusMeters else { return nil }
 
-            let distanceScore = max(0, 1 - distanceMeters / max(radiusMeters, 1))
+            let distanceScore: Double = Swift.max(0.0, 1.0 - distanceMeters / Swift.max(radiusMeters, 1.0))
             let sourceScore = feature.properties.source?.lowercased() == "manual" ? 0.05 : 0
             let score = min(1, distanceScore * 0.95 + sourceScore)
 
@@ -1650,9 +1739,9 @@ final class BuildingLinkService {
     func createManualAddress(
         campaignId: String,
         input: ManualAddressCreateInput,
+        addressId: UUID = UUID(),
         syncBehavior: ManualAddressCreateSyncBehavior = .waitForRemoteWhenOnline
     ) async throws -> ManualAddressCreateResponse {
-        let addressId = UUID()
         let clientMutationId = UUID().uuidString
         await campaignRepository.upsertManualAddressLocally(
             campaignId: campaignId,
@@ -3236,6 +3325,14 @@ enum ManualShapeServiceError: LocalizedError {
 }
 
 // MARK: - Supporting Types
+
+struct CampaignTileReadinessError: LocalizedError {
+    let status: String
+    var errorDescription: String? {
+        status == "preparing" ? "Your campaign map is still preparing. Please try again shortly." :
+            "Your campaign map could not finish preparing. Please try again."
+    }
+}
 
 enum BuildingLinkError: LocalizedError {
     case invalidURL

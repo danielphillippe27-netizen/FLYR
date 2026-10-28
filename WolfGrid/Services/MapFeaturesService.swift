@@ -45,6 +45,22 @@ struct GeoJSONCoordinatesNode: Codable, Sendable {
         })
     }
 
+    init(line: [[Double]]) {
+        value = .array(line.map { GeoJSONCoordinatesNode(point: $0) })
+    }
+
+    init(polygon: [[[Double]]]) {
+        value = .array(polygon.map { GeoJSONCoordinatesNode(line: $0) })
+    }
+
+    init(multiPolygon: [[[[Double]]]]) {
+        value = .array(multiPolygon.map { GeoJSONCoordinatesNode(polygon: $0) })
+    }
+
+    init(multiLine: [[[Double]]]) {
+        value = .array(multiLine.map { GeoJSONCoordinatesNode(line: $0) })
+    }
+
     private init(number: Double) {
         value = .number(number)
     }
@@ -132,9 +148,76 @@ enum MapFeatureGeoJSONGeometryType: String, Codable {
 }
 
 /// GeoJSON Geometry for map feature RPCs (decodes Point, LineString, Polygon, MultiPolygon, MultiLineString).
+extension CodingUserInfoKey {
+    static let canonicalBinaryGeometry = CodingUserInfoKey(rawValue: "wolfgrid.binary-field-geometry")!
+}
+
 struct MapFeatureGeoJSONGeometry: Codable {
     let type: String
     let coordinates: GeoJSONCoordinatesNode
+
+    init(type: String, coordinates: GeoJSONCoordinatesNode) {
+        self.type = type
+        self.coordinates = coordinates
+    }
+
+    init(native: CanonicalWKBGeometry) throws {
+        switch native {
+        case .point(let point): self.init(type: "Point", coordinates: GeoJSONCoordinatesNode(point: point))
+        case .lineString(let points): self.init(type: "LineString", coordinates: GeoJSONCoordinatesNode(line: points))
+        case .polygon(let rings): self.init(type: "Polygon", coordinates: GeoJSONCoordinatesNode(polygon: rings))
+        case .multiPolygon(let children):
+            let polygons = try children.map { child -> [[[Double]]] in
+                guard case .polygon(let rings) = child else { throw CanonicalWKBError.invalid }
+                return rings
+            }
+            self.init(type: "MultiPolygon", coordinates: GeoJSONCoordinatesNode(multiPolygon: polygons))
+        case .multiLineString(let children):
+            let lines = try children.map { child -> [[Double]] in
+                guard case .lineString(let points) = child else { throw CanonicalWKBError.invalid }
+                return points
+            }
+            self.init(type: "MultiLineString", coordinates: GeoJSONCoordinatesNode(multiLine: lines))
+        default: throw CanonicalWKBError.invalid
+        }
+    }
+
+    var nativeGeometry: CanonicalWKBGeometry? {
+        switch type {
+        case "Point": return asPoint.map(CanonicalWKBGeometry.point)
+        case "LineString": return asLineString.map(CanonicalWKBGeometry.lineString)
+        case "Polygon": return asPolygon.map(CanonicalWKBGeometry.polygon)
+        case "MultiPolygon": return asMultiPolygon.map { .multiPolygon($0.map(CanonicalWKBGeometry.polygon)) }
+        case "MultiLineString": return asMultiLineString.map { .multiLineString($0.map(CanonicalWKBGeometry.lineString)) }
+        default: return nil
+        }
+    }
+
+    private enum CodingKeys: String, CodingKey { case type, coordinates, format, wkb }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        if let format = try container.decodeIfPresent(String.self, forKey: .format) {
+            guard format == "wkb-v1" else { throw CanonicalWKBError.invalid }
+            var reader = CanonicalWKBReader(try container.decode(Data.self, forKey: .wkb))
+            try self.init(native: reader.read())
+        } else {
+            self.init(type: try container.decode(String.self, forKey: .type),
+                coordinates: try container.decode(GeoJSONCoordinatesNode.self, forKey: .coordinates))
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        if encoder.userInfo[.canonicalBinaryGeometry] as? Bool == true {
+            guard let nativeGeometry else { throw CanonicalWKBError.invalid }
+            try container.encode("wkb-v1", forKey: .format)
+            try container.encode(CanonicalWKBWriter.encode(nativeGeometry), forKey: .wkb)
+        } else {
+            try container.encode(type, forKey: .type)
+            try container.encode(coordinates, forKey: .coordinates)
+        }
+    }
     
     var asPoint: [Double]? { coordinates.asPoint }
     var asPolygon: [[[Double]]]? { coordinates.asPolygon }
@@ -405,7 +488,17 @@ enum ParcelOccupancyFilter {
                 return true
             }
 
-            return occupantCoordinates.contains { contains($0, in: parcel.geometry) }
+            // Reject distant occupants using one precomputed box per parcel before ray casting.
+            let rings = parcel.geometry.asPolygon.map { [$0] } ?? parcel.geometry.asMultiPolygon ?? []
+            let outerPoints = rings.flatMap { $0.first ?? [] }.filter { $0.count >= 2 && $0[0].isFinite && $0[1].isFinite }
+            guard let minX = outerPoints.map({ $0[0] }).min(),
+                  let maxX = outerPoints.map({ $0[0] }).max(),
+                  let minY = outerPoints.map({ $0[1] }).min(),
+                  let maxY = outerPoints.map({ $0[1] }).max() else { return false }
+            return occupantCoordinates.contains {
+                $0[0] >= minX - 1e-12 && $0[0] <= maxX + 1e-12 && $0[1] >= minY - 1e-12 && $0[1] <= maxY + 1e-12 &&
+                    contains($0, in: parcel.geometry)
+            }
         }
 
         return features.count == parcels.features.count
@@ -546,6 +639,58 @@ struct ResolvedCampaignTarget {
 }
 
 enum CampaignTargetResolver {
+    /// Resolve field targets directly from compact metadata and exact binary
+    /// shapes. The centroid calculation matches the existing campaign path.
+    static func buildingTargets(
+        from records: [CanonicalCompactRecord<BuildingProperties>], exactIndex: CanonicalCompactFieldIndex
+    ) throws -> [ResolvedCampaignTarget] {
+        var seen = Set<String>()
+        return try records.compactMap { record in
+            guard let rawId = normalizedSessionTargetId(record.properties.canonicalBuildingIdentifier ?? record.id),
+                  seen.insert(rawId.lowercased()).inserted,
+                  let geometry = try exactIndex.geometry(featureId: record.featureId) else { return nil }
+            let rings: [[[Double]]]
+            switch geometry {
+            case .polygon(let value): rings = value
+            case .multiPolygon(let polygons):
+                rings = polygons.flatMap { polygon in
+                    if case .polygon(let value) = polygon { return value }
+                    return []
+                }
+            default: return nil
+            }
+            guard let coordinate = centroidCoordinate(fromPolygonCoordinates: rings) else { return nil }
+            return ResolvedCampaignTarget(
+                id: rawId,
+                label: displayAddressText(formatted: record.properties.addressText,
+                    houseNumber: record.properties.houseNumber, streetName: record.properties.streetName) ?? "Building",
+                coordinate: coordinate,
+                addressId: normalizedUUIDString(record.properties.addressId) ?? normalizedUUIDString(record.id),
+                buildingId: rawId,
+                houseNumber: record.properties.houseNumber,
+                streetName: record.properties.streetName
+            )
+        }
+    }
+
+    static func addressTargets(from records: [CanonicalCompactRecord<AddressProperties>]) -> [ResolvedCampaignTarget] {
+        var seen = Set<String>()
+        return records.compactMap { record in
+            guard let rawId = normalizedUUIDString(record.properties.id ?? record.id),
+                  record.coordinate.count >= 2, seen.insert(rawId.lowercased()).inserted else { return nil }
+            return ResolvedCampaignTarget(
+                id: rawId,
+                label: displayAddressText(formatted: record.properties.formatted,
+                    houseNumber: record.properties.houseNumber, streetName: record.properties.streetName) ?? "Address",
+                coordinate: CLLocationCoordinate2D(latitude: record.coordinate[1], longitude: record.coordinate[0]),
+                addressId: rawId,
+                buildingId: normalizedSessionTargetId(record.properties.buildingGersId ?? record.properties.gersId),
+                houseNumber: record.properties.houseNumber,
+                streetName: record.properties.streetName
+            )
+        }
+    }
+
     static func preferredSessionTargets(
         buildings: [BuildingFeature],
         addresses: [AddressFeature]
@@ -846,6 +991,11 @@ final class MapFeaturesService: ObservableObject {
     @Published var parcels: ParcelFeatureCollection?
     @Published var roads: RoadFeatureCollection?
     @Published var diamondManifest: DiamondManifest?
+    @Published private(set) var compactFieldIndex: CanonicalCompactFieldIndex?
+    private var compactFieldUserId: UUID?
+    private var compactFieldWorkspaceId: UUID?
+    private var compactPreparationTask: Task<Void, Never>?
+    private var compactPreparationKey: String?
     @Published var displayModeHint: String?
     @Published var isLoading = false
     @Published var clientLinkingProgress: ClientLinkingProgress = .idle
@@ -954,6 +1104,92 @@ final class MapFeaturesService: ObservableObject {
     func diamondManifest(for campaignId: String) -> DiamondManifest? {
         if isScopedToCampaign(campaignId) { return diamondManifest }
         return featureSnapshotsByCampaign[campaignId.lowercased()]?.diamondManifest
+    }
+
+    func compactFieldIndex(for campaignId: String) -> CanonicalCompactFieldIndex? {
+        guard isScopedToCampaign(campaignId),
+              compactFieldUserId != nil, compactFieldUserId == AuthManager.shared.user?.id,
+              compactFieldWorkspaceId == WorkspaceContext.shared.workspaceId,
+              compactFieldIndex?.campaign.tiles.geometryRevision == diamondManifest?.geometryEtag,
+              compactFieldIndex?.campaign.campaignId.caseInsensitiveCompare(campaignId) == .orderedSame else { return nil }
+        return compactFieldIndex
+    }
+
+    private func restoreCompactFieldIndex(campaignId: String, requestId: UUID?,
+                                          tiles: CanonicalCampaignTiles?, canonicalSignature: String?) async {
+        guard let tiles, let canonicalSignature, let userId = AuthManager.shared.user?.id else {
+            compactPreparationTask?.cancel()
+            compactPreparationTask = nil
+            compactPreparationKey = nil
+            compactFieldIndex = nil
+            return
+        }
+        let workspaceId = WorkspaceContext.shared.workspaceId
+        let index = try? await CanonicalCompactCampaignStore.shared.load(campaignId: campaignId,
+            userId: userId.uuidString, workspaceId: workspaceId?.uuidString)
+        guard isActiveCampaignRequest(campaignId: campaignId, requestId: requestId),
+              AuthManager.shared.user?.id == userId, WorkspaceContext.shared.workspaceId == workspaceId else { return }
+        guard let index, index.campaign.canonicalSignature == canonicalSignature,
+              index.campaign.tiles.geometryRevision == tiles.geometryRevision,
+              index.campaign.tiles.sha256 == tiles.sha256,
+              index.campaign.tiles.geometryPack?.sha256 == tiles.geometryPack?.sha256 else {
+            compactFieldIndex = nil
+            prepareCompactFieldIndex(campaignId: campaignId, requestId: requestId, tiles: tiles,
+                canonicalSignature: canonicalSignature, userId: userId, workspaceId: workspaceId)
+            return
+        }
+        compactPreparationTask?.cancel()
+        compactPreparationTask = nil
+        compactPreparationKey = nil
+        compactFieldUserId = userId
+        compactFieldWorkspaceId = workspaceId
+        compactFieldIndex = index
+    }
+
+    /// Prepare the exact field data when a tile-enabled campaign is opened,
+    /// rather than requiring the user to run an offline download first.
+    private func prepareCompactFieldIndex(campaignId: String, requestId: UUID?, tiles: CanonicalCampaignTiles,
+                                          canonicalSignature: String, userId: UUID, workspaceId: UUID?) {
+        guard NetworkMonitor.shared.isOnline else { return }
+        let key = "\(campaignId.lowercased()):\(canonicalSignature):\(tiles.geometryRevision):\(userId):\(workspaceId?.uuidString ?? "personal")"
+        guard compactPreparationKey != key else { return }
+        compactPreparationTask?.cancel()
+        compactPreparationKey = key
+        compactPreparationTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer {
+                if self.compactPreparationKey == key {
+                    self.compactPreparationKey = nil
+                    self.compactPreparationTask = nil
+                }
+            }
+            @MainActor func stillCurrent() -> Bool {
+                !Task.isCancelled && self.compactPreparationKey == key &&
+                    self.isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) &&
+                    AuthManager.shared.user?.id == userId && WorkspaceContext.shared.workspaceId == workspaceId
+            }
+            do {
+                guard let (data, compact) = try await BuildingLinkService.shared.fetchCompactCampaignMapBundle(campaignId: campaignId),
+                      compact.canonicalSignature == canonicalSignature,
+                      compact.tiles.geometryRevision == tiles.geometryRevision,
+                      compact.tiles.sha256 == tiles.sha256,
+                      compact.tiles.geometryPack?.sha256 == tiles.geometryPack?.sha256,
+                      stillCurrent() else { return }
+                let geometryURL = try await CanonicalTilePackageStore.shared.downloadExactGeometry(compact.tiles)
+                guard stillCurrent() else { return }
+                let index = try await CanonicalCompactCampaignStore.shared.save(data: data, campaignId: campaignId,
+                    userId: userId.uuidString, workspaceId: workspaceId?.uuidString, geometryURL: geometryURL)
+                guard stillCurrent() else { return }
+                self.compactFieldUserId = userId
+                self.compactFieldWorkspaceId = workspaceId
+                self.compactFieldIndex = index
+                print("🧪 [MAP_DEBUG] compact_field_ready campaign=\(campaignId) revision=\(tiles.geometryRevision)")
+            } catch {
+                if stillCurrent() {
+                    print("⚠️ [MAP_DEBUG] compact_field_prepare_failed campaign=\(campaignId) error=\(error.localizedDescription)")
+                }
+            }
+        }
     }
 
     func displayModeHint(for campaignId: String) -> String? {
@@ -1138,6 +1374,9 @@ final class MapFeaturesService: ObservableObject {
 
         let isRefreshingSameCampaign = activeCampaignIdLower == campaignIdLower
         let requestId = UUID()
+        compactPreparationTask?.cancel()
+        compactPreparationTask = nil
+        compactPreparationKey = nil
         activeCampaignRequestId = requestId
         activeCampaignIdLower = campaignIdLower
         if !isRefreshingSameCampaign || forceRefresh {
@@ -1165,6 +1404,7 @@ final class MapFeaturesService: ObservableObject {
         // a manual home) so the map never collapses to empty while refresh requests are in flight.
         // We still clear immediately when switching to a different campaign.
         if !isRefreshingSameCampaign {
+            compactFieldIndex = nil
             seedCurrentFeaturesFromSnapshot(campaignId: campaignId)
         }
 
@@ -1179,14 +1419,29 @@ final class MapFeaturesService: ObservableObject {
         if let cachedBundle = await campaignRepository.getCampaignMapBundle(campaignId: campaignId),
            isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) {
             let cachedBuildings = filteredRenderableBuildingCollection(cachedBundle.buildings)
+            let cachedParcels = await Task.detached(priority: .userInitiated) {
+                ParcelOccupancyFilter.filter(
+                    parcels: cachedBundle.parcels,
+                    addresses: cachedBundle.addresses,
+                    buildings: cachedBuildings
+                )
+            }.value
+            guard isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else {
+                trace.end(status: "superseded_during_cache_processing")
+                return
+            }
             self.buildings = cachedBuildings
             self.addresses = cachedBundle.addresses
-            self.parcels = ParcelOccupancyFilter.filter(
-                parcels: cachedBundle.parcels,
-                addresses: cachedBundle.addresses,
-                buildings: cachedBuildings
-            )
+            self.parcels = cachedParcels
             self.roads = cachedBundle.roads
+            self.diamondManifest = nil
+            if let tiles = cachedBundle.metadata?.canonicalTiles {
+                let locallyAvailable = CanonicalTileHTTP.shared.registerIfPresent(tiles)
+                if locallyAvailable || NetworkMonitor.shared.isOnline { self.diamondManifest = tiles.diamondManifest(campaignId: campaignId) }
+            }
+            await restoreCompactFieldIndex(campaignId: campaignId, requestId: requestId,
+                tiles: cachedBundle.metadata?.canonicalTiles, canonicalSignature: cachedBundle.metadata?.canonicalSignature)
+            guard isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else { return }
             self.displayModeHint = cachedBundle.metadata?.displayModeHint
             self.currentCanonicalBundleLinksStatus = cachedBundle.metadata?.linksStatus
             self.reconciliationStatus = cachedBundle.metadata?.reconciliation
@@ -1706,7 +1961,7 @@ final class MapFeaturesService: ObservableObject {
             buildingUnits: bundle.counts?.buildingUnits ?? bundle.buildingUnits?.count
         )
 
-        return CanonicalCampaignMapBundle(
+        var preserved = CanonicalCampaignMapBundle(
             campaignId: bundle.campaignId,
             assetSignature: bundle.assetSignature,
             sourceVersion: bundle.sourceVersion,
@@ -1728,6 +1983,10 @@ final class MapFeaturesService: ObservableObject {
             expiresAt: bundle.expiresAt,
             updatedAt: bundle.updatedAt
         )
+        preserved.tiles = bundle.tiles
+        preserved.canonicalSignature = bundle.canonicalSignature
+        preserved.storageFormat = bundle.storageFormat
+        return preserved
     }
 
     private func applyCanonicalCampaignMapBundle(
@@ -1751,6 +2010,14 @@ final class MapFeaturesService: ObservableObject {
         self.addresses = bundle.addresses
         self.parcels = filteredParcels
         self.roads = bundle.roads
+        self.diamondManifest = nil
+        if let tiles = bundle.tiles {
+            let locallyAvailable = CanonicalTileHTTP.shared.registerIfPresent(tiles)
+            if locallyAvailable || NetworkMonitor.shared.isOnline { self.diamondManifest = tiles.diamondManifest(campaignId: campaignId) }
+        }
+        await restoreCompactFieldIndex(campaignId: campaignId, requestId: requestId,
+            tiles: bundle.tiles, canonicalSignature: bundle.canonicalSignature)
+        guard isActiveCampaignRequest(campaignId: campaignId, requestId: requestId) else { return }
         self.displayModeHint = bundle.displayModeHint
         self.currentCanonicalBundleLinksStatus = bundle.linksStatus
         self.reconciliationStatus = bundle.reconciliation

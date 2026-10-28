@@ -7,7 +7,7 @@ import CoreLocation
 
 /// Shared campaign status palette. Mirrors the web map status config.
 enum MapStatusColor {
-    static let untouchedLight = UIColor(hex: "#cfd8e3")!  // Light blue-grey (unvisited on light maps)
+    static let untouchedLight = UIColor(hex: "#b6d1e6")!  // Pale blue-grey with a visible cool tint (unvisited on light maps)
     static let untouchedDark = UIColor(hex: "#475569")!   // Dark Slate (unvisited on dark maps)
     static var useLightMapBuildingDefault = false
     static var untouched: UIColor {
@@ -95,10 +95,10 @@ final class MapLayerManager {
     // MARK: - Address markers zoom (3D cylinders + house number labels)
     
     /// Shared layer min zoom for 3D address markers.
-    private static let addressMarkersLayerMinZoom: Double = 11.8
+    private static let addressMarkersLayerMinZoom: Double = 10.0
     /// Campaign opening can fit the full territory near zoom 11. Keep campaign
     /// footprints visible there so they do not appear to vanish after first paint.
-    private static let buildingLayerMinZoom: Double = 10.5
+    private static let buildingLayerMinZoom: Double = 10.0
     /// House numbers are only readable at close range; keep them out of overview zooms.
     private static let addressNumbersLayerMinZoom: Double = 16.0
     private static let addressHouseIconImageId = "campaign-address-house-emblem"
@@ -837,12 +837,12 @@ final class MapLayerManager {
         Exp(.interpolate) {
             Exp(.linear)
             Exp(.zoom)
-            11.8
-            0.0
-            12.2
-            0.42
+            10.0
+            0.75
+            11.0
+            0.85
             12.8
-            0.72
+            0.92
             13.5
             0.92
             14.2
@@ -1072,11 +1072,11 @@ final class MapLayerManager {
         Exp(.interpolate) {
             Exp(.linear)
             Exp(.zoom)
-            13.5
+            10.0
             Exp(.switchCase) {
                 Self.isSelectedExpression
                 0.42
-                0.0
+                0.12
             }
             14.0
             Exp(.switchCase) {
@@ -1113,11 +1113,11 @@ final class MapLayerManager {
         Exp(.interpolate) {
             Exp(.linear)
             Exp(.zoom)
-            13.5
+            10.0
             Exp(.switchCase) {
                 Self.isSelectedExpression
                 1.0
-                0.0
+                0.62
             }
             14.0
             Exp(.switchCase) {
@@ -1303,14 +1303,39 @@ final class MapLayerManager {
     private var cardBuildingIdentifiersByAddress: [UUID: Set<String>] = [:]
     private var buildingFeatureStateCache: [String: [String: Any]] = [:]
     private var addressFeatureStateCache: [String: [String: Any]] = [:]
+    private var parcelIdsByAddressId: [String: [String]] = [:]
+
+    func updateParcelAddressLinks(_ links: [String: [String]]) {
+        guard parcelIdsByAddressId != links else { return }
+        parcelIdsByAddressId = links
+        guard let mapView else { return }
+        for (addressId, state) in addressFeatureStateCache {
+            for parcelId in links[addressId] ?? [] {
+                applyParcelFeatureState(featureId: parcelId, state: state, mapView: mapView)
+                applyParcelFeatureState(featureId: "parcel:" + parcelId, state: state, mapView: mapView)
+            }
+        }
+    }
     private var townhomeOverlayFeatureIdsByBuildingIdentifier: [String: Set<String>] = [:]
     private var townhomeOverlayBaseStateBuildingIdentifiers: Set<String> = []
     
     /// When false, 3D building extrusion layer is not added (campaign map shows flat map + addresses/roads only).
     var includeBuildingsLayer: Bool = true
 
-    /// When false, address circle layer (purple pins) is not added; addresses source is still created and updated for logic.
+    /// Legacy default visibility; address layers stay installed for mode switching.
     var includeAddressesLayer: Bool = true
+
+    // Keep the selected display mode through source refreshes and style reloads.
+    // Installation flags cannot represent visibility: both layer families are installed.
+    private var desiredAddressExtrusionVisibility: Bool?
+    private var addressExtrusionsVisible: Bool {
+        desiredAddressExtrusionVisibility ?? includeAddressesLayer
+    }
+
+    func setAddressExtrusionVisibility(isVisible: Bool) {
+        desiredAddressExtrusionVisibility = isVisible
+        applyAddressExtrusionVisibilityIfNeeded()
+    }
 
     /// When false, campaign roads are still loaded into the source but we skip the visual overlay so
     /// the base map's native road styling stays unchanged.
@@ -1919,6 +1944,7 @@ final class MapLayerManager {
                 MapStatusColor.untouched
             }
         )
+        layer.visibility = .constant(addressExtrusionsVisible ? .visible : .none)
         layer.fillExtrusionOpacity = .expression(Self.addressMarkersZoomOpacityExpression)
         layer.fillExtrusionHeight = .expression(Self.addressMarkerExtrusionHeightExpression)
         layer.fillExtrusionBase = .expression(Self.addressMarkerExtrusionBaseExpression)
@@ -1957,6 +1983,7 @@ final class MapLayerManager {
         }
 
         var selectedLayer = FillExtrusionLayer(id: Self.selectedAddressesLayerId, source: Self.addressesSourceId)
+        selectedLayer.visibility = .constant(addressExtrusionsVisible ? .visible : .none)
         selectedLayer.fillExtrusionColor = .expression(
             Exp(.switchCase) {
                 Self.isSelectedUnvisitedExpression
@@ -2083,6 +2110,35 @@ final class MapLayerManager {
         }
     }
 
+    /// Use explicit cap elevation in address mode and preserve rooftop placement otherwise.
+    private static func addressNumberElevationExpression(isAddressMode: Bool) -> Exp {
+        Exp(.switchCase) {
+            Self.manualPinMarkerExpression
+            Exp(.coalesce) {
+                Exp(.get) { "label_z_offset" }
+                Self.addressNumberRoofClearance
+            }
+            isAddressMode
+            // Cylinder labels need the full cap height above ground. Rooftop
+            // auto-elevation does not reliably lift labels over address cylinders.
+            Self.addressMarkerExtrusionHeight + 0.05
+            Self.addressNumberRoofClearance
+        }
+    }
+
+    /// Render a soft, screen-aligned shadow independently of the crisp white glyphs.
+    private static func addressNumberShadow(for labels: SymbolLayer) -> SymbolLayer {
+        var shadow = labels
+        shadow.id = labels.id + "-shadow"
+        shadow.textColor = .constant(StyleColor(UIColor.black.withAlphaComponent(0.65)))
+        shadow.textHaloColor = .constant(StyleColor(UIColor.black.withAlphaComponent(0.65)))
+        shadow.textHaloWidth = .constant(0.75)
+        shadow.textHaloBlur = .constant(3.5)
+        shadow.textTranslate = .constant([0, 1.5])
+        shadow.textTranslateAnchor = .constant(.viewport)
+        return shadow
+    }
+
     private func setupAddressNumbersLayer() {
         guard let mapView = mapView else { return }
 
@@ -2110,9 +2166,7 @@ final class MapLayerManager {
             }
         )
         layer.textColor = .constant(StyleColor(.white))
-        layer.textHaloColor = .constant(StyleColor(.black))
-        layer.textHaloWidth = .constant(1.4)
-        layer.textHaloBlur = .constant(0.4)
+        layer.textHaloWidth = .constant(0)
         layer.textAnchor = .constant(.center)
         layer.textJustify = .constant(.center)
         layer.textOffset = .expression(
@@ -2141,16 +2195,7 @@ final class MapLayerManager {
         layer.symbolZElevate = .constant(true)
         layer.symbolElevationReference = .constant(.ground)
         layer.symbolZOffset = .expression(
-            Exp(.switchCase) {
-                Self.manualPinMarkerExpression
-                Exp(.coalesce) {
-                    Exp(.get) { "label_z_offset" }
-                    Self.addressNumberRoofClearance
-                }
-                // symbolZElevate already supplies the rendered rooftop height.
-                // Add only clearance, matching Android, rather than counting the roof twice.
-                Self.addressNumberRoofClearance
-            }
+            Self.addressNumberElevationExpression(isAddressMode: false)
         )
         layer.textAllowOverlap = .constant(true)
         layer.textIgnorePlacement = .constant(true)
@@ -2174,6 +2219,10 @@ final class MapLayerManager {
             } else {
                 try mapView.mapboxMap.addLayer(layer)
             }
+            try mapView.mapboxMap.addLayer(
+                Self.addressNumberShadow(for: layer),
+                layerPosition: .below(Self.addressNumbersLayerId)
+            )
             print("✅ [MapLayer] Added address numbers symbol layer (\(Self.addressNumbersLayerId))")
         } catch {
             print("❌ [MapLayer] Error adding address numbers layer: \(error)")
@@ -2617,6 +2666,12 @@ final class MapLayerManager {
         }
     }
 
+    func updateCanonicalTileScope(buildings: [String]?, addresses: [String]?, parcels: [String]?) {
+        guard let mapView else { return }
+        do { try diamondGeometryProvider.applyCanonicalScope(buildings: buildings, addresses: addresses, parcels: parcels, on: mapView) }
+        catch { print("❌ [MapLayer] Could not scope canonical tiles: \(error)") }
+    }
+
     func setDiamondGeometryVisibility(_ isVisible: Bool, addressNumbers: Bool? = nil, parcels: Bool? = nil) {
         desiredDiamondBuildingVisibility = isVisible
         desiredDiamondAddressVisibility = isVisible
@@ -2645,7 +2700,13 @@ final class MapLayerManager {
             VectorTileDiamondGeometryProvider.addressCircleLayerId,
             VectorTileDiamondGeometryProvider.selectedAddressCircleLayerId,
             VectorTileDiamondGeometryProvider.addressNumberLayerId
-        ]
+        ].flatMap { layerId in
+            if layerId == VectorTileDiamondGeometryProvider.addressNumberLayerId ||
+                layerId == VectorTileDiamondGeometryProvider.buildingAddressNumberLayerId {
+                return [layerId, layerId + "-shadow"]
+            }
+            return [layerId]
+        }
 
         let existingLayerIds = Set(mapView.mapboxMap.allLayerIdentifiers.map(\.id))
         guard layerIds.contains(where: existingLayerIds.contains) else { return }
@@ -2658,12 +2719,13 @@ final class MapLayerManager {
         let shouldShowParcels = desiredDiamondParcelVisibility ?? (desiredDiamondBuildingVisibility || desiredDiamondAddressVisibility)
 
         for layerId in layerIds where existingLayerIds.contains(layerId) {
-            let isAddressCircleLayer = layerId == VectorTileDiamondGeometryProvider.addressCircleLayerId ||
-                layerId == VectorTileDiamondGeometryProvider.selectedAddressCircleLayerId
-            let isAddressNumberLayer = layerId == VectorTileDiamondGeometryProvider.addressNumberLayerId
-            let isBuildingAddressNumberLayer = layerId == VectorTileDiamondGeometryProvider.buildingAddressNumberLayerId
-            let isParcelLayer = layerId == VectorTileDiamondGeometryProvider.parcelFillLayerId ||
-                layerId == VectorTileDiamondGeometryProvider.parcelLineLayerId
+            let baseLayerId = layerId.hasSuffix("-shadow") ? String(layerId.dropLast(7)) : layerId
+            let isAddressCircleLayer = baseLayerId == VectorTileDiamondGeometryProvider.addressCircleLayerId ||
+                baseLayerId == VectorTileDiamondGeometryProvider.selectedAddressCircleLayerId
+            let isAddressNumberLayer = baseLayerId == VectorTileDiamondGeometryProvider.addressNumberLayerId
+            let isBuildingAddressNumberLayer = baseLayerId == VectorTileDiamondGeometryProvider.buildingAddressNumberLayerId
+            let isParcelLayer = baseLayerId == VectorTileDiamondGeometryProvider.parcelFillLayerId ||
+                baseLayerId == VectorTileDiamondGeometryProvider.parcelLineLayerId
             let shouldShow: Bool
             if isParcelLayer {
                 shouldShow = shouldShowParcels
@@ -2678,16 +2740,16 @@ final class MapLayerManager {
             }
             let visibility: Visibility = shouldShow ? .visible : .none
 
-            if layerId == VectorTileDiamondGeometryProvider.parcelFillLayerId {
+            if baseLayerId == VectorTileDiamondGeometryProvider.parcelFillLayerId {
                 try? mapView.mapboxMap.updateLayer(withId: layerId, type: FillLayer.self) {
                     $0.visibility = .constant(visibility)
                 }
-            } else if layerId == VectorTileDiamondGeometryProvider.buildingFillLayerId {
+            } else if baseLayerId == VectorTileDiamondGeometryProvider.buildingFillLayerId {
                 try? mapView.mapboxMap.updateLayer(withId: layerId, type: FillExtrusionLayer.self) {
                     $0.visibility = .constant(visibility)
                 }
-            } else if layerId == VectorTileDiamondGeometryProvider.addressCircleLayerId ||
-                        layerId == VectorTileDiamondGeometryProvider.selectedAddressCircleLayerId {
+            } else if baseLayerId == VectorTileDiamondGeometryProvider.addressCircleLayerId ||
+                        baseLayerId == VectorTileDiamondGeometryProvider.selectedAddressCircleLayerId {
                 if installedDiamondManifest?.sourceLayers?.addressCircles?.isEmpty == false {
                     try? mapView.mapboxMap.updateLayer(withId: layerId, type: FillExtrusionLayer.self) {
                         $0.visibility = .constant(visibility)
@@ -2697,8 +2759,8 @@ final class MapLayerManager {
                         $0.visibility = .constant(visibility)
                     }
                 }
-            } else if layerId == VectorTileDiamondGeometryProvider.addressNumberLayerId ||
-                        layerId == VectorTileDiamondGeometryProvider.buildingAddressNumberLayerId {
+            } else if baseLayerId == VectorTileDiamondGeometryProvider.addressNumberLayerId ||
+                        baseLayerId == VectorTileDiamondGeometryProvider.buildingAddressNumberLayerId {
                 try? mapView.mapboxMap.updateLayer(withId: layerId, type: SymbolLayer.self) {
                     $0.visibility = .constant(visibility)
                 }
@@ -2825,7 +2887,8 @@ final class MapLayerManager {
         addressStatuses: [UUID: AddressStatus],
         addressStatusRows: [UUID: AddressStatusRow] = [:],
         currentUserId: UUID? = nil,
-        workspaceCoveredAddressIds: Set<UUID> = []
+        workspaceCoveredAddressIds: Set<UUID> = [],
+        parcels: [ParcelFeature] = []
     ) {
         guard let mapView = mapView else { return }
 
@@ -2845,7 +2908,8 @@ final class MapLayerManager {
             addressStatuses: addressStatuses,
             addressStatusRows: addressStatusRows,
             currentUserId: currentUserId,
-            workspaceCoveredAddressIds: workspaceCoveredAddressIds
+            workspaceCoveredAddressIds: workspaceCoveredAddressIds,
+            parcels: parcels
         ) ?? Self.encodedEmptyTownhomeOverlay()
 #if DEBUG
         logTownhomeOverlayUnitChanges(
@@ -2888,6 +2952,13 @@ final class MapLayerManager {
             lastTownhomeOverlaySignature = signature
             townhomeOverlayFeatureIdsByBuildingIdentifier = Self.townhomeOverlayFeatureIdsByBuildingIdentifier(from: data)
             syncTownhomeOverlayBaseStates(nextBuildingIdentifiers: Set(townhomeOverlayFeatureIdsByBuildingIdentifier.keys))
+            do {
+                try diamondGeometryProvider.applyCoveredTownhomeBuildings(
+                    Self.completeTownhomeOverlayBuildingIdentifiers(from: data), on: mapView
+                )
+            } catch {
+                print("❌ [DIAMOND] Could not update townhome coverage: \(error)")
+            }
             let overlayCount = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])
                 .flatMap { $0["features"] as? [[String: Any]] }?
                 .count ?? 0
@@ -2959,6 +3030,32 @@ final class MapLayerManager {
             }
         }
         return result
+    }
+
+    // Hide the tiled parent only when every unit has a replacement extrusion.
+    // This prevents tile simplification from showing the parent through its walls.
+    static func completeTownhomeOverlayBuildingIdentifiers(from data: Data) -> Set<String> {
+        guard let collection = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let features = collection["features"] as? [[String: Any]] else { return [] }
+        var expected: [String: Int] = [:]
+        var rendered: [String: Set<String>] = [:]
+        for feature in features {
+            guard let properties = feature["properties"] as? [String: Any],
+                  let geometry = feature["geometry"] as? [String: Any],
+                  let geometryType = normalizedStringValue(geometry["type"]),
+                  geometryType == "polygon" || geometryType == "multipolygon",
+                  let featureId = normalizedStringValue(feature["id"]),
+                  let count = properties["unit_count"] as? Int, count >= 2 else { continue }
+            let identifiers = Set(normalizedStringValues(properties["building_identifiers"])
+                + [normalizedStringValue(properties["gers_id"])].compactMap { $0 })
+            for id in identifiers {
+                expected[id] = max(expected[id] ?? 0, count)
+                rendered[id, default: []].insert(featureId)
+            }
+        }
+        return Set(expected.compactMap { id, count in
+            rendered[id]?.count == count ? id : nil
+        })
     }
 
     private func syncTownhomeOverlayBaseStates(nextBuildingIdentifiers: Set<String>) {
@@ -3053,7 +3150,8 @@ final class MapLayerManager {
         addressStatuses: [UUID: AddressStatus],
         addressStatusRows: [UUID: AddressStatusRow] = [:],
         currentUserId: UUID? = nil,
-        workspaceCoveredAddressIds: Set<UUID> = []
+        workspaceCoveredAddressIds: Set<UUID> = [],
+        parcels: [ParcelFeature] = []
     ) -> Data? {
         let addressContextsById = overlayAddressContextsById(addresses)
 
@@ -3097,21 +3195,23 @@ final class MapLayerManager {
                 addresses: linkedAddresses
             )
 
+            let parcelSegments = parcelAlignedTownhomeSegments(
+                buildingPolygons: polygons, addressIds: linkedAddresses.map(\.id), parcels: parcels
+            )
             for (index, address) in linkedAddresses.enumerated() {
                 let sliceIndex = reverseSliceOrder ? linkedAddresses.count - index - 1 : index
                 let startFraction = Double(sliceIndex) / Double(linkedAddresses.count)
                 let endFraction = Double(sliceIndex + 1) / Double(linkedAddresses.count)
 
-                guard let clippedPolygons = slicedPolygons(
+                guard let clippedPolygons = parcelSegments?[address.id] ?? slicedPolygons(
                     polygons: polygons,
                     startFraction: startFraction,
                     endFraction: endFraction
                 ), !clippedPolygons.isEmpty else {
                     continue
                 }
-                let displayPolygons = clippedPolygons.map {
-                    insetPolygonRing($0, insetMeters: 0.38) ?? $0
-                }
+                // Extend each status segment to the building's exterior walls.
+                let displayPolygons = clippedPolygons
 
                 let properties: [String: Any] = [
                     "gers_id": gersId,
@@ -3147,10 +3247,10 @@ final class MapLayerManager {
                 featureDictionaries.append(feature)
             }
 
-            let dividerLines = townhomeDividerLineStrings(
+            let dividerLines = parcelSegments == nil ? townhomeDividerLineStrings(
                 polygons: polygons,
                 unitCount: linkedAddresses.count
-            )
+            ) : []
             for (dividerIndex, line) in dividerLines.enumerated() {
                 guard line.count >= 2 else { continue }
                 featureDictionaries.append([
@@ -3294,7 +3394,7 @@ final class MapLayerManager {
 
     private func applyAddressExtrusionVisibilityIfNeeded() {
         guard let mapView = mapView else { return }
-        let visibility: Visibility = includeAddressesLayer ? .visible : .none
+        let visibility: Visibility = addressExtrusionsVisible ? .visible : .none
 
         if mapView.mapboxMap.layerExists(withId: Self.addressesLayerId) {
             try? mapView.mapboxMap.updateLayer(withId: Self.addressesLayerId, type: FillExtrusionLayer.self) {
@@ -3466,8 +3566,10 @@ final class MapLayerManager {
         guard mapView.mapboxMap.layerExists(withId: Self.addressNumbersLayerId) else { return }
 
         do {
-            try mapView.mapboxMap.updateLayer(withId: Self.addressNumbersLayerId, type: SymbolLayer.self) {
-                $0.visibility = .constant(isVisible ? .visible : .none)
+            for layerId in [Self.addressNumbersLayerId, Self.addressNumbersLayerId + "-shadow"] {
+                try mapView.mapboxMap.updateLayer(withId: layerId, type: SymbolLayer.self) {
+                    $0.visibility = .constant(isVisible ? .visible : .none)
+                }
             }
             if mapView.mapboxMap.layerExists(withId: Self.addressLabelHitboxLayerId) {
                 try mapView.mapboxMap.updateLayer(withId: Self.addressLabelHitboxLayerId, type: CircleLayer.self) {
@@ -3527,11 +3629,21 @@ final class MapLayerManager {
             }
         }
 
-        if map.layerExists(withId: Self.addressNumbersLayerId) {
-            try? map.updateLayer(withId: Self.addressNumbersLayerId, type: SymbolLayer.self) {
+        for layerId in [Self.addressNumbersLayerId, Self.addressNumbersLayerId + "-shadow"] where map.layerExists(withId: layerId) {
+            try? map.updateLayer(withId: layerId, type: SymbolLayer.self) {
                 $0.minZoom = addressLabelMinZoom
                 $0.textOpacity = .expression(Self.addressNumbersZoomOpacityExpression)
                 $0.filter = Self.addressNumberLabelFilter(isAddressMode: isAddressMode)
+                $0.symbolZOffset = .expression(Self.addressNumberElevationExpression(isAddressMode: isAddressMode))
+                $0.textOffset = .expression(
+                    Exp(.switchCase) {
+                        Self.manualPinMarkerExpression
+                        Exp(.literal) { [0.0, 0.0] }
+                        isAddressMode
+                        Exp(.literal) { [0.0, 0.0] }
+                        Exp(.literal) { [0.0, -0.35] }
+                    }
+                )
             }
         }
 
@@ -3612,8 +3724,8 @@ final class MapLayerManager {
             }
         }
 
-        if map.layerExists(withId: VectorTileDiamondGeometryProvider.addressNumberLayerId) {
-            try? map.updateLayer(withId: VectorTileDiamondGeometryProvider.addressNumberLayerId, type: SymbolLayer.self) {
+        for layerId in [VectorTileDiamondGeometryProvider.addressNumberLayerId, VectorTileDiamondGeometryProvider.addressNumberLayerId + "-shadow"] where map.layerExists(withId: layerId) {
+            try? map.updateLayer(withId: layerId, type: SymbolLayer.self) {
                 $0.minZoom = addressLabelMinZoom
                 $0.textOpacity = .expression(
                     VectorTileDiamondGeometryProvider.linkedAddressNumberOpacityExpression(
@@ -3624,8 +3736,8 @@ final class MapLayerManager {
             }
         }
 
-        if map.layerExists(withId: VectorTileDiamondGeometryProvider.buildingAddressNumberLayerId) {
-            try? map.updateLayer(withId: VectorTileDiamondGeometryProvider.buildingAddressNumberLayerId, type: SymbolLayer.self) {
+        for layerId in [VectorTileDiamondGeometryProvider.buildingAddressNumberLayerId, VectorTileDiamondGeometryProvider.buildingAddressNumberLayerId + "-shadow"] where map.layerExists(withId: layerId) {
+            try? map.updateLayer(withId: layerId, type: SymbolLayer.self) {
                 $0.minZoom = addressLabelMinZoom
                 $0.textOpacity = .expression(
                     VectorTileDiamondGeometryProvider.linkedAddressNumberOpacityExpression(
@@ -4973,6 +5085,10 @@ final class MapLayerManager {
         }
 
         updateDiamondParcelState(featureId: normalizedId, state: state, logSuccess: logSuccess)
+        for parcelId in parcelIdsByAddressId[normalizedId] ?? [] {
+            applyParcelFeatureState(featureId: parcelId, state: state, mapView: mapView)
+            applyParcelFeatureState(featureId: "parcel:" + parcelId, state: state, mapView: mapView)
+        }
     }
 
     private func replayCachedFeatureStates(reason: String) {
@@ -5935,6 +6051,225 @@ final class MapLayerManager {
         }
         guard abs(covariance) > 0.000001 else { return false }
         return covariance < 0
+    }
+
+    // Clip the original footprint against each linked parcel. Accept the result
+    // only when each address has one distinct parcel and the parcels
+    // cover the footprint without overlap. Otherwise retain the established split.
+    static func parcelAlignedTownhomeSegments(
+        buildingPolygons: [[[Double]]], addressIds: [UUID], parcels: [ParcelFeature]
+    ) -> [UUID: [[[Double]]]]? {
+        guard addressIds.count >= 2, Set(addressIds).count == addressIds.count,
+              let origin = buildingPolygons.first?.first, origin.count >= 2 else { return nil }
+        let targetIds = Set(addressIds)
+        var parcelByAddress: [UUID: ParcelFeature] = [:]
+        for parcel in parcels {
+            let ids = Set(([parcel.properties.addressId].compactMap { $0 } + (parcel.properties.addressIds ?? []))
+                .compactMap(UUID.init(uuidString:))).intersection(targetIds)
+            guard ids.count <= 1 else { return nil }
+            for id in ids {
+                guard parcelByAddress[id] == nil else { return nil }
+                parcelByAddress[id] = parcel
+            }
+        }
+        guard parcelByAddress.count == addressIds.count else { return nil }
+        struct Pt { let x: Double; let y: Double }
+        func points(_ ring: [[Double]]) -> [Pt] {
+            var result = ring.compactMap { $0.count >= 2 ? Pt(x: $0[0] - origin[0], y: $0[1] - origin[1]) : nil }
+            if result.count > 1, result.first!.x == result.last!.x, result.first!.y == result.last!.y { result.removeLast() }
+            return result
+        }
+        func cross(_ a: Pt, _ b: Pt, _ p: Pt) -> Double { (b.x-a.x)*(p.y-a.y) - (b.y-a.y)*(p.x-a.x) }
+        func signedArea(_ p: [Pt]) -> Double {
+            guard p.count >= 3 else { return 0 }
+            return p.indices.reduce(0) { $0 + p[$1].x * p[($1+1)%p.count].y - p[($1+1)%p.count].x * p[$1].y } / 2
+        }
+        func convex(_ p: [Pt]) -> Bool {
+            guard p.count >= 3, abs(signedArea(p)) > 1e-16 else { return false }
+            var sign = 0
+            for i in p.indices {
+                let turn = cross(p[i], p[(i+1)%p.count], p[(i+2)%p.count])
+                if abs(turn) <= 1e-16 { continue }
+                let next = turn > 0 ? 1 : -1
+                if sign != 0 && sign != next { return false }
+                sign = next
+            }
+            return sign != 0
+        }
+        func clip(_ subject: [Pt], _ mask: [Pt]) -> [Pt] {
+            var output = subject
+            let orientation = signedArea(mask) >= 0 ? 1.0 : -1.0
+            for i in mask.indices {
+                let a = mask[i], b = mask[(i+1)%mask.count]
+                let input = output
+                output = []
+                guard var previous = input.last else { break }
+                for current in input {
+                    let previousSide = orientation * cross(a, b, previous)
+                    let currentSide = orientation * cross(a, b, current)
+                    let currentInside = currentSide >= -1e-18
+                    let previousInside = previousSide >= -1e-18
+                    if currentInside != previousInside {
+                        let denominator = previousSide - currentSide
+                        if abs(denominator) > 1e-24 {
+                            let t = previousSide / denominator
+                            output.append(Pt(x: previous.x + t*(current.x-previous.x), y: previous.y + t*(current.y-previous.y)))
+                        }
+                    }
+                    if currentInside { output.append(current) }
+                    previous = current
+                }
+            }
+            return output
+        }
+        // Ear clipping decomposes an irregular parcel into convex triangles so
+        // each part can be intersected with the original building footprint.
+        func triangulate(_ polygon: [Pt]) -> [[Pt]]? {
+            guard polygon.count >= 3, abs(signedArea(polygon)) > 1e-16 else { return nil }
+            let orientation = signedArea(polygon) >= 0 ? 1.0 : -1.0
+            var indices = Array(polygon.indices)
+            var triangles: [[Pt]] = []
+            var attempts = 0
+            while indices.count > 3 {
+                var found = false
+                for position in indices.indices {
+                    let a = polygon[indices[(position + indices.count - 1) % indices.count]]
+                    let b = polygon[indices[position]]
+                    let c = polygon[indices[(position + 1) % indices.count]]
+                    guard orientation * cross(a, b, c) > 1e-18 else { continue }
+                    let containsOther = indices.enumerated().contains { candidatePosition, index in
+                        if candidatePosition == position || candidatePosition == (position + indices.count - 1) % indices.count || candidatePosition == (position + 1) % indices.count { return false }
+                        let p = polygon[index]
+                        return orientation * cross(a, b, p) >= -1e-18 &&
+                            orientation * cross(b, c, p) >= -1e-18 &&
+                            orientation * cross(c, a, p) >= -1e-18
+                    }
+                    if containsOther { continue }
+                    triangles.append([a, b, c])
+                    indices.remove(at: position)
+                    found = true
+                    break
+                }
+                attempts += 1
+                if !found || attempts > polygon.count { return nil }
+            }
+            let last = indices.map { polygon[$0] }
+            guard abs(signedArea(last)) > 1e-18 else { return nil }
+            triangles.append(last)
+            return triangles
+        }
+        // Remove internal triangle edges before creating the extrusion. Mapbox
+        // otherwise rounds and shades every triangle as a separate wall.
+        func mergePieces(_ pieces: [[Pt]]) -> [[[Double]]]? {
+            struct Node: Hashable {
+                let x: Int64
+                let y: Int64
+                func precedes(_ other: Node) -> Bool { x == other.x ? y < other.y : x < other.x }
+            }
+            struct Edge: Hashable { let a: Node; let b: Node }
+            let scale = 10_000_000_000.0
+            func node(_ p: Pt) -> Node { Node(x: Int64((p.x * scale).rounded()), y: Int64((p.y * scale).rounded())) }
+            func point(_ n: Node) -> Pt { Pt(x: Double(n.x) / scale, y: Double(n.y) / scale) }
+            let normalized: [[Node]] = pieces.map { raw in
+                let p = signedArea(raw) < 0 ? Array(raw.reversed()) : raw
+                return p.map(node)
+            }
+            let vertices = Set(normalized.flatMap { $0 })
+            var edgeCounts: [Edge: Int] = [:]
+            for ring in normalized where ring.count >= 3 {
+                for index in ring.indices {
+                    let from = ring[index], to = ring[(index + 1) % ring.count]
+                    guard from != to else { continue }
+                    let a = point(from), b = point(to)
+                    let dx = b.x - a.x, dy = b.y - a.y
+                    let length2 = dx*dx + dy*dy
+                    guard length2 > 0 else { continue }
+                    var onEdge: [(Double, Node)] = []
+                    for candidate in vertices {
+                        let p = point(candidate)
+                        let t = ((p.x-a.x)*dx + (p.y-a.y)*dy) / length2
+                        if t < -1e-8 || t > 1.00000001 { continue }
+                        let distance = abs((p.x-a.x)*dy - (p.y-a.y)*dx) / sqrt(length2)
+                        if distance <= 2.5 / scale { onEdge.append((max(0, min(1, t)), candidate)) }
+                    }
+                    onEdge.sort { $0.0 < $1.0 }
+                    for i in 0..<max(0, onEdge.count - 1) {
+                        let first = onEdge[i].1, second = onEdge[i+1].1
+                        guard first != second else { continue }
+                        let forward = first.precedes(second)
+                        let edge = forward ? Edge(a: first, b: second) : Edge(a: second, b: first)
+                        edgeCounts[edge, default: 0] += forward ? 1 : -1
+                    }
+                }
+            }
+            var next: [Node: Node] = [:]
+            for (edge, count) in edgeCounts where count != 0 {
+                guard abs(count) == 1 else { return nil }
+                let from = count > 0 ? edge.a : edge.b
+                let to = count > 0 ? edge.b : edge.a
+                guard next[from] == nil else { return nil }
+                next[from] = to
+            }
+            guard !next.isEmpty else { return nil }
+            var rings: [[[Double]]] = []
+            while let start = next.keys.first {
+                var current = start
+                var ring: [Pt] = []
+                repeat {
+                    guard let following = next.removeValue(forKey: current), ring.count <= vertices.count else { return nil }
+                    ring.append(point(current))
+                    current = following
+                } while current != start
+                guard ring.count >= 3, signedArea(ring) > 1e-16 else { return nil }
+                var coords = ring.map { [$0.x + origin[0], $0.y + origin[1]] }
+                coords.append(coords[0])
+                rings.append(coords)
+            }
+            return rings
+        }
+        let footprint = buildingPolygons.map(points)
+        let footprintArea = footprint.reduce(0) { $0 + abs(signedArea($1)) }
+        guard footprintArea > 1e-16 else { return nil }
+        var masks: [[[Pt]]] = []
+        var result: [UUID: [[[Double]]]] = [:]
+        var totalArea = 0.0
+        for id in addressIds {
+            guard let parcel = parcelByAddress[id] else { return nil }
+            let polygons: [[[[Double]]]]
+            if let polygon = parcel.geometry.asPolygon { polygons = [polygon] }
+            else if let multi = parcel.geometry.asMultiPolygon { polygons = multi }
+            else { return nil }
+            guard !polygons.isEmpty, polygons.allSatisfy({ $0.count == 1 }) else { return nil }
+            var triangles: [[Pt]] = []
+            for polygon in polygons {
+                guard let ring = polygon.first else { return nil }
+                let mask = points(ring)
+                if convex(mask) { triangles.append(mask) }
+                else if let parts = triangulate(mask) { triangles.append(contentsOf: parts) }
+                else { return nil }
+            }
+            for existing in masks {
+                let overlap = existing.reduce(0.0) { total, first in
+                    total + triangles.reduce(0.0) { $0 + abs(signedArea(clip(first, $1))) }
+                }
+                if overlap > footprintArea * 0.001 { return nil }
+            }
+            masks.append(triangles)
+            var pieces: [[Pt]] = []
+            for building in footprint {
+                for mask in triangles {
+                    let clipped = clip(building, mask)
+                    let area = abs(signedArea(clipped))
+                    guard clipped.count >= 3, area > 1e-16 else { continue }
+                    totalArea += area
+                    pieces.append(clipped)
+                }
+            }
+            guard let merged = mergePieces(pieces), !merged.isEmpty else { return nil }
+            result[id] = merged
+        }
+        guard totalArea >= footprintArea * 0.98, totalArea <= footprintArea * 1.001 else { return nil }
+        return result
     }
 
     private static func slicedPolygons(
@@ -7110,12 +7445,27 @@ final class MapLayerManager {
     }
 
     private func buildingFeature(from feature: Feature) -> BuildingFeature? {
-        guard let properties = feature.properties,
-              let geometry = mapFeatureGeometry(from: feature) else {
-            return nil
-        }
+        guard let properties = feature.properties else { return nil }
 
         var converted = unwrapTurfProperties(properties)
+        // A rendered vector fragment supplies identity, never editing geometry.
+        // Resolve the original canonical footprint for moves, links and splits.
+        if let canonicalId = converted["canonical_id"] as? String,
+           let campaignId = installedDiamondManifest?.campaignId {
+            let canonical = MapFeaturesService.shared.buildings(for: campaignId)?.features.first(where: {
+                $0.properties.buildingIdentifierCandidates.contains(canonicalId) || $0.id == canonicalId
+            })
+            if let index = MapFeaturesService.shared.compactFieldIndex(for: campaignId),
+               index.campaign.tiles.geometryRevision == installedDiamondManifest?.geometryEtag,
+               let exact = try? index.exactBuildingFeature(id: canonicalId) {
+                // Existing field data can include local/manual link edits that
+                // take precedence over the immutable compact metadata.
+                return BuildingFeature(id: canonical?.id ?? exact.id, geometry: exact.geometry,
+                    properties: canonical?.properties ?? exact.properties)
+            }
+            if let canonical { return canonical }
+        }
+        guard let geometry = mapFeatureGeometry(from: feature) else { return nil }
         normalizeAddressPropertyAliases(&converted)
         if let rootId = rootFeatureId(from: feature), !rootId.isEmpty {
             if converted["id"] == nil {
@@ -7541,6 +7891,7 @@ final class MapLayerManager {
         try? mapView.mapboxMap.removeLayer(withId: Self.addressHouseIconLayerId)
         try? mapView.mapboxMap.removeLayer(withId: Self.addressLabelHitboxLayerId)
         try? mapView.mapboxMap.removeLayer(withId: Self.addressNumbersLayerId)
+        try? mapView.mapboxMap.removeLayer(withId: Self.addressNumbersLayerId + "-shadow")
         try? mapView.mapboxMap.removeLayer(withId: Self.manualAddressPreviewLayerId)
         try? mapView.mapboxMap.removeLayer(withId: Self.teammatePresenceCircleLayerId)
         try? mapView.mapboxMap.removeLayer(withId: Self.teammatePresenceLabelLayerId)

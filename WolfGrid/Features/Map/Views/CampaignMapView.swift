@@ -1671,6 +1671,7 @@ struct CampaignMapView: View {
     @State private var lastLightModeShadowPolicyIsFlat: Bool?
     /// Maps persisted building gersId → ordered address UUIDs (used for townhouse list order and split-status overlays)
     @State private var buildingAddressMap: [String: [UUID]] = [:]
+    @State private var hasCanonicalBuildingEdits = false
     @StateObject private var flyerModeManager = FlyerModeManager()
     @StateObject private var walkMode = WalkModeManager()
     @StateObject private var beaconService = SessionSafetyBeaconService.shared
@@ -2846,6 +2847,9 @@ struct CampaignMapView: View {
             .onChange(of: parcelsRenderSignature) { _, _ in
                 updateMapData()
                 scheduleInitialMapReadyCompletionIfPossible()
+                refreshParcelAutoCompleteTargetsForCurrentSession()
+            }
+            .onChange(of: featuresService.compactFieldIndex(for: campaignId)?.campaign.assetSignature) { _, _ in
                 refreshParcelAutoCompleteTargetsForCurrentSession()
             }
             .onChange(of: currentDiamondManifest) { _, _ in
@@ -5786,13 +5790,19 @@ struct CampaignMapView: View {
         let hasDiamondBuildings = !isCampaignStandardPinsMode && currentDiamondManifest?.hasRenderablePMTilesGeometry == true
         let hasDiamondAddresses = !isCampaignStandardPinsMode && currentDiamondManifest?.hasRenderablePMTilesAddresses == true
         let showAddressLayerWithBuildings = editModeShowsBuildingsAndAddresses
+        manager.setAddressExtrusionVisibility(
+            isVisible: effectiveMode == .addresses || showAddressLayerWithBuildings
+        )
         let shouldShowParcels = !isCampaignStandardPinsMode && !hideParcels
         if !hasBuildingsLayer || !hasAddressesLayer {
             print("🔍 [CampaignMap] Layers not in style yet (buildings=\(hasBuildingsLayer) townhouseOverlay=\(hasTownhomeOverlayLayer) addresses=\(hasAddressesLayer)); visibility will apply after style load")
         }
         let hasDiamondGeometry = hasDiamondBuildings || hasDiamondAddresses
-        let shouldShowDiamondBuildings = hasDiamondBuildings
-        let shouldShowGeoJSONBuildings = !hasDiamondBuildings && cubeModeShouldShowBuildingExtrusions()
+        let shouldShowBuildings = effectiveMode == .buildings
+        let shouldShowDiamondBuildings = shouldShowBuildings && hasDiamondBuildings
+        let shouldShowGeoJSONBuildings = shouldShowBuildings && (!hasDiamondBuildings || hasCanonicalBuildingEdits) && cubeModeShouldShowBuildingExtrusions()
+        let hasCanonicalParcelTiles = currentDiamondManifest?.hasRenderablePMTilesParcels == true &&
+            featuresService.compactFieldIndex(for: campaignId) != nil
         let shouldShowAddressNumbers = shouldShowAddressNumberLabels()
         let visibilitySignature = [
             effectiveMode.rawValue,
@@ -5824,26 +5834,45 @@ struct CampaignMapView: View {
             return
         }
 
+        // The status outlines and glow layers belong to the building renderer too.
+        // Keep them in sync with the extrusions when switching to pin mode.
+        for layerId in [
+            MapLayerManager.buildingsLeadGlowLayerId,
+            MapLayerManager.townhomeOutlineLayerId,
+            MapLayerManager.townhomeSliceOutlineLayerId,
+            MapLayerManager.townhomeDividerLayerId,
+            MapLayerManager.townhomeLeadGlowLayerId
+        ] where map.layerExists(withId: layerId) {
+            try? map.updateLayer(withId: layerId, type: LineLayer.self) {
+                $0.visibility = .constant(shouldShowBuildings ? .visible : .none)
+            }
+        }
+        if map.layerExists(withId: MapLayerManager.townhomeDividerStripLayerId) {
+            try? map.updateLayer(withId: MapLayerManager.townhomeDividerStripLayerId, type: FillExtrusionLayer.self) {
+                $0.visibility = .constant(shouldShowBuildings ? .visible : .none)
+            }
+        }
+
         switch effectiveMode {
         case .buildings:
             manager.includeBuildingsLayer = true
-            manager.includeAddressesLayer = showAddressLayerWithBuildings
+            // Keep both layer families installed for style reloads; only visibility changes.
+            manager.includeAddressesLayer = true
             manager.updateAddressModeZoomVisibility(isAddressMode: false)
             manager.setDiamondGeometryVisibility(
                 buildings: shouldShowDiamondBuildings,
                 addresses: hasDiamondAddresses && editModeShowsBuildingsAndAddresses,
-                addressNumbers: shouldShowAddressNumbers,
-                // Occupied campaign parcels are rendered from the filtered GeoJSON bundle.
-                parcels: false
+                addressNumbers: shouldShowAddressNumbers && featuresService.compactFieldIndex(for: campaignId) == nil,
+                parcels: hasCanonicalParcelTiles && shouldShowParcels
             )
             if hasParcelsFillLayer {
                 try? map.updateLayer(withId: MapLayerManager.parcelsFillLayerId, type: FillLayer.self) {
-                    $0.visibility = .constant(shouldShowParcels ? .visible : .none)
+                    $0.visibility = .constant(shouldShowParcels && !hasCanonicalParcelTiles ? .visible : .none)
                 }
             }
             if hasParcelsLineLayer {
                 try? map.updateLayer(withId: MapLayerManager.parcelsLineLayerId, type: LineLayer.self) {
-                    $0.visibility = .constant(shouldShowParcels ? .visible : .none)
+                    $0.visibility = .constant(shouldShowParcels && !hasCanonicalParcelTiles ? .visible : .none)
                 }
             }
             if hasBuildingsLayer {
@@ -5882,31 +5911,27 @@ struct CampaignMapView: View {
                 }
             }
             manager.updateAddressHouseIconVisibility(
-                isVisible: !isCampaignStandardPinsMode && hasAddressHouseIconLayer && (quickStartEnabled || showAddressLayerWithBuildings)
+                isVisible: !isCampaignStandardPinsMode && hasAddressHouseIconLayer && showAddressLayerWithBuildings
             )
             manager.updateAddressNumberLabelVisibility(isVisible: hasAddressNumbersLayer && shouldShowAddressNumbers)
         case .addresses:
-            // Address markers still need their physical context. Keep the real
-            // campaign footprints under the markers instead of turning the map
-            // into floating numbers and tiny dots over apparently empty lots.
             manager.includeBuildingsLayer = true
             manager.includeAddressesLayer = true
             manager.updateAddressModeZoomVisibility(isAddressMode: true)
             manager.setDiamondGeometryVisibility(
-                buildings: shouldShowDiamondBuildings,
+                buildings: false,
                 addresses: hasDiamondAddresses,
-                addressNumbers: shouldShowAddressNumbers,
-                // Do not let the unfiltered regional PMTiles layer restore empty parcels.
-                parcels: false
+                addressNumbers: shouldShowAddressNumbers && featuresService.compactFieldIndex(for: campaignId) == nil,
+                parcels: hasCanonicalParcelTiles && shouldShowParcels
             )
             if hasParcelsFillLayer {
                 try? map.updateLayer(withId: MapLayerManager.parcelsFillLayerId, type: FillLayer.self) {
-                    $0.visibility = .constant(shouldShowParcels ? .visible : .none)
+                    $0.visibility = .constant(shouldShowParcels && !hasCanonicalParcelTiles ? .visible : .none)
                 }
             }
             if hasParcelsLineLayer {
                 try? map.updateLayer(withId: MapLayerManager.parcelsLineLayerId, type: LineLayer.self) {
-                    $0.visibility = .constant(shouldShowParcels ? .visible : .none)
+                    $0.visibility = .constant(shouldShowParcels && !hasCanonicalParcelTiles ? .visible : .none)
                 }
             }
             let addressCount = visibleAddressFeatures.count
@@ -7032,6 +7057,16 @@ struct CampaignMapView: View {
         let visibleAddresses = visibleAddressFeatures
         let visibleManualPins = visibleAddresses.filter(isManualPinAddressFeature)
         let visibleParcels = visibleParcelFeatures
+        var parcelLinks: [String: [String]] = [:]
+        for parcel in visibleParcels {
+            let ids = [parcel.properties.parcelId, parcel.properties.externalId, parcel.id, parcel.properties.id]
+                .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+                .filter { !$0.isEmpty }
+            for addressId in linkedAddressIds(forParcel: parcel) {
+                parcelLinks[addressId.uuidString.lowercased(), default: []].append(contentsOf: ids)
+            }
+        }
+        manager.updateParcelAddressLinks(parcelLinks)
         let trace = PerfTrace.begin("campaign_open", "update_map_data", fields: [
             "campaign": campaignId,
             "displayMode": displayMode.rawValue,
@@ -7046,6 +7081,14 @@ struct CampaignMapView: View {
         let diamondManifestForCurrentRenderer = !isCampaignStandardPinsMode && canRenderTerritoryScopedGeometry
             ? currentDiamondManifest
             : nil
+        let compactIndex = diamondManifestForCurrentRenderer == nil ? nil : featuresService.compactFieldIndex(for: campaignId)
+        let tilePlan = try? compactIndex?.renderPlan(buildings: visibleBuildings, addresses: visibleAddresses, parcels: visibleParcels)
+        if let tilePlan {
+            manager.updateCanonicalTileScope(buildings: tilePlan.buildingIds, addresses: tilePlan.addressIds, parcels: tilePlan.parcelIds)
+        } else {
+            manager.updateCanonicalTileScope(buildings: nil, addresses: nil, parcels: nil)
+        }
+        hasCanonicalBuildingEdits = tilePlan?.buildingEdits.isEmpty == false
         manager.updateDiamondTerritoryBoundary(
             campaignTerritoryBoundaryGeoJSONObject,
             signature: campaignBoundaryCoordinatesSignature
@@ -7087,7 +7130,7 @@ struct CampaignMapView: View {
             debugRenderer == "geojson_buildings" &&
             !visibleBuildings.isEmpty
         let addressFeaturesForDisplay = usesStandardPinsRenderer ? [] : visibleAddresses
-        manager.updateBuildings(buildingsDataForCurrentDisplayMode(features: visibleBuildings))
+        manager.updateBuildings(buildingsDataForCurrentDisplayMode(features: tilePlan?.buildingEdits ?? visibleBuildings))
         if shouldPrioritizeBuildingFirstPaint {
             if let parcelsData = visibleParcelsGeoJSONData(features: visibleParcels) {
                 manager.updateParcels(parcelsData)
@@ -7116,12 +7159,13 @@ struct CampaignMapView: View {
         let loadedAddressFeatures = featuresService.addresses(for: campaignId)?.features
         let hasResolvedAddressLayer = loadedAddressFeatures != nil
         let hasSourceAddressFeatures = loadedAddressFeatures?.isEmpty == false
+        let overlayAddresses = tilePlan?.addressEdits ?? visibleManualPins
         if hasDiamondAddresses, !usesStandardPinsRenderer,
-           let manualPinData = addressDataForLayerCache(features: visibleManualPins) {
+           let manualPinData = addressDataForLayerCache(features: overlayAddresses) {
             // Keep manual pins and their roof offsets refreshed even when the
             // preloaded campaign addresses are rendered from vector tiles.
             manager.updateAddresses(
-                manualPinData, addresses: visibleManualPins, buildings: visibleBuildings,
+                manualPinData, addresses: overlayAddresses, buildings: visibleBuildings,
                 orderedAddressIdsByBuilding: buildingAddressMap
             )
         } else if !hasDiamondAddresses,
@@ -7149,7 +7193,7 @@ struct CampaignMapView: View {
             manager.updateRoads(roadsData)
         }
 
-        if let parcelsData = visibleParcelsGeoJSONData(features: visibleParcels) {
+        if tilePlan == nil, let parcelsData = visibleParcelsGeoJSONData(features: visibleParcels) {
             manager.updateParcels(parcelsData)
         }
         markGeoJSONBuildingsSourceReady(updateStartedAt: sourceUpdateStartedAt)
@@ -8065,7 +8109,8 @@ struct CampaignMapView: View {
             addressStatuses: addressStatuses,
             addressStatusRows: addressStatusRows,
             currentUserId: AuthManager.shared.user?.id,
-            workspaceCoveredAddressIds: coveredAddressIds
+            workspaceCoveredAddressIds: coveredAddressIds,
+            parcels: visibleParcelFeatures
         )
     }
 
@@ -8351,7 +8396,11 @@ struct CampaignMapView: View {
             linkedAddressIds.append(contentsOf: cached)
         }
 
-        return foundCachedEntry ? deduplicatedAddressIds(linkedAddressIds) : nil
+        if foundCachedEntry { return deduplicatedAddressIds(linkedAddressIds) }
+        guard let index = featuresService.compactFieldIndex(for: campaignId) else { return nil }
+        let compactIds = normalizedIdentifiers.flatMap { index.addressIds(forBuilding: $0) }
+            .compactMap(UUID.init(uuidString:))
+        return compactIds.isEmpty ? nil : deduplicatedAddressIds(compactIds)
     }
 
     private func currentLinkedAddressIdsForBuildingMutation(identifiers: [String]) -> [UUID] {
@@ -8548,11 +8597,15 @@ struct CampaignMapView: View {
             let targetAddressIds = deduplicatedAddressIds(addressIdsByTargetId[targetId] ?? [])
             guard !targetAddressIds.isEmpty else { return nil }
 
+            // Use the exact un-clipped shape from the compact package when its
+            // revision is available. Visible parcels retain the existing scope
+            // and enriched address links, so route and manual-pin rules stay intact.
+            let rings = CanonicalParcelFieldGeometry.rings(for: parcel, index: featuresService.compactFieldIndex(for: campaignId))
             return SessionParcelAutoCompleteTarget(
                 targetId: targetId,
                 buildingId: buildingIdsByTargetId[targetId],
                 addressIds: targetAddressIds,
-                rings: SessionParcelAutoCompleteTarget.rings(from: parcel.geometry)
+                rings: rings
             )
         }
     }
@@ -10549,9 +10602,9 @@ struct CampaignMapView: View {
     private func enrichedAddressTapResult(
         _ address: MapLayerManager.AddressTapResult
     ) -> MapLayerManager.AddressTapResult {
-        addressTapResultWithParcelMetadata(
-            visibleAddressTapResult(addressId: address.addressId) ?? address
-        )
+        let compact = featuresService.compactFieldIndex(for: campaignId)?
+            .addressFeature(id: address.addressId.uuidString).flatMap { addressTapResult(from: $0) }
+        return addressTapResultWithParcelMetadata(visibleAddressTapResult(addressId: address.addressId) ?? compact ?? address)
     }
 
     private func addressTapResultWithParcelMetadata(
@@ -10599,6 +10652,18 @@ struct CampaignMapView: View {
                     feature.properties.id,
                     feature.id
                 ]),
+                hasParcelLink: true
+            )
+        }
+
+        if let record = featuresService.compactFieldIndex(for: campaignId)?.campaign.records.parcels.first(where: { record in
+            ([record.properties.addressId].compactMap { $0 } + (record.properties.addressIds ?? []))
+                .compactMap { nonEmptyParcelValue($0)?.lowercased() }.contains(targetId)
+        }) {
+            return (
+                parcelId: firstNonEmptyParcelValue([record.properties.parcelId, record.properties.externalId,
+                    record.properties.id, record.id, record.properties.addressId]),
+                campaignParcelId: firstNonEmptyParcelValue([record.properties.id, record.id]),
                 hasParcelLink: true
             )
         }
@@ -11149,6 +11214,12 @@ struct CampaignMapView: View {
 
     private func refreshAddressModelLayersOnly(reason: String) {
         guard let manager = layerManager else { return }
+        if featuresService.compactFieldIndex(for: campaignId) != nil {
+            // Refresh the scoped vector layers and local edit overlay together.
+            // Uploading all addresses here would duplicate the tiled pins.
+            updateMapData()
+            return
+        }
         let trace = PerfTrace.begin("campaign_open", "update_address_layers_only", fields: [
             "campaign": campaignId,
             "reason": reason
@@ -13442,6 +13513,11 @@ struct CampaignMapView: View {
             (($0.properties.id ?? $0.id ?? "").lowercased()) == targetId
         }) {
             return addressTapResult(from: feature).map { addressTapResultWithParcelMetadata($0) }
+        }
+
+        if let feature = featuresService.compactFieldIndex(for: campaignId)?.addressFeature(id: targetId),
+           let result = addressTapResult(from: feature) {
+            return addressTapResultWithParcelMetadata(result)
         }
 
         if let buildingId = sanitizedBuildingIdentifier(fallbackBuildingId), building == nil {

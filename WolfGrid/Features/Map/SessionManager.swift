@@ -74,6 +74,14 @@ struct SessionParcelAutoCompleteTarget {
         return []
     }
 
+    static func rings(from geometry: CanonicalWKBGeometry) -> [[CLLocationCoordinate2D]] {
+        switch geometry {
+        case .polygon(let rings): return rings.map(coordinates(from:))
+        case .multiPolygon(let polygons): return polygons.flatMap { rings(from: $0) }
+        default: return []
+        }
+    }
+
     func contains(_ coordinate: CLLocationCoordinate2D) -> Bool {
         guard CLLocationCoordinate2DIsValid(coordinate), bbox.contains(coordinate) else { return false }
         return rings.contains { Self.ringContains(coordinate, ring: $0) }

@@ -722,6 +722,10 @@ final class CampaignRepository {
     static let shared = CampaignRepository()
 
     private let dbQueue = OfflineDatabase.shared.dbQueue
+    // Access only inside dbQueue closures; SQLite's change counter invalidates local edits.
+    private var decodedMapBundles: [String: (revision: Int, bundle: OfflineCampaignMapBundle)] = [:]
+    private var decodedMapBundleOrder: [String] = []
+
 
     private init() {}
 
@@ -814,7 +818,6 @@ final class CampaignRepository {
             let addressCounts = try Self.cachedAddressCounts(db)
 
             let campaigns = campaignRecords.compactMap { record -> CampaignV2? in
-                guard !Self.isQuickStartCampaign(payloadJSON: record.payloadJSON) else { return nil }
                 guard let campaignId = UUID(uuidString: record.id) else { return nil }
                 return Self.cachedCampaign(
                     campaignId: campaignId,
@@ -1005,9 +1008,9 @@ final class CampaignRepository {
                     campaignId: campaignId,
                     sourceId: sourceId,
                     externalId: feature.properties.gersId ?? feature.properties.buildingId,
-                    geometryGeoJSON: OfflineJSONCodec.encode(feature.geometry) ?? "{}",
+                    geometryGeoJSON: OfflineJSONCodec.encodeMapCache(feature.geometry) ?? "{}",
                     propertiesJSON: OfflineJSONCodec.encode(feature.properties),
-                    payloadJSON: OfflineJSONCodec.encode(feature),
+                    payloadJSON: OfflineJSONCodec.encodeMapCache(feature),
                     updatedAt: updatedAt
                 )
                 try record.save(db)
@@ -1034,7 +1037,7 @@ final class CampaignRepository {
                     postalCode: feature.properties.postalCode,
                     latitude: coordinate?[safe: 1],
                     longitude: coordinate?[safe: 0],
-                    payloadJSON: OfflineJSONCodec.encode(feature),
+                    payloadJSON: OfflineJSONCodec.encodeMapCache(feature),
                     updatedAt: updatedAt
                 )
                 try record.save(db)
@@ -1056,9 +1059,9 @@ final class CampaignRepository {
                     id: cacheScopedId(campaignId: campaignId, entityId: sourceId),
                     campaignId: campaignId,
                     externalId: feature.properties.externalId ?? feature.properties.parcelId,
-                    geometryGeoJSON: OfflineJSONCodec.encode(feature.geometry) ?? "{}",
+                    geometryGeoJSON: OfflineJSONCodec.encodeMapCache(feature.geometry) ?? "{}",
                     propertiesJSON: OfflineJSONCodec.encode(feature.properties),
-                    payloadJSON: OfflineJSONCodec.encode(feature),
+                    payloadJSON: OfflineJSONCodec.encodeMapCache(feature),
                     updatedAt: updatedAt
                 )
                 try record.save(db)
@@ -1119,7 +1122,7 @@ final class CampaignRepository {
                 postalCode: input.postalCode,
                 latitude: input.coordinate.latitude,
                 longitude: input.coordinate.longitude,
-                payloadJSON: OfflineJSONCodec.encode(feature),
+                payloadJSON: OfflineJSONCodec.encodeMapCache(feature),
                 updatedAt: updatedAt
             )
             try record.save(db)
@@ -1223,7 +1226,7 @@ final class CampaignRepository {
                     postalCode: postalCode ?? record.postalCode,
                     latitude: coordinate?.latitude ?? record.latitude,
                     longitude: coordinate?.longitude ?? record.longitude,
-                    payloadJSON: updatedFeature.flatMap { OfflineJSONCodec.encode($0) } ?? record.payloadJSON,
+                    payloadJSON: updatedFeature.flatMap { OfflineJSONCodec.encodeMapCache($0) } ?? record.payloadJSON,
                     updatedAt: updatedAt
                 )
                 try updated.save(db)
@@ -1378,7 +1381,7 @@ final class CampaignRepository {
                         postalCode: addressRecord.postalCode,
                         latitude: addressRecord.latitude,
                         longitude: addressRecord.longitude,
-                        payloadJSON: updatedFeature.flatMap { OfflineJSONCodec.encode($0) } ?? addressRecord.payloadJSON,
+                        payloadJSON: updatedFeature.flatMap { OfflineJSONCodec.encodeMapCache($0) } ?? addressRecord.payloadJSON,
                         updatedAt: updatedAt
                     )
                     try updated.save(db)
@@ -1574,7 +1577,7 @@ final class CampaignRepository {
                     postalCode: record.postalCode,
                     latitude: coordinate?.latitude ?? record.latitude,
                     longitude: coordinate?.longitude ?? record.longitude,
-                    payloadJSON: updatedFeature.flatMap { OfflineJSONCodec.encode($0) } ?? record.payloadJSON,
+                    payloadJSON: updatedFeature.flatMap { OfflineJSONCodec.encodeMapCache($0) } ?? record.payloadJSON,
                     updatedAt: updatedAt
                 )
                 try updated.save(db)
@@ -1681,9 +1684,9 @@ final class CampaignRepository {
                 localGeometryId: fallbackId,
                 campaignId: campaignId,
                 addressId: normalizedAddressId,
-                geometryGeoJSON: OfflineJSONCodec.encode(geometry) ?? "{}",
+                geometryGeoJSON: OfflineJSONCodec.encodeMapCache(geometry) ?? "{}",
                 geometrySource: "manual_fallback",
-                payloadJSON: OfflineJSONCodec.encode(feature),
+                payloadJSON: OfflineJSONCodec.encodeMapCache(feature),
                 createdAt: now,
                 updatedAt: now,
                 syncStatus: "pending"
@@ -1757,7 +1760,7 @@ final class CampaignRepository {
                 postalCode: addressRecord.postalCode,
                 latitude: addressRecord.latitude,
                 longitude: addressRecord.longitude,
-                payloadJSON: updatedFeature.flatMap { OfflineJSONCodec.encode($0) } ?? addressRecord.payloadJSON,
+                payloadJSON: updatedFeature.flatMap { OfflineJSONCodec.encodeMapCache($0) } ?? addressRecord.payloadJSON,
                 updatedAt: now
             )
             try updatedAddressRecord.save(db)
@@ -1909,7 +1912,7 @@ final class CampaignRepository {
                         postalCode: record.postalCode,
                         latitude: record.latitude,
                         longitude: record.longitude,
-                        payloadJSON: updatedFeature.flatMap { OfflineJSONCodec.encode($0) } ?? record.payloadJSON,
+                        payloadJSON: updatedFeature.flatMap { OfflineJSONCodec.encodeMapCache($0) } ?? record.payloadJSON,
                         updatedAt: updatedAt
                     )
                     try updated.save(db)
@@ -1996,7 +1999,7 @@ final class CampaignRepository {
                     postalCode: record.postalCode,
                     latitude: coordinate.latitude,
                     longitude: coordinate.longitude,
-                    payloadJSON: movedFeature.flatMap { OfflineJSONCodec.encode($0) } ?? record.payloadJSON,
+                    payloadJSON: movedFeature.flatMap { OfflineJSONCodec.encodeMapCache($0) } ?? record.payloadJSON,
                     updatedAt: updatedAt
                 )
                 try updated.save(db)
@@ -2044,9 +2047,9 @@ final class CampaignRepository {
                     campaignId: record.campaignId,
                     sourceId: record.sourceId,
                     externalId: record.externalId,
-                    geometryGeoJSON: OfflineJSONCodec.encode(geometry) ?? record.geometryGeoJSON,
+                    geometryGeoJSON: OfflineJSONCodec.encodeMapCache(geometry) ?? record.geometryGeoJSON,
                     propertiesJSON: record.propertiesJSON,
-                    payloadJSON: movedFeature.flatMap { OfflineJSONCodec.encode($0) } ?? record.payloadJSON,
+                    payloadJSON: movedFeature.flatMap { OfflineJSONCodec.encodeMapCache($0) } ?? record.payloadJSON,
                     updatedAt: updatedAt
                 )
                 try updated.save(db)
@@ -2324,7 +2327,7 @@ final class CampaignRepository {
                 let record = CachedRoadRecord(
                     id: cacheScopedId(campaignId: campaignId, entityId: corridor.id ?? "road-\(index)"),
                     campaignId: campaignId,
-                    geometryGeoJSON: OfflineJSONCodec.encode(geometry) ?? "{}",
+                    geometryGeoJSON: OfflineJSONCodec.encodeMapCache(geometry) ?? "{}",
                     propertiesJSON: OfflineJSONCodec.encode(properties),
                     updatedAt: updatedAt
                 )
@@ -2372,9 +2375,9 @@ final class CampaignRepository {
                         campaignId: campaignId,
                         sourceId: sourceId,
                         externalId: feature.properties.gersId ?? feature.properties.buildingId,
-                        geometryGeoJSON: OfflineJSONCodec.encode(feature.geometry) ?? "{}",
+                        geometryGeoJSON: OfflineJSONCodec.encodeMapCache(feature.geometry) ?? "{}",
                         propertiesJSON: OfflineJSONCodec.encode(feature.properties),
-                        payloadJSON: OfflineJSONCodec.encode(feature),
+                        payloadJSON: OfflineJSONCodec.encodeMapCache(feature),
                         updatedAt: updatedAt
                     )
                     try record.save(db)
@@ -2395,7 +2398,7 @@ final class CampaignRepository {
                         postalCode: feature.properties.postalCode,
                         latitude: coordinate?[safe: 1],
                         longitude: coordinate?[safe: 0],
-                        payloadJSON: OfflineJSONCodec.encode(feature),
+                        payloadJSON: OfflineJSONCodec.encodeMapCache(feature),
                         updatedAt: updatedAt
                     )
                     try record.save(db)
@@ -2411,9 +2414,9 @@ final class CampaignRepository {
                         id: cacheScopedId(campaignId: campaignId, entityId: sourceId),
                         campaignId: campaignId,
                         externalId: feature.properties.externalId ?? feature.properties.parcelId,
-                        geometryGeoJSON: OfflineJSONCodec.encode(feature.geometry) ?? "{}",
+                        geometryGeoJSON: OfflineJSONCodec.encodeMapCache(feature.geometry) ?? "{}",
                         propertiesJSON: OfflineJSONCodec.encode(feature.properties),
-                        payloadJSON: OfflineJSONCodec.encode(feature),
+                        payloadJSON: OfflineJSONCodec.encodeMapCache(feature),
                         updatedAt: updatedAt
                     )
                     try record.save(db)
@@ -2424,7 +2427,7 @@ final class CampaignRepository {
                     let record = CachedRoadRecord(
                         id: cacheScopedId(campaignId: campaignId, entityId: sourceId),
                         campaignId: campaignId,
-                        geometryGeoJSON: OfflineJSONCodec.encode(feature.geometry) ?? "{}",
+                        geometryGeoJSON: OfflineJSONCodec.encodeMapCache(feature.geometry) ?? "{}",
                         propertiesJSON: OfflineJSONCodec.encode(feature.properties),
                         updatedAt: updatedAt
                     )
@@ -2447,15 +2450,32 @@ final class CampaignRepository {
                     linksByAddress[normalizedAddressId] = link
                 }
 
+                // Index address aliases once. Scanning and decoding the whole campaign
+                // for every link makes map opening quadratic and blocks all cache reads.
+                let addressRecords = try CachedAddressRecord
+                    .filter(Column("campaign_id") == campaignId)
+                    .fetchAll(db)
+                var addressesByCacheId = Dictionary(uniqueKeysWithValues: addressRecords.map { ($0.id, $0) })
+                var cacheIdsByAddressId: [String: [String]] = [:]
+                let scopedPrefix = "\(campaignId.lowercased()):"
+                for record in addressRecords {
+                    let feature = OfflineJSONCodec.decode(AddressFeature.self, from: record.payloadJSON)
+                    let unscopedId = record.id.lowercased().hasPrefix(scopedPrefix)
+                        ? String(record.id.dropFirst(scopedPrefix.count))
+                        : record.id
+                    let aliases = Set([feature?.properties.id, feature?.id, unscopedId]
+                        .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+                        .filter { !$0.isEmpty })
+                    for alias in aliases {
+                        cacheIdsByAddressId[alias, default: []].append(record.id)
+                    }
+                }
+
                 func applyAddressLink(addressId: String, buildingId: String) throws {
                     let normalizedAddressId = addressId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
                     guard !normalizedAddressId.isEmpty else { return }
-                    let addressRecords = try CachedAddressRecord
-                        .filter(Column("campaign_id") == campaignId)
-                        .fetchAll(db)
-                        .filter { Self.record($0, campaignId: campaignId, matchesAddressId: normalizedAddressId) }
-
-                    for addressRecord in addressRecords {
+                    for cacheId in cacheIdsByAddressId[normalizedAddressId] ?? [] {
+                        guard let addressRecord = addressesByCacheId[cacheId] else { continue }
                         let feature = OfflineJSONCodec.decode(AddressFeature.self, from: addressRecord.payloadJSON)
                         let updatedFeature = feature.map {
                             AddressFeature(
@@ -2486,10 +2506,11 @@ final class CampaignRepository {
                             postalCode: addressRecord.postalCode,
                             latitude: addressRecord.latitude,
                             longitude: addressRecord.longitude,
-                            payloadJSON: updatedFeature.flatMap { OfflineJSONCodec.encode($0) } ?? addressRecord.payloadJSON,
+                            payloadJSON: updatedFeature.flatMap { OfflineJSONCodec.encodeMapCache($0) } ?? addressRecord.payloadJSON,
                             updatedAt: updatedAt
                         )
                         try updated.save(db)
+                        addressesByCacheId[cacheId] = updated
                     }
                 }
 
@@ -2519,7 +2540,7 @@ final class CampaignRepository {
                     sourceVersion: bundle.sourceVersion,
                     displayModeHint: bundle.displayModeHint,
                     linksStatus: bundle.linksStatus,
-                    countsJSON: bundle.counts.flatMap { OfflineJSONCodec.encode($0) },
+                    countsJSON: bundle.tileMetadataCountsJSON,
                     layerFetchedAtJSON: bundle.layerFetchedAt.flatMap { OfflineJSONCodec.encode($0) },
                     reconciliationJSON: bundle.reconciliation.flatMap { OfflineJSONCodec.encode($0) },
                     reconciliationReportJSON: bundle.reconciliationReport.flatMap { OfflineJSONCodec.encode($0) },
@@ -2626,6 +2647,10 @@ final class CampaignRepository {
 
     func getCampaignMapBundle(campaignId: String) async -> OfflineCampaignMapBundle? {
         try? await dbQueue.read { db in
+            let revision = db.totalChangesCount
+            if let cached = self.decodedMapBundles[campaignId], cached.revision == revision {
+                return cached.bundle
+            }
             let buildingRecords = try CachedBuildingRecord
                 .filter(Column("campaign_id") == campaignId)
                 .fetchAll(db)
@@ -2683,7 +2708,7 @@ final class CampaignRepository {
                 )
             }
 
-            return OfflineCampaignMapBundle(
+            let bundle = OfflineCampaignMapBundle(
                 buildings: BuildingFeatureCollection(type: "FeatureCollection", features: linkedBundle.buildings),
                 addresses: AddressFeatureCollection(type: "FeatureCollection", features: linkedBundle.addresses),
                 parcels: ParcelFeatureCollection(type: "FeatureCollection", features: parcels),
@@ -2699,6 +2724,13 @@ final class CampaignRepository {
                 } ?? [],
                 metadata: metadataRecord?.metadata
             )
+            self.decodedMapBundles[campaignId] = (revision, bundle)
+            self.decodedMapBundleOrder.removeAll { $0 == campaignId }
+            self.decodedMapBundleOrder.append(campaignId)
+            while self.decodedMapBundleOrder.count > 2 {
+                self.decodedMapBundles.removeValue(forKey: self.decodedMapBundleOrder.removeFirst())
+            }
+            return bundle
         }
     }
 

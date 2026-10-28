@@ -20,6 +20,49 @@ final class TownhomeStatusRefreshTests: XCTestCase {
         return (buildings, addresses, links)
     }
 
+    func testTownhomeSegmentsFollowParcelsAndRejectIncompleteCoverage() throws {
+        let first = UUID(), second = UUID()
+        let footprint = [[[0.0, 0.0], [4.0, 0.0], [4.0, 2.0], [0.0, 2.0], [0.0, 0.0]]]
+        func parcel(_ id: UUID, _ ring: [[Double]]) throws -> ParcelFeature {
+            let value: [String: Any] = ["type": "Feature", "id": id.uuidString,
+                "properties": ["address_id": id.uuidString],
+                "geometry": ["type": "Polygon", "coordinates": [ring]]]
+            return try JSONDecoder().decode(ParcelFeature.self, from: JSONSerialization.data(withJSONObject: value))
+        }
+        let left = try parcel(first, [[0,0], [1,0], [1,2], [0,2], [0,0]])
+        let right = try parcel(second, [[1,0], [4,0], [4,2], [1,2], [1,0]])
+        let result = try XCTUnwrap(MapLayerManager.parcelAlignedTownhomeSegments(
+            buildingPolygons: footprint, addressIds: [first, second], parcels: [left, right]))
+        let leftRing = try XCTUnwrap(result[first]?.first)
+        XCTAssertEqual(leftRing.map { $0[0] }.max() ?? 0, 1, accuracy: 0.000001)
+        XCTAssertNil(MapLayerManager.parcelAlignedTownhomeSegments(
+            buildingPolygons: footprint, addressIds: [first, second], parcels: [left]))
+        let irregularValue: [String: Any] = ["type": "Feature", "id": first.uuidString,
+            "properties": ["address_id": first.uuidString],
+            "geometry": ["type": "MultiPolygon", "coordinates": [[[[0,0], [1,0], [1,3], [0.5,2.5], [0,3], [0,0]]]]]]
+        let irregular = try JSONDecoder().decode(ParcelFeature.self, from: JSONSerialization.data(withJSONObject: irregularValue))
+        let irregularSegments = try XCTUnwrap(MapLayerManager.parcelAlignedTownhomeSegments(
+            buildingPolygons: footprint, addressIds: [first, second], parcels: [irregular, right]))
+        XCTAssertEqual(irregularSegments[first]?.count, 1, "The parcel should be one continuous surface")
+        let gap = try parcel(second, [[2,0], [4,0], [4,2], [2,2], [2,0]])
+        XCTAssertNil(MapLayerManager.parcelAlignedTownhomeSegments(
+            buildingPolygons: footprint, addressIds: [first, second], parcels: [left, gap]))
+    }
+
+    func testOnlyCompleteTownhomeCoverageHidesParentBuilding() throws {
+        let (buildings, addresses, links) = try fixture(units: 3)
+        let data = try XCTUnwrap(MapLayerManager.buildTownhomeStatusOverlayGeoJSON(
+            buildings: buildings, addresses: addresses, orderedAddressIdsByBuilding: links, addressStatuses: [:]))
+        XCTAssertTrue(MapLayerManager.completeTownhomeOverlayBuildingIdentifiers(from: data).contains("townhome-0"))
+        var collection = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        var features = try XCTUnwrap(collection["features"] as? [[String: Any]])
+        let index = try XCTUnwrap(features.firstIndex { ($0["id"] as? String) == addresses[0].properties.id?.lowercased() })
+        features.remove(at: index)
+        collection["features"] = features
+        let partial = try JSONSerialization.data(withJSONObject: collection)
+        XCTAssertFalse(MapLayerManager.completeTownhomeOverlayBuildingIdentifiers(from: partial).contains("townhome-0"))
+    }
+
     func testStatusRefreshMatchesFullRebuildForEveryStatusAndReset() throws {
         let (buildings, addresses, links) = try fixture()
         let ids = try XCTUnwrap(links.values.first)

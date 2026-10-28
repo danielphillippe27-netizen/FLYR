@@ -28,6 +28,14 @@ enum OfflineDateCodec {
 }
 
 enum OfflineJSONCodec {
+    static func encodeMapCache<T: Encodable>(_ value: T) -> String? {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.userInfo[.canonicalBinaryGeometry] = true
+        guard let data = try? encoder.encode(value) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
     static func encode<T: Encodable>(_ value: T) -> String? {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
