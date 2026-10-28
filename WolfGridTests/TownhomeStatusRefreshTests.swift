@@ -92,6 +92,23 @@ final class TownhomeStatusRefreshTests: XCTestCase {
         }
     }
 
+    func testTeammateCoverageColorsOnlyTheCoveredTownhome() throws {
+        let (buildings, addresses, links) = try fixture()
+        let ids = try XCTUnwrap(links.values.first)
+        let data = try XCTUnwrap(MapLayerManager.buildTownhomeStatusOverlayGeoJSON(
+            buildings: buildings, addresses: addresses, orderedAddressIdsByBuilding: links,
+            addressStatuses: [:], workspaceCoveredAddressIds: [ids[0]]))
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let features = try XCTUnwrap(object["features"] as? [[String: Any]])
+        let properties = features.compactMap { $0["properties"] as? [String: Any] }
+        let covered = try XCTUnwrap(properties.first { ($0["address_id"] as? String)?.lowercased() == ids[0].uuidString.lowercased() })
+        let neighbour = try XCTUnwrap(properties.first { ($0["address_id"] as? String)?.lowercased() == ids[1].uuidString.lowercased() })
+        XCTAssertEqual(covered["visit_owner"] as? String, "teammate")
+        XCTAssertEqual(covered["segment_status"] as? String, "visited")
+        XCTAssertNotEqual(neighbour["visit_owner"] as? String, "teammate")
+        XCTAssertNotEqual(neighbour["segment_status"] as? String, "visited")
+    }
+
     func testInvalidSnapshotRequiresFullRebuild() {
         XCTAssertNil(MapLayerManager.updatingTownhomeOverlayStatuses(in: Data("invalid".utf8), addressStatuses: [:]))
     }

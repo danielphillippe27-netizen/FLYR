@@ -8396,7 +8396,7 @@ struct CampaignMapView: View {
             linkedAddressIds.append(contentsOf: cached)
         }
 
-        if foundCachedEntry { return deduplicatedAddressIds(linkedAddressIds) }
+        if foundCachedEntry && !linkedAddressIds.isEmpty { return deduplicatedAddressIds(linkedAddressIds) }
         guard let index = featuresService.compactFieldIndex(for: campaignId) else { return nil }
         let compactIds = normalizedIdentifiers.flatMap { index.addressIds(forBuilding: $0) }
             .compactMap(UUID.init(uuidString:))
@@ -8816,7 +8816,8 @@ struct CampaignMapView: View {
             }
             let hasExplicitStatus = addressStatuses[addressId] != nil
             let hasSessionState = hasSessionOverlayState(forAddressId: addressId)
-            guard hasExplicitStatus || hasSessionState else {
+            let hasTeamCoverage = workspaceCoverage?.home(addressId)?.isLocked == true
+            guard hasExplicitStatus || hasSessionState || hasTeamCoverage else {
                 skippedSparseAddressStateReplays += 1
                 continue
             }
@@ -8843,7 +8844,8 @@ struct CampaignMapView: View {
             }
             let hasExplicitStatus = fallbackStatus != nil || addressIds.contains { addressStatuses[$0] != nil }
             let hasSessionState = hasSessionOverlayState(forBuildingId: gersId, addressIds: addressIds)
-            guard hasExplicitStatus || hasSessionState else {
+            let hasTeamCoverage = addressIds.contains { workspaceCoverage?.home($0)?.isLocked == true }
+            guard hasExplicitStatus || hasSessionState || hasTeamCoverage else {
                 skippedSparseBuildingStateReplays += 1
                 continue
             }
@@ -8901,7 +8903,7 @@ struct CampaignMapView: View {
     }
 
     private func applySessionVisitOverlayStatesIfNeeded() {
-        guard hasSessionVisitOverlayState else { return }
+        guard hasSessionVisitOverlayState || (workspaceCoverage?.homes.contains(where: \.isLocked) == true) else { return }
         applySessionVisitOverlayStates()
     }
 
@@ -8994,6 +8996,7 @@ struct CampaignMapView: View {
         return deduplicatedAddressIds(allAddresses.compactMap { feature -> UUID? in
             let addressBuildingIdentifiers = [
                 feature.properties.buildingGersId,
+                feature.properties.linkedBuildingId,
                 feature.properties.gersId
             ]
             .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
@@ -9208,6 +9211,11 @@ struct CampaignMapView: View {
                   let uuid = UUID(uuidString: idStr) else { return false }
             return uuid == addressId
         })?.properties.buildingGersId
+        ?? visibleAddressFeatures.first(where: { feature in
+            guard let idStr = feature.properties.id ?? feature.id,
+                  let uuid = UUID(uuidString: idStr) else { return false }
+            return uuid == addressId
+        })?.properties.linkedBuildingId
         ?? visibleAddressFeatures.first(where: { feature in
             guard let idStr = feature.properties.id ?? feature.id,
                   let uuid = UUID(uuidString: idStr) else { return false }
