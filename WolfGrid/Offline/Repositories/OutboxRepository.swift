@@ -521,6 +521,26 @@ final class OutboxRepository {
 
     private init() {}
 
+    func hasUnfinishedEndSession(id: UUID) async -> Bool {
+        (try? await dbQueue.read { db in
+            try Bool.fetchOne(db, sql: """
+                SELECT EXISTS(SELECT 1 FROM sync_outbox
+                    WHERE lower(entity_id) = lower(?) AND operation = ?
+                      AND COALESCE(status, 'pending') != 'synced')
+                """, arguments: [id.uuidString, OutboxOperation.endSession.rawValue]) ?? false
+        }) ?? false
+    }
+
+    func pendingFarmTouchCreation(id: UUID) async throws -> FarmTouch? {
+        try await dbQueue.read { db in
+            let entry = try OutboxEntry.fetchOne(db, sql: """
+                SELECT * FROM sync_outbox WHERE lower(entity_id) = lower(?)
+                  AND operation = ? AND synced_at IS NULL LIMIT 1
+                """, arguments: [id.uuidString, OutboxOperation.createFarmTouch.rawValue])
+            return entry?.decodedPayload(FarmTouchOutboxPayload.self)?.touch
+        }
+    }
+
     @discardableResult
     func enqueue<P: Encodable>(
         entityType: String,
@@ -531,9 +551,27 @@ final class OutboxRepository {
         operationVersion: Int = 1,
         dependencyKey: String? = nil
     ) async -> String? {
+        guard let entry = Self.makeEntry(
+            entityType: entityType, entityId: entityId, operation: operation,
+            payload: payload, clientMutationId: clientMutationId,
+            operationVersion: operationVersion, dependencyKey: dependencyKey
+        ) else { return nil }
+        do {
+            try await dbQueue.write { db in try entry.insert(db) }
+            return entry.id
+        } catch {
+            debugLog("Failed to enqueue outbox entry \(operation.rawValue): \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    static func makeEntry<P: Encodable>(
+        entityType: String, entityId: String, operation: OutboxOperation, payload: P,
+        clientMutationId: String = UUID().uuidString, operationVersion: Int = 1,
+        dependencyKey: String? = nil
+    ) -> OutboxEntry? {
         guard let payloadJSON = OfflineJSONCodec.encode(payload) else { return nil }
-        let resolvedDependencyKey = dependencyKey ?? "\(entityType):\(entityId)"
-        let entry = OutboxEntry(
+        return OutboxEntry(
             id: UUID().uuidString,
             clientMutationId: clientMutationId,
             entityType: entityType,
@@ -542,7 +580,7 @@ final class OutboxRepository {
             operationVersion: operationVersion,
             payloadJSON: payloadJSON,
             status: "pending",
-            dependencyKey: resolvedDependencyKey,
+            dependencyKey: dependencyKey ?? "\(entityType):\(entityId)",
             createdAt: OfflineDateCodec.string(from: Date()),
             attemptedAt: nil,
             syncedAt: nil,
@@ -552,21 +590,72 @@ final class OutboxRepository {
             deadLetteredAt: nil
         )
 
-        do {
-            try await dbQueue.write { db in
-                try entry.insert(db)
-            }
-            return entry.id
-        } catch {
-            debugLog("Failed to enqueue outbox entry \(operation.rawValue): \(error.localizedDescription)")
-            return nil
+    }
+
+    func insert(_ entry: OutboxEntry) async throws {
+        try await dbQueue.write { db in try entry.insert(db) }
+    }
+
+    func hasUnsyncedManualAddressCreate(campaignId: String, addressId: UUID? = nil, buildingId: String? = nil) async -> Bool {
+        // A read failure must not allow an online mutation to overtake creation.
+        (try? await dbQueue.read { db in
+            let count = try Int.fetchOne(db, sql: """
+                SELECT COUNT(*) FROM sync_outbox
+                WHERE operation = 'create_manual_address' AND synced_at IS NULL
+                  AND json_valid(payload_json)
+                  AND lower(json_extract(CASE WHEN json_valid(payload_json) THEN payload_json ELSE '{}' END, '$.campaignId')) = ?
+                  AND (? IS NULL OR lower(json_extract(CASE WHEN json_valid(payload_json) THEN payload_json ELSE '{}' END, '$.addressId')) = ?)
+                  AND (? IS NULL OR lower(json_extract(CASE WHEN json_valid(payload_json) THEN payload_json ELSE '{}' END, '$.buildingId')) = ?)
+                """, arguments: [campaignId.lowercased(), addressId?.uuidString.lowercased(), addressId?.uuidString.lowercased(), buildingId?.lowercased(), buildingId?.lowercased()]) ?? 0
+            return count > 0
+        }) ?? true
+    }
+
+    /// Persist the resolved description before the first network submission so
+    /// a retry or app restart submits the same UUID and the same address fields.
+    func saveResolvedManualAddressCreate(entryId: String, payload: ManualAddressCreateOutboxPayload) async throws {
+        guard let json = OfflineJSONCodec.encode(payload) else { throw BuildingLinkError.fetchFailed }
+        try await dbQueue.write { db in
+            try db.execute(sql: """
+                UPDATE sync_outbox SET payload_json = ?
+                WHERE id = ? AND operation = 'create_manual_address' AND synced_at IS NULL
+                """, arguments: [json, entryId])
+            guard db.changesCount == 1 else { throw BuildingLinkError.fetchFailed }
         }
+    }
+
+    /// A recorded replay must not omit outcomes still waiting for sync or conflict resolution.
+    func hasUnsyncedReplayEvents(sessionId: UUID) async throws -> Bool {
+        try await dbQueue.read { db in
+            try Self.hasUnsyncedReplayEvents(in: db, sessionId: sessionId)
+        }
+    }
+
+    static func hasUnsyncedReplayEvents(in db: Database, sessionId: UUID) throws -> Bool {
+        let count = try Int.fetchOne(db, sql: """
+            SELECT COUNT(*) FROM sync_outbox
+            WHERE synced_at IS NULL
+              AND operation IN ('upsert_address_status', 'create_session_event')
+              AND CASE WHEN json_valid(payload_json)
+                       THEN lower(json_extract(payload_json, '$.sessionId')) = ?
+                       ELSE 1 END
+              AND CASE WHEN operation = 'create_session_event' AND json_valid(payload_json)
+                       THEN COALESCE(json_extract(payload_json, '$.eventType'), '') NOT IN
+                            ('session_started', 'session_paused', 'session_resumed', 'session_ended')
+                       ELSE 1 END
+            """, arguments: [sessionId.uuidString.lowercased()]) ?? 0
+        return count > 0
     }
 
     func fetchPending(limit: Int = 50) async -> [OutboxEntry] {
         let now = OfflineDateCodec.string(from: Date())
         return (try? await dbQueue.read { db in
-            try OutboxEntry.fetchAll(
+            try Self.fetchPending(in: db, now: now, limit: limit)
+        }) ?? []
+    }
+
+    static func fetchPending(in db: Database, now: String, limit: Int) throws -> [OutboxEntry] {
+        try OutboxEntry.fetchAll(
                 db,
                 sql: """
                 SELECT o.*
@@ -574,6 +663,33 @@ final class OutboxRepository {
                 WHERE o.synced_at IS NULL
                   AND COALESCE(o.status, 'pending') IN ('pending', 'failed')
                   AND (o.retry_after IS NULL OR o.retry_after <= ?)
+                  AND NOT EXISTS (
+                      SELECT 1 FROM sync_outbox address_create
+                      JOIN json_tree(CASE WHEN json_valid(o.payload_json)
+                          THEN o.payload_json ELSE '{}' END) affected_address
+                      WHERE o.operation != 'create_manual_address'
+                        AND address_create.operation = 'create_manual_address'
+                        AND address_create.synced_at IS NULL
+                        AND affected_address.type = 'text'
+                        AND (json_extract(CASE WHEN json_valid(o.payload_json) THEN o.payload_json ELSE '{}' END, '$.campaignId') IS NULL OR
+                            lower(json_extract(CASE WHEN json_valid(o.payload_json) THEN o.payload_json ELSE '{}' END, '$.campaignId')) = lower(json_extract(
+                                CASE WHEN json_valid(address_create.payload_json)
+                                  THEN address_create.payload_json ELSE '{}' END, '$.campaignId')))
+                        AND (
+                            ((affected_address.fullkey = '$.addressId' OR affected_address.path = '$.addressIds')
+                              AND lower(affected_address.value) = lower(json_extract(
+                                  CASE WHEN json_valid(address_create.payload_json)
+                                    THEN address_create.payload_json ELSE '{}' END, '$.addressId')))
+                            OR
+                            (o.operation = 'delete_building' AND affected_address.fullkey = '$.buildingId'
+                              AND lower(affected_address.value) = lower(json_extract(
+                                  CASE WHEN json_valid(address_create.payload_json)
+                                    THEN address_create.payload_json ELSE '{}' END, '$.buildingId'))
+                              AND lower(json_extract(CASE WHEN json_valid(o.payload_json) THEN o.payload_json ELSE '{}' END, '$.campaignId')) = lower(json_extract(
+                                  CASE WHEN json_valid(address_create.payload_json)
+                                    THEN address_create.payload_json ELSE '{}' END, '$.campaignId')))
+                        )
+                  )
                   AND NOT EXISTS (
                       SELECT 1
                       FROM sync_outbox older
@@ -588,7 +704,6 @@ final class OutboxRepository {
                 """,
                 arguments: [now, limit]
             )
-        }) ?? []
     }
 
     func pendingCount() async -> Int {

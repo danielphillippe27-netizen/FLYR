@@ -1,0 +1,298 @@
+{
+  "measurements" : [
+    {
+      "addresses" : 13328,
+      "buildings" : 13906,
+      "parcels" : 14243,
+      "phase" : "compact_field_records",
+      "result" : "PASS"
+    },
+    {
+      "phase" : "compact_offline_cache",
+      "result" : "PASS"
+    },
+    {
+      "phase" : "exact_binary_geometry",
+      "records" : 53839,
+      "result" : "PASS"
+    },
+    {
+      "phase" : "field_building_tap_geometry",
+      "result" : "PASS"
+    },
+    {
+      "phase" : "field_address_tap_metadata",
+      "result" : "PASS"
+    },
+    {
+      "addresses" : 13328,
+      "buildings" : 13906,
+      "parcels" : 14243,
+      "phase" : "compact_field_snapshot",
+      "result" : "PASS",
+      "roads" : 0
+    },
+    {
+      "addresses" : 13328,
+      "homes" : 13906,
+      "phase" : "compact_session_targets",
+      "result" : "PASS"
+    },
+    {
+      "phase" : "compact_parcel_target_mapping",
+      "result" : "PASS"
+    },
+    {
+      "phase" : "field_parcel_shape_parity",
+      "result" : "PASS"
+    },
+    {
+      "milliseconds" : 294.28566666319966,
+      "phase" : "first_tappable",
+      "renderer" : "pmtiles",
+      "round" : 0
+    },
+    {
+      "addressEdits" : 0,
+      "addresses" : 13328,
+      "phase" : "scope_plan",
+      "targetPresent" : true
+    },
+    {
+      "filter" : "(\n    all,\n        (\n        match,\n                (\n            \"geometry-type\"\n        ),\n                (\n            MultiPolygon,\n            Polygon\n        ),\n        1,\n        0\n    ),\n        (\n        in,\n                (\n            get,\n            \"canonical_id\"\n        ),\n                (\n            literal,\n                        (\n                \"0004cba6-afd3-4962-a4ac-8b366f6003ed\"\n            )\n        )\n    )\n)",
+      "phase" : "scope_style",
+      "target" : "0004cba6-afd3-4962-a4ac-8b366f6003ed",
+      "visibility" : "visible"
+    },
+    {
+      "phase" : "single_address_scope",
+      "result" : "PASS"
+    },
+    {
+      "phase" : "zoomed_out_cylinder",
+      "result" : "PASS",
+      "zoom" : 14
+    },
+    {
+      "phase" : "zoomed_out_cylinder",
+      "result" : "PASS",
+      "zoom" : 12
+    },
+    {
+      "layer" : "buildings",
+      "neighbour" : [
+        90,
+        106,
+        128
+      ],
+      "phase" : "colour",
+      "stateVerifiedAfterMs" : 400.79925002646632,
+      "status" : "attempted",
+      "target" : [
+        249,
+        117,
+        117
+      ]
+    },
+    {
+      "layer" : "buildings",
+      "neighbour" : [
+        90,
+        106,
+        128
+      ],
+      "phase" : "colour",
+      "stateVerifiedAfterMs" : 386.24029167112894,
+      "status" : "talked",
+      "target" : [
+        41,
+        199,
+        99
+      ]
+    },
+    {
+      "layer" : "buildings",
+      "neighbour" : [
+        90,
+        106,
+        128
+      ],
+      "phase" : "colour",
+      "stateVerifiedAfterMs" : 393.96054166718386,
+      "status" : "lead",
+      "target" : [
+        49,
+        117,
+        249
+      ]
+    },
+    {
+      "layer" : "buildings",
+      "neighbour" : [
+        90,
+        106,
+        128
+      ],
+      "phase" : "colour",
+      "stateVerifiedAfterMs" : 393.93670833669603,
+      "status" : "appointment",
+      "target" : [
+        249,
+        206,
+        28
+      ]
+    },
+    {
+      "layer" : "buildings",
+      "neighbour" : [
+        90,
+        106,
+        128
+      ],
+      "phase" : "colour",
+      "stateVerifiedAfterMs" : 385.48141665523872,
+      "status" : "do_not_knock",
+      "target" : [
+        11,
+        11,
+        11
+      ]
+    },
+    {
+      "layer" : "buildings",
+      "neighbour" : [
+        90,
+        106,
+        128
+      ],
+      "phase" : "colour",
+      "stateVerifiedAfterMs" : 397.9422916600015,
+      "status" : "not_visited",
+      "target" : [
+        90,
+        106,
+        128
+      ]
+    },
+    {
+      "layer" : "address_circles_compact",
+      "neighbour" : [
+        88,
+        104,
+        127
+      ],
+      "phase" : "colour",
+      "stateVerifiedAfterMs" : 394.28083333768882,
+      "status" : "attempted",
+      "target" : [
+        244,
+        116,
+        116
+      ]
+    },
+    {
+      "layer" : "address_circles_compact",
+      "neighbour" : [
+        88,
+        104,
+        127
+      ],
+      "phase" : "colour",
+      "stateVerifiedAfterMs" : 388.48929168307222,
+      "status" : "talked",
+      "target" : [
+        40,
+        196,
+        98
+      ]
+    },
+    {
+      "layer" : "address_circles_compact",
+      "neighbour" : [
+        88,
+        104,
+        127
+      ],
+      "phase" : "colour",
+      "stateVerifiedAfterMs" : 391.36362500721589,
+      "status" : "lead",
+      "target" : [
+        48,
+        115,
+        245
+      ]
+    },
+    {
+      "layer" : "address_circles_compact",
+      "neighbour" : [
+        88,
+        104,
+        127
+      ],
+      "phase" : "colour",
+      "stateVerifiedAfterMs" : 400.26166665484197,
+      "status" : "appointment",
+      "target" : [
+        244,
+        202,
+        28
+      ]
+    },
+    {
+      "layer" : "address_circles_compact",
+      "neighbour" : [
+        88,
+        104,
+        127
+      ],
+      "phase" : "colour",
+      "stateVerifiedAfterMs" : 388.71529168682173,
+      "status" : "do_not_knock",
+      "target" : [
+        11,
+        12,
+        12
+      ]
+    },
+    {
+      "layer" : "address_circles_compact",
+      "neighbour" : [
+        88,
+        104,
+        127
+      ],
+      "phase" : "colour",
+      "stateVerifiedAfterMs" : 411.39970833319239,
+      "status" : "not_visited",
+      "target" : [
+        88,
+        104,
+        127
+      ]
+    },
+    {
+      "phase" : "autorecord",
+      "result" : "PASS",
+      "scenarios" : 2,
+      "scope" : "real dwell pipeline with binary shape, isolated demo state, no backend writes"
+    },
+    {
+      "phase" : "map_edit_moved_overlay_hit",
+      "result" : "PASS",
+      "tile_original_suppressed" : true
+    },
+    {
+      "addresses_preserved" : 13328,
+      "phase" : "map_edit_remove_reopen_sync",
+      "result" : "PASS",
+      "selected_items" : 2
+    },
+    {
+      "phase" : "map_edit_undo_restores_tiles",
+      "result" : "PASS",
+      "server_revision" : 4
+    }
+  ],
+  "result" : "PASS",
+  "scope" : "local rendering and state, no production mutations"
+}

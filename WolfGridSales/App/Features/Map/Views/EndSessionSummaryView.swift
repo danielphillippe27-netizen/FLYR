@@ -284,7 +284,10 @@ struct EndSessionSummaryView: View {
 private struct ShareActivitySheet: View {
     let images: [UIImage]
     var onDismiss: () -> Void
+    var onCreateReplay: (() -> Void)? = nil
+    var replayIsRecorded = false
     @State private var saveToast: String?
+    @State private var replayResult: String?
     @State private var showShareHelp = false
     @State private var selectedPage = 0
     @Environment(\.displayScale) private var displayScale
@@ -333,6 +336,29 @@ private struct ShareActivitySheet: View {
                                     .padding(.horizontal, 24)
                                     .tag(index)
                             }
+                            if let onCreateReplay {
+                                VStack(spacing: 20) {
+                                    Image(systemName: "play.rectangle.on.rectangle")
+                                        .font(.system(size: 52)).foregroundColor(.red)
+                                    Text("Create a replay").font(.title2.bold()).foregroundColor(.white)
+                                    Text(replayIsRecorded ? "Replay this activity using recorded GPS and visit outcomes." : "Animate this campaign and save a simulated video to Photos.")
+                                        .font(.subheadline).foregroundColor(.white.opacity(0.7))
+                                        .multilineTextAlignment(.center)
+                                    Button("Create Replay", action: onCreateReplay)
+                                        .buttonStyle(.borderedProminent).tint(.red)
+                                }
+                                .padding(24)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                .aspectRatio(images[0].size.width / images[0].size.height, contentMode: .fit)
+                                .background(Color.black)
+                                .clipShape(RoundedRectangle(cornerRadius: 16))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 16)
+                                        .stroke(Color.white.opacity(0.5), lineWidth: 1)
+                                )
+                                .padding(.horizontal, 24)
+                                .tag(images.count)
+                            }
                         }
                         .tabViewStyle(.page(indexDisplayMode: .never))
                         .frame(height: 500)
@@ -342,9 +368,9 @@ private struct ShareActivitySheet: View {
                 Spacer(minLength: 0)
 
                 // Page dots when multiple cards
-                if images.count > 1 {
+                if images.count + (onCreateReplay == nil ? 0 : 1) > 1 {
                     HStack(spacing: 6) {
-                        ForEach(images.indices, id: \.self) { index in
+                        ForEach(0..<(images.count + (onCreateReplay == nil ? 0 : 1)), id: \.self) { index in
                             Circle()
                                 .fill(index == selectedPage ? Color.white : Color.white.opacity(0.4))
                                 .frame(width: 8, height: 8)
@@ -396,6 +422,9 @@ private struct ShareActivitySheet: View {
                 .padding(.top, 12)
                 .padding(.bottom, 28)
                 .background(Color.black)
+                .opacity(selectedPage < images.count ? 1 : 0)
+                .allowsHitTesting(selectedPage < images.count)
+                .accessibilityHidden(selectedPage >= images.count)
             }
 
             if let message = saveToast {
@@ -414,6 +443,20 @@ private struct ShareActivitySheet: View {
         }
         .sheet(isPresented: $showShareHelp) {
             ShareHelpSheet(onDismiss: { showShareHelp = false })
+        }
+        .alert("Replay video", isPresented: Binding(
+            get: { replayResult != nil },
+            set: { if !$0 { replayResult = nil } }
+        )) {
+            Button("OK", role: .cancel) { replayResult = nil }
+        } message: {
+            Text(replayResult ?? "")
+        }
+        .onAppear {
+            if let result = DemoVideoRecorder.lastResult {
+                DemoVideoRecorder.lastResult = nil
+                replayResult = result
+            }
         }
     }
 
@@ -447,6 +490,7 @@ struct ShareActivityGateView: View {
     var sessionID: UUID? = nil
     /// Prefer live campaign capture for the first share card; falls back to Mapbox static API.
     var campaignMapSnapshot: UIImage? = nil
+    var onCreateReplay: (() -> Void)? = nil
     var onDismiss: () -> Void
     @Environment(\.colorScheme) private var colorScheme
     @State private var images: [UIImage] = []
@@ -463,7 +507,7 @@ struct ShareActivityGateView: View {
                         }
                     }
             } else {
-                ShareActivitySheet(images: images, onDismiss: onDismiss)
+                ShareActivitySheet(images: images, onDismiss: onDismiss, onCreateReplay: onCreateReplay, replayIsRecorded: sessionID != nil)
             }
         }
         .safeAreaInset(edge: .bottom) {

@@ -17,6 +17,16 @@ private func resolveFarmAddressStatus(rawStatus: String?, visitedCount: Int) -> 
     return AddressStatus(rawValue: normalized) ?? fallback
 }
 
+struct FarmAddressSummary: Identifiable, Decodable {
+    let id: UUID
+    let formatted: String
+}
+
+struct FarmAddressSummaryPage {
+    let addresses: [FarmAddressSummary]
+    let hasMore: Bool
+}
+
 struct FarmAddressViewRow: Identifiable, Codable, Equatable {
     let farmAddressId: UUID
     let campaignAddressId: UUID?

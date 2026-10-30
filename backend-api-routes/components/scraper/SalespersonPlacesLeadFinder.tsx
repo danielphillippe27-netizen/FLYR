@@ -1815,13 +1815,14 @@ export function SalespersonPlacesLeadFinder() {
 
   function openSavedListInDialer() {
     const saved = summary?.savedList;
-    if (!saved?.dialerLeadIds?.length) {
+    if (!saved?.listId && !saved?.dialerLeadIds?.length) {
       router.push('/dialer');
       return;
     }
 
     const params = new URLSearchParams();
-    params.set('leadIds', saved.dialerLeadIds.join(','));
+    if (saved.listId) params.set('listId', saved.listId);
+    else params.set('leadIds', saved.dialerLeadIds.join(','));
     params.set('listName', saved.listName);
     if (saveWorkspaceId) params.set('workspaceId', saveWorkspaceId);
     router.push(`/dialer?${params.toString()}`);

@@ -213,6 +213,9 @@ final class SessionsAPI {
         farmExecutionContext: FarmExecutionContext? = nil,
         startedAt: Date? = nil
     ) async throws {
+        if let context = farmExecutionContext {
+            try await FarmTouchService.shared.syncPendingSessionTouch(id: context.touchId)
+        }
         let emptyPath = "{\"type\":\"LineString\",\"coordinates\":[]}"
         let resolvedWorkspaceId = await resolveWorkspaceId(
             forCampaignId: campaignId,

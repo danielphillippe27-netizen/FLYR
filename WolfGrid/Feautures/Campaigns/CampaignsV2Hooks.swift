@@ -117,6 +117,9 @@ final class UseCampaignV2: ObservableObject {
         
         // First check if campaign exists in the store with addresses loaded
         if let store = store, var campaign = store.campaign(id: id) {
+            // Publish cached detail immediately while the network refresh runs.
+            item = campaign
+
             print("🎣 [HOOK DEBUG] Campaign found in store: '\(campaign.name)'")
 
             let needsRefresh =

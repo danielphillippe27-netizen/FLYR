@@ -151,6 +151,13 @@ final class SessionStartCacheRepository {
     }
 
     func upsertRouteAssignments(_ assignments: [RouteAssignmentSummary], workspaceId: UUID) async {
+        let campaignIds = assignments.filter {
+            !["completed", "complete", "cancelled", "canceled", "archived", "declined"]
+                .contains($0.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+        }.compactMap(\.campaignId)
+        await MainActor.run {
+            OfflinePreloadCoordinator.shared.requireLocalCampaigns(campaignIds)
+        }
         let cachedAt = OfflineDateCodec.string(from: Date())
         try? await dbQueue.write { db in
             for assignment in assignments {

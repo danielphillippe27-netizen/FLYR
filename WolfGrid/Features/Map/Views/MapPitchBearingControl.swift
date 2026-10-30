@@ -10,14 +10,15 @@ struct FlyrMapPitchBearingControl: View {
     let onCameraDrag: (CGSize) -> Void
     var size: CGFloat = 52
     var height: CGFloat = 44
+    var foregroundColor: Color = .white
 
     @State private var pressed = false
     @State private var lastDragTranslation: CGSize = .zero
 
     var body: some View {
         ZStack {
-            PitchYawRollEmblem()
-                .frame(width: 34, height: 34)
+            PitchYawRollEmblem(color: foregroundColor)
+                .frame(width: 32, height: 32)
                 .accessibilityHidden(true)
                 .opacity(pressed ? 0.72 : 1)
                 .scaleEffect(pressed ? 0.94 : 1)
@@ -50,38 +51,30 @@ struct FlyrMapPitchBearingControl: View {
 }
 
 private struct PitchYawRollEmblem: View {
+    let color: Color
+
     var body: some View {
         Canvas { context, size in
             let center = CGPoint(x: size.width * 0.5, y: size.height * 0.5)
             let strokeWidth = min(size.width, size.height) * 0.085
             let lineStyle = StrokeStyle(lineWidth: strokeWidth, lineCap: .round, lineJoin: .round)
-            let color = Color.white
 
-            let globeRadius = min(size.width, size.height) * 0.37
-            let globeRect = CGRect(
-                x: center.x - globeRadius,
-                y: center.y - globeRadius,
-                width: globeRadius * 2,
-                height: globeRadius * 2
-            )
-            context.stroke(Path(ellipseIn: globeRect), with: .color(color), style: lineStyle)
-
-            var globeLines = Path()
-            globeLines.addEllipse(in: CGRect(
-                x: center.x - globeRadius * 0.48,
-                y: center.y - globeRadius,
-                width: globeRadius * 0.96,
-                height: globeRadius * 2
+            // Two perpendicular rings: one facing the viewer and one lying flat.
+            let radius = min(size.width, size.height) * 0.34
+            var rings = Path()
+            rings.addEllipse(in: CGRect(
+                x: center.x - radius,
+                y: center.y - radius,
+                width: radius * 2,
+                height: radius * 2
             ))
-            globeLines.move(to: CGPoint(x: center.x - globeRadius, y: center.y))
-            globeLines.addLine(to: CGPoint(x: center.x + globeRadius, y: center.y))
-            globeLines.addEllipse(in: CGRect(
-                x: center.x - globeRadius * 0.94,
-                y: center.y - globeRadius * 0.43,
-                width: globeRadius * 1.88,
-                height: globeRadius * 0.86
+            rings.addEllipse(in: CGRect(
+                x: center.x - radius * 1.3,
+                y: center.y - radius * 0.36,
+                width: radius * 2.6,
+                height: radius * 0.72
             ))
-            context.stroke(globeLines, with: .color(color), style: lineStyle)
+            context.stroke(rings, with: .color(color), style: lineStyle)
         }
     }
 }

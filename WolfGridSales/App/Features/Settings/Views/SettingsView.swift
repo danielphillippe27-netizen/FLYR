@@ -2,6 +2,7 @@ import SwiftUI
 import UIKit
 
 struct SettingsView: View {
+    @AppStorage("showCampaignDemoController") private var showCampaignDemoController = false
     @StateObject private var vm = SettingsViewModel()
     @StateObject private var auth = AuthManager.shared
     @Environment(\.dismiss) private var dismiss
@@ -34,6 +35,14 @@ struct SettingsView: View {
                     
                     // Appearance
                     appearanceSection
+
+                    Section {
+                        Toggle("Show Demo Controller", isOn: $showCampaignDemoController)
+                    } header: {
+                        Text("Demo Videos")
+                    } footer: {
+                        Text("Show a small Demo Controller button at the bottom of campaign details to create demo videos.")
+                    }
 
                     // App Info
                     appInfoSection

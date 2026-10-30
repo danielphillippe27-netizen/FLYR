@@ -32,11 +32,18 @@ struct CampaignRowView: View {
             }
 
             VStack(alignment: .leading, spacing: 4) {
-                Text(titleText)
-                    .font(.flyrHeadline)
-                    .foregroundColor(.primary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
+                HStack(spacing: 5) {
+                    Text(titleText)
+                        .font(.flyrHeadline)
+                        .foregroundColor(.primary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    if campaign.tags?.lowercased().contains("quick_start") == true {
+                        Image(systemName: "bolt.fill")
+                            .foregroundStyle(Color.red)
+                            .accessibilityLabel("Quick Start")
+                    }
+                }
 
                 if isAssigned {
                     Label("Assigned to you", systemImage: "person.crop.circle.badge.checkmark")

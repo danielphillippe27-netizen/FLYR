@@ -1,0 +1,223 @@
+diff --git a/app/src/main/java/com/wolfgrid/android/features/map/GoogleMapUserLocation.kt b/app/src/main/java/com/wolfgrid/android/features/map/GoogleMapUserLocation.kt
+new file mode 100644
+--- /dev/null
++++ b/app/src/main/java/com/wolfgrid/android/features/map/GoogleMapUserLocation.kt
+@@ -0,0 +1,116 @@
++package com.wolfgrid.android.features.map
++
++import android.graphics.Bitmap
++import android.graphics.Canvas
++import android.graphics.Color
++import android.graphics.Paint
++import android.graphics.Path
++import android.graphics.RadialGradient
++import android.graphics.RectF
++import android.graphics.Shader
++import android.view.Surface
++import androidx.compose.runtime.Composable
++import androidx.compose.runtime.DisposableEffect
++import androidx.compose.runtime.LaunchedEffect
++import androidx.compose.runtime.getValue
++import androidx.compose.runtime.mutableStateOf
++import androidx.compose.runtime.remember
++import androidx.compose.runtime.setValue
++import androidx.compose.ui.geometry.Offset
++import androidx.compose.ui.platform.LocalContext
++import androidx.compose.ui.platform.LocalDensity
++import androidx.compose.ui.platform.LocalView
++import androidx.lifecycle.Lifecycle
++import androidx.lifecycle.LifecycleEventObserver
++import androidx.lifecycle.compose.LocalLifecycleOwner
++import androidx.lifecycle.repeatOnLifecycle
++import com.google.android.gms.maps.model.BitmapDescriptorFactory
++import com.google.android.gms.maps.model.LatLng
++import com.google.maps.android.compose.Circle
++import com.google.maps.android.compose.GoogleMapComposable
++import com.google.maps.android.compose.Marker
++import com.google.maps.android.compose.rememberMarkerState
++import com.wolfgrid.android.features.map.session.AndroidHeadingPresentationEngine
++import com.wolfgrid.android.features.map.session.SessionCoordinate
++import com.wolfgrid.android.features.map.session.WolfCompassHeading
++import kotlinx.coroutines.delay
++import kotlinx.coroutines.isActive
++
++/** Flat blue location dot and live compass cone; the wolf remains on the 3D map. */
++@Composable
++@GoogleMapComposable
++internal fun GoogleMapUserLocation(location: SessionCoordinate) {
++    val context = LocalContext.current
++    val view = LocalView.current
++    val lifecycle = LocalLifecycleOwner.current.lifecycle
++    val density = LocalDensity.current.density
++    val compass = remember(context, view) {
++        WolfCompassHeading(context) { view.display?.rotation ?: Surface.ROTATION_0 }
++    }
++    val courseEngine = remember { AndroidHeadingPresentationEngine() }
++    val course = remember(location) { courseEngine.nextState(location) }
++    var heading by remember { mutableStateOf<Double?>(null) }
++    DisposableEffect(compass, lifecycle) {
++        val observer = LifecycleEventObserver { _, _ ->
++            compass.setActive(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
++        }
++        lifecycle.addObserver(observer)
++        compass.setActive(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
++        onDispose {
++            lifecycle.removeObserver(observer)
++            compass.setActive(false)
++        }
++    }
++    LaunchedEffect(compass, lifecycle, location) {
++        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
++            while (isActive) {
++                heading = compass.heading(location) ?: course.headingDegrees.takeIf { course.isRenderable }
++                delay(80)
++            }
++        }
++    }
++    val position = LatLng(location.latitude, location.longitude)
++    val dotIcon = remember(density) {
++        val side = (22 * density).toInt().coerceAtLeast(1)
++        val bitmap = Bitmap.createBitmap(side, side, Bitmap.Config.ARGB_8888)
++        val canvas = Canvas(bitmap)
++        val paint = Paint(Paint.ANTI_ALIAS_FLAG)
++        paint.color = Color.WHITE
++        canvas.drawCircle(side / 2f, side / 2f, 9 * density, paint)
++        paint.color = Color.rgb(0, 122, 255)
++        canvas.drawCircle(side / 2f, side / 2f, 6 * density, paint)
++        BitmapDescriptorFactory.fromBitmap(bitmap)
++    }
++    val directionIcon = remember(density) {
++        val side = (72 * density).toInt().coerceAtLeast(1)
++        val bitmap = Bitmap.createBitmap(side, side, Bitmap.Config.ARGB_8888)
++        val canvas = Canvas(bitmap)
++        val center = side / 2f
++        val radius = 34 * density
++        val cone = Path().apply {
++            moveTo(center, center)
++            arcTo(RectF(center - radius, center - radius, center + radius, center + radius), -120f, 60f)
++            close()
++        }
++        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
++            shader = RadialGradient(center, center, radius,
++                Color.argb(128, 0, 122, 255), Color.argb(5, 0, 122, 255), Shader.TileMode.CLAMP)
++        }
++        canvas.drawPath(cone, paint)
++        BitmapDescriptorFactory.fromBitmap(bitmap)
++    }
++    location.accuracyMeters?.takeIf { it.isFinite() && it > 0 }?.let { accuracy ->
++        Circle(center = position, radius = accuracy.toDouble(),
++            fillColor = androidx.compose.ui.graphics.Color(0x1A007AFF),
++            strokeColor = androidx.compose.ui.graphics.Color(0x2E007AFF), strokeWidth = 1f)
++    }
++    heading?.takeIf { it.isFinite() }?.let { direction ->
++        Marker(state = rememberMarkerState(position = position).apply { this.position = position },
++            contentDescription = "Direction you are facing", anchor = Offset(0.5f, 0.5f),
++            flat = true, rotation = (((direction % 360) + 360) % 360).toFloat(),
++            icon = directionIcon, zIndex = 1000f, onClick = { true })
++    }
++    Marker(state = rememberMarkerState(position = position).apply { this.position = position },
++        contentDescription = "Your location", anchor = Offset(0.5f, 0.5f),
++        icon = dotIcon, zIndex = 1001f, onClick = { true })
++}
+diff --git a/app/src/main/java/com/wolfgrid/android/features/campaign/CampaignScreen.kt b/app/src/main/java/com/wolfgrid/android/features/campaign/CampaignScreen.kt
+--- a/app/src/main/java/com/wolfgrid/android/features/campaign/CampaignScreen.kt
++++ b/app/src/main/java/com/wolfgrid/android/features/campaign/CampaignScreen.kt
+@@ -124,6 +124,7 @@
+ import com.wolfgrid.android.features.buildings.BuildingAddressUiState
+ import com.wolfgrid.android.features.invites.LiveSessionCodeUiState
+ import com.wolfgrid.android.features.map.WolfGridMapboxBasemapCleanup
++import com.wolfgrid.android.features.map.GoogleMapUserLocation
+ import com.wolfgrid.android.features.map.Map2DPerformance
+ import com.wolfgrid.android.features.map.WolfGridMapPitchBearingControl
+ import com.wolfgrid.android.features.map.rememberWolfGridMapStyleJson
+@@ -3008,7 +3009,6 @@
+     onParcelSelected: (CampaignMapParcelRenderItem) -> Unit,
+     onLongPress: (Double, Double) -> Unit
+ ) {
+-    val iconContext=androidx.compose.ui.platform.LocalContext.current
+     val center = LatLng(initialCameraPose.latitude, initialCameraPose.longitude)
+     val cameraState = rememberCameraPositionState {
+         position = CameraPosition.fromLatLngZoom(center, initialCameraPose.zoom.toFloat().coerceIn(10f, 19f))
+@@ -3045,23 +3045,6 @@
+         cameraPositionState = cameraState,
+         onMapLongClick = { point -> onLongPress(point.latitude, point.longitude) }
+     ) {
+-        // GoogleMap composes its content only after the SDK is ready. Creating a
+-        // BitmapDescriptor before this point crashes the first switch from 3D.
+-        val userIcon=remember(iconContext){
+-            val side=(52*iconContext.resources.displayMetrics.density).toInt()
+-            val output=android.graphics.Bitmap.createBitmap(side,side,android.graphics.Bitmap.Config.ARGB_8888)
+-            val canvas=android.graphics.Canvas(output)
+-            val paint=android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply{color=android.graphics.Color.WHITE}
+-            canvas.drawCircle(side/2f,side/2f,side/2f,paint)
+-            iconContext.assets.open("wolfy/stage1.png").use{stream->
+-                android.graphics.BitmapFactory.decodeStream(stream)?.let{image->
+-                    val inset=side*0.1f
+-                    canvas.save();canvas.clipPath(android.graphics.Path().apply{addCircle(side/2f,side/2f,side/2f-inset,android.graphics.Path.Direction.CW)})
+-                    canvas.drawBitmap(image,null,android.graphics.RectF(inset,inset,side-inset,side-inset),paint);canvas.restore();image.recycle()
+-                }
+-            }
+-            BitmapDescriptorFactory.fromBitmap(output)
+-        }
+         renderData.campaignRings.forEach { ring ->
+             GooglePolygon(
+                 points = ring.map { LatLng(it.latitude(), it.longitude()) },
+@@ -3148,18 +3131,7 @@
+                 onClick = { onTargetSelected(target); true }
+             )
+         }
+-        sessionState.currentLocation?.let { location ->
+-            val locationPoint = LatLng(location.latitude, location.longitude)
+-            GoogleCircle(
+-                center = locationPoint,
+-                radius = 16.0,
+-                fillColor = Color(0x330A84FF),
+-                strokeColor = Color.Transparent,
+-                zIndex = 80f
+-            )
+-            Marker(state=MarkerState(locationPoint),title="Your location",icon=userIcon,anchor=androidx.compose.ui.geometry.Offset(0.5f,0.5f),zIndex=81f)
+-
+-        }
++        sessionState.currentLocation?.let { GoogleMapUserLocation(it) }
+         sessionState.liveTeammates.forEach { teammate ->
+             Marker(
+                 state = MarkerState(LatLng(teammate.latitude, teammate.longitude)),
+diff --git a/app/src/main/java/com/wolfgrid/android/features/map/session/MapSessionScreen.kt b/app/src/main/java/com/wolfgrid/android/features/map/session/MapSessionScreen.kt
+--- a/app/src/main/java/com/wolfgrid/android/features/map/session/MapSessionScreen.kt
++++ b/app/src/main/java/com/wolfgrid/android/features/map/session/MapSessionScreen.kt
+@@ -151,6 +151,7 @@
+ import com.wolfgrid.android.features.campaign.scopedToCampaignBoundary
+ import com.wolfgrid.android.features.invites.LiveSessionCodeUiState
+ import com.wolfgrid.android.features.invites.LiveSessionJoinUiState
++import com.wolfgrid.android.features.map.GoogleMapUserLocation
+ import com.wolfgrid.android.features.map.Map2DPerformance
+ import com.wolfgrid.android.features.map.CampaignPinClusters
+ import com.wolfgrid.android.features.map.WolfGridGoogle2DMap
+@@ -6507,26 +6508,7 @@
+     location: SessionCoordinate,
+     headingState: AndroidHeadingPresentationState
+ ) {
+-    val center = LatLng(location.latitude, location.longitude)
+-    val context = LocalContext.current
+-    val density = LocalDensity.current.density
+-    val wolfBitmap by androidx.compose.runtime.produceState<Bitmap?>(null, context, density) {
+-        value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+-            runCatching { createCampaignWolfPortrait(context, density) }.getOrNull()
+-        }
+-    }
+-    val puckIcon = remember(wolfBitmap) {
+-        wolfBitmap?.let(BitmapDescriptorFactory::fromBitmap) ?: createSessionPuckIcon()
+-    }
+-    Marker(
+-        state = MarkerState(center),
+-        contentDescription = "Wolfy · Your location",
+-        anchor = Offset(0.5f, 0.5f),
+-        flat = false,
+-        icon = puckIcon,
+-        zIndex = 1000f,
+-        onClick = { true }
+-    )
++    GoogleMapUserLocation(location)
+ }
+ 
+ private fun createSessionPuckIcon(): BitmapDescriptor {

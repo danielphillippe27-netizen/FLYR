@@ -35,6 +35,7 @@ struct NewCampaignDetailView: View {
     @State private var campaignLeads: [FieldLead] = []
     @State private var selectedLead: FieldLead?
     @State private var leadsLoaded = false
+    @State private var campaignOutreachMode: ContactOutreachMode?
     @State private var isActivityExpanded = false
     @State private var campaignActivities: [SessionRecord] = []
     @State private var activityCount: Int = 0
@@ -42,10 +43,18 @@ struct NewCampaignDetailView: View {
     /// When set, share card is shown for this specific activity (tapped from Activity list).
     @State private var selectedSessionForShare: SessionRecord? = nil
     @State private var supportFeedbackRoute: CampaignSupportFeedbackRoute?
+    @AppStorage("showCampaignDemoController") private var showCampaignDemoController = false
     @State private var showDemoConfigSheet = false
+    @State private var replayRequested = false
+    @State private var demoSaveVideo = false
+    @State private var replaySourceSessionID: UUID?
+    @State private var demoAccessMessage: String?
+    @State private var pendingDemoLaunchConfiguration: DemoSessionLaunchConfiguration?
+    @State private var demoPresentationSnapshot: CampaignDetailPresentation?
     @State private var activeDemoLaunchConfiguration: DemoSessionLaunchConfiguration?
     @State private var awaitingDemoSummary = false
     @State private var demoSummaryItem: EndSessionSummaryItem?
+    @State private var pendingDemoSummaryItem: EndSessionSummaryItem?
     @Namespace private var mapNamespace
 
     private static let campaignFeedbackQuickSuggestions: [String] = [
@@ -56,6 +65,9 @@ struct NewCampaignDetailView: View {
     ]
 
     private var presentation: CampaignDetailPresentation? {
+        if activeDemoLaunchConfiguration != nil, let demoPresentationSnapshot {
+            return demoPresentationSnapshot
+        }
         guard let campaign = hook.item else { return nil }
         return CampaignDetailPresentation(
             campaign: campaign,
@@ -101,8 +113,20 @@ struct NewCampaignDetailView: View {
         presentation?.isJustListedMearnsDemo == true
     }
 
-    private var isFounderDemoEnabled: Bool {
-        DemoFounderAccess.isAllowed(user: authManager.user)
+    private func openDemoController() {
+        guard showCampaignDemoController else { return }
+        guard sessionManager.sessionId == nil, !sessionManager.isEndingSession else {
+            demoAccessMessage = "End your current session before starting a demo recording."
+            return
+        }
+        guard hook.item != nil else {
+            demoAccessMessage = "This campaign is still loading. \(hook.error ?? "Try again once the campaign name appears.")"
+            return
+        }
+        HapticManager.medium()
+        demoSaveVideo = false
+        replaySourceSessionID = nil
+        showDemoConfigSheet = true
     }
 
     private var demoCampaignOptions: [CampaignV2] {
@@ -171,10 +195,10 @@ struct NewCampaignDetailView: View {
                         Text(hook.item?.name ?? "Loading...")
                             .font(.heading)
                             .foregroundColor(.text)
+                            .padding(.vertical, 8)
+                            .contentShape(Rectangle())
                             .onTapGesture(count: 3) {
-                                guard isFounderDemoEnabled, hook.item != nil else { return }
-                                HapticManager.medium()
-                                showDemoConfigSheet = true
+                                openDemoController()
                             }
                         
                         Spacer()
@@ -216,6 +240,8 @@ struct NewCampaignDetailView: View {
                             .buttonStyle(.plain)
                         }
                     }
+
+
                     
                     if let campaign = hook.item {
                         Text("Created \(campaign.createdAt, formatter: dateFormatter)")
@@ -272,6 +298,7 @@ struct NewCampaignDetailView: View {
                         // Fullscreen trigger
                         Button(action: {
                             HapticManager.medium()
+                            MapOpenTrace.begin(campaign: campaignID.uuidString)
                             isMapFullscreen = true
                         }) {
                             Color.clear
@@ -393,6 +420,11 @@ struct NewCampaignDetailView: View {
                     if isLeadsExpanded {
                         if !effectiveCampaignLeads.isEmpty {
                             VStack(alignment: .leading, spacing: 8) {
+                                HStack {
+                                    Button { campaignOutreachMode = .call } label: { Label("Call list", systemImage: "phone") }
+                                    Button { campaignOutreachMode = .text } label: { Label("Message list", systemImage: "message") }
+                                }
+                                .buttonStyle(.bordered)
                                 ForEach(Array(effectiveCampaignLeads.prefix(5).enumerated()), id: \.element.id) { index, lead in
                                     Button {
                                         HapticManager.light()
@@ -631,6 +663,21 @@ struct NewCampaignDetailView: View {
                 .buttonStyle(.plain)
                 .padding(.top, 16)
                 
+                    if showCampaignDemoController {
+                        Button {
+                            openDemoController()
+                        } label: {
+                            Label("Demo Controller", systemImage: "video.fill")
+                                .font(.caption.weight(.semibold))
+                                .foregroundColor(.muted)
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 10)
+                                .background(Color.bgSecondary, in: Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityHint("Configure and start a demo recording")
+                    }
+
                 Spacer(minLength: 100) // Space for button
             }
             .padding()
@@ -673,33 +720,68 @@ struct NewCampaignDetailView: View {
         .fullScreenCover(isPresented: Binding(
             get: { showShareCardView || selectedSessionForShare != nil },
             set: { if !$0 { showShareCardView = false; selectedSessionForShare = nil } }
-        )) {
+        ), onDismiss: {
+            if replayRequested {
+                replayRequested = false
+                demoSaveVideo = true
+                showDemoConfigSheet = true
+            }
+        }) {
             ShareActivityGateView(
                 data: effectiveShareCardData(selectedSession: selectedSessionForShare),
                 sessionID: selectedSessionForShare?.id,
                 campaignMapSnapshot: nil,
+                onCreateReplay: hook.item == nil || sessionManager.sessionId != nil || sessionManager.isEndingSession ? nil : {
+                    replayRequested = true
+                    replaySourceSessionID = selectedSessionForShare?.id
+                    showShareCardView = false
+                    selectedSessionForShare = nil
+                },
                 onDismiss: {
                     showShareCardView = false
                     selectedSessionForShare = nil
                 }
             )
         }
+        .sheet(item: $campaignOutreachMode) { mode in
+            ContactCallQueueView(leads: effectiveCampaignLeads, mode: mode)
+        }
         .sheet(isPresented: $showFullAddressesSheet) {
             if let campaign = hook.item {
                 FullAddressesSheet(addresses: campaign.addresses)
             }
         }
-        .sheet(isPresented: $showDemoConfigSheet) {
+        .alert("Demo Controller", isPresented: Binding(
+            get: { demoAccessMessage != nil },
+            set: { if !$0 { demoAccessMessage = nil } }
+        )) {
+            Button("OK", role: .cancel) { demoAccessMessage = nil }
+        } message: {
+            Text(demoAccessMessage ?? "")
+        }
+        .sheet(isPresented: $showDemoConfigSheet, onDismiss: {
+            guard let configuration = pendingDemoLaunchConfiguration else { return }
+            pendingDemoLaunchConfiguration = nil
+            awaitingDemoSummary = true
+            demoPresentationSnapshot = presentation
+            activeDemoLaunchConfiguration = configuration
+        }) {
             DemoSessionConfigSheet(
                 campaigns: demoCampaignOptions,
                 defaultCampaignID: hook.item?.id ?? campaignID,
+                saveVideo: demoSaveVideo,
+                recordedSessionID: replaySourceSessionID,
                 onStart: { configuration in
-                    awaitingDemoSummary = true
-                    activeDemoLaunchConfiguration = configuration
+                    pendingDemoLaunchConfiguration = configuration
+                    showDemoConfigSheet = false
                 }
             )
         }
-        .fullScreenCover(item: $activeDemoLaunchConfiguration) { configuration in
+        .fullScreenCover(item: $activeDemoLaunchConfiguration, onDismiss: {
+            guard let summary = pendingDemoSummaryItem else { return }
+            pendingDemoSummaryItem = nil
+            demoSummaryItem = summary
+        }) { configuration in
             CampaignMapView(
                 campaignId: configuration.campaign.id.uuidString,
                 showPreSessionStartButton: false,
@@ -737,6 +819,10 @@ struct NewCampaignDetailView: View {
         .onAppear {
             print("📱 [DETAIL DEBUG] NewCampaignDetailView appeared for campaign ID: \(campaignID)")
             hook.load(id: campaignID, store: store)
+            OfflinePreloadCoordinator.shared.pauseForForegroundWork(
+                reason: "campaign_details", campaignId: campaignID.uuidString, resumeDelaySeconds: 10
+            )
+            OfflinePreloadCoordinator.shared.requireLocalCampaigns([campaignID])
             Task {
                 await onboardingDemo.load()
                 await campaignDownloadService.refreshState(campaignId: campaignID.uuidString)
@@ -762,12 +848,12 @@ struct NewCampaignDetailView: View {
         .onChange(of: sessionManager.pendingSessionSummary) { _, summary in
             guard awaitingDemoSummary, let summary else { return }
             let sessionID = sessionManager.pendingSessionSummarySessionId
-            activeDemoLaunchConfiguration = nil
-            demoSummaryItem = EndSessionSummaryItem(
+            pendingDemoSummaryItem = EndSessionSummaryItem(
                 data: summary,
                 sessionID: sessionID,
                 campaignMapSnapshot: SessionManager.lastEndedSummaryMapSnapshot
             )
+            activeDemoLaunchConfiguration = nil
             sessionManager.pendingSessionSummary = nil
             sessionManager.pendingSessionSummarySessionId = nil
         }
@@ -860,14 +946,15 @@ struct NewCampaignDetailView: View {
     private var offlineAvailabilitySection: some View {
         let campaignIdString = campaignID.uuidString
         let downloadState = campaignDownloadService.state(for: campaignIdString)
-        let isOfflineAvailable = downloadState?.isAvailableOffline == true
+        let isOfflineAvailable = downloadState?.isAvailableOffline == true && campaignDownloadService.readiness(for: campaignIdString)?.isVerified == true
         let isDownloading = downloadState?.status == "downloading"
         let isFailed = downloadState?.status == "failed"
         let statusTitle = offlineStatusTitle(isReady: isOfflineAvailable, isDownloading: isDownloading, isFailed: isFailed)
         let statusIcon = offlineStatusIcon(isReady: isOfflineAvailable, isDownloading: isDownloading, isFailed: isFailed)
         let statusColor = offlineStatusColor(isReady: isOfflineAvailable, isDownloading: isDownloading, isFailed: isFailed)
 
-        return HStack(spacing: 12) {
+        return VStack(alignment: .leading, spacing: 8) {
+        HStack(spacing: 12) {
             Image(systemName: statusIcon)
                 .font(.subheadline)
                 .foregroundColor(statusColor)
@@ -901,6 +988,21 @@ struct NewCampaignDetailView: View {
                 .background(Color.bgTertiary)
                 .clipShape(Capsule())
                 .buttonStyle(.plain)
+            }
+        }
+            Text(localDataSummary(
+                readiness: campaignDownloadService.readiness(for: campaignIdString),
+                isReady: isOfflineAvailable, isDownloading: isDownloading, isFailed: isFailed
+            ))
+            .font(.caption)
+            .foregroundColor(.muted)
+            if let bytes = campaignDownloadService.mapTileBytes[campaignIdString], bytes > 0 {
+                Text("Map tiles: \(ByteCountFormatter.string(fromByteCount: Int64(clamping: bytes), countStyle: .file))")
+                    .font(.caption)
+                    .foregroundColor(.muted)
+            }
+            if let updated = offlineUpdatedText(for: downloadState) {
+                Text(updated).font(.caption).foregroundColor(.muted)
             }
         }
         .padding(16)
@@ -1189,7 +1291,10 @@ struct NewCampaignDetailView: View {
     }
 
     private func routeActiveCampaignSessionToRecordTabIfNeeded() {
-        guard sessionManager.sessionId != nil,
+        // The fullscreen map already owns this session. Switching tabs here
+        // constructs a second map beneath it during activation.
+        guard !isMapFullscreen,
+              sessionManager.sessionId != nil,
               !sessionManager.isDemoSession,
               sessionManager.campaignId == campaignID else {
             return
@@ -1955,6 +2060,8 @@ struct FullscreenMapView: View {
     var initialFarmSessionType: FarmTouchType? = nil
     var farmSessionStartContextProvider: ((FarmTouchType) async -> FarmExecutionContext?)? = nil
     let onClose: () -> Void
+    @EnvironmentObject private var uiState: AppUIState
+    @State private var mapOwnerToken = UUID()
     @ObservedObject private var sessionManager = SessionManager.shared
 
     var body: some View {
@@ -1976,6 +2083,8 @@ struct FullscreenMapView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .ignoresSafeArea()
         .matchedGeometryEffect(id: "map", in: namespace, isSource: isSource)
+        .onAppear { uiState.fullscreenMapOwners.insert(mapOwnerToken) }
+        .onDisappear { uiState.fullscreenMapOwners.remove(mapOwnerToken) }
         .onReceive(NotificationCenter.default.publisher(for: .sessionEnded)) { _ in
             // If a session ends while this fullscreen map is presented, dismiss it so
             // MainTabView can present the global Share Activity full-screen cover.
@@ -2000,7 +2109,7 @@ private struct CampaignAreaPreview: View {
             || (center.map(CLLocationCoordinate2DIsValid) ?? false)
     }
 
-    @State private var shimmerOffset: CGFloat = -1.2
+    @Environment(\.accessibilityReduceMotion) private var reduceSkeletonMotion
 
     private var coordinates: [CLLocationCoordinate2D] {
         let validBoundary = territoryBoundary.filter(CLLocationCoordinate2DIsValid)
@@ -2063,54 +2172,44 @@ private struct CampaignAreaPreview: View {
     }
 
     private var loadingMapSkeleton: some View {
-        GeometryReader { geometry in
-            ZStack {
-                Color(colorScheme == .dark ? .systemGray5 : .systemGray6)
+        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceSkeletonMotion)) { timeline in
+            let phase = reduceSkeletonMotion ? 0.5 : timeline.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.6) / 1.6
+            let pulse = reduceSkeletonMotion ? 1.0 : 0.72 + 0.28 * (0.5 + 0.5 * sin(phase * 2 * .pi))
+            GeometryReader { geometry in
+                ZStack {
+                    Color(colorScheme == .dark ? .systemGray5 : .systemGray6)
 
-                // Soft blocks and road channels suggest a map without showing unrelated geography.
-                ForEach(0..<12, id: \.self) { index in
-                    let column = index % 4
-                    let row = index / 4
-                    RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .fill(Color.primary.opacity(colorScheme == .dark ? 0.07 : 0.045))
-                        .frame(width: geometry.size.width * 0.15, height: geometry.size.height * 0.16)
-                        .position(
-                            x: geometry.size.width * (0.12 + CGFloat(column) * 0.25),
-                            y: geometry.size.height * (0.16 + CGFloat(row) * 0.34)
-                        )
-                }
+                    // Soft placeholder blocks with a continuous shimmer.
+                    ForEach(0..<12, id: \.self) { index in
+                        let column = index % 4
+                        let row = index / 4
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .fill(Color.primary.opacity((colorScheme == .dark ? 0.16 : 0.10) * pulse))
+                            .frame(width: geometry.size.width * 0.15, height: geometry.size.height * 0.16)
+                            .position(
+                                x: geometry.size.width * (0.12 + CGFloat(column) * 0.25),
+                                y: geometry.size.height * (0.16 + CGFloat(row) * 0.34)
+                            )
+                    }
 
-                Path { path in
-                    path.move(to: CGPoint(x: -20, y: geometry.size.height * 0.34))
-                    path.addLine(to: CGPoint(x: geometry.size.width + 20, y: geometry.size.height * 0.52))
-                    path.move(to: CGPoint(x: geometry.size.width * 0.58, y: -20))
-                    path.addLine(to: CGPoint(x: geometry.size.width * 0.42, y: geometry.size.height + 20))
-                    path.move(to: CGPoint(x: -20, y: geometry.size.height * 0.78))
-                    path.addLine(to: CGPoint(x: geometry.size.width + 20, y: geometry.size.height * 0.68))
+                    LinearGradient(
+                        colors: [.clear, Color.white.opacity(colorScheme == .dark ? 0.22 : 0.65), .clear],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                    .frame(width: geometry.size.width * 0.72)
+                    .rotationEffect(.degrees(-18))
+                    .offset(x: CGFloat(phase * 2.4 - 1.2) * geometry.size.width)
+                    .opacity(reduceSkeletonMotion ? 0 : 1)
+                    .blendMode(.screen)
                 }
-                .stroke(Color(.systemBackground).opacity(0.9), style: StrokeStyle(lineWidth: 13, lineCap: .round))
-
-                LinearGradient(
-                    colors: [.clear, Color(.systemBackground).opacity(0.52), .clear],
-                    startPoint: .leading,
-                    endPoint: .trailing
-                )
-                .frame(width: geometry.size.width * 0.72)
-                .rotationEffect(.degrees(-18))
-                .offset(x: shimmerOffset * geometry.size.width)
-                .blendMode(.screen)
-            }
-            .clipped()
-            .onAppear {
-                shimmerOffset = -1.2
-                withAnimation(.linear(duration: 1.35).repeatForever(autoreverses: false)) {
-                    shimmerOffset = 1.2
-                }
+                .clipped()
             }
         }
         .accessibilityLabel("Loading campaign map")
         .accessibilityAddTraits(.updatesFrequently)
     }
+
 
     private var previewSubtitle: String {
         let count = campaign?.addresses.count ?? 0

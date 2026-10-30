@@ -555,6 +555,29 @@ final class OutboxRepository {
         }
     }
 
+    /// A recorded replay must not omit outcomes still waiting for sync or conflict resolution.
+    func hasUnsyncedReplayEvents(sessionId: UUID) async throws -> Bool {
+        try await dbQueue.read { db in
+            try Self.hasUnsyncedReplayEvents(in: db, sessionId: sessionId)
+        }
+    }
+
+    static func hasUnsyncedReplayEvents(in db: Database, sessionId: UUID) throws -> Bool {
+        let count = try Int.fetchOne(db, sql: """
+            SELECT COUNT(*) FROM sync_outbox
+            WHERE synced_at IS NULL
+              AND operation IN ('upsert_address_status', 'create_session_event')
+              AND CASE WHEN json_valid(payload_json)
+                       THEN lower(json_extract(payload_json, '$.sessionId')) = ?
+                       ELSE 1 END
+              AND CASE WHEN operation = 'create_session_event' AND json_valid(payload_json)
+                       THEN COALESCE(json_extract(payload_json, '$.eventType'), '') NOT IN
+                            ('session_started', 'session_paused', 'session_resumed', 'session_ended')
+                       ELSE 1 END
+            """, arguments: [sessionId.uuidString.lowercased()]) ?? 0
+        return count > 0
+    }
+
     func fetchPending(limit: Int = 50) async -> [OutboxEntry] {
         let now = OfflineDateCodec.string(from: Date())
         return (try? await dbQueue.read { db in

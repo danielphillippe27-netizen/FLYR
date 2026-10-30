@@ -1,17 +1,18 @@
 import SwiftUI
 
 struct FarmsView: View {
-    @State private var farmFilter: FarmFilter = .active
+    @State private var farmFilter: FarmFilter = .all
     @State private var showFarmInfo = false
 
     var body: some View {
-        NavigationStack {
+        Group {
             VStack(spacing: 0) {
                 FarmListView(
                     externalFilter: $farmFilter,
                     onCreateFarmTapped: showFarmInfoMessage
                 )
             }
+            .toolbar(.visible, for: .navigationBar)
             .navigationTitle("Farm")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -48,7 +49,7 @@ struct FarmsView: View {
         .alert("Farm Is Created On Web", isPresented: $showFarmInfo) {
             Button("OK", role: .cancel) {}
         } message: {
-            Text("Add farms on web at wolfgrid.app. The farm limit is 5000 homes.")
+            Text("Create farms at wolfgrid.app, then view them here. Manage annual coverage, daily assignments, and touchpoint plans in the web farm dashboard.")
         }
     }
 
@@ -59,5 +60,7 @@ struct FarmsView: View {
 }
 
 #Preview {
-    FarmsView()
+    NavigationStack {
+        FarmsView()
+    }
 }

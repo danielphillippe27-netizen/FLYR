@@ -349,6 +349,7 @@ class BuildingDataService: ObservableObject {
     ) -> String {
         let identifierCacheKey = Self.normalizedIdentifierList([gersId] + buildingIdentifiers).joined(separator: ",")
         let linkedAddressCacheKey = linkedAddressIds.map { $0.uuidString.lowercased() }.sorted().joined(separator: ",")
+            + ":edits-\(CampaignMapEditStore.shared.generation)"
         if let addressId {
             return "\(campaignId.uuidString):addr:\(addressId.uuidString):\(identifierCacheKey):\(linkedAddressCacheKey)"
         }
@@ -559,6 +560,19 @@ class BuildingDataService: ObservableObject {
                     allAddressResponses = filtered
                 }
             }
+        }
+        if CampaignMapEditStore.shared.hasEdits(campaignId.uuidString),
+           let corrected = await resolveLocalAddressResolution(gersId: gersId, campaignId: campaignId,
+                addressId: addressId, preferredAddressId: preferredAddressId,
+                buildingIdentifiers: buildingIdentifiers, linkedAddressIds: linkedAddressIds) {
+            let allowed = corrected.matchedAddressIDs
+            let missing = allowed.subtracting(allAddressResponses.map(\.id))
+            if !missing.isEmpty {
+                let response = try await supabase.from("campaign_addresses").select(Self.addressSelect)
+                    .eq("campaign_id", value: campaignId.uuidString).in("id", values: missing.map(\.uuidString)).execute()
+                allAddressResponses.append(contentsOf: try decoder.decode([CampaignAddressResponse].self, from: response.data))
+            }
+            allAddressResponses = allAddressResponses.filter { allowed.contains($0.id) }
         }
         allAddressResponses = Self.deduplicatedAddressesForDisplay(
             allAddressResponses,
@@ -1092,6 +1106,46 @@ class BuildingDataService: ObservableObject {
         buildingIdentifiers: [String] = [],
         linkedAddressIds: [UUID] = []
     ) async -> LocalAddressResolution? {
+        if CampaignMapEditStore.shared.hasEdits(campaignId.uuidString) {
+            let service = MapFeaturesService.shared
+            let identifiers = Set(Self.normalizedIdentifierList([gersId] + buildingIdentifiers))
+            let building = service.buildings(for: campaignId.uuidString)?.features.first {
+                !identifiers.isDisjoint(with: $0.properties.buildingIdentifierCandidates.map { $0.lowercased() })
+            }
+            let explicit = Set([addressId, preferredAddressId].compactMap { $0 })
+            let linked = Set(building?.properties.addressUUIDs ?? [])
+            let features = (service.addresses(for: campaignId.uuidString)?.features ?? []).filter { feature in
+                guard let id = UUID(uuidString: feature.properties.id ?? feature.id ?? "") else { return false }
+                if !explicit.isEmpty { return explicit.contains(id) }
+                if linked.contains(id) { return true }
+                return CampaignMapEditPlanner.linkedBuilding(feature).map { identifiers.contains($0.lowercased()) } == true
+            }
+            let resolved = features.compactMap { resolvedAddress(from: $0, fallbackGersId: gersId) }
+            return LocalAddressResolution(buildingFeature: building, resolvedAddresses: resolved,
+                matchedAddressIDs: Set(resolved.map(\.id)))
+        }
+        // The compact index already holds the canonical links and can resolve a
+        // selected home directly. Do not decode the entire farm for every tap.
+        if let index = MapFeaturesService.shared.compactFieldIndex(for: campaignId.uuidString) {
+            let identifiers = Self.normalizedIdentifierList([gersId] + buildingIdentifiers)
+            let building = identifiers.lazy.compactMap { try? index.exactBuildingFeature(id: $0) }.first
+            let storedIds = identifiers.flatMap { index.addressIds(forBuilding: $0) }
+            let explicitIds = [addressId?.uuidString, building?.properties.addressId].compactMap { $0 }
+                + linkedAddressIds.map(\.uuidString)
+            let selectedIds = addressId != nil && !explicitIds.isEmpty ? explicitIds : (storedIds.isEmpty ? explicitIds : storedIds)
+            var seen = Set<UUID>()
+            var addresses = selectedIds.compactMap { index.addressFeature(id: $0) }
+                .compactMap { resolvedAddress(from: $0, fallbackGersId: gersId) }
+                .filter { seen.insert($0.id).inserted }
+            addresses = Self.deduplicatedResolvedAddressesForDisplay(
+                addresses, preferredAddressId: preferredAddressId, requestedAddressId: addressId
+            )
+            addresses.sort { $0.displayStreet.localizedStandardCompare($1.displayStreet) == .orderedAscending }
+            if building != nil || !addresses.isEmpty {
+                return LocalAddressResolution(buildingFeature: building, resolvedAddresses: addresses,
+                                              matchedAddressIDs: Set(addresses.map(\.id)))
+            }
+        }
         guard let bundle = await CampaignRepository.shared.getCampaignMapBundle(campaignId: campaignId.uuidString) else {
             return nil
         }

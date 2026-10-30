@@ -4,6 +4,7 @@ import Supabase
 struct FarmListView: View {
     @StateObject private var viewModel = FarmViewModel()
     @StateObject private var authManager = AuthManager.shared
+    @ObservedObject private var workspace = WorkspaceContext.shared
     @State private var farmFilter: FarmFilter = .active
     @State private var recentlyCreatedFarmID: UUID?
     @State private var searchText = ""
@@ -42,6 +43,22 @@ struct FarmListView: View {
                     .background(Color(.systemGroupedBackground))
                 }
 
+                if let error = viewModel.errorMessage {
+                    VStack(spacing: 12) {
+                        Text(error)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                        Button("Try Again") {
+                            Task {
+                                if let userId = authManager.user?.id {
+                                    await viewModel.loadFarms(userId: userId)
+                                }
+                            }
+                        }
+                    }
+                    .padding()
+                }
+
                 if viewModel.farms.isEmpty {
                     if viewModel.isLoading {
                         VStack(spacing: 16) {
@@ -53,7 +70,7 @@ struct FarmListView: View {
                         }
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .padding(.top, 60)
-                    } else {
+                    } else if viewModel.errorMessage == nil {
                         FarmListEmptyView()
                     }
                 } else {
@@ -98,7 +115,8 @@ struct FarmListView: View {
             .navigationDestination(for: Farm.self) { farm in
                 FarmDetailView(farmId: farm.id)
             }
-            .task {
+            .task(id: "\(authManager.user?.id.uuidString ?? "signed-out"):\(workspace.workspaceId?.uuidString ?? "no-workspace")") {
+                viewModel.farms = []
                 if let userId = authManager.user?.id {
                     await viewModel.loadFarms(userId: userId)
                 }

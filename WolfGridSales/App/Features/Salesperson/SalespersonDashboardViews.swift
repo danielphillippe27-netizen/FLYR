@@ -75,6 +75,10 @@ private struct SalespersonDiallerLead: Identifiable, Codable, Equatable {
     var email: String?
     var website: String?
     var websiteDomain: String?
+    var source: String?
+    var googlePlaceId: String?
+    var googleRating: Double?
+    var googleRatingCount: Int?
     var address: String?
     var city: String?
     var region: String?
@@ -101,6 +105,10 @@ private struct SalespersonDiallerLead: Identifiable, Codable, Equatable {
         case email
         case website
         case websiteDomain = "website_domain"
+        case source
+        case googlePlaceId = "google_place_id"
+        case googleRating = "google_rating"
+        case googleRatingCount = "google_rating_count"
         case address
         case city
         case region
@@ -141,7 +149,11 @@ private struct SalespersonDiallerLead: Identifiable, Codable, Equatable {
         region: String? = nil,
         countryCode: String? = nil,
         timeZoneIdentifier: String? = nil,
-        lastContactedAt: Date? = nil
+        lastContactedAt: Date? = nil,
+        source: String? = nil,
+        googlePlaceId: String? = nil,
+        googleRating: Double? = nil,
+        googleRatingCount: Int? = nil
     ) {
         self.id = id
         self.salesContactId = salesContactId
@@ -152,6 +164,10 @@ private struct SalespersonDiallerLead: Identifiable, Codable, Equatable {
         self.email = email
         self.website = website
         self.websiteDomain = websiteDomain
+        self.source = source
+        self.googlePlaceId = googlePlaceId
+        self.googleRating = googleRating
+        self.googleRatingCount = googleRatingCount
         self.address = address
         self.city = city
         self.region = region
@@ -179,6 +195,15 @@ private struct SalespersonDiallerLead: Identifiable, Codable, Equatable {
             .compactMap { $0 }
             .joined(separator: " · ")
             .nilIfEmpty
+    }
+
+    var googleRatingLine: String? {
+        let isGooglePlace = googlePlaceId?.nilIfEmpty != nil ||
+            ["google_places", "d2d_job_signals"].contains(source?.lowercased() ?? "")
+        guard isGooglePlace else { return nil }
+        let rating = googleRating.map { String(format: "%.1f stars", $0) } ?? "No rating"
+        let count = googleRatingCount.map { "\($0.formatted()) ratings" } ?? "Rating count unavailable"
+        return "\(rating) · \(count)"
     }
 
     var locationLine: String? {
@@ -533,29 +558,29 @@ private struct SalespersonDiallerCallResponse: Decodable {
     let call: SalespersonDiallerCall
 }
 
-private struct SalespersonCallLog: Identifiable, Decodable {
-    let id: UUID
-    let direction: String?
-    let status: String?
-    let disposition: String?
-    let startedAt: Date?
-    let createdAt: Date
-    let durationSeconds: Int?
-    let note: String?
-
-    var occurredAt: Date { startedAt ?? createdAt }
-    var outcome: String {
-        (disposition?.nilIfEmpty ?? status?.nilIfEmpty ?? "Unknown")
-            .replacingOccurrences(of: "_", with: " ").capitalized
+private struct SalespersonActivityLog: Identifiable, Decodable {
+    let id: String
+    let channel: String
+    let subject: String
+    let body: String?
+    let occurredAt: Date
+    var icon: String {
+        switch channel {
+        case "call": return "phone"
+        case "email": return "envelope"
+        case "sms": return "message"
+        case "meeting", "task": return "calendar"
+        default: return "text.alignleft"
+        }
     }
-
     enum CodingKeys: String, CodingKey {
-        case id, direction, status, disposition
-        case startedAt = "started_at"
-        case createdAt = "created_at"
-        case durationSeconds = "duration_seconds"
-        case note = "disposition_note"
+        case id, channel, subject, body
+        case occurredAt = "occurred_at"
     }
+}
+private struct SalespersonActivityLogPage: Decodable {
+    let timeline: [SalespersonActivityLog]
+    let hasMore: Bool
 }
 
 private struct SalespersonInboxResponse: Decodable {
@@ -777,6 +802,9 @@ private struct SalespersonLeadMetadata: Decodable, Equatable, Hashable {
     let firstName: String?
     let lastName: String?
     let photoPath: String?
+    let googlePlaceId: String?
+    let googleRating: Double?
+    let googleReviewCount: Int?
 }
 
 private struct SalespersonContactCreatePayload: Encodable {
@@ -871,6 +899,15 @@ private struct SalespersonLeadMasterRow: Identifiable, Decodable, Equatable, Has
         guard let rawWebsite = website?.nilIfEmpty else { return nil }
         let value = rawWebsite.contains("://") ? rawWebsite : "https://\(rawWebsite)"
         return URL(string: value)?.host?.replacingOccurrences(of: "www.", with: "").nilIfEmpty ?? rawWebsite
+    }
+
+    var googleRatingLine: String? {
+        let isGooglePlace = metadata?.googlePlaceId?.nilIfEmpty != nil ||
+            ["google_places", "d2d_job_signals"].contains(source?.lowercased() ?? "")
+        guard isGooglePlace else { return nil }
+        let rating = metadata?.googleRating.map { String(format: "%.1f stars", $0) } ?? "No rating"
+        let count = metadata?.googleReviewCount.map { "\($0.formatted()) ratings" } ?? "Rating count unavailable"
+        return "\(rating) · \(count)"
     }
 
     var locationLine: String? {
@@ -1012,7 +1049,9 @@ private struct SalespersonDiallerListGroup: Identifiable, Equatable {
 
     var count: Int { leads.count }
     var dialableCount: Int {
-        leads.filter { !$0.phone.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.count
+        leads.filter {
+            $0.disposition == nil && !$0.phone.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }.count
     }
 
     var subtitle: String {
@@ -1028,7 +1067,9 @@ private struct SalespersonDiallerListGroup: Identifiable, Equatable {
         }
         .map { key, rows in
             let sortedRows = rows.sorted {
-                ($0.createdAt ?? .distantPast) > ($1.createdAt ?? .distantPast)
+                let lhsDate = $0.createdAt ?? .distantPast
+                let rhsDate = $1.createdAt ?? .distantPast
+                return lhsDate == rhsDate ? $0.id.uuidString < $1.id.uuidString : lhsDate > rhsDate
             }
             return SalespersonDiallerListGroup(
                 id: key,
@@ -1049,7 +1090,9 @@ private struct SalespersonDiallerListGroup: Identifiable, Equatable {
 
     private static func makeScrapeMomentGroups(from leads: [SalespersonDiallerLead]) -> [SalespersonDiallerListGroup] {
         let sortedLeads = leads.sorted {
-            ($0.createdAt ?? .distantPast) > ($1.createdAt ?? .distantPast)
+            let lhsDate = $0.createdAt ?? .distantPast
+            let rhsDate = $1.createdAt ?? .distantPast
+            return lhsDate == rhsDate ? $0.id.uuidString < $1.id.uuidString : lhsDate > rhsDate
         }
         var batches: [[SalespersonDiallerLead]] = []
 
@@ -1074,7 +1117,9 @@ private struct SalespersonDiallerListGroup: Identifiable, Equatable {
 
         return batches.map { rows in
             let sortedRows = rows.sorted {
-                ($0.createdAt ?? .distantPast) > ($1.createdAt ?? .distantPast)
+                let lhsDate = $0.createdAt ?? .distantPast
+                let rhsDate = $1.createdAt ?? .distantPast
+                return lhsDate == rhsDate ? $0.id.uuidString < $1.id.uuidString : lhsDate > rhsDate
             }
             let createdAt = sortedRows.compactMap(\.createdAt).max() ?? .distantPast
             let id = createdAt == .distantPast
@@ -1417,6 +1462,7 @@ private struct SalespersonPerformanceResponse: Decodable, Equatable {
             let answers: MetricComparison
             let messages: MetricComparison
             let emails: MetricComparison
+            let demosSent: MetricComparison?
             let directMessages: MetricComparison
             let posts: MetricComparison
             let meetingsBooked: MetricComparison
@@ -1591,6 +1637,12 @@ private actor SalespersonMobileAPI {
     }
 
     private func data(for request: URLRequest) async throws -> Data {
+        let trace = PerfTrace.begin("sales_api", "request", fields: [
+            "path": request.url?.path ?? "unknown",
+            "method": request.httpMethod ?? "GET"
+        ])
+        var outcome = "error"
+        defer { trace.end(status: Task.isCancelled ? "cancelled" : outcome) }
         let session = try await SupabaseManager.shared.client.auth.session
         guard request.value(forHTTPHeaderField: "Authorization") == "Bearer \(session.accessToken)" else {
             throw CancellationError()
@@ -1622,10 +1674,12 @@ private actor SalespersonMobileAPI {
                         ?? HTTPURLResponse.localizedString(forStatusCode: retryHTTP.statusCode)
                     throw SalespersonAPIError.status(retryHTTP.statusCode, retryMessage)
                 }
+                outcome = "ok_after_workspace_refresh"
                 return retryData
             }
             throw SalespersonAPIError.status(http.statusCode, message)
         }
+        outcome = "ok"
         return data
     }
 
@@ -1769,7 +1823,10 @@ private actor SalespersonMobileAPI {
         let workspaceId = try await workspaceId()
         let request = try await request(
             path: "api/dialer/leads",
-            queryItems: [URLQueryItem(name: "workspaceId", value: workspaceId.uuidString)]
+            queryItems: [
+                URLQueryItem(name: "workspaceId", value: workspaceId.uuidString),
+                URLQueryItem(name: "includeCompleted", value: "1"),
+            ]
         )
         do {
             return try decoder.decode(SalespersonDiallerLeadsResponse.self, from: try await data(for: request)).leads
@@ -1779,6 +1836,28 @@ private actor SalespersonMobileAPI {
                 .compactMap(diallerLead(from:))
                 .filter { $0.disposition == nil }
         }
+    }
+
+    func fetchDiallerLead(id: UUID) async throws -> SalespersonDiallerLead? {
+        let workspaceId = try await workspaceId()
+        let request = try await request(path: "api/dialer/leads", queryItems: [
+            URLQueryItem(name: "workspaceId", value: workspaceId.uuidString),
+            URLQueryItem(name: "leadIds", value: id.uuidString)
+        ])
+        return try decoder.decode(SalespersonDiallerLeadsResponse.self, from: try await data(for: request)).leads.first
+    }
+
+    func refreshDiallerLeadGoogleRating(id: UUID) async throws -> SalespersonDiallerLead? {
+        let workspaceId = try await workspaceId()
+        let request = try await request(
+            path: "api/dialer/leads",
+            queryItems: [
+                URLQueryItem(name: "workspaceId", value: workspaceId.uuidString),
+                URLQueryItem(name: "leadIds", value: id.uuidString),
+                URLQueryItem(name: "refreshGoogleRating", value: "1"),
+            ]
+        )
+        return try decoder.decode(SalespersonDiallerLeadsResponse.self, from: try await data(for: request)).leads.first
     }
 
     func fetchDiallerSmartLists() async throws -> [SalespersonDiallerSmartListOption] {
@@ -1960,6 +2039,19 @@ private actor SalespersonMobileAPI {
             SalespersonLeadListResponse.self,
             from: try await data(for: request)
         ).leads
+    }
+
+    func refreshSalespersonLeadGoogleRating(id: UUID) async throws -> SalespersonLeadMasterRow? {
+        let workspaceId = try await workspaceId()
+        let request = try await request(
+            path: "api/salesperson/leads",
+            queryItems: [
+                URLQueryItem(name: "workspaceId", value: workspaceId.uuidString),
+                URLQueryItem(name: "leadId", value: id.uuidString),
+                URLQueryItem(name: "refreshGoogleRating", value: "1"),
+            ]
+        )
+        return try decoder.decode(SalespersonLeadListResponse.self, from: try await data(for: request)).leads.first
     }
 
     func createSalespersonContact(
@@ -2207,6 +2299,7 @@ private actor SalespersonMobileAPI {
         id: UUID,
         disposition: String,
         notes: String?,
+        expectedNotes: String? = nil,
         email: String? = nil,
         followUpName: String? = nil,
         followUpAt: Date? = nil,
@@ -2218,6 +2311,7 @@ private actor SalespersonMobileAPI {
             let id: String
             let disposition: String
             let notes: String?
+            let expectedNotes: String?
             let email: String?
             let followUpName: String?
             let followUpAt: Date?
@@ -2232,6 +2326,7 @@ private actor SalespersonMobileAPI {
             id: id.uuidString,
             disposition: disposition,
             notes: notes?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty,
+            expectedNotes: expectedNotes,
             email: email?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty,
             followUpName: followUpName?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty,
             followUpAt: followUpAt,
@@ -2243,7 +2338,7 @@ private actor SalespersonMobileAPI {
             let response = try decoder.decode(Response.self, from: try await data(for: request))
             return (response.lead, response.warning)
         } catch {
-            guard isDiallerBackendUnavailable(error) else { throw error }
+            guard !createNotification, isDiallerBackendUnavailable(error) else { throw error }
             let lead = try await contactBackedLead(
                 id: id,
                 disposition: disposition,
@@ -2455,12 +2550,13 @@ private actor SalespersonMobileAPI {
         }
     }
 
-    func saveDiallerLeadContact(id: UUID, notes: String?, email: String?) async throws -> (SalespersonDiallerLead, String?) {
+    func saveDiallerLeadContact(id: UUID, notes: String?, expectedNotes: String? = nil, email: String?) async throws -> (SalespersonDiallerLead, String?) {
         let workspaceId = try await workspaceId()
         struct Payload: Encodable {
             let workspaceId: String
             let id: String
             let notes: String?
+            let expectedNotes: String?
             let email: String?
             let saveContact: Bool
         }
@@ -2472,6 +2568,7 @@ private actor SalespersonMobileAPI {
             workspaceId: workspaceId.uuidString,
             id: id.uuidString,
             notes: notes?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty,
+            expectedNotes: expectedNotes,
             email: email?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty,
             saveContact: true
         )
@@ -2492,7 +2589,7 @@ private actor SalespersonMobileAPI {
         }
     }
 
-    func fetchInbox(source: String = "all", status: String = "open", limit: Int = 75) async throws -> SalespersonInboxResponse {
+    func fetchInbox(source: String = "all", status: String = "open", limit: Int = 75, syncEmail: Bool = false) async throws -> SalespersonInboxResponse {
         let workspaceId = try await workspaceId()
         var request = try await request(
             path: "api/inbox",
@@ -2500,7 +2597,8 @@ private actor SalespersonMobileAPI {
                 URLQueryItem(name: "workspaceId", value: workspaceId.uuidString),
                 URLQueryItem(name: "source", value: source),
                 URLQueryItem(name: "status", value: status),
-                URLQueryItem(name: "limit", value: String(limit))
+                URLQueryItem(name: "limit", value: String(limit)),
+                URLQueryItem(name: "syncEmail", value: syncEmail ? "1" : "0")
             ]
         )
         request.cachePolicy = .reloadIgnoringLocalCacheData
@@ -2522,34 +2620,15 @@ private actor SalespersonMobileAPI {
         return try decoder.decode(SalespersonInboxResponse.self, from: try await data(for: request)).threads?.first
     }
 
-    func fetchCallLogs(for lead: SalespersonDiallerLead, offset: Int = 0) async throws -> [SalespersonCallLog] {
-        let context = try await currentUserContext()
-        guard let workspaceId = context.workspaceId else { throw SalespersonAPIError.missingWorkspace }
-        var matches = ["sales_lead_id.eq.\(lead.id.uuidString)", "contact_id.eq.\(lead.id.uuidString)"]
-        if let contactId = lead.salesContactId.flatMap(UUID.init(uuidString:)) {
-            matches.append("contact_id.eq.\(contactId.uuidString)")
-        }
-        let digits = lead.phone.normalizedPhoneDigits
-        if digits.count >= 8 {
-            let number = !lead.phone.trimmingCharacters(in: .whitespaces).hasPrefix("+") && digits.count == 10
-                ? "+1\(digits)" : "+\(digits)"
-            matches.append("and(direction.eq.outbound,to_number_e164.eq.\(number))")
-            matches.append("and(direction.eq.inbound,from_number_e164.eq.\(number))")
-        }
-        let response = try await SupabaseManager.shared.client.from("dialer_calls")
-            .select("id,direction,status,disposition,started_at,created_at,duration_seconds,disposition_note")
-            .eq("workspace_id", value: workspaceId.uuidString)
-            .eq("user_id", value: context.userId.uuidString)
-            .or(matches.joined(separator: ","))
-            .order("created_at", ascending: false)
-            .order("id", ascending: false)
-            .range(from: offset, to: offset + 24)
-            .execute()
-        let currentContext = try await currentUserContext()
-        guard currentContext.userId == context.userId, currentContext.workspaceId == context.workspaceId else {
-            throw CancellationError()
-        }
-        return try decoder.decode([SalespersonCallLog].self, from: response.data)
+    func fetchActivityLogs(for lead: SalespersonDiallerLead, offset: Int = 0) async throws -> SalespersonActivityLogPage {
+        let workspaceId = try await workspaceId()
+        let request = try await request(path: "api/crm/timeline", queryItems: [
+            URLQueryItem(name: "workspaceId", value: workspaceId.uuidString),
+            URLQueryItem(name: "leadId", value: lead.id.uuidString),
+            URLQueryItem(name: "offset", value: String(offset)),
+            URLQueryItem(name: "limit", value: "25")
+        ])
+        return try decoder.decode(SalespersonActivityLogPage.self, from: try await data(for: request))
     }
 
     func uploadInboxAttachment(
@@ -2758,6 +2837,7 @@ private final class SalespersonDiallerViewModel: ObservableObject {
     @Published private(set) var isDiallerSessionPaused = false
     @Published private(set) var diallerSessionStartedAt: Date?
     @Published var isLoading = false
+    private var isRefreshing = false
     @Published var isPlacingCall = false
     @Published var isSaving = false
     @Published var isSavingContent = false
@@ -2799,6 +2879,8 @@ private final class SalespersonDiallerViewModel: ObservableObject {
     private var emailAutosaveTask: Task<Void, Never>?
     private var answeredCallIds: Set<UUID> = []
     private var discardRequestedCallIds: Set<UUID> = []
+    private var attemptedRatingRefreshLeadIds: Set<UUID> = []
+    private var progressUserId: String?
 
     deinit {
         emailAutosaveTask?.cancel()
@@ -2811,7 +2893,9 @@ private final class SalespersonDiallerViewModel: ObservableObject {
     var mainList: SalespersonDiallerListGroup? {
         guard !leads.isEmpty else { return nil }
         let sortedLeads = leads.sorted {
-            ($0.createdAt ?? .distantPast) > ($1.createdAt ?? .distantPast)
+            let lhsDate = $0.createdAt ?? .distantPast
+            let rhsDate = $1.createdAt ?? .distantPast
+            return lhsDate == rhsDate ? $0.id.uuidString < $1.id.uuidString : lhsDate > rhsDate
         }
         return SalespersonDiallerListGroup(
             id: mainListId,
@@ -2837,38 +2921,107 @@ private final class SalespersonDiallerViewModel: ObservableObject {
         activeList?.leads ?? []
     }
 
+    var selectedLeadPosition: String? {
+        guard let selectedLead else { return nil }
+        let queue = selectedList?.leads ?? leads
+        guard let index = queue.firstIndex(where: { $0.id == selectedLead.id }) else { return nil }
+        return "Business \(index + 1) of \(queue.count)"
+    }
+
+    func adjacentLead(_ direction: Int) -> SalespersonDiallerLead? {
+        let queue = selectedList?.leads ?? leads
+        guard let selectedLead, let index = queue.firstIndex(where: { $0.id == selectedLead.id }),
+              queue.indices.contains(index + direction) else { return nil }
+        return queue[index + direction]
+    }
+
+    func browseLead(_ direction: Int) {
+        guard !isCallSessionActive, !isPlacingCall, !isSaving, !isSavingContent,
+              let next = adjacentLead(direction) else { return }
+        guard notes == (selectedLead?.notes ?? ""), email == (selectedLead?.email ?? "") else {
+            errorMessage = "Save your contact changes before switching businesses."
+            return
+        }
+        select(next)
+    }
+
     var shouldChooseStatus: Bool {
         selectedLead != nil && activeCall != nil && !isCallSessionActive
     }
 
+    /// Refresh saved companion edits while preserving any local draft.
+    func refreshCompanionContact() async {
+        guard !isSaving, !isRefreshing, let previous = selectedLead else { return }
+        do {
+            guard var latest = try await SalespersonMobileAPI.shared.fetchDiallerLead(id: previous.id),
+                  selectedLead?.id == previous.id, !isSaving else { return }
+            let savedNotes = selectedLead?.notes ?? ""
+            let savedEmail = selectedLead?.email ?? ""
+            if notes == savedNotes { notes = latest.notes ?? "" }
+            else if (latest.notes ?? "") != savedNotes {
+                // Keep the baseline with the draft so a later refresh cannot erase it.
+                latest.notes = selectedLead?.notes
+                statusMessage = "Notes changed on the web. Your unsaved iPhone notes are kept."
+            }
+            if Self.normalizedEmail(email) == Self.normalizedEmail(savedEmail) { email = latest.email ?? "" }
+            else { latest.email = selectedLead?.email }
+            replaceLead(latest)
+        } catch {
+            // Call audio is independent of companion refreshes.
+        }
+    }
+
     func load() async {
+        guard !isRefreshing else { return }
+        isRefreshing = true
+        let trace = PerfTrace.begin("sales_screen", "dialler")
+        defer {
+            isRefreshing = false
+            trace.end(status: Task.isCancelled ? "cancelled" : (errorMessage == nil ? "ok" : "error"))
+        }
         emailAutosaveTask?.cancel()
-        isLoading = true
+        isLoading = leads.isEmpty
         errorMessage = nil
         defer { isLoading = false }
         do {
+            progressUserId = (try? await SupabaseManager.shared.client.auth.session.user.id.uuidString)
             leads = try await SalespersonMobileAPI.shared.fetchDiallerLeads()
+            if selectedListId == nil, let savedListId = savedActiveListId(),
+               savedListId == mainListId || leadLists.contains(where: { $0.id == savedListId }) {
+                selectedListId = savedListId
+            }
             if let selectedListId,
-               !leadLists.contains(where: { $0.id == selectedListId }) {
+               selectedListId != mainListId && !leadLists.contains(where: { $0.id == selectedListId }) {
                 self.selectedListId = nil
             }
             selectedLead = selectedLead.flatMap { selected in
                 leads.first(where: { $0.id == selected.id })
+            }
+            if let selectedLead, !isDialableLead(selectedLead) {
+                self.selectedLead = nil
             }
             if let selectedLead {
                 selectedListId = selectedListId ?? listId(containing: selectedLead) ?? leadLists.first?.id
                 email = selectedLead.email ?? ""
                 notes = selectedLead.notes ?? ""
                 textDropBody = defaultTextDropBody(for: selectedLead)
-            } else if let firstLead = leads.first(where: isDialableLead) ?? leads.first {
-                select(firstLead)
             } else {
-                notes = ""
-                email = ""
-                textDropBody = ""
+                let queue = selectedList?.leads ?? leads
+                let savedLeadId = savedLeadId(in: selectedListId ?? mainListId)
+                let savedLead = queue.first { $0.id == savedLeadId }
+                if let next = savedLead.flatMap({ isDialableLead($0) ? $0 : nextDialableLead(after: $0.id) })
+                    ?? (savedLead == nil ? queue.first(where: isDialableLead) : nil) {
+                    select(next)
+                } else {
+                    notes = ""
+                    email = ""
+                    textDropBody = ""
+                }
             }
         } catch {
-            errorMessage = error.localizedDescription
+            if !Task.isCancelled {
+                errorMessage = error.localizedDescription
+            }
         }
     }
 
@@ -2955,8 +3108,11 @@ private final class SalespersonDiallerViewModel: ObservableObject {
     func openList(_ list: SalespersonDiallerListGroup) {
         emailAutosaveTask?.cancel()
         selectedListId = list.id
-        if let firstLead = list.leads.first(where: isDialableLead) ?? list.leads.first {
-            select(firstLead)
+        saveActiveListId(list.id)
+        let savedLead = list.leads.first { $0.id == savedLeadId(in: list.id) }
+        if let next = savedLead.flatMap({ isDialableLead($0) ? $0 : nextDialableLead(after: $0.id) })
+            ?? (savedLead == nil ? list.leads.first(where: isDialableLead) : nil) {
+            select(next)
         } else {
             discardConversationIfNeeded(activeCall)
             selectedLead = nil
@@ -3041,12 +3197,28 @@ private final class SalespersonDiallerViewModel: ObservableObject {
         discardConversationIfNeeded(activeCall)
         selectedListId = selectedListId ?? listId(containing: lead) ?? leadLists.first?.id ?? mainListId
         selectedLead = lead
+        saveActiveListId(selectedListId)
+        saveLeadId(lead.id, in: selectedListId ?? mainListId)
         notes = lead.notes ?? ""
         email = lead.email ?? ""
         textDropBody = defaultTextDropBody(for: lead)
         activeCall = nil
         manualCallNumber = nil
         isCallSessionActive = false
+    }
+
+    func refreshSelectedLeadGoogleRating() async {
+        guard let lead = selectedLead,
+              lead.googleRatingLine != nil,
+              (lead.googleRating == nil || lead.googleRatingCount == nil || lead.website?.nilIfEmpty == nil),
+              attemptedRatingRefreshLeadIds.insert(lead.id).inserted else { return }
+        do {
+            guard let updated = try await SalespersonMobileAPI.shared.refreshDiallerLeadGoogleRating(id: lead.id),
+                  selectedLead?.id == lead.id else { return }
+            replaceLead(updated)
+        } catch {
+            // Keep the saved lead visible when Google Places cannot supply a rating.
+        }
     }
 
     func loadSmartLists() async {
@@ -3126,7 +3298,7 @@ private final class SalespersonDiallerViewModel: ObservableObject {
     }
 
     func callSelected() async {
-        guard let selectedLead else { return }
+        guard let selectedLead, isDialableLead(selectedLead) else { return }
         await placeCall(lead: selectedLead)
     }
 
@@ -3148,6 +3320,9 @@ private final class SalespersonDiallerViewModel: ObservableObject {
             let call = try await SalespersonMobileAPI.shared.startManualDiallerCall(phone: trimmedNumber)
             activeCall = call
             manualCallNumber = call.toNumber ?? trimmedNumber
+            notes = ""
+            email = ""
+            textDropBody = ""
             try await SalespersonVoiceCallService.shared.startOutboundCall(
                 label: manualCallNumber ?? trimmedNumber,
                 callRequestId: call.callRequestId,
@@ -3282,13 +3457,13 @@ private final class SalespersonDiallerViewModel: ObservableObject {
             await placeCall(lead: next)
             return
         }
-        if let first = nextDialableLead(after: nil) {
+        if selectedLead == nil, let first = nextDialableLead(after: nil) {
             select(first)
             await placeCall(lead: first)
             return
         }
         closeLead()
-        statusMessage = "No valid pending leads left."
+        statusMessage = "End of list reached."
     }
 
     func advanceToNextLead() {
@@ -3297,12 +3472,12 @@ private final class SalespersonDiallerViewModel: ObservableObject {
             select(next)
             return
         }
-        if let first = nextDialableLead(after: nil) {
+        if selectedLead == nil, let first = nextDialableLead(after: nil) {
             select(first)
             return
         }
         closeLead()
-        statusMessage = "No valid pending leads left."
+        statusMessage = "End of list reached."
     }
 
     func appendQuickNote(_ note: String) {
@@ -3344,11 +3519,12 @@ private final class SalespersonDiallerViewModel: ObservableObject {
 
     func removeLead(_ lead: SalespersonDiallerLead) async {
         do {
+            let next = selectedLead?.id == lead.id ? nextDialableLead(after: lead.id) : nil
             try await SalespersonMobileAPI.shared.removeDiallerLead(id: lead.id)
             leads.removeAll { $0.id == lead.id }
             if selectedLead?.id == lead.id {
                 selectedLead = nil
-                selectNextLead()
+                if let next { select(next) }
             }
             statusMessage = "Lead removed from queue."
         } catch {
@@ -3377,15 +3553,24 @@ private final class SalespersonDiallerViewModel: ObservableObject {
     }
 
     func hangUp() {
-        let isManualCall = selectedLead == nil
+        let isManualCall = manualCallNumber != nil
         SalespersonVoiceCallService.shared.endActiveCall()
         isCallSessionActive = false
         if isManualCall {
             discardConversationIfNeeded(activeCall)
             activeCall = nil
-            manualCallNumber = nil
         }
         statusMessage = isManualCall ? "Manual call ended." : "Call ended. Choose a status."
+    }
+
+    func closeManualCall() {
+        guard !isCallSessionActive, manualCallNumber != nil else { return }
+        manualCallNumber = nil
+        if let selectedLead {
+            notes = selectedLead.notes ?? ""
+            email = selectedLead.email ?? ""
+            textDropBody = defaultTextDropBody(for: selectedLead)
+        }
     }
 
     func pauseSession() {
@@ -3431,12 +3616,11 @@ private final class SalespersonDiallerViewModel: ObservableObject {
 
     func callDidEnd() {
         guard activeCall != nil else { return }
-        let isManualCall = selectedLead == nil
+        let isManualCall = manualCallNumber != nil
         isCallSessionActive = false
         if isManualCall {
             discardConversationIfNeeded(activeCall)
             activeCall = nil
-            manualCallNumber = nil
         }
         statusMessage = isManualCall ? "Manual call ended." : "Call ended. Choose a status."
     }
@@ -3468,8 +3652,11 @@ private final class SalespersonDiallerViewModel: ObservableObject {
                 note: notes
             )
             SalespersonVoiceCallService.shared.endActiveCall()
-            completeCurrentLead(message: "Voicemail dropped.")
-            await callNext()
+            let next = completeCurrentLead(message: "Voicemail dropped.", disposition: "left_voicemail")
+            if let next {
+                select(next)
+                await placeCall(lead: next)
+            }
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -3505,8 +3692,11 @@ private final class SalespersonDiallerViewModel: ObservableObject {
                 disposition: "callback_requested",
                 note: nextNotes
             )
-            completeCurrentLead(message: "Text drop sent.")
-            await callNext()
+            let next = completeCurrentLead(message: "Text drop sent.", disposition: "callback_requested")
+            if let next {
+                select(next)
+                await placeCall(lead: next)
+            }
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -3533,7 +3723,8 @@ private final class SalespersonDiallerViewModel: ObservableObject {
     }
 
     func sendTextMessage(_ message: String) async -> Bool {
-        guard let selectedLead else { return false }
+        guard !isSendingCallbackText else { return false }
+        guard let phone = manualCallNumber ?? selectedLead?.phone else { return false }
         let body = message.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !body.isEmpty else {
             errorMessage = "Write a text before sending it."
@@ -3547,10 +3738,10 @@ private final class SalespersonDiallerViewModel: ObservableObject {
 
         do {
             let warning = try await SalespersonMobileAPI.shared.sendInboxText(
-                leadId: selectedLead.id.uuidString,
+                leadId: manualCallNumber == nil ? selectedLead?.id.uuidString : nil,
                 contactId: nil,
                 body: body,
-                phone: selectedLead.phone
+                phone: phone
             )
             textDropBody = body
             statusMessage = warning ?? "Text sent."
@@ -3562,7 +3753,7 @@ private final class SalespersonDiallerViewModel: ObservableObject {
     }
 
     func sendEmailMessage(to recipient: String, subject: String, body: String) async -> Bool {
-        guard let selectedLead else { return false }
+        let selectedLead = manualCallNumber == nil ? self.selectedLead : nil
         let trimmedRecipient = recipient.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedSubject = subject.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedBody = body.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -3582,12 +3773,12 @@ private final class SalespersonDiallerViewModel: ObservableObject {
 
         do {
             emailAutosaveTask?.cancel()
-            let savedEmail = selectedLead.email ?? ""
+            let savedEmail = selectedLead?.email ?? ""
             var saveWarning: String?
-            if Self.normalizedEmail(savedEmail) != Self.normalizedEmail(trimmedRecipient) {
+            if let selectedLead, Self.normalizedEmail(savedEmail) != Self.normalizedEmail(trimmedRecipient) {
                 let result = try await SalespersonMobileAPI.shared.saveDiallerLeadContact(
                     id: selectedLead.id,
-                    notes: notes,
+                    notes: nil,
                     email: trimmedRecipient
                 )
                 replaceLead(result.0)
@@ -3598,13 +3789,13 @@ private final class SalespersonDiallerViewModel: ObservableObject {
             }
 
             let warning = try await SalespersonMobileAPI.shared.sendInboxEmail(
-                leadId: selectedLead.id.uuidString,
+                leadId: selectedLead?.id.uuidString,
                 contactId: nil,
                 to: trimmedRecipient,
                 subject: trimmedSubject.isEmpty ? "Following up" : trimmedSubject,
                 body: trimmedBody,
                 useDemoTemplate: SalespersonDemoEmailTemplate.matches(
-                    subject: trimmedSubject, body: trimmedBody, recipientName: selectedLead.name
+                    subject: trimmedSubject, body: trimmedBody, recipientName: selectedLead?.name
                 )
             )
             statusMessage = warning ?? saveWarning ?? "Email sent and added to the dialler."
@@ -3627,6 +3818,7 @@ private final class SalespersonDiallerViewModel: ObservableObject {
             let (updatedLead, warning) = try await SalespersonMobileAPI.shared.saveDiallerLeadContact(
                 id: selectedLead.id,
                 notes: notes,
+                expectedNotes: selectedLead.notes ?? "",
                 email: email
             )
             replaceLead(updatedLead)
@@ -3679,18 +3871,19 @@ private final class SalespersonDiallerViewModel: ObservableObject {
                     id: selectedLead.id,
                     disposition: legacyLeadDisposition(for: disposition),
                     notes: notes,
+                expectedNotes: selectedLead.notes ?? "",
                     email: email
                 )
             }
-            completeCurrentLead(message: "Saved.")
-            selectNextLead()
+            let next = completeCurrentLead(message: "Saved.", disposition: disposition)
+            if let next { select(next) }
         } catch {
             errorMessage = error.localizedDescription
         }
     }
 
-    func scheduleFollowUp(name: String, at date: Date, followUpNotes: String) async {
-        guard let selectedLead else { return }
+    func scheduleFollowUp(name: String, at date: Date, followUpNotes: String) async -> Bool {
+        guard !isSaving, let selectedLead else { return false }
         isSaving = true
         errorMessage = nil
         defer { isSaving = false }
@@ -3716,15 +3909,18 @@ private final class SalespersonDiallerViewModel: ObservableObject {
                 id: selectedLead.id,
                 disposition: "callback",
                 notes: nextNotes,
+                expectedNotes: selectedLead.notes ?? "",
                 email: email,
                 followUpName: followUpName,
                 followUpAt: date,
                 createNotification: true
             )
-            completeCurrentLead(message: warning ?? "Follow-up added to Task.")
-            selectNextLead()
+            let next = completeCurrentLead(message: warning ?? "Follow-up added to Task.", disposition: "callback_requested")
+            if let next { select(next) }
+            return true
         } catch {
             errorMessage = error.localizedDescription
+            return false
         }
     }
 
@@ -3774,10 +3970,14 @@ private final class SalespersonDiallerViewModel: ObservableObject {
         }
     }
 
-    private func completeCurrentLead(message: String) {
-        guard let selectedLead else { return }
+    @discardableResult
+    private func completeCurrentLead(message: String, disposition: String) -> SalespersonDiallerLead? {
+        guard let selectedLead else { return nil }
+        let next = nextDialableLead(after: selectedLead.id)
         emailAutosaveTask?.cancel()
-        leads.removeAll { $0.id == selectedLead.id }
+        if let index = leads.firstIndex(where: { $0.id == selectedLead.id }) {
+            leads[index].disposition = disposition
+        }
         discardConversationIfNeeded(activeCall)
         activeCall = nil
         manualCallNumber = nil
@@ -3787,6 +3987,7 @@ private final class SalespersonDiallerViewModel: ObservableObject {
         email = ""
         textDropBody = ""
         statusMessage = message
+        return next
     }
 
     private func discardConversationIfNeeded(_ call: SalespersonDiallerCall?) {
@@ -3810,7 +4011,7 @@ private final class SalespersonDiallerViewModel: ObservableObject {
         do {
             let (updatedLead, _) = try await SalespersonMobileAPI.shared.saveDiallerLeadContact(
                 id: leadId,
-                notes: notes,
+                notes: nil,
                 email: requestedEmail
             )
             replaceLead(updatedLead)
@@ -3907,9 +4108,32 @@ private final class SalespersonDiallerViewModel: ObservableObject {
             .lowercased() ?? ""
     }
 
-    private func selectNextLead() {
-        guard let next = nextDialableLead(after: nil) else { return }
-        select(next)
+    private var progressStorageKey: String? {
+        progressUserId.map { "salesperson.dialler.progress.\($0)" }
+    }
+
+    private func savedActiveListId() -> String? {
+        guard let progressStorageKey else { return nil }
+        return UserDefaults.standard.string(forKey: "\(progressStorageKey).activeList")
+    }
+
+    private func saveActiveListId(_ id: String?) {
+        guard let progressStorageKey, let id else { return }
+        UserDefaults.standard.set(id, forKey: "\(progressStorageKey).activeList")
+    }
+
+    private func savedLeadId(in listId: String) -> UUID? {
+        guard let progressStorageKey,
+              let positions = UserDefaults.standard.dictionary(forKey: progressStorageKey) as? [String: String],
+              let value = positions[listId] else { return nil }
+        return UUID(uuidString: value)
+    }
+
+    private func saveLeadId(_ id: UUID, in listId: String) {
+        guard let progressStorageKey else { return }
+        var positions = UserDefaults.standard.dictionary(forKey: progressStorageKey) as? [String: String] ?? [:]
+        positions[listId] = id.uuidString
+        UserDefaults.standard.set(positions, forKey: progressStorageKey)
     }
 
     private func nextDialableLead(after id: UUID?) -> SalespersonDiallerLead? {
@@ -3917,8 +4141,7 @@ private final class SalespersonDiallerViewModel: ObservableObject {
         let currentIndex = id.flatMap { selectedId in
             queue.firstIndex(where: { $0.id == selectedId })
         } ?? -1
-        let later = queue.dropFirst(max(currentIndex + 1, 0)).first(where: isDialablePending)
-        return later ?? queue.first(where: isDialablePending)
+        return queue.dropFirst(max(currentIndex + 1, 0)).first(where: isDialablePending)
     }
 
     private func isDialablePending(_ lead: SalespersonDiallerLead) -> Bool {
@@ -3948,44 +4171,92 @@ private final class SalespersonDiallerViewModel: ObservableObject {
 
 @MainActor
 private final class SalespersonInboxViewModel: ObservableObject {
+    private static var lastEmailRefreshAtByScope: [String: Date] = [:]
     @Published var threads: [SalespersonInboxThread] = []
     @Published var counts: [String: Int] = [:]
     @Published var selectedSource: String
     @Published var isLoading = false
+    private var isRefreshing = false
     @Published var isSending = false
     @Published var errorMessage: String?
     @Published var statusMessage: String?
+    private var latestResponse: SalespersonInboxResponse?
+    private var knownLeads: [SalespersonLeadMasterRow] = []
+    private var isFetchingLeads = false
+    private var isRefreshingEmail = false
 
-    let sources = ["all", "sms", "email", "call"]
+    let sources = ["all", "sms", "email"]
 
     init(selectedSource: String = "all") {
         self.selectedSource = selectedSource
     }
 
     func load() async {
+        guard !isRefreshing else { return }
+        isRefreshing = true
+        let trace = PerfTrace.begin("sales_screen", "inbox")
+        defer {
+            isRefreshing = false
+            trace.end(status: Task.isCancelled ? "cancelled" : (errorMessage == nil ? "ok" : "error"))
+        }
         let requestUserId = AuthManager.shared.user?.id
         let requestWorkspaceId = WorkspaceContext.shared.workspaceId
-        threads = []
-        counts = [:]
         guard requestUserId != nil else { return }
-        isLoading = true
+        isLoading = latestResponse == nil
         errorMessage = nil
         defer { isLoading = false }
         do {
-            async let inboxRequest = SalespersonMobileAPI.shared.fetchInbox(source: selectedSource)
-            async let leadsRequest = SalespersonMobileAPI.shared.fetchSalespersonLeads()
-            let response = try await inboxRequest
-            let knownLeads = (try? await leadsRequest) ?? []
+            let source = selectedSource
+            let response = try await SalespersonMobileAPI.shared.fetchInbox(source: source)
             guard AuthManager.shared.user?.id == requestUserId,
-                  WorkspaceContext.shared.workspaceId == requestWorkspaceId else { return }
-            let rawThreads = response.threads ?? Self.threads(from: response.items ?? [])
-            threads = Self.consolidatedThreads(
-                Self.threadsByResolvingContacts(rawThreads, from: knownLeads)
-            )
-            counts = response.counts ?? [:]
+                  WorkspaceContext.shared.workspaceId == requestWorkspaceId,
+                  selectedSource == source else { return }
+            latestResponse = response
+            apply(response)
+            Task { await fetchLeadsIfNeeded(userId: requestUserId, workspaceId: requestWorkspaceId) }
+            Task { await refreshEmailIfNeeded(source: source, userId: requestUserId, workspaceId: requestWorkspaceId) }
         } catch {
-            errorMessage = error.localizedDescription
+            if !Task.isCancelled {
+                errorMessage = error.localizedDescription
+            }
         }
+    }
+
+    private func apply(_ response: SalespersonInboxResponse) {
+        let rawThreads = response.threads ?? Self.threads(from: (response.items ?? []).filter {
+            $0.source == "sms" || $0.source == "email"
+        })
+        threads = Self.consolidatedThreads(
+            Self.threadsByResolvingContacts(Self.messageThreads(rawThreads), from: knownLeads)
+        )
+        counts = response.counts ?? [:]
+    }
+
+    private func fetchLeadsIfNeeded(userId: UUID?, workspaceId: UUID?) async {
+        guard !isFetchingLeads, knownLeads.isEmpty else { return }
+        isFetchingLeads = true
+        defer { isFetchingLeads = false }
+        guard let leads = try? await SalespersonMobileAPI.shared.fetchSalespersonLeads(),
+              AuthManager.shared.user?.id == userId,
+              WorkspaceContext.shared.workspaceId == workspaceId else { return }
+        knownLeads = leads
+        if let latestResponse { apply(latestResponse) }
+    }
+
+    private func refreshEmailIfNeeded(source: String, userId: UUID?, workspaceId: UUID?) async {
+        guard source == "all" || source == "email", !isRefreshingEmail else { return }
+        let scope = "\(userId?.uuidString ?? "signed-out"):\(workspaceId?.uuidString ?? "no-workspace")"
+        if let lastRefreshAt = Self.lastEmailRefreshAtByScope[scope],
+           Date().timeIntervalSince(lastRefreshAt) < 30 { return }
+        isRefreshingEmail = true
+        Self.lastEmailRefreshAtByScope[scope] = Date()
+        defer { isRefreshingEmail = false }
+        guard let response = try? await SalespersonMobileAPI.shared.fetchInbox(source: source, syncEmail: true),
+              AuthManager.shared.user?.id == userId,
+              WorkspaceContext.shared.workspaceId == workspaceId,
+              selectedSource == source else { return }
+        latestResponse = response
+        apply(response)
     }
 
     func selectSource(_ source: String) {
@@ -4071,7 +4342,7 @@ private final class SalespersonInboxViewModel: ObservableObject {
                 }
             }
             await load()
-            let serverThread = refreshed
+            let serverThread = refreshed.flatMap { Self.messageThreads([$0]).first }
                 ?? threads.first(where: { $0.id == thread.id })
                 ?? threads.first(where: {
                     guard let contactId = thread.contactId?.nilIfEmpty else { return false }
@@ -4185,7 +4456,7 @@ private final class SalespersonInboxViewModel: ObservableObject {
                 fromNumber: call.fromNumber
             )
             statusMessage = "Calling \(call.toNumber ?? trimmedNumber)."
-            await load()
+            Task { await load() }
             return true
         } catch {
             errorMessage = error.localizedDescription
@@ -4268,6 +4539,29 @@ private final class SalespersonInboxViewModel: ObservableObject {
         let digits = phone.normalizedPhoneDigits
         guard !digits.isEmpty else { return nil }
         return digits.count > 10 ? String(digits.suffix(10)) : digits
+    }
+
+    private static func messageThreads(_ threads: [SalespersonInboxThread]) -> [SalespersonInboxThread] {
+        threads.compactMap { thread in
+            let events = thread.events.filter { $0.source == "sms" || $0.source == "email" }
+                .sorted { $0.occurredAt < $1.occurredAt }
+            guard let latest = events.last else { return nil }
+            return SalespersonInboxThread(
+                id: thread.id,
+                contactId: thread.contactId,
+                contact: thread.contact,
+                title: thread.title,
+                subtitle: thread.subtitle,
+                primaryPhone: thread.primaryPhone,
+                primaryEmail: thread.primaryEmail,
+                latestAt: latest.occurredAt,
+                latestSource: latest.source,
+                latestPreview: latest.body ?? latest.preview,
+                unreadCount: events.filter { $0.direction == "inbound" && $0.readAt == nil }.count,
+                needsResponse: latest.direction == "inbound",
+                events: events
+            )
+        }
     }
 
     private static func consolidatedThreads(_ threads: [SalespersonInboxThread]) -> [SalespersonInboxThread] {
@@ -4490,6 +4784,7 @@ private enum SalespersonTaskDueFilter: String, CaseIterable, Identifiable {
 private final class SalespersonTasksViewModel: ObservableObject {
     @Published var items: [SalespersonCalendarItem] = []
     @Published var isLoading = false
+    private var isRefreshing = false
     @Published var errorMessage: String?
     @Published var selectedDueFilter: SalespersonTaskDueFilter = .today
 
@@ -4511,15 +4806,26 @@ private final class SalespersonTasksViewModel: ObservableObject {
     }
 
     func load() async {
-        isLoading = true
+        guard !isRefreshing else { return }
+        isRefreshing = true
+        let trace = PerfTrace.begin("sales_screen", "follow_up")
+        defer {
+            isRefreshing = false
+            trace.end(status: Task.isCancelled ? "cancelled" : (errorMessage == nil ? "ok" : "error"))
+        }
+        isLoading = items.isEmpty
         errorMessage = nil
         defer { isLoading = false }
-        items = await SalespersonCalendarService.shared.fetchAllCalendarItems()
+        do {
+            items = try await SalespersonCalendarService.shared.fetchAllCalendarItems()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
     }
 
     func complete(_ item: SalespersonCalendarItem) async {
         do {
-            try await SalespersonCalendarService.shared.deleteEvent(id: item.sourceId)
+            try await SalespersonCalendarService.shared.completeItem(item)
             items.removeAll { $0.id == item.id }
         } catch {
             errorMessage = error.localizedDescription
@@ -4541,9 +4847,11 @@ private final class SalespersonTasksViewModel: ObservableObject {
 private final class SalespersonLeadsViewModel: ObservableObject {
     @Published var leads: [SalespersonLeadMasterRow] = []
     @Published var isLoading = false
+    private var isRefreshing = false
     @Published var errorMessage: String?
     @Published var searchText = ""
     @Published var selectedListId: String?
+    private var attemptedRatingRefreshLeadIds: Set<UUID> = []
 
     var leadLists: [SalespersonLeadListGroup] {
         SalespersonLeadListGroup.makeGroups(from: leads)
@@ -4603,6 +4911,19 @@ private final class SalespersonLeadsViewModel: ObservableObject {
         leads[index] = lead
     }
 
+    func refreshGoogleRating(for lead: SalespersonLeadMasterRow) async {
+        guard lead.googleRatingLine != nil,
+              (lead.metadata?.googleRating == nil || lead.metadata?.googleReviewCount == nil || lead.website?.nilIfEmpty == nil),
+              attemptedRatingRefreshLeadIds.insert(lead.id).inserted else { return }
+        do {
+            if let updated = try await SalespersonMobileAPI.shared.refreshSalespersonLeadGoogleRating(id: lead.id) {
+                replaceLead(updated)
+            }
+        } catch {
+            // Keep the saved lead visible if Google Places is unavailable.
+        }
+    }
+
     func addLead(_ lead: SalespersonLeadMasterRow) {
         leads.removeAll { $0.id == lead.id }
         leads.insert(lead, at: 0)
@@ -4627,7 +4948,14 @@ private final class SalespersonLeadsViewModel: ObservableObject {
     }
 
     func load() async {
-        isLoading = true
+        guard !isRefreshing else { return }
+        isRefreshing = true
+        let trace = PerfTrace.begin("sales_screen", "contacts")
+        defer {
+            isRefreshing = false
+            trace.end(status: Task.isCancelled ? "cancelled" : (errorMessage == nil ? "ok" : "error"))
+        }
+        isLoading = leads.isEmpty
         errorMessage = nil
         defer { isLoading = false }
         do {
@@ -4636,7 +4964,9 @@ private final class SalespersonLeadsViewModel: ObservableObject {
                 self.selectedListId = nil
             }
         } catch {
-            errorMessage = error.localizedDescription
+            if !Task.isCancelled {
+                errorMessage = error.localizedDescription
+            }
         }
     }
 
@@ -4701,6 +5031,7 @@ private final class SalespersonHomeViewModel: ObservableObject {
     @Published var performance: SalespersonPerformanceResponse?
     @Published var selectedPeriod: Period = .daily
     @Published var isLoading = false
+    private var isRefreshing = false
     @Published var errorMessage: String?
     @Published var linkCopyMessage: String?
 
@@ -4734,14 +5065,29 @@ private final class SalespersonHomeViewModel: ObservableObject {
     }
 
     func load() async {
-        isLoading = true
+        guard !isRefreshing else { return }
+        isRefreshing = true
+        let requestedPeriod = selectedPeriod
+        let trace = PerfTrace.begin("sales_screen", "home")
+        defer {
+            isRefreshing = false
+            if requestedPeriod != selectedPeriod {
+                Task { await load() }
+            }
+            trace.end(status: Task.isCancelled ? "cancelled" : (errorMessage == nil ? "ok" : "error"))
+        }
+        isLoading = performance == nil
         errorMessage = nil
         defer { isLoading = false }
 
         do {
-            performance = try await SalespersonMobileAPI.shared.fetchSalespersonPerformance(period: selectedPeriod.rawValue)
+            let response = try await SalespersonMobileAPI.shared.fetchSalespersonPerformance(period: requestedPeriod.rawValue)
+            guard requestedPeriod == selectedPeriod else { return }
+            performance = response
         } catch {
-            errorMessage = error.localizedDescription
+            if !Task.isCancelled {
+                errorMessage = error.localizedDescription
+            }
         }
     }
 
@@ -5281,22 +5627,6 @@ struct SalespersonLeadsView: View {
         NavigationStack {
             VStack(spacing: 0) {
                 scraperDialerBanner
-                NavigationLink {
-                    HiringLeadsView()
-                } label: {
-                    HStack(spacing: 12) {
-                        Image(systemName: "briefcase.fill").foregroundStyle(.red)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Hiring Leads").font(.subheadline.weight(.semibold))
-                            Text("New employer postings · Canada + USA")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
-                    }
-                    .padding(.horizontal, 16).padding(.vertical, 12)
-                }
-                .buttonStyle(.plain)
                 contactsListsSwitcher
                 if isSearchVisible {
                     salespersonListSearchBar
@@ -5528,6 +5858,7 @@ struct SalespersonLeadsView: View {
                             SalespersonLeadRow(lead: lead, kind: .contact)
                         }
                         .buttonStyle(.plain)
+                        .task(id: lead.id) { await viewModel.refreshGoogleRating(for: lead) }
                         Divider()
                             .padding(.leading, 60)
                     }
@@ -5559,6 +5890,7 @@ struct SalespersonLeadsView: View {
                                     SalespersonLeadRow(lead: lead, kind: .listLead)
                                 }
                                 .buttonStyle(.plain)
+                                .task(id: lead.id) { await viewModel.refreshGoogleRating(for: lead) }
                                 Divider()
                                     .padding(.leading, 60)
                             }
@@ -6016,6 +6348,16 @@ private struct SalespersonLeadRow: View {
                         .foregroundStyle(Color.muted)
                         .lineLimit(1)
                 }
+                Text("Website: \(lead.websiteHost ?? "No website listed")")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Color.muted)
+                    .lineLimit(1)
+                if let rating = lead.googleRatingLine {
+                    Label(rating, systemImage: "star.fill")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color.muted)
+                        .lineLimit(1)
+                }
             }
 
             Spacer(minLength: 8)
@@ -6036,7 +6378,7 @@ private struct SalespersonLeadRow: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
-        .frame(height: 72)
+        .frame(minHeight: 72)
         .contentShape(Rectangle())
     }
 }
@@ -6084,13 +6426,14 @@ private struct SalespersonDiallerDateGroup: Identifiable {
 private struct SalespersonDiallerQueueRow: View {
     let lead: SalespersonDiallerLead
     let isSelected: Bool
+    let position: Int
 
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
-            Image(systemName: isSelected ? "phone.circle.fill" : "person.text.rectangle")
-                .font(.system(size: 20, weight: .semibold))
+            Text("\(position)")
+                .font(.caption.weight(.bold))
                 .foregroundColor(isSelected ? .red : .accent)
-                .frame(width: 32, height: 32)
+                .frame(minWidth: 32, minHeight: 32)
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(lead.displayBusinessName)
@@ -6134,6 +6477,11 @@ private struct SalespersonDiallerQueueRow: View {
                     Text("Active")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.red)
+                } else if let disposition = lead.disposition?.nilIfEmpty {
+                    Text(disposition.replacingOccurrences(of: "_", with: " ").capitalized)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 } else {
                     Image(systemName: "chevron.right")
                         .font(.system(size: 14, weight: .semibold))
@@ -6208,13 +6556,13 @@ private enum SalespersonContactComposerChannel: String, Identifiable {
 }
 
 private enum SalespersonDemoLink {
-    static let url = URL(string: "https://wolfgrid.app/demo100")!
+    static let url = URL(string: "https://wolfgrid.app/demo1")!
 }
 
 // Copy shared with backend-api-routes/lib/email/demo.ts. Sending this template
 // uses the existing web endpoint so its HTML and configured sender stay shared.
 private enum SalespersonDemoEmailTemplate {
-    static let title = "WolfGrid Demo100"
+    static let title = "WolfGrid Demo"
     static let subject = "Your WolfGrid demo"
 
     static func body(recipientName: String?) -> String {
@@ -6236,6 +6584,24 @@ private enum SalespersonDemoEmailTemplate {
     }
 }
 
+private enum SalespersonStormsDemoTemplate {
+    static let title = "WolfGrid Storms Demo"
+    static let subject = "Your WolfGrid Storms demo"
+
+    static func body(recipientName: String?) -> String {
+        let name = recipientName?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+        return """
+        Hey \(name ?? "there"), thought this could be useful for your team.
+
+        WolfGrid Storms helps you see hail and wind activity, choose an area to work, and turn it into a campaign—with addresses, conversations, and follow-ups in one place.
+
+        Here’s the demo: https://wolfgrid.app/features/storms
+
+        Any questions? Happy to walk you through it!
+        """
+    }
+}
+
 private enum SalespersonDemoTextTemplate {
     static let title = SalespersonDemoEmailTemplate.title
 
@@ -6253,6 +6619,8 @@ private enum SalespersonDemoTextTemplate {
 private struct SalespersonTextTemplateMenu: View {
     @Binding var message: String
     let recipientName: String?
+    var showsPlusButton = false
+    var onAddAttachment: (() -> Void)? = nil
 
     var body: some View {
         Menu {
@@ -6260,6 +6628,11 @@ private struct SalespersonTextTemplateMenu: View {
                 message = SalespersonDemoTextTemplate.body(recipientName: recipientName)
             } label: {
                 Label(SalespersonDemoTextTemplate.title, systemImage: "play.rectangle")
+            }
+            Button {
+                message = SalespersonStormsDemoTemplate.body(recipientName: recipientName)
+            } label: {
+                Label(SalespersonStormsDemoTemplate.title, systemImage: "cloud.bolt.rain")
             }
             Divider()
             Button {
@@ -6272,8 +6645,23 @@ private struct SalespersonTextTemplateMenu: View {
             } label: {
                 Label(SalespersonOutreachTemplate.realEstateTeam.title, systemImage: "person.3")
             }
+            if let onAddAttachment {
+                Divider()
+                Button(action: onAddAttachment) {
+                    Label("Photo or video", systemImage: "photo.on.rectangle")
+                }
+            }
         } label: {
-            Label("Templates", systemImage: "doc.on.doc")
+            if showsPlusButton {
+                Image(systemName: "plus")
+                    .font(.system(size: 20, weight: .medium))
+                    .foregroundStyle(Color.flyrPrimary)
+                    .frame(width: 38, height: 38)
+                    .background(.thinMaterial, in: Circle())
+                    .overlay(Circle().stroke(Color.secondary.opacity(0.25), lineWidth: 1))
+            } else {
+                Label("Templates", systemImage: "doc.on.doc")
+            }
         }
         .accessibilityLabel("Text templates")
     }
@@ -6467,6 +6855,14 @@ private struct SalespersonLeadDetailView: View {
             editControls
         }
         .task { await loadIntegrations() }
+        .task(id: lead.id) {
+            guard lead.googleRatingLine != nil,
+                  (lead.metadata?.googleRating == nil || lead.metadata?.googleReviewCount == nil || lead.website?.nilIfEmpty == nil) else { return }
+            if let updated = try? await SalespersonMobileAPI.shared.refreshSalespersonLeadGoogleRating(id: lead.id) {
+                lead = updated
+                onLeadUpdated(updated)
+            }
+        }
         .confirmationDialog(
             "Call \(name.nilIfEmpty ?? lead.displayName)?",
             isPresented: $showCallConfirmation,
@@ -6721,9 +7117,18 @@ private struct SalespersonLeadDetailView: View {
                 .foregroundStyle(isContact ? Color.green : Color.orange)
             Text("Status: \(lead.leadState.replacingOccurrences(of: "_", with: " ").capitalized)")
             Text("Source: \(lead.sourceLabel)")
+            if let rating = lead.googleRatingLine {
+                Label(rating, systemImage: "star.fill")
+            }
             Text("Added \(lead.createdAt.formatted(date: .abbreviated, time: .shortened))")
-            if let website = lead.website?.nilIfEmpty {
-                Button(website) { openExternal(website) }.foregroundStyle(Color.red)
+            HStack(spacing: 4) {
+                Text("Website:")
+                if let website = lead.website?.nilIfEmpty {
+                    Button(lead.websiteHost ?? website) { openExternal(website) }
+                        .foregroundStyle(Color.red)
+                } else {
+                    Text("No website listed")
+                }
             }
         }
         .font(.system(size: 14))
@@ -6910,6 +7315,22 @@ private struct SalespersonEmailSocialLink: Identifiable {
 private struct SalespersonEmailSignaturePreview: View {
     let senderEmail: String
 
+    private var signatureName: String {
+        switch senderEmail.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "christian@wolfgrid.app": return "Christian Phillippe"
+        case "daniel@wolfgrid.app": return "Daniel Phillippe"
+        default: return "WolfGrid Sales"
+        }
+    }
+
+    private var signatureTitle: String {
+        switch senderEmail.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "christian@wolfgrid.app": return "Head of Sales"
+        case "daniel@wolfgrid.app": return "Founder"
+        default: return "Sales"
+        }
+    }
+
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             Capsule()
@@ -6917,11 +7338,11 @@ private struct SalespersonEmailSignaturePreview: View {
                 .frame(width: 3, height: 106)
 
             VStack(alignment: .leading, spacing: 4) {
-                Text("Daniel Phillippe")
+                Text(signatureName)
                     .font(.system(size: 15, weight: .bold))
 
                 HStack(spacing: 5) {
-                    Text("Founder")
+                    Text(signatureTitle)
                         .foregroundStyle(.secondary)
                     Circle()
                         .fill(Color.secondary.opacity(0.7))
@@ -6965,7 +7386,7 @@ private struct SalespersonEmailSignaturePreview: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Email signature: Daniel Phillippe, Founder at WolfGrid, wolfgrid.app, \(senderEmail), with Instagram, YouTube, LinkedIn, and Facebook links.")
+        .accessibilityLabel("Email signature: \(signatureName), \(signatureTitle) at WolfGrid, wolfgrid.app, \(senderEmail), with Instagram, YouTube, LinkedIn, and Facebook links.")
     }
 }
 
@@ -6980,6 +7401,7 @@ struct SalespersonEmailComposer: View {
     let onCancel: () -> Void
     let onSend: () -> Void
     @FocusState private var focusedField: Field?
+    @State private var validationMessage: String?
 
     private enum Field {
         case recipient
@@ -7008,6 +7430,13 @@ struct SalespersonEmailComposer: View {
                     } label: {
                         Label(SalespersonDemoEmailTemplate.title, systemImage: "play.rectangle")
                     }
+                    Button {
+                        subject = SalespersonStormsDemoTemplate.subject
+                        messageBody = SalespersonStormsDemoTemplate.body(recipientName: recipientName)
+                        focusedField = .body
+                    } label: {
+                        Label(SalespersonStormsDemoTemplate.title, systemImage: "cloud.bolt.rain")
+                    }
                     Divider()
                     Button {
                         applyTemplate(.individualAgent)
@@ -7030,7 +7459,7 @@ struct SalespersonEmailComposer: View {
                 }
                 .accessibilityLabel("Email templates")
 
-                Button(action: onSend) {
+                Button(action: send) {
                     if isSending {
                         ProgressView()
                             .frame(width: 30, height: 38)
@@ -7040,7 +7469,7 @@ struct SalespersonEmailComposer: View {
                             .frame(width: 30, height: 38)
                     }
                 }
-                .disabled(!canSend)
+                .disabled(isSending)
                 .accessibilityLabel("Send email")
             }
             .overlay {
@@ -7051,6 +7480,16 @@ struct SalespersonEmailComposer: View {
             .foregroundStyle(.primary)
             .padding(.horizontal, 18)
             .padding(.vertical, 10)
+
+            if let visibleError = (validationMessage ?? errorMessage)?.nilIfEmpty {
+                Label(visibleError, systemImage: "exclamationmark.circle.fill")
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 10)
+                    .accessibilityIdentifier("emailSendError")
+            }
 
             composeRow(label: "To") {
                 if recipientIsEditable {
@@ -7116,14 +7555,6 @@ struct SalespersonEmailComposer: View {
                         .padding(.top, 18)
                         .padding(.bottom, 16)
 
-                    if let errorMessage = errorMessage?.nilIfEmpty {
-                        Text(errorMessage)
-                            .font(.footnote)
-                            .foregroundStyle(.red)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 20)
-                            .padding(.bottom, 12)
-                    }
                 }
             }
             .scrollDismissesKeyboard(.interactively)
@@ -7146,6 +7577,11 @@ struct SalespersonEmailComposer: View {
                 .accessibilityLabel("Hide keyboard")
             }
         }
+        .onChange(of: recipient) { _, _ in validationMessage = nil }
+        .onChange(of: messageBody) { _, _ in validationMessage = nil }
+        .onChange(of: errorMessage) { _, newError in
+            if newError?.nilIfEmpty != nil { focusedField = nil }
+        }
         .onAppear {
             focusedField = recipientIsEditable && recipient.isEmpty ? .recipient : .subject
         }
@@ -7155,12 +7591,30 @@ struct SalespersonEmailComposer: View {
         AuthManager.shared.user?.email.nilIfEmpty ?? "WolfGrid Mail"
     }
 
-    private var canSend: Bool {
-        !isSending
-            && recipient.trimmingCharacters(in: .whitespacesAndNewlines).contains("@")
-            && recipient.trimmingCharacters(in: .whitespacesAndNewlines).contains(".")
-            && !subject.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && !messageBody.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    private func send() {
+        guard !isSending else { return }
+        focusedField = nil
+        let trimmedRecipient = recipient.trimmingCharacters(in: .whitespacesAndNewlines)
+        let parts = trimmedRecipient.split(separator: "@", omittingEmptySubsequences: false)
+        guard parts.count == 2,
+              !parts[0].isEmpty,
+              parts[1].contains("."),
+              !parts[1].hasPrefix("."),
+              !parts[1].hasSuffix("."),
+              !trimmedRecipient.contains(where: \.isWhitespace) else {
+            validationMessage = "Enter a complete email address, such as name@outlook.com."
+            return
+        }
+        guard !messageBody.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            validationMessage = "Write an email before sending it."
+            return
+        }
+        validationMessage = nil
+        recipient = trimmedRecipient
+        if subject.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            subject = "Following up"
+        }
+        onSend()
     }
 
     private func composeRow<Content: View>(
@@ -7697,6 +8151,13 @@ private struct PlacesLeadResultRow: View {
     let onCopy: () -> Void
     let onOpen: (String) -> Void
 
+    private var website: String? { lead.website?.nilIfEmpty }
+
+    private var websiteLabel: String {
+        guard let website else { return "No website listed" }
+        return lead.websiteDomain?.nilIfEmpty ?? website
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .top) {
@@ -7706,11 +8167,6 @@ private struct PlacesLeadResultRow: View {
                     Text(lead.primaryType ?? lead.industry ?? "Lead")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    if let domain = lead.websiteDomain {
-                        Text(domain)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
                 }
                 Spacer()
                 Text("\(lead.confidenceScore)")
@@ -7731,6 +8187,32 @@ private struct PlacesLeadResultRow: View {
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
+            HStack(spacing: 5) {
+                Image(systemName: "star.fill")
+                    .foregroundStyle(.yellow)
+                if let rating = lead.rating {
+                    Text("\(rating, specifier: "%.1f") stars")
+                } else {
+                    Text("No rating")
+                }
+                Text("·")
+                Text(lead.userRatingCount.map { "\($0.formatted()) ratings" } ?? "Rating count unavailable")
+            }
+            .font(.caption)
+            HStack(spacing: 5) {
+                Image(systemName: "globe")
+                Text("Website:")
+                if let website {
+                    Button(websiteLabel) { onOpen(website) }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(Color.flyrPrimary)
+                        .lineLimit(1)
+                } else {
+                    Text(websiteLabel)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .font(.caption)
             if let evidence = lead.evidenceSummary {
                 Text(evidence)
                     .font(.caption)
@@ -7756,15 +8238,6 @@ private struct PlacesLeadResultRow: View {
                     .controlSize(.small)
                 }
 
-                if let website = lead.website {
-                    Button {
-                        onOpen(website)
-                    } label: {
-                        Label("Website", systemImage: "globe")
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                }
             }
         }
         .padding()
@@ -7777,6 +8250,7 @@ struct SalespersonHomeView: View {
     @StateObject private var home = SalespersonHomeViewModel()
     @ObservedObject private var voice = SalespersonVoiceCallService.shared
     @Environment(\.openURL) private var openURL
+    @AppStorage("salesperson.dailyDialGoal") private var dailyGoal = 100
     @State private var isDemoPresented = false
     @State private var isVoicemailSettingsPresented = false
     @State private var isCallingVoicemail = false
@@ -7814,21 +8288,7 @@ struct SalespersonHomeView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 8))
                     }
 
-                    LazyVGrid(columns: metricColumns, spacing: 10) {
-                        ForEach(performanceMetrics, id: \.title) { item in
-                            metric(
-                                item.title,
-                                value: item.value,
-                                currentValue: item.currentValue,
-                                caption: item.caption,
-                                comparison: item.comparison
-                            )
-                        }
-                    }
-
-                    mrrSummary
-
-                    demoVideoLinkSection
+                    dailyDials
 
                     accountActions
                 }
@@ -7868,36 +8328,133 @@ struct SalespersonHomeView: View {
     }
 
     private var homeHeader: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 12) {
-            Text(home.displayName)
-                .font(.system(size: 40, weight: .bold))
+        VStack(alignment: .leading, spacing: 8) {
+            Text(greeting)
+                .font(.system(size: 32, weight: .semibold))
                 .foregroundStyle(.primary)
-                .lineLimit(2)
-                .minimumScaleFactor(0.75)
+                .fixedSize(horizontal: false, vertical: true)
+            Text(Date(), format: .dateTime.weekday(.wide).month(.wide).day())
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.top, 16)
+    }
 
-            Spacer(minLength: 8)
+    private var greeting: String {
+        let hour = Calendar.current.component(.hour, from: Date())
+        let salutation = hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening"
+        guard home.displayName != "Home",
+              let firstName = home.displayName.split(separator: " ").first else { return salutation }
+        return "\(salutation), \(firstName)"
+    }
 
-            Menu {
-                ForEach(SalespersonHomeViewModel.Period.allCases) { period in
-                    Button {
-                        Task { await home.selectPeriod(period) }
-                    } label: {
-                        if period == home.selectedPeriod {
-                            Label(period.menuLabel, systemImage: "checkmark")
-                        } else {
-                            Text(period.menuLabel)
-                        }
+    private var dailyDials: some View {
+        VStack(alignment: .leading, spacing: 24) {
+            HStack {
+                Text("TODAY")
+                    .font(.caption.weight(.semibold))
+                    .tracking(2)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                NavigationLink {
+                    statsScreen
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.headline)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Stats and goals")
+            }
+
+            SalespersonDailyDialsRing(completed: home.performance?.outreach.calls, target: dailyGoal)
+
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .top, spacing: 8) { dailyMetricColumns }
+                LazyVGrid(columns: metricColumns, alignment: .leading, spacing: 20) { dailyMetricColumns }
+            }
+        }
+        .padding(.vertical, 16)
+    }
+
+    @ViewBuilder
+    private var dailyMetricColumns: some View {
+        dailyMetric("Conversations", value: home.performance?.outreach.answers)
+        dailyMetric("Texts", value: home.performance?.outreach.outboundMessages)
+        dailyMetric("Emails", value: home.performance?.outreach.emails)
+        dailyMetric("Demos Sent", value: home.performance?.outreach.demosSent)
+    }
+
+    private func dailyMetric(_ label: String, value: Int?) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(label.uppercased())
+                .font(.system(size: 9, weight: .semibold))
+                .tracking(0.5)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: true, vertical: false)
+            Text(value.map(formatCount) ?? "—")
+                .font(.system(size: 27, weight: .semibold))
+                .monospacedDigit()
+            Text("Today")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+    }
+
+    private var statsScreen: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("DAILY GOAL")
+                        .font(.caption.weight(.semibold))
+                        .tracking(2)
+                        .foregroundStyle(.secondary)
+                    Stepper(value: $dailyGoal, in: 25...5_000, step: 25) {
+                        Text("\(dailyGoal) dials per day")
+                            .font(.headline)
+                    }
+                    Text("Only outbound calls count toward this goal. Conversations currently counts answered outbound calls; texts, emails, and demos sent are tracked separately.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding()
+                .background(Color.bgSecondary, in: RoundedRectangle(cornerRadius: 12))
+
+                Picker("Period", selection: Binding(
+                    get: { home.selectedPeriod },
+                    set: { period in Task { await home.selectPeriod(period) } }
+                )) {
+                    ForEach(SalespersonHomeViewModel.Period.allCases) { period in
+                        Text(period.menuLabel).tag(period)
                     }
                 }
-            } label: {
-                Label(home.selectedPeriod.menuLabel, systemImage: "chevron.down")
-                    .labelStyle(.titleAndIcon)
-                    .font(.subheadline.weight(.semibold))
+                .pickerStyle(.segmented)
+
+                if home.isLoading {
+                    ProgressView("Loading stats")
+                        .frame(maxWidth: .infinity, minHeight: 120)
+                } else if let error = home.errorMessage {
+                    ContentUnavailableView("Stats unavailable", systemImage: "chart.bar.xaxis", description: Text(error))
+                } else {
+                    LazyVGrid(columns: metricColumns, spacing: 10) {
+                        ForEach(performanceMetrics, id: \.title) { item in
+                            metric(item.title, value: item.value, currentValue: item.currentValue,
+                                   caption: item.caption, comparison: item.comparison)
+                        }
+                    }
+
+                    mrrSummary
+                }
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
+            .padding()
         }
-        .padding(.top, 4)
+        .navigationTitle("Stats & Goals")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.visible, for: .navigationBar)
+        .onDisappear { Task { await home.selectPeriod(.daily) } }
     }
 
     private var metricColumns: [GridItem] {
@@ -7914,16 +8471,17 @@ struct SalespersonHomeView: View {
         let periodCaption = home.selectedPeriod.caption
         guard let performance = home.performance else {
             return [
-                ("Calls Made", "0", 0, periodCaption, nil),
-                ("Answers", "0", 0, periodCaption, nil),
-                ("Texts", "0", 0, periodCaption, nil),
-                ("Emails", "0", 0, periodCaption, nil),
-                ("DMs", "0", 0, periodCaption, nil),
-                ("Posts", "0", 0, periodCaption, nil),
-                ("Meetings Booked", "0", 0, periodCaption, nil),
-                ("Meetings Held", "0", 0, periodCaption, nil),
-                ("Sign Ups", "0", 0, periodCaption, nil),
-                ("Paid Teams", "0", 0, periodCaption, nil),
+                ("Calls Made", "—", 0, periodCaption, nil),
+                ("Answers", "—", 0, periodCaption, nil),
+                ("Texts", "—", 0, periodCaption, nil),
+                ("Emails", "—", 0, periodCaption, nil),
+                ("Demos Sent", "—", 0, periodCaption, nil),
+                ("DMs", "—", 0, periodCaption, nil),
+                ("Posts", "—", 0, periodCaption, nil),
+                ("Meetings Booked", "—", 0, periodCaption, nil),
+                ("Meetings Held", "—", 0, periodCaption, nil),
+                ("Sign Ups", "—", 0, periodCaption, nil),
+                ("Paid Teams", "—", 0, periodCaption, nil),
             ]
         }
 
@@ -7934,6 +8492,7 @@ struct SalespersonHomeView: View {
             ("Answers", formatCount(performance.outreach.answers), performance.outreach.answers, periodCaption, comparisons?.outreach.answers),
             ("Texts", formatCount(performance.outreach.outboundMessages), performance.outreach.outboundMessages, periodCaption, comparisons?.outreach.messages),
             ("Emails", formatCount(performance.outreach.emails), performance.outreach.emails, periodCaption, comparisons?.outreach.emails),
+            ("Demos Sent", performance.outreach.demosSent.map(formatCount) ?? "—", performance.outreach.demosSent ?? 0, periodCaption, comparisons?.outreach.demosSent),
             ("DMs", formatCount(performance.outreach.directMessages), performance.outreach.directMessages, periodCaption, comparisons?.outreach.directMessages),
             ("Posts", formatCount(performance.outreach.posts), performance.outreach.posts, periodCaption, comparisons?.outreach.posts),
             ("Meetings Booked", formatCount(performance.outreach.meetingsBooked), performance.outreach.meetingsBooked, periodCaption, comparisons?.outreach.meetingsBooked),
@@ -8001,49 +8560,24 @@ struct SalespersonHomeView: View {
             }
     }
 
-    @ViewBuilder
-    private var demoVideoLinkSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Label("WolfGrid demo", systemImage: "play.rectangle.fill")
-                    .font(.headline)
-                Spacer()
-                Button {
-                    home.copyDemoVideoLink()
-                } label: {
-                    Label("Copy", systemImage: "doc.on.doc")
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-            }
-
+    private var accountActions: some View {
+        HStack(spacing: 12) {
             Button {
                 isDemoPresented = true
             } label: {
-                Label("Open demo", systemImage: "play.fill")
-                    .frame(maxWidth: .infinity)
+                Label("Demo", systemImage: "play.fill")
+                    .font(.subheadline.weight(.semibold))
+                    .frame(maxWidth: .infinity, minHeight: 44)
             }
             .buttonStyle(.borderedProminent)
-
-            Text(home.demoVideoLink)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
-                .textSelection(.enabled)
-
-            if let message = home.linkCopyMessage {
-                Text(message)
-                    .font(.caption)
-                    .foregroundStyle(.green)
+            .contextMenu {
+                Button {
+                    home.copyDemoVideoLink()
+                } label: {
+                    Label("Copy demo link", systemImage: "doc.on.doc")
+                }
             }
-        }
-        .padding()
-        .background(Color.bgSecondary)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-    }
 
-    private var accountActions: some View {
-        HStack(spacing: 12) {
             Button {
                 isVoicemailSettingsPresented = true
             } label: {
@@ -8208,6 +8742,107 @@ struct SalespersonHomeView: View {
         let remainder = safeSeconds % 60
         if minutes <= 0 { return "\(remainder)s" }
         return "\(minutes)m \(String(format: "%02d", remainder))s"
+    }
+}
+
+private struct SalespersonDailyDialsRing: View {
+    let completed: Int?
+    let target: Int
+
+    @Environment(\.dynamicTypeSize) private var typeSize
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var displayedProgress = 0.0
+
+    private var safeTarget: Int { max(1, target) }
+    private var remaining: Int? { completed.map { max(0, safeTarget - $0) } }
+    private var fraction: Double {
+        guard let completed else { return 0 }
+        return min(1, max(0, Double(completed) / Double(safeTarget)))
+    }
+
+    var body: some View {
+        VStack(spacing: 22) {
+            if typeSize.isAccessibilitySize {
+                ring.frame(width: 220, height: 220)
+                HStack {
+                    sideValue(remaining.map(String.init) ?? "—", label: "REMAINING")
+                    Spacer()
+                    sideValue(String(safeTarget), label: "PER DAY")
+                }
+            } else {
+                GeometryReader { geometry in
+                    HStack(spacing: 8) {
+                        sideValue(remaining.map(String.init) ?? "—", label: "REMAINING")
+                            .frame(maxWidth: .infinity)
+                        ring
+                            .frame(width: geometry.size.width * 0.58,
+                                   height: geometry.size.width * 0.58)
+                        sideValue(String(safeTarget), label: "PER DAY")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .frame(height: geometry.size.height)
+                }
+                .frame(height: 226)
+            }
+
+            if let completed {
+                Text(completed >= safeTarget
+                     ? "DAILY GOAL COMPLETE"
+                     : "\(Int(Double(completed) * 100 / Double(safeTarget)))% COMPLETE · \(remaining ?? 0) DIALS TO GO")
+                    .font(.caption.weight(.medium))
+                    .tracking(0.5)
+                    .foregroundStyle(completed >= safeTarget ? .green : .red)
+                    .multilineTextAlignment(.center)
+            }
+        }
+        .onAppear { animateProgress() }
+        .onChange(of: fraction) { _, _ in animateProgress() }
+    }
+
+    private var ring: some View {
+        ZStack {
+            Circle().stroke(Color(uiColor: .secondarySystemBackground), lineWidth: 10)
+            Circle().trim(from: 0, to: displayedProgress)
+                .stroke(completed ?? 0 >= safeTarget ? Color.green : Color.red,
+                        style: StrokeStyle(lineWidth: 10, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+            VStack(spacing: 8) {
+                Text(completed.map(String.init) ?? "—")
+                    .font(.system(size: 56, weight: .semibold))
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.5)
+                Text("/ \(safeTarget) DIALS")
+                    .font(.caption.weight(.medium))
+                    .tracking(1)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(20)
+        }
+        .padding(6)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(completed.map(String.init) ?? "Unavailable") of \(safeTarget) dials today")
+    }
+
+    private func sideValue(_ value: String, label: String) -> some View {
+        VStack(spacing: 8) {
+            Text(value)
+                .font(.system(.title2, weight: .medium))
+                .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.6)
+            Text(label)
+                .font(.system(size: 9, weight: .medium))
+                .tracking(0.5)
+                .foregroundStyle(.secondary)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private func animateProgress() {
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.6)) {
+            displayedProgress = fraction
+        }
     }
 }
 
@@ -8488,6 +9123,7 @@ private struct SalespersonPhoneKeypadGrid: View {
 private struct SalespersonManualDialPad: View {
     @Environment(\.dismiss) private var dismiss
     @State private var number = ""
+    @FocusState private var isNumberFocused: Bool
     @State private var isCalling = false
     @State private var validationMessage: String?
     let onCall: (String) async -> Bool
@@ -8497,12 +9133,20 @@ private struct SalespersonManualDialPad: View {
             ScrollView {
                 VStack(spacing: 24) {
                     HStack(spacing: 12) {
-                        Text(number.isEmpty ? "Enter a phone number" : number)
+                        TextField("Phone number", text: $number)
                             .font(.system(size: 30, weight: .medium, design: .rounded))
-                            .foregroundStyle(number.isEmpty ? .secondary : .primary)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.5)
+                            .textContentType(.telephoneNumber)
+                            .keyboardType(.phonePad)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .multilineTextAlignment(.center)
+                            .focused($isNumberFocused)
+                            .disabled(isCalling)
                             .frame(maxWidth: .infinity, minHeight: 48)
+                            .accessibilityLabel("Phone number")
+                            .onChange(of: number) { _, _ in
+                                validationMessage = nil
+                            }
 
                         Button {
                             guard !number.isEmpty else { return }
@@ -8523,6 +9167,15 @@ private struct SalespersonManualDialPad: View {
                         .accessibilityLabel("Delete digit")
                     }
                     .padding(.horizontal, 8)
+
+                    PasteButton(payloadType: String.self) { values in
+                        guard !isCalling, let pastedNumber = values.first else { return }
+                        number = pastedNumber.trimmingCharacters(in: .whitespacesAndNewlines)
+                        validationMessage = nil
+                        isNumberFocused = false
+                    }
+                    .disabled(isCalling)
+                    .accessibilityLabel("Paste phone number")
 
                     SalespersonPhoneKeypadGrid(
                         isEnabled: !isCalling,
@@ -8565,6 +9218,10 @@ private struct SalespersonManualDialPad: View {
             .navigationTitle("Manual Call")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Done") { isNumberFocused = false }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") { dismiss() }
                         .disabled(isCalling)
@@ -8574,6 +9231,7 @@ private struct SalespersonManualDialPad: View {
     }
 
     private func append(_ digit: String) {
+        isNumberFocused = false
         guard number.count < 18 else { return }
         if digit == "+" {
             guard number.isEmpty else { return }
@@ -8588,6 +9246,7 @@ private struct SalespersonManualDialPad: View {
             validationMessage = "Enter a valid phone number."
             return
         }
+        isNumberFocused = false
         isCalling = true
         Task {
             let didStart = await onCall(number)
@@ -8626,6 +9285,12 @@ private struct SalespersonDiallerNewLeadSheet: View {
     @State private var address = ""
     @State private var notes = ""
     @State private var isSaving = false
+
+    init(kind: SalespersonDiallerNewLeadKind, viewModel: SalespersonDiallerViewModel, phone: String = "") {
+        self.kind = kind
+        self.viewModel = viewModel
+        _phone = State(initialValue: phone)
+    }
 
     private var trimmedPersonName: String {
         personName.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -8756,6 +9421,7 @@ struct SalespersonDiallerView: View {
     @State private var isKeypadPresented = false
     @State private var isManualKeypadPresented = false
     @State private var isTextSheetPresented = false
+    @State private var startsTextWithDemo = false
     @State private var isEmailSheetPresented = false
     @State private var isMeetingSheetPresented = false
     @State private var profileLead: SalespersonDiallerLead?
@@ -8943,7 +9609,11 @@ struct SalespersonDiallerView: View {
                     .presentationDragIndicator(.visible)
                 }
                 .sheet(item: $newLeadKind) { kind in
-                    SalespersonDiallerNewLeadSheet(kind: kind, viewModel: viewModel)
+                    SalespersonDiallerNewLeadSheet(
+                        kind: kind,
+                        viewModel: viewModel,
+                        phone: viewModel.manualCallNumber ?? ""
+                    )
                         .presentationDetents([.large])
                         .presentationDragIndicator(.visible)
                 }
@@ -8968,15 +9638,18 @@ struct SalespersonDiallerView: View {
                 .sheet(isPresented: $isFollowUpSheetPresented) {
                     if let lead = viewModel.selectedLead {
                         SalespersonDiallerFollowUpSheet(lead: lead) { title, date, notes in
-                            Task {
-                                await viewModel.scheduleFollowUp(name: title, at: date, followUpNotes: notes)
+                            if await viewModel.scheduleFollowUp(name: title, at: date, followUpNotes: notes) {
                                 isFollowUpSheetPresented = false
+                            } else {
+                                let message = viewModel.errorMessage ?? "Could not save the follow-up. Please try again."
+                                viewModel.errorMessage = nil
+                                throw NSError(domain: "FollowUp", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
                             }
                         }
                     }
                 }
                 .sheet(isPresented: $isTextSheetPresented) {
-                    SalespersonDiallerTextSheet(viewModel: viewModel)
+                    SalespersonDiallerTextSheet(viewModel: viewModel, startsWithDemo: startsTextWithDemo)
                 }
                 .sheet(isPresented: $isEmailSheetPresented) {
                     SalespersonDiallerEmailSheet(viewModel: viewModel)
@@ -9028,7 +9701,16 @@ struct SalespersonDiallerView: View {
                 }
 	            .task { await voice.refreshRegistrationIfNeeded() }
                 .task(id: viewModel.selectedLead?.id) {
+                    while !Task.isCancelled {
+                        await viewModel.refreshCompanionContact()
+                        do { try await Task.sleep(for: .seconds(3)) } catch { return }
+                    }
+                }
+                .task(id: viewModel.selectedLead?.id) {
                     await loadInlineResearch(for: viewModel.selectedLead)
+                }
+                .task(id: viewModel.selectedLead?.id) {
+                    await viewModel.refreshSelectedLeadGoogleRating()
                 }
                 .onChange(of: uiState.pendingSalespersonDiallerListSelection) { _, _ in
                     applyPendingDiallerListSelection()
@@ -9045,9 +9727,12 @@ struct SalespersonDiallerView: View {
                 }
 	            .alert("Dialler", isPresented: Binding(
 	                get: { viewModel.errorMessage != nil },
-	                set: { if !$0 { viewModel.errorMessage = nil } }
+	                set: { isPresented in
+                        guard !isPresented else { return }
+                        Task { @MainActor in viewModel.errorMessage = nil }
+                    }
 	            )) {
-	                Button("OK", role: .cancel) {}
+	                Button("OK", role: .cancel) { viewModel.errorMessage = nil }
 	            } message: {
 	                Text(viewModel.errorMessage ?? "")
             }
@@ -9163,11 +9848,15 @@ struct SalespersonDiallerView: View {
     private func diallerWorkspace(lead: SalespersonDiallerLead?) -> some View {
         sessionMetricsHeader
         leadIdentityPanel(lead)
-        compactCallControls(hasLead: lead != nil)
+        compactCallControls(hasLead: lead?.disposition == nil && lead != nil)
         if viewModel.isDiallerSessionActive {
             activeSessionControls
         }
-        communicationActions(hasLead: lead != nil)
+        if viewModel.manualCallNumber != nil {
+            manualCommunicationActions
+        } else {
+            communicationActions(hasLead: lead != nil)
+        }
         compactNotes
         if let lead {
             SalespersonDiallerCallHistoryView(
@@ -9240,20 +9929,29 @@ struct SalespersonDiallerView: View {
         HStack(spacing: 12) {
             if let lead {
                 VStack(alignment: .leading, spacing: 5) {
-                    Button {
-                        profileLead = lead
-                    } label: {
-                        HStack(spacing: 6) {
+                    if let position = viewModel.selectedLeadPosition {
+                        Text(position)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(Color.flyrPrimary)
+                    }
+                    HStack(spacing: 8) {
+                        Button { profileLead = lead } label: {
                             Text(lead.name.nilIfEmpty ?? lead.displayBusinessName)
-                                .font(.title3.weight(.bold))
-                                .lineLimit(1)
-                            Image(systemName: "chevron.right")
-                                .font(.caption.weight(.bold))
-                                .foregroundStyle(.tertiary)
+                                .font(.title3.weight(.bold)).lineLimit(1)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityHint("Opens the complete contact profile")
+                        Spacer(minLength: 0)
+                        ForEach([-1, 1], id: \.self) { direction in
+                            Button { viewModel.browseLead(direction) } label: {
+                                Image(systemName: direction < 0 ? "chevron.left" : "chevron.right")
+                                    .font(.headline).frame(width: 44, height: 44)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel(direction < 0 ? "Previous business" : "Next business")
+                            .disabled(viewModel.adjacentLead(direction) == nil || isBusy || voice.callPhase == .connecting || voice.callPhase == .connected || viewModel.isCallSessionActive)
                         }
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityHint("Opens the complete contact profile")
 
                     if let history = lead.sharedCallHistory {
                         Text("Last attempted by \(history.lastCalledBy) · \(history.lastCalledAt.formatted(date: .abbreviated, time: .shortened))")
@@ -9277,14 +9975,28 @@ struct SalespersonDiallerView: View {
                         }
                     }
 
-                    Text("Last contacted: \(lastContactedText(for: lead))")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                    if let rating = lead.googleRatingLine {
+                        Label(rating, systemImage: "star.fill")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
 
-                    Text(lead.phone)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    if let website = lead.website?.nilIfEmpty ?? lead.websiteDomain?.nilIfEmpty {
+                        Button {
+                            let value = website.contains("://") ? website : "https://\(website)"
+                            if let url = URL(string: value) { openURL(url) }
+                        } label: {
+                            Label(lead.websiteDomain?.nilIfEmpty ?? website, systemImage: "globe")
+                                .font(.caption)
+                                .lineLimit(1)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(Color.flyrPrimary)
+                    } else {
+                        Label("No website listed", systemImage: "globe")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
                 Spacer(minLength: 8)
@@ -9305,6 +10017,9 @@ struct SalespersonDiallerView: View {
 
                 if viewModel.isCallSessionActive {
                     keypadShortcut
+                } else {
+                    Button("Done") { viewModel.closeManualCall() }
+                        .font(.subheadline.weight(.semibold))
                 }
             } else {
                 Color.clear
@@ -9411,13 +10126,6 @@ struct SalespersonDiallerView: View {
         return "\(location) · \(formatter.string(from: now)) local time"
     }
 
-    private func lastContactedText(for lead: SalespersonDiallerLead) -> String {
-        guard let lastContacted = lead.lastContactedDate else { return "Never" }
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .full
-        return formatter.localizedString(for: lastContacted, relativeTo: Date())
-    }
-
     private var keypadShortcut: some View {
         Button {
             isKeypadPresented = true
@@ -9450,6 +10158,25 @@ struct SalespersonDiallerView: View {
             }
             shortcutButton("Meeting", systemImage: "calendar.badge.plus", disabled: !hasLead) {
                 isMeetingSheetPresented = true
+            }
+        }
+    }
+
+    private var manualCommunicationActions: some View {
+        HStack(spacing: 8) {
+            shortcutButton("Create Contact", systemImage: "person.crop.circle.badge.plus", disabled: viewModel.isCallSessionActive) {
+                newLeadKind = .person
+            }
+            shortcutButton("Text", systemImage: "message.fill", disabled: false) {
+                startsTextWithDemo = false
+                isTextSheetPresented = true
+            }
+            shortcutButton("Send Demo", systemImage: "play.rectangle.fill", disabled: false) {
+                startsTextWithDemo = true
+                isTextSheetPresented = true
+            }
+            shortcutButton("Email", systemImage: "envelope.fill", disabled: false) {
+                isEmailSheetPresented = true
             }
         }
     }
@@ -9713,10 +10440,11 @@ struct SalespersonDiallerView: View {
 	                            Button {
 	                                viewModel.select(lead)
 	                            } label: {
-	                                SalespersonDiallerQueueRow(
-	                                    lead: lead,
-	                                    isSelected: lead.id == viewModel.selectedLead?.id
-	                                )
+                                SalespersonDiallerQueueRow(
+                                    lead: lead,
+                                    isSelected: lead.id == viewModel.selectedLead?.id,
+                                    position: (viewModel.visibleLeads.firstIndex(where: { $0.id == lead.id }) ?? 0) + 1
+                                )
 	                            }
 	                            .buttonStyle(.plain)
                                 .swipeActions(edge: .trailing, allowsFullSwipe: false) {
@@ -9950,7 +10678,7 @@ private struct SalespersonDiallerCallHistoryView: View {
     let activeCall: SalespersonDiallerCall?
     @ObservedObject private var auth = AuthManager.shared
     @ObservedObject private var workspace = WorkspaceContext.shared
-    @State private var logs: [SalespersonCallLog] = []
+    @State private var logs: [SalespersonActivityLog] = []
     @State private var isLoading = false
     @State private var hasMore = false
     @State private var errorMessage: String?
@@ -9965,33 +10693,32 @@ private struct SalespersonDiallerCallHistoryView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("Call Logs")
+                Text("Logs")
                     .font(.subheadline.weight(.semibold))
                 Spacer()
                 Button { refreshID = UUID() } label: {
                     Image(systemName: "arrow.clockwise")
                         .frame(minWidth: 44, minHeight: 44)
                 }
-                .accessibilityLabel("Refresh call logs")
+                .accessibilityLabel("Refresh logs")
             }
+
+            Text("Last contacted: \(lastContactedText)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
 
             ForEach(logs) { log in
                 HStack(alignment: .top, spacing: 10) {
-                    Image(systemName: log.direction == "inbound" ? "phone.arrow.down.left" : "phone.arrow.up.right")
+                    Image(systemName: log.icon)
                         .foregroundStyle(Color.flyrPrimary)
                         .accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: 5) {
-                        Text("\(log.direction == "inbound" ? "Incoming" : "Outgoing") · \(log.outcome)")
+                        Text(log.subject)
                             .font(.subheadline.weight(.semibold))
                         Text(log.occurredAt, format: .dateTime.year().month(.abbreviated).day().hour().minute())
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                        if let duration = log.durationSeconds, duration > 0 {
-                            Text("Duration: \(duration / 60)m \(duration % 60)s")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        if let note = log.note?.nilIfEmpty {
+                        if let note = log.body?.nilIfEmpty {
                             Text(note)
                                 .font(.caption)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -10006,7 +10733,7 @@ private struct SalespersonDiallerCallHistoryView: View {
             }
 
             if isLoading {
-                ProgressView("Loading call logs…")
+                ProgressView("Loading logs…")
                     .font(.caption)
             } else if let errorMessage {
                 Text(errorMessage)
@@ -10014,22 +10741,34 @@ private struct SalespersonDiallerCallHistoryView: View {
                     .foregroundStyle(.secondary)
                 Button("Try Again") { refreshID = UUID() }
             } else if logs.isEmpty {
-                Text("No call logs yet.")
+                Text("No activity yet.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else if hasMore {
-                Button("Show Older Calls") { Task { await load(reset: false) } }
+                Button("Show Older Activity") { Task { await load(reset: false) } }
                     .font(.subheadline)
             }
         }
+        .onChange(of: lead.id) { _, _ in
+            logs = []
+            nextOffset = 0
+        }
         .task(id: refreshKey) {
             await load(reset: true)
-            // Call completion webhooks can arrive just after the device hangs up.
-            if callPhase == .ended {
-                do { try await Task.sleep(for: .seconds(2)) } catch { return }
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(5)) } catch { return }
                 await load(reset: true)
             }
         }
+    }
+
+    private var lastContactedText: String {
+        guard let date = [lead.lastContactedDate, logs.filter { ["call", "sms", "email"].contains($0.channel) }.map(\.occurredAt).max()].compactMap({ $0 }).max() else {
+            return "Never"
+        }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .full
+        return formatter.localizedString(for: date, relativeTo: Date())
     }
 
     @MainActor
@@ -10037,7 +10776,6 @@ private struct SalespersonDiallerCallHistoryView: View {
         let currentRequest = UUID()
         requestID = currentRequest
         if reset {
-            logs = []
             nextOffset = 0
             hasMore = false
         }
@@ -10045,16 +10783,19 @@ private struct SalespersonDiallerCallHistoryView: View {
         errorMessage = nil
         defer { if requestID == currentRequest { isLoading = false } }
         do {
-            let page = try await SalespersonMobileAPI.shared.fetchCallLogs(for: lead, offset: nextOffset)
+            let page = try await SalespersonMobileAPI.shared.fetchActivityLogs(for: lead, offset: nextOffset)
             try Task.checkCancellation()
             guard requestID == currentRequest else { return }
-            let existingIDs = Set(logs.map(\.id))
-            logs.append(contentsOf: page.filter { !existingIDs.contains($0.id) })
-            nextOffset += page.count
-            hasMore = page.count == 25
+            if reset { logs = page.timeline }
+            else {
+                let existingIDs = Set(logs.map(\.id))
+                logs.append(contentsOf: page.timeline.filter { !existingIDs.contains($0.id) })
+            }
+            nextOffset += page.timeline.count
+            hasMore = page.hasMore
         } catch {
             guard !Task.isCancelled, requestID == currentRequest else { return }
-            errorMessage = "Unable to load call logs. Please try again."
+            errorMessage = "Unable to load logs. Please try again."
         }
     }
 }
@@ -10306,16 +11047,22 @@ private struct SalespersonDiallerTextSheet: View {
     @ObservedObject var viewModel: SalespersonDiallerViewModel
     @Environment(\.dismiss) private var dismiss
     @State private var draft: String
+    @State private var isSubmitting = false
 
-    init(viewModel: SalespersonDiallerViewModel) {
+    init(viewModel: SalespersonDiallerViewModel, startsWithDemo: Bool = false) {
         self.viewModel = viewModel
-        _draft = State(initialValue: viewModel.textDropBody)
+        _draft = State(initialValue: startsWithDemo
+            ? SalespersonDemoTextTemplate.body(recipientName: viewModel.manualCallNumber == nil ? viewModel.selectedLead?.name : nil)
+            : viewModel.textDropBody)
     }
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                if let lead = viewModel.selectedLead {
+                if let manualNumber = viewModel.manualCallNumber {
+                    SalespersonMessageRecipientHeader(name: manualNumber, phone: manualNumber)
+                    Divider()
+                } else if let lead = viewModel.selectedLead {
                     SalespersonMessageRecipientHeader(
                         name: lead.name.nilIfEmpty ?? lead.displayBusinessName,
                         phone: lead.phone
@@ -10337,7 +11084,7 @@ private struct SalespersonDiallerTextSheet: View {
                 SalespersonMessageComposeBar(
                     text: $draft,
                     placeholder: "Text Message",
-                    isSending: viewModel.isSendingCallbackText,
+                    isSending: isSubmitting || viewModel.isSendingCallbackText,
                     canSend: canSend,
                     onSend: send
                 )
@@ -10347,8 +11094,8 @@ private struct SalespersonDiallerTextSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    SalespersonTextTemplateMenu(message: $draft, recipientName: viewModel.selectedLead?.name)
-                        .disabled(viewModel.isSendingCallbackText)
+                    SalespersonTextTemplateMenu(message: $draft, recipientName: viewModel.manualCallNumber == nil ? viewModel.selectedLead?.name : nil)
+                        .disabled(isSubmitting || viewModel.isSendingCallbackText)
                 }
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
@@ -10359,15 +11106,20 @@ private struct SalespersonDiallerTextSheet: View {
     }
 
     private var canSend: Bool {
-        !viewModel.isSendingCallbackText
+        !isSubmitting
+            && !viewModel.isSendingCallbackText
             && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private func send() {
         guard canSend else { return }
+        isSubmitting = true
+        let message = draft
         Task {
-            if await viewModel.sendTextMessage(draft) {
+            if await viewModel.sendTextMessage(message) {
                 dismiss()
+            } else {
+                isSubmitting = false
             }
         }
     }
@@ -10384,7 +11136,7 @@ private struct SalespersonDiallerEmailSheet: View {
         self.viewModel = viewModel
         _recipient = State(initialValue: viewModel.email)
         _subject = State(initialValue: SalespersonDemoEmailTemplate.subject)
-        _messageBody = State(initialValue: SalespersonDemoEmailTemplate.body(recipientName: viewModel.selectedLead?.name))
+        _messageBody = State(initialValue: SalespersonDemoEmailTemplate.body(recipientName: viewModel.manualCallNumber == nil ? viewModel.selectedLead?.name : nil))
     }
 
     var body: some View {
@@ -10392,7 +11144,7 @@ private struct SalespersonDiallerEmailSheet: View {
             recipient: $recipient,
             subject: $subject,
             messageBody: $messageBody,
-            recipientName: viewModel.selectedLead?.name,
+            recipientName: viewModel.manualCallNumber == nil ? viewModel.selectedLead?.name : nil,
             recipientIsEditable: true,
             isSending: viewModel.isSendingEmail,
             errorMessage: viewModel.errorMessage,
@@ -10593,6 +11345,7 @@ private struct SalespersonDiallerMeetingSheet: View {
 
         let attendeeEmails = attendeeEmail.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty.map { [$0] } ?? []
         let draft = ZoomMeetingDraft(
+            leadId: lead.id.uuidString,
             title: title.trimmingCharacters(in: .whitespacesAndNewlines),
             startAt: startAt,
             endAt: endAt,
@@ -11172,14 +11925,16 @@ private enum SalespersonFollowUpChoice: String, CaseIterable, Identifiable {
 
 private struct SalespersonDiallerFollowUpSheet: View {
     let lead: SalespersonDiallerLead
-    let onSave: (String, Date, String) -> Void
+    let onSave: (String, Date, String) async throws -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var choice: SalespersonFollowUpChoice = .today
     @State private var title: String
     @State private var customDate: Date
     @State private var notes = ""
+    @State private var isSaving = false
+    @State private var saveError: String?
 
-    init(lead: SalespersonDiallerLead, onSave: @escaping (String, Date, String) -> Void) {
+    init(lead: SalespersonDiallerLead, onSave: @escaping (String, Date, String) async throws -> Void) {
         self.lead = lead
         self.onSave = onSave
         _title = State(initialValue: "Follow up with \(lead.displayBusinessName)")
@@ -11222,9 +11977,25 @@ private struct SalespersonDiallerFollowUpSheet: View {
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Add") {
-                        onSave(title, customDate, notes)
+                        guard !isSaving else { return }
+                        isSaving = true
+                        Task {
+                            defer { isSaving = false }
+                            do { try await onSave(title, customDate, notes) }
+                            catch { saveError = error.localizedDescription }
+                        }
                     }
+                    .disabled(isSaving)
                 }
+            }
+            .interactiveDismissDisabled(isSaving)
+            .alert("Follow-up not saved", isPresented: Binding(
+                get: { saveError != nil },
+                set: { if !$0 { saveError = nil } }
+            )) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(saveError ?? "")
             }
         }
     }
@@ -11466,6 +12237,7 @@ private struct SalespersonInboxThreadView: View {
     @State private var emailSubject = ""
     @State private var isComposingEmail = false
     @State private var selectedMediaItem: PhotosPickerItem?
+    @State private var isChoosingAttachment = false
     @State private var pendingAttachment: SalespersonInboxPendingAttachment?
     @FocusState private var composerFocused: Bool
 
@@ -11636,16 +12408,21 @@ private struct SalespersonInboxThreadView: View {
             }
 
             HStack(alignment: .bottom, spacing: 8) {
-                PhotosPicker(selection: $selectedMediaItem, matching: .any(of: [.images, .videos])) {
-                    Image(systemName: "plus")
-                        .font(.system(size: 20, weight: .medium))
-                        .foregroundStyle(.primary)
-                        .frame(width: 38, height: 38)
-                        .background(.thinMaterial, in: Circle())
-                        .overlay(Circle().stroke(Color.secondary.opacity(0.25), lineWidth: 1))
-                }
+                SalespersonTextTemplateMenu(
+                    message: $draft,
+                    recipientName: thread.contact?.fullName?.normalizedInboxLine.nilIfEmpty,
+                    showsPlusButton: true,
+                    onAddAttachment: {
+                        composerFocused = false
+                        isChoosingAttachment = true
+                    }
+                )
                 .disabled(!thread.canText || viewModel.isSending)
-                .accessibilityLabel("Add a photo or video")
+                .photosPicker(
+                    isPresented: $isChoosingAttachment,
+                    selection: $selectedMediaItem,
+                    matching: .any(of: [.images, .videos])
+                )
 
                 HStack(alignment: .bottom, spacing: 6) {
                     TextField(thread.canText ? "Message" : "No phone on contact", text: $draft, axis: .vertical)
@@ -12166,10 +12943,22 @@ private struct SalespersonMessageTimestamp: View {
 
 struct SalespersonTasksView: View {
     @StateObject private var viewModel = SalespersonTasksViewModel()
+    @State private var followUpCategory = "manual"
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
+                Picker("Follow-up category", selection: $followUpCategory) {
+                    Text("Manual").tag("manual")
+                    Text("Demo").tag("demo")
+                }
+                .pickerStyle(.segmented)
+                .padding(.horizontal, 16)
+                .padding(.top, 10)
+
+                if followUpCategory == "demo" {
+                    SalespersonDemoFollowUpsView()
+                } else {
                 Picker("Due date", selection: $viewModel.selectedDueFilter) {
                     ForEach(SalespersonTaskDueFilter.allCases) { filter in
                         Text(filter.title).tag(filter)
@@ -12180,8 +12969,14 @@ struct SalespersonTasksView: View {
                 .padding(.vertical, 10)
 
                 taskList
+                }
             }
-            .task { await viewModel.load() }
+            .task(id: viewModel.selectedDueFilter) {
+                while !Task.isCancelled {
+                    await viewModel.load()
+                    do { try await Task.sleep(for: .seconds(3)) } catch { return }
+                }
+            }
             .alert("Follow Up", isPresented: Binding(
                 get: { viewModel.errorMessage != nil },
                 set: { if !$0 { viewModel.errorMessage = nil } }

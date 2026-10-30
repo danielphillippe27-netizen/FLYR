@@ -20,6 +20,7 @@ struct LeadDetailView: View {
     @State private var editableEmail: String = ""
     @State private var editableNotes: String = ""
     @State private var isSaving = false
+    @State private var communicationError: String?
     private var hasEdits: Bool { editableName != (lead.name ?? "") || editablePhone != (lead.phone ?? "") || editableEmail != (lead.email ?? "") || editableNotes != (lead.notes ?? "") }
     
     init(lead: FieldLead, onConnectCRM: @escaping () -> Void, onDismiss: (() -> Void)? = nil, onLeadUpdated: ((FieldLead) -> Void)? = nil) {
@@ -103,6 +104,9 @@ struct LeadDetailView: View {
             editableEmail = lead.email ?? ""
             editableNotes = lead.notes ?? ""
         }
+        .alert("Unable to open app", isPresented: Binding(get: { communicationError != nil }, set: { if !$0 { communicationError = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: { Text(communicationError ?? "") }
         .sheet(isPresented: $showSyncSettings) {
             SyncSettingsView()
         }
@@ -148,12 +152,9 @@ struct LeadDetailView: View {
     }
     
     private func phoneDigits(from raw: String) -> String? {
-        let digits = raw.filter { $0.isNumber || $0 == "+" }
-        let digitsOnly = digits.filter { $0.isNumber }
-        if digitsOnly.isEmpty { return nil }
-        return (digits.hasPrefix("+") ? "+" : "") + digitsOnly
+        ContactCommunication.phoneNumber(raw)
     }
-    
+
     private func circularActionButton(icon: String, isEnabled: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: icon)
@@ -165,26 +166,28 @@ struct LeadDetailView: View {
         }
         .buttonStyle(.plain)
         .disabled(!isEnabled)
+        .accessibilityLabel(icon == "message.fill" ? "Message contact" : icon == "phone.fill" ? "Call contact" : icon == "envelope.fill" ? "Email contact" : "Open address")
     }
     
     private func openPhone() {
-        guard let digits = phoneDigits(from: editablePhone.isEmpty ? (lead.phone ?? "") : editablePhone),
-              let url = URL(string: "tel:\(digits)") else { return }
-        UIApplication.shared.open(url)
+        openCommunication(ContactCommunication.phoneURL(editablePhone), app: "Phone")
     }
-    
+
     private func openSMS() {
-        guard let digits = phoneDigits(from: editablePhone.isEmpty ? (lead.phone ?? "") : editablePhone),
-              let url = URL(string: "sms:\(digits)") else { return }
-        UIApplication.shared.open(url)
+        openCommunication(ContactCommunication.phoneURL(editablePhone, text: true), app: "Messages")
     }
-    
+
     private func openEmail() {
-        let email = editableEmail.isEmpty ? (lead.email ?? "") : editableEmail
-        guard !email.isEmpty, let url = URL(string: "mailto:\(email)") else { return }
-        UIApplication.shared.open(url)
+        openCommunication(ContactCommunication.emailURL(editableEmail), app: "Mail")
     }
-    
+
+    private func openCommunication(_ url: URL?, app: String) {
+        guard let url else { communicationError = "Add a valid contact detail first."; return }
+        UIApplication.shared.open(url, options: [:]) { success in
+            if !success { communicationError = "Couldn’t open \(app) on this device." }
+        }
+    }
+
     private func openMaps() {
         let encoded = lead.address.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
         guard let url = URL(string: "http://maps.apple.com/?q=\(encoded)") else { return }

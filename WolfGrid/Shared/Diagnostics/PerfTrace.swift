@@ -69,3 +69,21 @@ enum PerfTrace {
     }
     #endif
 }
+
+/// Measures the user-facing interval from opening a map through its first
+/// usable frame, independent of the cache and backend phase timings.
+@MainActor
+enum MapOpenTrace {
+    private static var start: (campaign: String, time: Date)?
+    static func begin(campaign: String) {
+        start = (campaign.lowercased(), Date())
+        PerfTrace.event("map_open_user", "tap", fields: ["campaign": campaign])
+    }
+    static func event(_ phase: String, campaign: String, fields: [String: Any] = [:]) {
+        guard let start, start.campaign == campaign.lowercased() else { return }
+        var values = fields
+        values["campaign"] = campaign
+        values["elapsedMs"] = Int(Date().timeIntervalSince(start.time) * 1000)
+        PerfTrace.event("map_open_user", phase, fields: values)
+    }
+}

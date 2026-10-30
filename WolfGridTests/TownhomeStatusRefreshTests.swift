@@ -20,6 +20,91 @@ final class TownhomeStatusRefreshTests: XCTestCase {
         return (buildings, addresses, links)
     }
 
+    func testTownhomeSegmentsFollowParcelsAndRejectIncompleteCoverage() throws {
+        let first = UUID(), second = UUID()
+        let footprint = [[[0.0, 0.0], [4.0, 0.0], [4.0, 2.0], [0.0, 2.0], [0.0, 0.0]]]
+        func parcel(_ id: UUID, _ ring: [[Double]]) throws -> ParcelFeature {
+            let value: [String: Any] = ["type": "Feature", "id": id.uuidString,
+                "properties": ["address_id": id.uuidString],
+                "geometry": ["type": "Polygon", "coordinates": [ring]]]
+            return try JSONDecoder().decode(ParcelFeature.self, from: JSONSerialization.data(withJSONObject: value))
+        }
+        let left = try parcel(first, [[0,0], [1,0], [1,2], [0,2], [0,0]])
+        let right = try parcel(second, [[1,0], [4,0], [4,2], [1,2], [1,0]])
+        let result = try XCTUnwrap(MapLayerManager.parcelAlignedTownhomeSegments(
+            buildingPolygons: footprint, addressIds: [first, second], parcels: [left, right]))
+        let leftRing = try XCTUnwrap(result[first]?.first)
+        XCTAssertEqual(leftRing.map { $0[0] }.max() ?? 0, 1, accuracy: 0.000001)
+        XCTAssertNil(MapLayerManager.parcelAlignedTownhomeSegments(
+            buildingPolygons: footprint, addressIds: [first, second], parcels: [left]))
+        let irregularValue: [String: Any] = ["type": "Feature", "id": first.uuidString,
+            "properties": ["address_id": first.uuidString],
+            "geometry": ["type": "MultiPolygon", "coordinates": [[[[0,0], [1,0], [1,3], [0.5,2.5], [0,3], [0,0]]]]]]
+        let irregular = try JSONDecoder().decode(ParcelFeature.self, from: JSONSerialization.data(withJSONObject: irregularValue))
+        let irregularSegments = try XCTUnwrap(MapLayerManager.parcelAlignedTownhomeSegments(
+            buildingPolygons: footprint, addressIds: [first, second], parcels: [irregular, right]))
+        XCTAssertEqual(irregularSegments[first]?.count, 1, "The parcel should be one continuous surface")
+        let gap = try parcel(second, [[2,0], [4,0], [4,2], [2,2], [2,0]])
+        XCTAssertNil(MapLayerManager.parcelAlignedTownhomeSegments(
+            buildingPolygons: footprint, addressIds: [first, second], parcels: [left, gap]))
+    }
+
+    func testOnlyCompleteTownhomeCoverageHidesParentBuilding() throws {
+        let (buildings, addresses, links) = try fixture(units: 3)
+        let data = try XCTUnwrap(MapLayerManager.buildTownhomeStatusOverlayGeoJSON(
+            buildings: buildings, addresses: addresses, orderedAddressIdsByBuilding: links, addressStatuses: [:]))
+        XCTAssertTrue(MapLayerManager.completeTownhomeOverlayBuildingIdentifiers(from: data).contains("townhome-0"))
+        var collection = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        var features = try XCTUnwrap(collection["features"] as? [[String: Any]])
+        let index = try XCTUnwrap(features.firstIndex { ($0["id"] as? String) == addresses[0].properties.id?.lowercased() })
+        features.remove(at: index)
+        collection["features"] = features
+        let partial = try JSONSerialization.data(withJSONObject: collection)
+        XCTAssertFalse(MapLayerManager.completeTownhomeOverlayBuildingIdentifiers(from: partial).contains("townhome-0"))
+    }
+
+    func testParcelPlacementUsesItsPortionOfSharedRoof() throws {
+        let roof = try makeBuildingFeature(gersId: "shared", width: 40, depth: 20)
+        let parcel = ParcelFeature(id: "left", geometry: .init(type: "Polygon", coordinates: .init(polygon: [[
+            [-79.0, 43.0], [-78.999, 43.0], [-78.999, 43.002], [-79.0, 43.002], [-79.0, 43.0]
+        ]])), properties: .init(id: "left", parcelId: "left", externalId: nil, source: nil, areaSqm: nil))
+        let placement = try XCTUnwrap(MapLayerManager.parcelRoofPlacement(parcel: parcel, buildings: [roof]))
+        XCTAssertEqual(placement.1.longitude, -78.9995, accuracy: 0.000001)
+        XCTAssertEqual(placement.1.latitude, 43.001, accuracy: 0.000001)
+        let another = try makeBuildingFeature(gersId: "overlap", width: 40, depth: 20)
+        XCTAssertNil(MapLayerManager.parcelRoofPlacement(parcel: parcel, buildings: [roof, another]))
+    }
+
+    func testNewParcelAddressCreatesIndependentlyColoredTownhomeSegments() throws {
+        let first = UUID(), second = UUID()
+        let roof = try makeBuildingFeature(gersId: "shared", width: 40, depth: 20, unitsCount: 2, addressCount: 2)
+        func parcel(_ id: String, _ left: Double, _ right: Double) -> ParcelFeature {
+            ParcelFeature(id: id, geometry: .init(type: "Polygon", coordinates: .init(polygon: [[
+                [left, 43.0], [right, 43.0], [right, 43.002], [left, 43.002], [left, 43.0]
+            ]])), properties: .init(id: id, parcelId: id, externalId: nil, source: nil, areaSqm: nil))
+        }
+        func address(_ id: UUID, _ number: String, _ parcelId: String) -> AddressFeature {
+            AddressFeature(id: id.uuidString, geometry: .init(type: "Point", coordinates: .init(point: [-79.0, 43.0])),
+                properties: .init(id: id.uuidString, buildingGersId: "shared", houseNumber: number,
+                    streetName: "Main St", formatted: "\(number) Main St", parcelId: parcelId, hasParcelLink: true))
+        }
+        let data = try XCTUnwrap(MapLayerManager.buildTownhomeStatusOverlayGeoJSON(
+            buildings: [roof], addresses: [address(first, "1", "left"), address(second, "2", "right")],
+            orderedAddressIdsByBuilding: ["shared": [first, second]], addressStatuses: [first: .talked],
+            parcels: [parcel("left", -79.0, -78.999), parcel("right", -78.999, -78.996)]))
+        let collection = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let features = try XCTUnwrap(collection["features"] as? [[String: Any]])
+        let units = features.filter { ($0["properties"] as? [String: Any])?["address_id"] != nil }
+        XCTAssertEqual(units.count, 2)
+        let firstUnit = try XCTUnwrap(units.first { ($0["properties"] as? [String: Any])?["address_id"] as? String == first.uuidString.lowercased() })
+        let secondUnit = try XCTUnwrap(units.first { ($0["properties"] as? [String: Any])?["address_id"] as? String == second.uuidString.lowercased() })
+        XCTAssertNotEqual((firstUnit["properties"] as? [String: Any])?["segment_status"] as? String,
+                          (secondUnit["properties"] as? [String: Any])?["segment_status"] as? String)
+        let geometry = try XCTUnwrap(firstUnit["geometry"] as? [String: Any])
+        let rings = try XCTUnwrap(geometry["coordinates"] as? [[[Double]]])
+        XCTAssertEqual(try XCTUnwrap(rings.first?.map { $0[0] }.max()), -78.999, accuracy: 0.000001)
+    }
+
     func testStatusRefreshMatchesFullRebuildForEveryStatusAndReset() throws {
         let (buildings, addresses, links) = try fixture()
         let ids = try XCTUnwrap(links.values.first)
@@ -47,6 +132,23 @@ final class TownhomeStatusRefreshTests: XCTestCase {
                 buildings: buildings, addresses: addresses, orderedAddressIdsByBuilding: links,
                 addressStatuses: [id: .talked], workspaceCoveredAddressIds: covered))
         }
+    }
+
+    func testTeammateCoverageColorsOnlyTheCoveredTownhome() throws {
+        let (buildings, addresses, links) = try fixture()
+        let ids = try XCTUnwrap(links.values.first)
+        let data = try XCTUnwrap(MapLayerManager.buildTownhomeStatusOverlayGeoJSON(
+            buildings: buildings, addresses: addresses, orderedAddressIdsByBuilding: links,
+            addressStatuses: [:], workspaceCoveredAddressIds: [ids[0]]))
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let features = try XCTUnwrap(object["features"] as? [[String: Any]])
+        let properties = features.compactMap { $0["properties"] as? [String: Any] }
+        let covered = try XCTUnwrap(properties.first { ($0["address_id"] as? String)?.lowercased() == ids[0].uuidString.lowercased() })
+        let neighbour = try XCTUnwrap(properties.first { ($0["address_id"] as? String)?.lowercased() == ids[1].uuidString.lowercased() })
+        XCTAssertEqual(covered["visit_owner"] as? String, "teammate")
+        XCTAssertEqual(covered["segment_status"] as? String, "visited")
+        XCTAssertNotEqual(neighbour["visit_owner"] as? String, "teammate")
+        XCTAssertNotEqual(neighbour["segment_status"] as? String, "visited")
     }
 
     func testInvalidSnapshotRequiresFullRebuild() {

@@ -53,6 +53,7 @@ struct SessionStartView: View {
     @State private var mapCampaign: CampaignV2?
     @State private var showCampaignMap: Bool = false
     @State private var showQuickCampaign: Bool = false
+    @State private var showFarms: Bool = false
     @State private var showNetworkingSession: Bool = false
     @State private var showPaywall: Bool = false
     @State private var showJoinSessionCodeSheet: Bool = false
@@ -79,11 +80,17 @@ struct SessionStartView: View {
                 }
                 await loadData()
             }
+            .task(id: visibleMapPrefetchKey) {
+                await prefetchVisibleCampaignMaps()
+            }
             .navigationDestination(isPresented: $showCampaignMap) {
                 campaignMapDestination
             }
             .navigationDestination(isPresented: $showQuickCampaign) {
                 QuickStartMapView()
+            }
+            .navigationDestination(isPresented: $showFarms) {
+                FarmsView()
             }
             .navigationDestination(isPresented: $showNetworkingSession) {
                 NetworkingSessionView()
@@ -116,6 +123,18 @@ struct SessionStartView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 sessionActionButtons
+                Button {
+                    HapticManager.light()
+                    showFarms = true
+                } label: {
+                    Label("Farms", systemImage: "leaf")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(16)
+                }
+                .buttonStyle(SessionActionCardStyle(fill: Color(red: 0.06, green: 0.43, blue: 0.28)))
+                .foregroundStyle(.white)
+                .padding(.horizontal)
                 campaignList
                 Spacer()
             }
@@ -147,8 +166,8 @@ struct SessionStartView: View {
     private var sessionActionButtons: some View {
         HStack(spacing: 12) {
             quickActionButton(
-                title: "Standard",
-                systemImage: "map.fill",
+                title: "Quick Start",
+                systemImage: "bolt.fill",
                 fill: Color(red: 0.88, green: 0.66, blue: 0.08)
             ) {
                 HapticManager.light()
@@ -403,6 +422,40 @@ struct SessionStartView: View {
     }
 
     // MARK: - Helpers
+
+    // Include navigation in the task identity: stop scheduling speculative work
+    // as soon as a map opens, while the selected map reuses any in-flight fetch.
+    private var visibleMapPrefetchKey: String {
+        let ids = campaigns.prefix(maxVisibleCampaignItems).map { $0.id.uuidString }.joined(separator: ",")
+        return "\(workspaceContext.workspaceId?.uuidString ?? "none")|\(showCampaignMap)|\(showQuickCampaign)|\(showNetworkingSession)|\(ids)"
+    }
+
+    @MainActor
+    private func prefetchVisibleCampaignMaps() async {
+        guard !showCampaignMap, !showQuickCampaign, !showNetworkingSession else { return }
+        let ids = campaigns.prefix(maxVisibleCampaignItems).map { $0.id.uuidString }
+        // A small rolling window avoids flooding the connection with all campaigns.
+        await withTaskGroup(of: Void.self) { group in
+            var next = ids.makeIterator()
+            for _ in 0..<2 {
+                guard let id = next.next(), !Task.isCancelled else { break }
+                group.addTask {
+                    await CampaignDownloadService.shared.prefetchMapBundleIfNeeded(campaignId: id)
+                }
+            }
+            while await group.next() != nil {
+                guard !Task.isCancelled else {
+                    group.cancelAll()
+                    return
+                }
+                if let id = next.next() {
+                    group.addTask {
+                        await CampaignDownloadService.shared.prefetchMapBundleIfNeeded(campaignId: id)
+                    }
+                }
+            }
+        }
+    }
 
     private func openCampaign(_ campaign: CampaignV2) {
         PerfTrace.event("session_start", "open_campaign", fields: [

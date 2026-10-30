@@ -1,0 +1,1228 @@
+diff --git a/app/build.gradle.kts b/app/build.gradle.kts
+--- a/app/build.gradle.kts
++++ b/app/build.gradle.kts
+@@ -53,6 +53,7 @@
+         buildConfigField("String", "MAPBOX_ACCESS_TOKEN", "\"${secret("MAPBOX_ACCESS_TOKEN")}\"")
+         buildConfigField("String", "GOOGLE_MAPS_API_KEY", "\"${secret("GOOGLE_MAPS_API_KEY")}\"")
+ 
++        buildConfigField("boolean", "MAP_FORCE_2D", "false")
+         manifestPlaceholders["googleMapsApiKey"] = secret("GOOGLE_MAPS_API_KEY")
+     }
+ 
+@@ -91,6 +92,7 @@
+ 
+     buildTypes {
+         debug {
++            buildConfigField("boolean", "MAP_FORCE_2D", providers.gradleProperty("wolfgridMapForce2D").map { it.toBoolean().toString() }.getOrElse("false"))
+             applicationIdSuffix = ".debug"
+             versionNameSuffix = "-debug" + providers.gradleProperty("debugBuildLabel")
+                 .orNull?.let { "-$it" }.orEmpty()
+diff --git a/app/src/main/java/com/wolfgrid/android/features/map/CampaignPinLayout.kt b/app/src/main/java/com/wolfgrid/android/features/map/CampaignPinLayout.kt
+new file mode 100644
+--- /dev/null
++++ b/app/src/main/java/com/wolfgrid/android/features/map/CampaignPinLayout.kt
+@@ -0,0 +1,55 @@
++package com.wolfgrid.android.features.map
++
++import kotlin.math.floor
++import kotlin.math.ln
++import kotlin.math.pow
++import kotlin.math.sin
++
++internal data class CampaignPinGeometry(val id: String, val latitude: Double, val longitude: Double)
++internal data class CampaignPinCell(val zoom: Int, val x: Long, val y: Long)
++internal data class CampaignPinGroup(val key: String, val ids: List<String>)
++
++/** Geometry only: status, labels, selection and fractional zoom never invalidate membership. */
++internal class CampaignPinLayout {
++    private var previousPoints: Map<String, CampaignPinGeometry>? = null
++    private var previousZoom: Int? = null
++    private var groups = emptyList<CampaignPinGroup>()
++    var rebuildCount = 0
++        private set
++
++    fun update(points: List<CampaignPinGeometry>, zoom: Float, isMoving: Boolean = false): List<CampaignPinGroup> {
++        if (isMoving) return groups
++        val bucket = if (zoom.isFinite()) floor(zoom.toDouble()).toInt().coerceIn(0, 18) else 0
++        val valid = points.asSequence().filter {
++            it.latitude.isFinite() && it.longitude.isFinite() &&
++                it.latitude in -90.0..90.0 && it.longitude in -180.0..180.0
++        }.associateBy { it.id }
++        if (previousZoom == bucket && previousPoints == valid) return groups
++        previousZoom = bucket
++        previousPoints = valid
++        rebuildCount++
++        groups = if (bucket >= 18) {
++            valid.values.map { CampaignPinGroup("pin:${it.id}", listOf(it.id)) }
++        } else {
++            val scale = 256 * 2.0.pow(bucket)
++            valid.values.groupBy { point ->
++                val sine = sin(Math.toRadians(point.latitude.coerceIn(-85.05112878, 85.05112878)))
++                val x = (point.longitude + 180) / 360 * scale
++                val y = (0.5 - ln((1 + sine) / (1 - sine)) / (4 * Math.PI)) * scale
++                CampaignPinCell(bucket, floor(x / 64).toLong(), floor(y / 64).toLong())
++            }.map { (cell, members) ->
++                CampaignPinGroup("cell:${cell.zoom}:${cell.x}:${cell.y}", members.map { it.id })
++            }
++        }
++        return groups
++    }
++}
++
++/** Retains current item data while reusing the shared layout algorithm. */
++internal fun <T> campaignPinGroups(items: List<T>, zoom: Float, coordinate: (T) -> Pair<Double, Double>): List<List<T>> {
++    val points = items.mapIndexed { index, item ->
++        val (lat, lon) = coordinate(item)
++        CampaignPinGeometry(index.toString(), lat, lon)
++    }
++    return CampaignPinLayout().update(points, zoom).map { group -> group.ids.map { items[it.toInt()] } }
++}
+diff --git a/app/src/main/java/com/wolfgrid/android/features/map/CampaignPinClusters.kt b/app/src/main/java/com/wolfgrid/android/features/map/CampaignPinClusters.kt
+--- a/app/src/main/java/com/wolfgrid/android/features/map/CampaignPinClusters.kt
++++ b/app/src/main/java/com/wolfgrid/android/features/map/CampaignPinClusters.kt
+@@ -20,27 +20,16 @@
+ import com.google.maps.android.compose.Marker
+ import com.google.maps.android.compose.rememberMarkerState
+ import kotlinx.coroutines.launch
++import androidx.compose.runtime.LaunchedEffect
++import androidx.compose.runtime.getValue
++import androidx.compose.runtime.mutableStateOf
++import androidx.compose.runtime.mutableFloatStateOf
++import androidx.compose.runtime.setValue
++import androidx.compose.runtime.snapshotFlow
++import android.util.LruCache
++import com.google.android.gms.maps.model.BitmapDescriptor
++import kotlinx.coroutines.flow.distinctUntilChanged
+ import kotlin.math.floor
+-import kotlin.math.ln
+-import kotlin.math.pow
+-import kotlin.math.sin
+-
+-/** World-anchored cells avoid changing membership when the map is panned. */
+-internal fun <T> campaignPinGroups(items: List<T>, zoom: Float, coordinate: (T) -> Pair<Double, Double>): List<List<T>> {
+-    val valid = items.filter {
+-        val (lat, lon) = coordinate(it)
+-        lat.isFinite() && lon.isFinite() && lat in -90.0..90.0 && lon in -180.0..180.0
+-    }
+-    if (zoom >= 18f) return valid.map { listOf(it) }
+-    val scale = 256 * 2.0.pow(floor(zoom.toDouble()))
+-    return valid.groupBy {
+-        val (lat, lon) = coordinate(it)
+-        val sine = sin(Math.toRadians(lat.coerceIn(-85.05112878, 85.05112878)))
+-        val x = (lon + 180) / 360 * scale
+-        val y = (0.5 - ln((1 + sine) / (1 - sine)) / (4 * Math.PI)) * scale
+-        floor(x / 64).toLong() to floor(y / 64).toLong()
+-    }.values.toList()
+-}
+ 
+ /** Counts include every supplied pin; individual markers retain the caller's actions and styling. */
+ @Composable
+@@ -53,54 +42,82 @@
+     onClusterClick: () -> Unit = {},
+     marker: @Composable @GoogleMapComposable (T) -> Unit
+ ) {
+-    val zoom = cameraState.position.zoom
+-    val groups = remember(items, floor(zoom)) {
+-        campaignPinGroups(items, zoom) { coordinate(it).let { point -> point.latitude to point.longitude } }
++    var settledZoom by remember { mutableFloatStateOf(cameraState.position.zoom) }
++    var cameraMoving by remember { mutableStateOf(cameraState.isMoving) }
++    LaunchedEffect(cameraState) {
++        snapshotFlow { cameraState.isMoving to if (cameraState.isMoving) null else floor(cameraState.position.zoom) }
++            .distinctUntilChanged().collect { (moving, zoom) ->
++                cameraMoving = moving
++                if (zoom != null) settledZoom = zoom
++            }
+     }
++    val points = remember(items) {
++        items.map { item -> coordinate(item).let { CampaignPinGeometry(itemKey(item), it.latitude, it.longitude) } }
++    }
++    val layout = remember { CampaignPinLayout() }
++    val groups = remember(points, settledZoom, cameraMoving) {
++        val started = System.nanoTime()
++        val previousRebuilds = layout.rebuildCount
++        layout.update(points, settledZoom, isMoving = cameraMoving).also {
++            if (layout.rebuildCount != previousRebuilds) {
++                Map2DPerformance.record("cluster_layout", started, "pins=${points.size} groups=${it.size} rebuilds=${layout.rebuildCount}")
++            }
++        }
++    }
++    val itemsById = remember(items) { items.associateBy(itemKey) }
++    val iconCache = remember { LruCache<String, BitmapDescriptor>(128) }
+     val scope = rememberCoroutineScope()
+     val density = LocalDensity.current.density
+-    groups.forEach { group ->
+-        if (group.size == 1) {
+-            key(itemKey(group.first())) { marker(group.first()) }
+-        } else {
+-            val bounds = LatLngBounds.builder().apply { group.forEach { include(coordinate(it)) } }.build()
+-            val count = group.size
+-            val icon = remember(count, density) {
+-                val size = ((if (count >= 1000) 56 else 48) * density).toInt().coerceAtLeast(1)
+-                val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+-                val canvas = Canvas(bitmap)
+-                val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+-                paint.color = Color.WHITE
+-                canvas.drawCircle(size / 2f, size / 2f, size / 2f - density, paint)
+-                paint.color = Color.rgb(225, 0, 25)
+-                canvas.drawCircle(size / 2f, size / 2f, size / 2f - 4 * density, paint)
+-                paint.color = Color.WHITE
+-                paint.textSize = 16 * density
+-                paint.isFakeBoldText = true
+-                paint.textAlign = Paint.Align.CENTER
+-                canvas.drawText(count.toString(), size / 2f, size / 2f - (paint.ascent() + paint.descent()) / 2, paint)
+-                BitmapDescriptorFactory.fromBitmap(bitmap)
++    groups.forEach { layoutGroup ->
++        key(layoutGroup.key) {
++            val group = layoutGroup.ids.mapNotNull(itemsById::get)
++            if (group.size == 1) {
++                key(itemKey(group.first())) { marker(group.first()) }
++            } else if (group.isNotEmpty()) {
++                val bounds = remember(layoutGroup, points) {
++                    LatLngBounds.builder().apply { group.forEach { include(coordinate(it)) } }.build()
++                }
++                val count = group.size
++                val icon = remember(count, density) {
++                    val cacheKey = "$count:$density"
++                    iconCache.get(cacheKey) ?: run {
++                        val size = ((if (count >= 1000) 56 else 48) * density).toInt().coerceAtLeast(1)
++                        val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
++                        val canvas = Canvas(bitmap)
++                        val paint = Paint(Paint.ANTI_ALIAS_FLAG)
++                        paint.color = Color.WHITE
++                        canvas.drawCircle(size / 2f, size / 2f, size / 2f - density, paint)
++                        paint.color = Color.rgb(225, 0, 25)
++                        canvas.drawCircle(size / 2f, size / 2f, size / 2f - 4 * density, paint)
++                        paint.color = Color.WHITE
++                        paint.textSize = 16 * density
++                        paint.isFakeBoldText = true
++                        paint.textAlign = Paint.Align.CENTER
++                        canvas.drawText(count.toString(), size / 2f, size / 2f - (paint.ascent() + paint.descent()) / 2, paint)
++                        BitmapDescriptorFactory.fromBitmap(bitmap).also { iconCache.put(cacheKey, it) }
++                    }
++                }
++                Marker(
++                    state = rememberMarkerState(position = bounds.center).apply { position = bounds.center },
++                    title = "$count homes",
++                    snippet = "Tap to zoom in",
++                    icon = icon,
++                    anchor = Offset(0.5f, 0.5f),
++                    zIndex = 100f,
++                    onClick = {
++                        onClusterClick()
++                        scope.launch {
++                            val currentZoom = cameraState.position.zoom
++                            cameraState.animate(CameraUpdateFactory.newLatLngBounds(bounds, (64 * density).toInt()))
++                            val fitted = cameraState.position
++                            cameraState.animate(CameraUpdateFactory.newCameraPosition(CameraPosition.fromLatLngZoom(
++                                bounds.center, maxOf(currentZoom + 1, fitted.zoom).coerceAtMost(18f)
++                            )))
++                        }
++                        true
++                    }
++                )
+             }
+-            Marker(
+-                state = rememberMarkerState(position = bounds.center).apply { position = bounds.center },
+-                title = "$count homes",
+-                snippet = "Tap to zoom in",
+-                icon = icon,
+-                anchor = Offset(0.5f, 0.5f),
+-                zIndex = 100f,
+-                onClick = {
+-                    onClusterClick()
+-                    scope.launch {
+-                        val currentZoom = cameraState.position.zoom
+-                        cameraState.animate(CameraUpdateFactory.newLatLngBounds(bounds, (64 * density).toInt()))
+-                        val fitted = cameraState.position
+-                        cameraState.animate(CameraUpdateFactory.newCameraPosition(CameraPosition.fromLatLngZoom(
+-                            bounds.center, maxOf(currentZoom + 1, fitted.zoom).coerceAtMost(18f)
+-                        )))
+-                    }
+-                    true
+-                }
+-            )
+         }
+     }
+ }
+diff --git a/app/src/main/java/com/wolfgrid/android/features/map/Map2DPerformance.kt b/app/src/main/java/com/wolfgrid/android/features/map/Map2DPerformance.kt
+new file mode 100644
+--- /dev/null
++++ b/app/src/main/java/com/wolfgrid/android/features/map/Map2DPerformance.kt
+@@ -0,0 +1,14 @@
++package com.wolfgrid.android.features.map
++
++import android.util.Log
++import com.wolfgrid.android.BuildConfig
++
++/** Debug-only timings contain counts and durations, never address/location data. */
++internal object Map2DPerformance {
++    fun record(event: String, startedAtNanos: Long, detail: String = "") {
++        if (BuildConfig.DEBUG) {
++            val elapsedMs = (System.nanoTime() - startedAtNanos) / 1_000_000.0
++            Log.d("Map2DPerformance", "$event durationMs=$elapsedMs $detail")
++        }
++    }
++}
+diff --git a/app/src/main/java/com/wolfgrid/android/features/map/MapCameraControl.kt b/app/src/main/java/com/wolfgrid/android/features/map/MapCameraControl.kt
+--- a/app/src/main/java/com/wolfgrid/android/features/map/MapCameraControl.kt
++++ b/app/src/main/java/com/wolfgrid/android/features/map/MapCameraControl.kt
+@@ -46,7 +46,7 @@
+     ) {
+         PitchYawRollEmblem(
+             color = color.copy(alpha = if (pressed) 0.72f else 1f),
+-            modifier = Modifier.size(31.dp)
++            modifier = Modifier.size(34.dp)
+         )
+     }
+ }
+@@ -64,26 +64,13 @@
+         val center = Offset(size.width * 0.5f, size.height * 0.5f)
+         val strokeWidth = size.minDimension * 0.085f
+         val lineStroke = Stroke(width = strokeWidth, cap = StrokeCap.Round)
+-        val globeRadius = size.minDimension * 0.37f
++        val globeRadius = size.minDimension * 0.34f
+ 
+         drawCircle(color, radius = globeRadius, center = center, style = lineStroke)
+         drawOval(
+             color = color,
+-            topLeft = Offset(center.x - globeRadius * 0.48f, center.y - globeRadius),
+-            size = Size(globeRadius * 0.96f, globeRadius * 2f),
+-            style = lineStroke
+-        )
+-        drawLine(
+-            color,
+-            Offset(center.x - globeRadius, center.y),
+-            Offset(center.x + globeRadius, center.y),
+-            strokeWidth = strokeWidth,
+-            cap = StrokeCap.Round
+-        )
+-        drawOval(
+-            color = color,
+-            topLeft = Offset(center.x - globeRadius * 0.94f, center.y - globeRadius * 0.43f),
+-            size = Size(globeRadius * 1.88f, globeRadius * 0.86f),
++            topLeft = Offset(center.x - globeRadius * 1.3f, center.y - globeRadius * 0.36f),
++            size = Size(globeRadius * 2.6f, globeRadius * 0.72f),
+             style = lineStroke
+         )
+     }
+diff --git a/app/src/main/java/com/wolfgrid/android/features/map/WolfGridGoogle2DMap.kt b/app/src/main/java/com/wolfgrid/android/features/map/WolfGridGoogle2DMap.kt
+--- a/app/src/main/java/com/wolfgrid/android/features/map/WolfGridGoogle2DMap.kt
++++ b/app/src/main/java/com/wolfgrid/android/features/map/WolfGridGoogle2DMap.kt
+@@ -2,6 +2,9 @@
+ 
+ import androidx.compose.runtime.Composable
+ import androidx.compose.runtime.remember
++import androidx.compose.runtime.LaunchedEffect
++import androidx.compose.runtime.snapshotFlow
++import kotlinx.coroutines.flow.distinctUntilChanged
+ import androidx.compose.ui.Modifier
+ import com.google.android.gms.maps.model.LatLng
+ import com.google.maps.android.compose.CameraPositionState
+@@ -29,6 +32,16 @@
+     onMapLongClick: (LatLng) -> Unit = {},
+     content: @Composable @GoogleMapComposable () -> Unit = {}
+ ) {
++    LaunchedEffect(cameraPositionState) {
++        var movementStarted = 0L
++        snapshotFlow { cameraPositionState.isMoving }.distinctUntilChanged().collect { moving ->
++            if (moving) movementStarted = System.nanoTime()
++            else if (movementStarted != 0L) {
++                Map2DPerformance.record("camera_idle", movementStarted)
++                movementStarted = 0L
++            }
++        }
++    }
+     val properties = remember(darkMode, satellite) {
+         MapProperties(
+             mapType = MapType.HYBRID,
+diff --git a/app/src/main/java/com/wolfgrid/android/features/campaign/CampaignManualPinTargets.kt b/app/src/main/java/com/wolfgrid/android/features/campaign/CampaignManualPinTargets.kt
+new file mode 100644
+--- /dev/null
++++ b/app/src/main/java/com/wolfgrid/android/features/campaign/CampaignManualPinTargets.kt
+@@ -0,0 +1,15 @@
++package com.wolfgrid.android.features.campaign
++
++import com.wolfgrid.android.features.map.session.RouteStop
++import java.util.Locale
++
++/** Session pins are available immediately, before campaign-bundle enrichment or reload. */
++internal fun campaignManualPinTargets(
++    targets: List<CampaignMapTargetRenderItem>,
++    dropped: List<RouteStop>,
++    session: List<RouteStop>
++): List<CampaignMapTargetRenderItem> = (
++    session.filter(RouteStop::isManualPin).map(RouteStop::toCampaignMapTargetRenderItem) +
++        dropped.filter(RouteStop::isManualPin).map(RouteStop::toCampaignMapTargetRenderItem) +
++        targets.filter(CampaignMapTargetRenderItem::isManualPin)
++    ).distinctBy { it.id.lowercase(Locale.US) }
+diff --git a/app/src/main/java/com/wolfgrid/android/features/campaign/CampaignScreen.kt b/app/src/main/java/com/wolfgrid/android/features/campaign/CampaignScreen.kt
+--- a/app/src/main/java/com/wolfgrid/android/features/campaign/CampaignScreen.kt
++++ b/app/src/main/java/com/wolfgrid/android/features/campaign/CampaignScreen.kt
+@@ -124,6 +124,7 @@
+ import com.wolfgrid.android.features.buildings.BuildingAddressUiState
+ import com.wolfgrid.android.features.invites.LiveSessionCodeUiState
+ import com.wolfgrid.android.features.map.WolfGridMapboxBasemapCleanup
++import com.wolfgrid.android.features.map.Map2DPerformance
+ import com.wolfgrid.android.features.map.WolfGridMapPitchBearingControl
+ import com.wolfgrid.android.features.map.rememberWolfGridMapStyleJson
+ import com.wolfgrid.android.features.map.session.ActiveSessionTopControls
+@@ -144,6 +145,7 @@
+ import com.wolfgrid.android.features.map.session.SessionMode
+ import com.wolfgrid.android.features.map.session.SessionToolsTray
+ import com.wolfgrid.android.features.map.session.SessionUiState
++import com.wolfgrid.android.features.map.session.isTeammateProtected
+ import com.wolfgrid.android.features.map.session.displayVisitOwner
+ import com.wolfgrid.android.features.map.session.effectiveAddressIds
+ import com.wolfgrid.android.features.map.session.findStopForMapTarget
+@@ -209,6 +211,10 @@
+ import kotlin.math.PI
+ import kotlin.math.abs
+ import kotlin.math.atan2
++import androidx.compose.runtime.snapshotFlow
++import kotlinx.coroutines.flow.filterNotNull
++import kotlinx.coroutines.flow.distinctUntilChanged
++import com.google.maps.android.compose.rememberMarkerState
+ import kotlin.math.cos
+ import kotlin.math.hypot
+ import kotlin.math.max
+@@ -1576,6 +1582,7 @@
+     var selectedTargetId by rememberSaveable(campaign.id) { mutableStateOf<String?>(null) }
+     var selectedParcelId by rememberSaveable(campaign.id) { mutableStateOf<String?>(null) }
+     var manualPinQuickStatus by remember(campaign.id) { mutableStateOf<ManualPinQuickStatusState?>(null) }
++    var quickStatusCardStop by remember(campaign.id) { mutableStateOf<RouteStop?>(null) }
+     var manualPinInitialStatus by remember(campaign.id) { mutableStateOf<Map<String, String>>(emptyMap()) }
+     var manualPinEditStopId by remember(campaign.id) { mutableStateOf<String?>(null) }
+     var progressExpanded by rememberSaveable(sessionState.localSessionId) { mutableStateOf(false) }
+@@ -1620,7 +1627,7 @@
+         mapboxAvailable = token.isNotBlank(),
+         googleAvailable = BuildConfig.GOOGLE_MAPS_API_KEY.isNotBlank(),
+         standardMode = quickStartEnabled,
+-        preferred2D = preferred2D
++        preferred2D = if (BuildConfig.MAP_FORCE_2D) true else preferred2D
+     )
+     val useGoogle2DRenderer = campaignMapRenderer == CampaignMapRenderer.GOOGLE_2D
+     val campaignMapRendererAvailable = campaignMapRenderer != null
+@@ -1729,6 +1736,7 @@
+         droppedStandardPins.firstOrNull { it.id == selectedTargetId }
+     }
+     val selectedMapStop = selectedDroppedPinStop ?: selectedTargetStop ?: selectedBuildingStop ?: selectedParcelStop
++        ?: quickStatusCardStop?.takeIf { it.id == selectedTargetId }
+     val buildingFeatures = rememberPreparedMapValue(
+         campaign.id, emptyList<Feature>(), renderData.buildingPolygons
+     ) {
+@@ -1761,33 +1769,14 @@
+                 .toPinCylinderFeatures()
+         }
+     }
++    val manualPinTargets = remember(renderData.targetPoints, droppedStandardPins, sessionRouteStopsForCampaign) {
++        campaignManualPinTargets(renderData.targetPoints, droppedStandardPins, sessionRouteStopsForCampaign)
++    }
+     val manualPinModelFeatures = rememberPreparedMapValue(
+-        campaign.id, emptyList<Feature>(),
+-        renderData.targetPoints,
+-        droppedStandardPins,
+-        standardModeEnabled,
+-        displayMode
+-    ) {
+-        val visibleTargets = if (standardModeEnabled && displayMode == CampaignMapDisplayMode.HOMES) {
+-            renderData.targetPoints.filter(CampaignMapTargetRenderItem::isManualPin)
+-        } else if (standardModeEnabled) {
+-            renderData.targetPoints
+-        } else {
+-            renderData.targetPoints.filter(CampaignMapTargetRenderItem::isManualPin)
+-        }
+-        val rendered = visibleTargets.toPinModelFeatures()
+-        val dropped = droppedStandardPins.map { stop ->
+-            Feature.fromGeometry(Point.fromLngLat(stop.longitude, stop.latitude)).apply {
+-                addStringProperty("id", stop.id)
+-                addStringProperty("status", stop.mapLayerStatus())
+-                addStringProperty("visit_owner", stop.campaignMapVisitOwner())
+-                addStringProperty("feature_type", "manual_pin")
+-            }
+-        }
+-        (rendered + dropped).distinctBy { it.getStringProperty("id").lowercase(Locale.US) }
+-    }
+-    val tappablePinTargets = remember(renderData.targetPoints, droppedStandardPins) {
+-        (renderData.targetPoints + droppedStandardPins.map(RouteStop::toCampaignMapTargetRenderItem))
++        campaign.id, emptyList<Feature>(), manualPinTargets
++    ) { manualPinTargets.toPinModelFeatures() }
++    val tappablePinTargets = remember(renderData.targetPoints, manualPinTargets) {
++        (manualPinTargets + renderData.targetPoints)
+             .distinctBy { it.id.lowercase(Locale.US) }
+     }
+     val selectedIdentifiers = remember(selectedMapStop) {
+@@ -1826,11 +1815,8 @@
+             .filterNot(CampaignMapTargetRenderItem::isManualPin)
+             .map { target -> target.toCampaignFeatureState(statusRouteStops, statusLookup) }
+     }
+-    val manualPinFeatureStates = remember(renderData.targetPoints, droppedStandardPins, statusRouteStops) {
+-        (renderData.targetPoints.filter(CampaignMapTargetRenderItem::isManualPin) +
+-            droppedStandardPins.map(RouteStop::toCampaignMapTargetRenderItem))
+-            .distinctBy { it.id.lowercase(Locale.US) }
+-            .map { target -> target.toCampaignFeatureState(statusRouteStops, statusLookup) }
++    val manualPinFeatureStates = remember(manualPinTargets, statusRouteStops) {
++        manualPinTargets.map { target -> target.toCampaignFeatureState(statusRouteStops, statusLookup) }
+     }
+     val townhomeFeatureStates = remember(townhomeOverlayData.segments, statusRouteStops) {
+         townhomeOverlayData.segments.mapNotNull { feature ->
+@@ -2047,6 +2033,15 @@
+                 ?.let { return it }
+         }
+         return null
++    }
++
++    fun present2DQuickStatus(stop: RouteStop, startedAtNanos: Long = System.nanoTime()) {
++        quickStatusCardStop = stop
++        selectedBuildingId = null
++        selectedParcelId = null
++        selectedTargetId = if (stop.isTeammateProtected()) stop.id else null
++        manualPinQuickStatus = if (stop.isTeammateProtected()) null else ManualPinQuickStatusState(stop, openedAtNanos = startedAtNanos)
++        hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+     }
+ 
+     fun presentQuickStatus(stop: RouteStop, point: Point, mapView: MapView) {
+@@ -2223,32 +2218,28 @@
+                 },
+                 onUserGesture = { cameraMode = CampaignMapCameraMode.Idle },
+                 onTargetSelected = { target ->
+-                    selectedTargetId = target.id
+-                    selectedBuildingId = null
+-                    selectedParcelId = null
++                    val started = System.nanoTime()
++                    present2DQuickStatus(target.toRouteStop(statusRouteStops), started)
+                 },
+                 onBuildingSelected = { building ->
+-                    selectedBuildingId = building.id
+-                    selectedTargetId = null
+-                    selectedParcelId = null
++                    val started = System.nanoTime()
++                    present2DQuickStatus(building.toRouteStop(statusRouteStops, targets), started)
+                 },
+-                onParcelSelected = { selectParcel(it) },
++                onParcelSelected = { parcel ->
++                    val started = System.nanoTime()
++                    val linked = renderData.targetPoints.findLinkedTargetForParcel(parcel)?.toRouteStop(statusRouteStops)
++                        ?: renderData.buildingPolygons.findLinkedBuildingForParcel(parcel)?.toRouteStop(statusRouteStops, targets)
++                        ?: parcel.toSelectionOnlyRouteStop()
++                    linked?.let { present2DQuickStatus(it, started) }
++                },
+                 onLongPress = { latitude, longitude ->
++                    val started = System.nanoTime()
+                     val point = Point.fromLngLat(longitude, latitude)
+-                    resolveHomeForLongPress(point)?.let { existing ->
+-                        selectedTargetId = existing.id
+-                        selectedBuildingId = null
+-                        selectedParcelId = null
+-                        manualPinQuickStatus = ManualPinQuickStatusState(existing)
+-                        hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+-                    } ?: onCreateManualPin(latitude, longitude)?.let { droppedPin ->
+-                        droppedStandardPins = droppedStandardPins.filterNot { it.id == droppedPin.id } + droppedPin
+-                        selectedTargetId = droppedPin.id
+-                        selectedBuildingId = null
+-                        selectedParcelId = null
+-                        manualPinQuickStatus = ManualPinQuickStatusState(droppedPin)
+-                        hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+-                    }
++                    resolveHomeForLongPress(point)?.let { present2DQuickStatus(it, started) }
++                        ?: onCreateManualPin(latitude, longitude)?.let { droppedPin ->
++                            droppedStandardPins = droppedStandardPins.filterNot { it.id == droppedPin.id } + droppedPin
++                            present2DQuickStatus(droppedPin, started)
++                        }
+                 }
+             )
+         } else {
+@@ -2644,7 +2635,7 @@
+                     )
+                 }
+                 if (!useGoogle2DRenderer && token.isNotBlank()) {
+-                    WolfGridMapPitchBearingControl(onCameraDrag = ::applyFullMapCameraDrag)
++                    WolfGridMapPitchBearingControl(onCameraDrag = ::applyFullMapCameraDrag, color = if (darkMode) Color.White else Color(0xFF333333))
+                 }
+                 if (BuildConfig.GOOGLE_MAPS_API_KEY.isNotBlank() && token.isNotBlank()) CampaignRendererDimensionToggle(
+                     darkMode = darkMode,
+@@ -2678,7 +2669,7 @@
+                     )
+                 }
+                 if (!useGoogle2DRenderer && token.isNotBlank()) {
+-                    WolfGridMapPitchBearingControl(onCameraDrag = ::applyFullMapCameraDrag)
++                    WolfGridMapPitchBearingControl(onCameraDrag = ::applyFullMapCameraDrag, color = if (darkMode) Color.White else Color(0xFF333333))
+                 }
+                 if (BuildConfig.GOOGLE_MAPS_API_KEY.isNotBlank() && token.isNotBlank()) CampaignRendererDimensionToggle(
+                     darkMode = darkMode,
+@@ -2785,6 +2776,10 @@
+             )
+         }
+         manualPinQuickStatus?.let { menu ->
++            LaunchedEffect(menu.openedAtNanos) {
++                androidx.compose.runtime.withFrameNanos { }
++                if (useGoogle2DRenderer) Map2DPerformance.record("tap_to_menu", menu.openedAtNanos)
++            }
+             BoxWithConstraints(
+                 modifier = Modifier
+                     .fillMaxSize()
+@@ -2808,6 +2803,7 @@
+                     isSaving = menu.isSaving,
+                     onStatus = { status ->
+                         manualPinInitialStatus = manualPinInitialStatus + (menu.stop.id to status)
++                        quickStatusCardStop = menu.stop.copy(status = status)
+                         selectedTargetId = menu.stop.id
+                         onMarkStopStatus(menu.stop, status, null)
+                         manualPinQuickStatus = null
+@@ -3025,14 +3021,16 @@
+             cameraState.position = CameraPosition.fromLatLngZoom(center, initialCameraPose.zoom.toFloat())
+         }
+     }
+-    LaunchedEffect(cameraState.position) {
+-        onCameraPoseChanged(
+-            initialCameraPose.copy(
+-                latitude = cameraState.position.target.latitude,
+-                longitude = cameraState.position.target.longitude,
+-                zoom = cameraState.position.zoom.toDouble()
+-            )
+-        )
++    val latestCameraChanged = androidx.compose.runtime.rememberUpdatedState(onCameraPoseChanged)
++    LaunchedEffect(cameraState) {
++        snapshotFlow { if (cameraState.isMoving) null else cameraState.position }
++            .filterNotNull().distinctUntilChanged().collect { camera ->
++                latestCameraChanged.value(initialCameraPose.copy(
++                    latitude = camera.target.latitude,
++                    longitude = camera.target.longitude,
++                    zoom = camera.zoom.toDouble()
++                ))
++            }
+     }
+     LaunchedEffect(cameraState.isMoving, cameraState.cameraMoveStartedReason) {
+         if (cameraState.isMoving && cameraState.cameraMoveStartedReason == CameraMoveStartedReason.GESTURE) {
+@@ -3141,12 +3139,12 @@
+             }
+             val status = if (matchingStop?.cardEngaged == true) "qr_scanned" else matchingStop?.status ?: target.status
+             Marker(
+-                state = MarkerState(LatLng(target.point.latitude(), target.point.longitude())),
++                state = rememberMarkerState(position = LatLng(target.point.latitude(), target.point.longitude())).apply { position = LatLng(target.point.latitude(), target.point.longitude()) },
+                 title = target.label,
+                 snippet = status.statusLabel(),
+-                icon = BitmapDescriptorFactory.defaultMarker(
+-                    campaignGoogleMarkerHue(status, matchingStop?.displayVisitOwner())
+-                ),
++                icon = remember(status, matchingStop?.displayVisitOwner()) {
++                    BitmapDescriptorFactory.defaultMarker(campaignGoogleMarkerHue(status, matchingStop?.displayVisitOwner()))
++                },
+                 onClick = { onTargetSelected(target); true }
+             )
+         }
+@@ -3514,7 +3512,7 @@
+     Surface(
+         onClick = onToggle,
+         color = if (darkMode) Color.Black.copy(alpha = 0.82f) else Color.White,
+-        contentColor = if (darkMode) Color.White else Color.Black,
++        contentColor = if (darkMode) Color.White else Color(0xFF333333),
+         shape = CircleShape,
+         shadowElevation = 6.dp,
+         modifier = Modifier.size(48.dp)
+@@ -3858,7 +3856,7 @@
+ }
+ 
+ private object CampaignMapStatusPalette {
+-    val UntouchedLight = Color(0xFFCFD8E3)
++    val UntouchedLight = Color(0xFFB6D1E6)
+     val UntouchedDark = Color(0xFF475569)
+     val FlyerUntouched = Color(0xFFEF4444)
+     val Touched = Color(0xFF22C55E)
+@@ -3871,7 +3869,7 @@
+     val TeammateTouched = Color(0xFF166534)
+ 
+     fun untouched(darkMode: Boolean): Color = if (darkMode) UntouchedDark else UntouchedLight
+-    fun untouchedHex(darkMode: Boolean): Int = if (darkMode) 0x475569 else 0xCFD8E3
++    fun untouchedHex(darkMode: Boolean): Int = if (darkMode) 0x475569 else 0xB6D1E6
+     fun selectedHex(): Int = 0x94A3B8
+     fun selectedOutline(darkMode: Boolean): Color = if (darkMode) Color(0xFFE2E8F0) else Color(0xFF334155)
+ }
+@@ -5502,7 +5500,7 @@
+     return ownerStop.campaignMapVisitOwner()
+ }
+ 
+-private fun RouteStop.toCampaignMapTargetRenderItem(): CampaignMapTargetRenderItem {
++internal fun RouteStop.toCampaignMapTargetRenderItem(): CampaignMapTargetRenderItem {
+     return CampaignMapTargetRenderItem(
+         id = id,
+         addressIds = effectiveAddressIds(),
+@@ -5513,7 +5511,7 @@
+         labelPoint = Point.fromLngLat(longitude, latitude),
+         status = mapLayerStatus(),
+         visited = visited,
+-        isManualPin = true
++        isManualPin = isManualPin
+     )
+ }
+ 
+diff --git a/app/src/main/java/com/wolfgrid/android/features/map/session/MapSessionScreen.kt b/app/src/main/java/com/wolfgrid/android/features/map/session/MapSessionScreen.kt
+--- a/app/src/main/java/com/wolfgrid/android/features/map/session/MapSessionScreen.kt
++++ b/app/src/main/java/com/wolfgrid/android/features/map/session/MapSessionScreen.kt
+@@ -151,6 +151,7 @@
+ import com.wolfgrid.android.features.campaign.scopedToCampaignBoundary
+ import com.wolfgrid.android.features.invites.LiveSessionCodeUiState
+ import com.wolfgrid.android.features.invites.LiveSessionJoinUiState
++import com.wolfgrid.android.features.map.Map2DPerformance
+ import com.wolfgrid.android.features.map.CampaignPinClusters
+ import com.wolfgrid.android.features.map.WolfGridGoogle2DMap
+ import com.wolfgrid.android.features.map.WolfGridMapboxBasemapCleanup
+@@ -353,7 +354,8 @@
+ internal data class ManualPinQuickStatusState(
+     val stop: RouteStop,
+     val anchorDp: Offset? = null,
+-    val isSaving: Boolean = false
++    val isSaving: Boolean = false,
++    val openedAtNanos: Long = System.nanoTime()
+ )
+ 
+ private enum class EndSummaryMetricVariant { DoorsDistanceTime, DoorsConversationsTime }
+@@ -3736,7 +3738,7 @@
+ private fun multiAddressRowColors(darkMode: Boolean, status: String?): MultiAddressRowColors {
+     val normalized = status.normalizedAddressRowStatus()
+     val baseText = if (darkMode) Color.White else Color.Black
+-    val baseBackground = if (darkMode) Color(0xFF475569) else Color(0xFFCFD8E3)
++    val baseBackground = if (darkMode) Color(0xFF475569) else Color(0xFFB6D1E6)
+     val accent = when (normalized) {
+         "flyer_unvisited" -> Color(0xFFEF4444)
+         "do_not_knock" -> Color(0xFF000000)
+@@ -4932,21 +4934,22 @@
+         mutableStateOf<ManualPinQuickStatusState?>(null)
+     }
+     fun createAndFocusManualPin(latitude: Double, longitude: Double, anchorDp: Offset? = null): RouteStop? {
++        val started = System.nanoTime()
+         val stop = onCreateManualPin(latitude, longitude) ?: return null
+         hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+-        onStopSelected(stop)
+-        manualPinQuickStatus = ManualPinQuickStatusState(stop, anchorDp = anchorDp)
++        manualPinQuickStatus = ManualPinQuickStatusState(stop, anchorDp = anchorDp, openedAtNanos = started)
+         return stop
+     }
+     fun presentExistingHomeQuickStatus(stop: RouteStop, anchorDp: Offset?) {
++        val started = System.nanoTime()
+         hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+-        onStopSelected(stop)
++        if (stop.isTeammateProtected()) onStopSelected(stop)
+         // Teammate-created pins open the protected card directly. Never expose the
+         // radial status/edit actions before the ownership guard is visible.
+         manualPinQuickStatus = if (stop.isTeammateProtected()) {
+             null
+         } else {
+-            ManualPinQuickStatusState(stop, anchorDp = anchorDp)
++            ManualPinQuickStatusState(stop, anchorDp = anchorDp, openedAtNanos = started)
+         }
+     }
+     LaunchedEffect(cardRenderState.localSessionId) {
+@@ -5114,7 +5117,7 @@
+                                     strokeWidth = if (selected) 4f else 3f,
+                                     zIndex = if (selected) 35f else 20f,
+                                     onClick = {
+-                                        selectionStop?.let(onStopSelected)
++                                        selectionStop?.let { presentExistingHomeQuickStatus(it, null) }
+                                     }
+                                 )
+                             }
+@@ -5131,7 +5134,7 @@
+                                     strokeWidth = if (selected) 3.2f else 1.2f,
+                                     zIndex = if (selected) 32f else 10f,
+                                     onClick = {
+-                                        selectionStop?.let(onStopSelected)
++                                        selectionStop?.let { presentExistingHomeQuickStatus(it, null) }
+                                     }
+                                 )
+                             }
+@@ -5175,11 +5178,11 @@
+                                 coordinate = { LatLng(it.latitude, it.longitude) }
+                             ) { stop ->
+                                 Marker(
+-                                    state = MarkerState(LatLng(stop.latitude, stop.longitude)),
++                                    state = rememberMarkerState(position = LatLng(stop.latitude, stop.longitude)).apply { position = LatLng(stop.latitude, stop.longitude) },
+                                     title = stop.label,
+                                     snippet = stop.status?.statusLabel() ?: if (stop.autoArrived) "Nearby" else "Pending",
+                                     onClick = {
+-                                        onStopSelected(stop)
++                                        presentExistingHomeQuickStatus(stop, null)
+                                         true
+                                     }
+                                 )
+@@ -5187,6 +5190,10 @@
+                         }
+                     }
+                     manualPinQuickStatus?.let { menu ->
++                        LaunchedEffect(menu.openedAtNanos) {
++                            androidx.compose.runtime.withFrameNanos { }
++                            if (!useMapboxActiveFieldMap) Map2DPerformance.record("tap_to_menu", menu.openedAtNanos)
++                        }
+                         BoxWithConstraints(
+                             modifier = Modifier
+                                 .fillMaxSize()
+@@ -5371,7 +5378,7 @@
+             if (showCameraDrag) {
+                 WolfGridMapPitchBearingControl(
+                     onCameraDrag = onCameraDrag,
+-                    color = if (darkMode) Color.White else Color.Black
++                    color = if (darkMode) Color.White else Color(0xFF333333)
+                 )
+             }
+         }
+@@ -5640,7 +5647,7 @@
+         Expression.literal("attempted") to rgbExpression(0xF87171),
+         Expression.literal("not_interested") to rgbExpression(0xF87171),
+         Expression.literal("pending_visited") to rgbExpression(0xF59E0B),
+-        fallback = rgbExpression(if (darkMode) 0x475569 else 0xCFD8E3)
++        fallback = rgbExpression(if (darkMode) 0x475569 else 0xB6D1E6)
+     )
+     return Expression.switchCase(
+         Expression.eq(
+@@ -6056,7 +6063,6 @@
+     val manualPinFeatures = remember(visibleRouteStopTopology) {
+         visibleRouteStops
+             .filter(RouteStop::isManualPin)
+-            .take(120)
+             .map { stop ->
+                 stop.toActiveFieldStopFeature(selected = false)
+             }
+@@ -6082,7 +6088,7 @@
+         }
+     }
+     val manualPinFeatureStates = remember(visibleRouteStops, selectedStopKey) {
+-        visibleRouteStops.filter(RouteStop::isManualPin).take(120).map { stop ->
++        visibleRouteStops.filter(RouteStop::isManualPin).map { stop ->
+             stop.toActiveFieldFeatureState(selected = selectedStop?.matchesTargetId(stop.id) == true)
+         }
+     }
+@@ -8349,7 +8355,7 @@
+ }
+ 
+ private fun fieldParcelColor(darkMode: Boolean): Color {
+-    return if (darkMode) Color(0xFF475569) else Color(0xFFCFD8E3)
++    return if (darkMode) Color(0xFF475569) else Color(0xFFB6D1E6)
+ }
+ 
+ private fun buildingPolygonColor(
+@@ -8543,7 +8549,7 @@
+         "do_not_knock" -> Color(0xFF000000)
+         "no_answer", "attempted" -> Color(0xFFF87171)
+         "pending_visited" -> Color(0xFFF59E0B)
+-        else -> if (darkMode) Color(0xFF475569) else Color(0xFFCFD8E3)
++        else -> if (darkMode) Color(0xFF475569) else Color(0xFFB6D1E6)
+     }
+ }
+ 
+diff --git a/app/src/main/java/com/wolfgrid/android/features/map/session/ManualPinSaveGate.kt b/app/src/main/java/com/wolfgrid/android/features/map/session/ManualPinSaveGate.kt
+new file mode 100644
+--- /dev/null
++++ b/app/src/main/java/com/wolfgrid/android/features/map/session/ManualPinSaveGate.kt
+@@ -0,0 +1,22 @@
++package com.wolfgrid.android.features.map.session
++
++import kotlinx.coroutines.CompletableDeferred
++
++/** Status writes must follow the durable create operation for the same UUID. */
++internal class ManualPinSaveGate {
++    class Ticket(val id: String, val ready: CompletableDeferred<Boolean> = CompletableDeferred())
++    private val pending = mutableMapOf<String, Ticket>()
++
++    fun begin(id: String): Ticket {
++        pending.remove(id)?.ready?.complete(false)
++        return Ticket(id).also { pending[id] = it }
++    }
++
++    fun finish(ticket: Ticket, success: Boolean) {
++        if (pending[ticket.id] !== ticket) return
++        ticket.ready.complete(success)
++        if (success) pending.remove(ticket.id)
++    }
++
++    suspend fun await(id: String): Boolean = pending[id]?.ready?.await() ?: true
++}
+diff --git a/app/src/main/java/com/wolfgrid/android/features/map/session/SessionViewModel.kt b/app/src/main/java/com/wolfgrid/android/features/map/session/SessionViewModel.kt
+--- a/app/src/main/java/com/wolfgrid/android/features/map/session/SessionViewModel.kt
++++ b/app/src/main/java/com/wolfgrid/android/features/map/session/SessionViewModel.kt
+@@ -43,6 +43,9 @@
+ 
+     private val statusWriteGuard = SessionStatusWriteGuard()
+     private val statusWriteMutex = Mutex()
++    private val manualPinSaveGate = ManualPinSaveGate()
++    internal fun beginManualPinSave(id: String) = manualPinSaveGate.begin(id)
++    internal fun finishManualPinSave(ticket: ManualPinSaveGate.Ticket, success: Boolean) = manualPinSaveGate.finish(ticket, success)
+     private var ticker: Job? = null
+     private var lastVisitScoringPoint: SessionCoordinate? = null
+     private var lastPresencePublishAtEpochMs: Long = 0L
+@@ -649,6 +652,7 @@
+         statusWriteGuard.begin()
+         viewModelScope.launch {
+             try {
++                if (recordedStop.isManualPin && !manualPinSaveGate.await(recordedStop.id)) return@launch
+                 statusWriteMutex.withLock {
+                     repository.persistLocalSnapshot(updatedState)
+                     repository.recordAddressStatus(
+diff --git a/app/src/main/java/com/wolfgrid/android/ui/WolfGridApp.kt b/app/src/main/java/com/wolfgrid/android/ui/WolfGridApp.kt
+--- a/app/src/main/java/com/wolfgrid/android/ui/WolfGridApp.kt
++++ b/app/src/main/java/com/wolfgrid/android/ui/WolfGridApp.kt
+@@ -361,7 +361,7 @@
+     var preparedRouteStops by remember { mutableStateOf<List<RouteStop>>(emptyList()) }
+     var sessionStartBlockMessage by remember { mutableStateOf<String?>(null) }
+     var sessionStartInProgress by remember { mutableStateOf(false) }
+-    var sessionUses2DMap by rememberSaveable(sessionState.localSessionId) { mutableStateOf(false) }
++    var sessionUses2DMap by rememberSaveable(sessionState.localSessionId) { mutableStateOf(BuildConfig.MAP_FORCE_2D) }
+     var sessionUsesSatelliteMap by rememberSaveable(sessionState.localSessionId) { mutableStateOf(false) }
+     var showPostSessionSummaryPage by rememberSaveable { mutableStateOf(false) }
+     var showTeamChats by rememberSaveable { mutableStateOf(false) }
+@@ -373,7 +373,7 @@
+     var showSettings by rememberSaveable { mutableStateOf(false) }
+     LaunchedEffect(sessionState.isActive) {
+         if (!sessionState.isActive) {
+-            sessionUses2DMap = false
++            sessionUses2DMap = BuildConfig.MAP_FORCE_2D
+             sessionUsesSatelliteMap = false
+         }
+     }
+@@ -722,6 +722,7 @@
+             status = null,
+             isManualPin = true
+         )
++        val saveTicket = sessionVm.beginManualPinSave(addressId)
+         sessionVm.addManualPinStop(stop)
+         tab = DashboardTab.SESSION
+         scope.launch {
+@@ -731,12 +732,30 @@
+                     .onFailure { if (BuildConfig.DEBUG) Log.d("ManualPin", "Google reverse geocode failed", it) }
+                     .getOrNull()
+             }
+-            val queued = withContext(Dispatchers.IO) {
+-                container.buildingAddressRepository.enqueueManualAddressCreate(
+-                    campaignId = campaignId,
+-                    request = fallbackRequest,
+-                    scheduleSync = false
+-                )
++            val queued = try {
++                withContext(Dispatchers.IO) {
++                    val queued = container.buildingAddressRepository.enqueueManualAddressCreate(
++                        campaignId = campaignId,
++                        request = fallbackRequest,
++                        scheduleSync = false
++                    )
++                    if (queued) container.campaignBundleRepository.upsertManualPinAddressLocally(
++                        campaignId, addressId, fallbackLabel, latitude, longitude
++                    )
++                    queued
++                }
++            } catch (error: Exception) {
++                if (error is kotlinx.coroutines.CancellationException) throw error
++                false
++            } finally {
++                // Complete below only after both the outbox and local address are durable.
++                if (kotlinx.coroutines.currentCoroutineContext()[kotlinx.coroutines.Job]?.isActive == false) sessionVm.finishManualPinSave(saveTicket, false)
++            }
++            sessionVm.finishManualPinSave(saveTicket, queued)
++            if (!queued) {
++                geocode.cancel()
++                Toast.makeText(context, "Couldn't save this pin. Please drop it again.", Toast.LENGTH_SHORT).show()
++                return@launch
+             }
+             val resolved = geocode.await()
+ 
+@@ -774,12 +793,6 @@
+                         locality = resolved.locality,
+                         region = resolved.region,
+                         postalCode = resolved.postalCode
+-                    )
+-                }
+-            } else {
+-                withContext(Dispatchers.IO) {
+-                    container.campaignBundleRepository.upsertManualPinAddressLocally(
+-                        campaignId, addressId, fallbackLabel, latitude, longitude
+                     )
+                 }
+             }
+diff --git a/app/src/test/java/com/wolfgrid/android/features/map/CampaignPinLayoutTest.kt b/app/src/test/java/com/wolfgrid/android/features/map/CampaignPinLayoutTest.kt
+new file mode 100644
+--- /dev/null
++++ b/app/src/test/java/com/wolfgrid/android/features/map/CampaignPinLayoutTest.kt
+@@ -0,0 +1,73 @@
++package com.wolfgrid.android.features.map
++
++import org.junit.Assert.*
++import org.junit.Test
++
++class CampaignPinLayoutTest {
++    private val points = (0 until 1000).map { CampaignPinGeometry("home-$it", 43.65 + it * 0.00001, -79.38) }
++
++    @Test fun unchangedAndFractionalZoomReuseTheSameLayout() {
++        val cache = CampaignPinLayout()
++        val first = cache.update(points, 15.1f)
++        repeat(100) { assertSame(first, cache.update(points.toList(), 15.9f)) }
++        assertEquals(1, cache.rebuildCount)
++    }
++
++    @Test fun cameraGestureDefersAllRebuildsUntilIdle() {
++        val cache = CampaignPinLayout()
++        val first = cache.update(points, 10f)
++        repeat(120) { assertSame(first, cache.update(points, 10f + it / 15f, isMoving = true)) }
++        assertEquals(1, cache.rebuildCount)
++        assertEquals(1000, cache.update(points, 18f).size)
++        assertEquals(2, cache.rebuildCount)
++    }
++
++    @Test fun reorderingDoesNotChangeMembershipOrRebuild() {
++        val cache = CampaignPinLayout()
++        val first = cache.update(points, 12f)
++        assertSame(first, cache.update(points.reversed(), 12f))
++        assertEquals(1, cache.rebuildCount)
++    }
++
++    @Test fun everyValidPinAppearsExactlyOnceAtEveryZoom() {
++        val cache = CampaignPinLayout()
++        (0..20).forEach { zoom ->
++            val ids = cache.update(points, zoom.toFloat()).flatMap { it.ids }
++            assertEquals(points.map { it.id }.toSet(), ids.toSet())
++            assertEquals(points.size, ids.size)
++        }
++    }
++
++    @Test fun movingAddingAndRemovingPinsInvalidateGeometry() {
++        val cache = CampaignPinLayout()
++        cache.update(points, 14f)
++        cache.update(points.drop(1), 14f)
++        cache.update(points.drop(1) + CampaignPinGeometry("new", 44.0, -79.0), 14f)
++        cache.update(points.map { if (it.id == "home-5") it.copy(longitude = -80.0) else it }, 14f)
++        assertEquals(4, cache.rebuildCount)
++    }
++
++    @Test fun invalidZoomAndCoordinatesRemainBounded() {
++        val cache = CampaignPinLayout()
++        val invalid = listOf(CampaignPinGeometry("nan", Double.NaN, 0.0), CampaignPinGeometry("outside", 91.0, 0.0))
++        val poles = listOf(CampaignPinGeometry("north", 90.0, 180.0), CampaignPinGeometry("south", -90.0, -180.0))
++        assertEquals(setOf("north", "south"), cache.update(invalid + poles, Float.NaN).flatMap { it.ids }.toSet())
++        assertEquals(2, cache.update(poles, Float.POSITIVE_INFINITY).sumOf { it.ids.size })
++    }
++
++    @Test fun tenThousandPinsReuseLayoutDuringStatusOnlyUpdates() {
++        data class Home(val geometry: CampaignPinGeometry, val status: String)
++        val homes = (0 until 10000).map { Home(CampaignPinGeometry("$it", 43.0 + it % 100 * 0.0001, -79.0 + it / 100 * 0.0001), "untouched") }
++        val cache = CampaignPinLayout()
++        val started = System.nanoTime()
++        cache.update(homes.map { it.geometry }, 15f)
++        val firstMs = (System.nanoTime() - started) / 1_000_000.0
++        val updatesStarted = System.nanoTime()
++        repeat(100) { index ->
++            val updated = homes.mapIndexed { i, home -> if (i == index) home.copy(status = "talked") else home }
++            cache.update(updated.map { it.geometry }, 15f)
++        }
++        println("10k pins: firstMs=$firstMs statusUpdates100Ms=${(System.nanoTime() - updatesStarted) / 1_000_000.0} rebuilds=${cache.rebuildCount}")
++        assertEquals(1, cache.rebuildCount)
++    }
++}
+diff --git a/app/src/test/java/com/wolfgrid/android/features/map/session/ManualPinSaveGateTest.kt b/app/src/test/java/com/wolfgrid/android/features/map/session/ManualPinSaveGateTest.kt
+new file mode 100644
+--- /dev/null
++++ b/app/src/test/java/com/wolfgrid/android/features/map/session/ManualPinSaveGateTest.kt
+@@ -0,0 +1,47 @@
++package com.wolfgrid.android.features.map.session
++
++import kotlinx.coroutines.CoroutineStart
++import kotlinx.coroutines.async
++import kotlinx.coroutines.runBlocking
++import org.junit.Assert.*
++import org.junit.Test
++
++class ManualPinSaveGateTest {
++    @Test fun everyQuickStatusWaitsForItsOwnDurableCreate() = runBlocking {
++        listOf("no_answer", "talked", "hot_lead", "future_seller", "appointment").forEach { status ->
++            val gate = ManualPinSaveGate()
++            val ticket = gate.begin(status)
++            val write = async(start = CoroutineStart.UNDISPATCHED) { gate.await(status) }
++            assertFalse(write.isCompleted)
++            gate.finish(ticket, true)
++            assertTrue(write.await())
++        }
++    }
++
++    @Test fun saveFailureNeverReleasesAnOrphanStatus() = runBlocking {
++        val gate = ManualPinSaveGate()
++        val ticket = gate.begin("pin")
++        gate.finish(ticket, false)
++        assertFalse(gate.await("pin"))
++    }
++
++    @Test fun staleSaveCannotReleaseAReplacementDraft() = runBlocking {
++        val gate = ManualPinSaveGate()
++        val first = gate.begin("pin")
++        val replacement = gate.begin("pin")
++        gate.finish(first, true)
++        assertFalse(first.ready.await())
++        assertFalse(replacement.ready.isCompleted)
++        gate.finish(replacement, true)
++        assertTrue(gate.await("pin"))
++    }
++
++    @Test fun existingAndDifferentPinsAreIndependent() = runBlocking {
++        val gate = ManualPinSaveGate()
++        val pending = gate.begin("pending")
++        assertTrue(gate.await("existing"))
++        assertFalse(pending.ready.isCompleted)
++        gate.finish(pending, true)
++        assertTrue(gate.await("pending"))
++    }
++}
+diff --git a/app/src/test/java/com/wolfgrid/android/features/campaign/CampaignManualPinTargetsTest.kt b/app/src/test/java/com/wolfgrid/android/features/campaign/CampaignManualPinTargetsTest.kt
+new file mode 100644
+--- /dev/null
++++ b/app/src/test/java/com/wolfgrid/android/features/campaign/CampaignManualPinTargetsTest.kt
+@@ -0,0 +1,40 @@
++package com.wolfgrid.android.features.campaign
++
++import com.wolfgrid.android.features.map.session.RouteStop
++import org.junit.Assert.*
++import org.junit.Test
++
++class CampaignManualPinTargetsTest {
++    private fun stop(id: String, manual: Boolean = true) = RouteStop(
++        id = id, label = "Pinned Home", latitude = 43.65, longitude = -79.38, isManualPin = manual
++    )
++
++    @Test fun onlyUserCreatedPinsJoinBuildingsIn3D() {
++        val manual = stop("manual")
++        val address = stop("address", false)
++        val targets = listOf(manual, address).map { it.toCampaignMapTargetRenderItem() }
++        assertFalse(targets.last().isManualPin)
++        assertEquals(listOf("manual"), campaignManualPinTargets(targets, emptyList(), listOf(address)).map { it.id })
++    }
++
++    @Test fun unsyncedSessionAndDroppedPinsSurviveRendererSwitch() {
++        val pins = campaignManualPinTargets(emptyList(), listOf(stop("dropped")), listOf(stop("session"), stop("regular", false)))
++        assertEquals(setOf("dropped", "session"), pins.map { it.id }.toSet())
++    }
++
++    @Test fun allStatusesAndCoordinatesSurviveWithoutDuplicatePins() {
++        listOf("no_answer", "talked", "hot_lead", "future_seller", "appointment").forEach { status ->
++            val stale = stop("PIN")
++            val latest = stop("pin").copy(latitude = 44.0, status = status)
++            val pins = campaignManualPinTargets(listOf(stale.toCampaignMapTargetRenderItem()), listOf(stale), listOf(latest))
++            assertEquals(1, pins.size)
++            assertEquals(44.0, pins.single().point.latitude(), 0.0)
++            assertEquals(status, pins.single().status)
++        }
++    }
++
++    @Test fun everyManualPinRemainsVisibleBeyond120Pins() {
++        val pins = (0 until 250).map { stop("pin-$it") }
++        assertEquals(250, campaignManualPinTargets(emptyList(), emptyList(), pins).size)
++    }
++}
+diff --git a/app/src/androidTest/java/com/wolfgrid/android/features/map/Map2DControlsTest.kt b/app/src/androidTest/java/com/wolfgrid/android/features/map/Map2DControlsTest.kt
+new file mode 100644
+--- /dev/null
++++ b/app/src/androidTest/java/com/wolfgrid/android/features/map/Map2DControlsTest.kt
+@@ -0,0 +1,47 @@
++package com.wolfgrid.android.features.map
++
++import androidx.compose.material3.MaterialTheme
++import androidx.compose.ui.geometry.Offset
++import androidx.compose.ui.test.junit4.createComposeRule
++import androidx.compose.ui.test.onNodeWithContentDescription
++import androidx.compose.ui.test.onNodeWithText
++import androidx.compose.ui.test.performClick
++import androidx.compose.ui.test.performTouchInput
++import androidx.compose.ui.test.swipe
++import com.wolfgrid.android.features.map.session.ManualPinQuickStatusMenu
++import org.junit.Assert.*
++import org.junit.Rule
++import org.junit.Test
++
++class Map2DControlsTest {
++    @get:Rule val compose = createComposeRule()
++
++    @Test fun statusMenuOffersEveryActionWithoutWaitingForAddressLoading() {
++        val selected = mutableListOf<String>()
++        compose.setContent {
++            MaterialTheme {
++                ManualPinQuickStatusMenu(
++                    darkMode = false, addressText = "Pinned Home",
++                    onStatus = { selected += it }, onDismiss = {}, onEdit = {}
++                )
++            }
++        }
++        listOf("No Answer" to "no_answer", "Talked" to "talked", "Lead" to "hot_lead",
++            "Follow Up" to "future_seller", "Appointment" to "appointment").forEach { (label, status) ->
++            compose.onNodeWithText(label).performClick()
++            compose.runOnIdle { assertEquals(status, selected.last()) }
++        }
++        compose.runOnIdle { assertEquals(5, selected.size) }
++    }
++
++    @Test fun twoRingCameraControlRetainsItsDragGesture() {
++        val drags = mutableListOf<Offset>()
++        compose.setContent {
++            MaterialTheme { WolfGridMapPitchBearingControl(onCameraDrag = { drags += it }) }
++        }
++        compose.onNodeWithContentDescription("Drag to rotate or tilt map").performTouchInput {
++            swipe(center, center + Offset(40f, 20f), 300)
++        }
++        compose.runOnIdle { assertTrue(drags.isNotEmpty()) }
++    }
++}
+diff --git a/docs/MAP_2D_PARITY.md b/docs/MAP_2D_PARITY.md
+new file mode 100644
+--- /dev/null
++++ b/docs/MAP_2D_PARITY.md
+@@ -0,0 +1,59 @@
++# Android map parity
++
++This change carries over the approved iOS map changes:
++
++- Untouched light-mode houses use blue-grey `#B6D1E6`; dark-mode houses retain `#475569`.
++- Light map camera controls use charcoal `#333333`.
++- The camera emblem has a front circle and a flat perpendicular ring, with no arrow. Drag rotation/tilt remains available.
++- A 2D marker/building/parcel tap presents the quick status menu before opening the full address card. Teammate ownership protection still opens the protected card.
++- Manual pin creation returns a stable UUID immediately. A selected status waits until its create operation and local address are durable. Failed/stale saves cannot release a different pin's status.
++- Clusters use world-anchored 64-pixel cells, stable keys and a bounded shared icon cache. They rebuild for geometry or integer zoom changes, once the camera settles. Status/label changes retain membership and callbacks use the latest items.
++- Google camera positions are published to the campaign screen at idle instead of every animation frame.
++- Manually created session pins join campaign pins in the 3D model source even before a bundle refresh, with status and coordinates preserved. Regular address pins retain their separate display-mode rules. Session manual pins are no longer capped at 120.
++- Existing haptic strengths are preserved.
++
++## Automated checks
++
++Run in the Android project:
++
++```sh
++./gradlew :app:testProductionDebugUnitTest
++./gradlew :app:connectedProductionDebugAndroidTest \
++  -Pandroid.testInstrumentationRunnerArguments.class=com.wolfgrid.android.features.map.Map2DControlsTest
++```
++
++Focused JVM tests:
++
++- `CampaignPinClustersTest`: grouping, street zoom, stable membership and invalid coordinates.
++- `CampaignPinLayoutTest`: 1,000 pins across zoom levels, 120 deferred gesture updates, status-only updates, reordering, geometry changes and a 10,000-pin benchmark.
++- `ManualPinSaveGateTest`: all five quick statuses, save failure, stale completion and independent pin IDs.
++- `CampaignManualPinTargetsTest`: manual-only model membership, unsynced session pins, all statuses, deduplication and more than 120 pins.
++- Existing `ManualPinInteractionPolicyTest` and `WolfGridMapStylesTest`.
++
++`Map2DControlsTest` exercises the real Compose menu's five actions and the camera control drag gesture. It requires a device/emulator.
++
++## Force 2D and inspect timings
++
++```sh
++./gradlew :app:installProductionDebug -PwolfgridMapForce2D=true
++adb logcat -s Map2DPerformance
++```
++
++The flag forces Google 2D selection in debug builds and resets to 2D for a new session. Release builds always set the flag to false. Rebuild without the property to use normal renderer selection.
++
++Debug events include `cluster_layout` (duration, pin/group counts and rebuild count), `tap_to_menu` (handler entry to the menu's next frame), and `camera_idle` (duration of camera movement). Logs contain no addresses or coordinates. Camera movement duration is not a frame-rate measurement.
++
++## Device verification still required
++
++1. In light and dark mode, inspect house colours and the two-ring icon on campaign and active-session maps.
++2. With 1,000+ pins, pan and pinch across integer zoom levels. Check cluster logs rebuild at idle, then confirm a cluster zooms in and individual markers open the correct menu.
++3. Tap a 2D marker, building and parcel. Choose every quick status, dismiss the menu and edit the card. Check protected teammate pins remain protected.
++4. Drop a pin and immediately choose a status while offline, then reconnect. Confirm the create operation precedes its status and both use the same UUID.
++5. Create manual pins in 2D and switch to 3D buildings before enrichment, after a reload, and with more than 120 pins. Verify manual pins retain their coordinates/status and ordinary address pins follow their previous visibility rules.
++6. Compare gesture smoothness on a real phone; desktop data-processing timings do not establish phone frame rate.
++
++## Validation in this session
++
++The changed production Kotlin files compiled using Kotlin 2.1.10, the Android 36 SDK and cached Google Maps, Mapbox and Compose dependencies. Twenty-two focused JVM tests passed. This compilation used cached project classes for unchanged dependencies and a credential-free verification BuildConfig; it is not a full APK build.
++
++Gradle could not start because the execution sandbox denies its local daemon socket. Device/emulator interaction tests were not run. The original Android folder was read-only from the iOS task, so the port was prepared in a separate working copy and delivered as a patch.

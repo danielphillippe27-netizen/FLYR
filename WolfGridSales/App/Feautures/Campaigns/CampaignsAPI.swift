@@ -67,10 +67,6 @@ struct TerritoryBoundaryUpdate: Encodable {
 }
 
 /// Payload for campaigns.update(status).
-struct CampaignStatusUpdate: Encodable {
-    let status: String
-}
-
 /// Payload for campaigns.update(name/title/type).
 struct CampaignDetailsUpdate: Encodable {
     let name: String
@@ -376,6 +372,9 @@ final class CampaignsAPI {
             dataQualityReason: dbRow.dataQualityReason
         )
         
+        await MainActor.run {
+            OfflinePreloadCoordinator.shared.requireLocalCampaigns([campaign.id], refreshExisting: true)
+        }
         print("✅ [API DEBUG] Campaign creation completed")
         return campaign
     }
@@ -597,6 +596,7 @@ final class CampaignsAPI {
         do {
             let countRes: PostgrestResponse<[CampaignCountRow]> = try await client
                 .rpc("get_campaign_address_counts")
+                .in("campaign_id", values: dbRows.map { $0.id.uuidString })
                 .execute()
             let counts = Dictionary(
                 uniqueKeysWithValues: countRes.value.map { ($0.campaignId, $0.addressCount) }
@@ -989,16 +989,38 @@ final class CampaignsAPI {
 
     /// Update campaign status (e.g. archive).
     func updateCampaignStatus(campaignId: UUID, status: CampaignStatus) async throws {
-        let payload = CampaignStatusUpdate(status: status.rawValue)
-        _ = try await client
-            .from("campaigns")
-            .update(payload)
-            .eq("id", value: campaignId.uuidString)
-            .execute()
+        guard status == .archived else {
+            throw NSError(domain: "CampaignsAPI", code: 400, userInfo: [NSLocalizedDescriptionKey: "This campaign action is not supported."])
+        }
+        try await archiveCampaignThroughBackend(campaignId: campaignId)
 
         try await verifyCampaignStatus(campaignId: campaignId, expectedStatus: status)
         await CampaignRepository.shared.updateCachedCampaignStatus(campaignId: campaignId, status: status)
         print("✅ [API] Updated campaign \(campaignId) status to \(status.rawValue)")
+    }
+
+    private func archiveCampaignThroughBackend(campaignId: UUID) async throws {
+        let url = Config.backendAPIURL
+            .appendingPathComponent("api")
+            .appendingPathComponent("campaigns")
+            .appendingPathComponent(campaignId.uuidString)
+        var request = URLRequest(url: url)
+        request.httpMethod = "PATCH"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let session = try await client.auth.session
+        request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["status": CampaignStatus.archived.rawValue])
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw NSError(domain: "CampaignsAPI", code: -1, userInfo: [NSLocalizedDescriptionKey: "Campaign archiving did not receive a valid server response."])
+        }
+        guard (200...299).contains(http.statusCode) else {
+            let message = Self.extractMessageFromErrorBody(data) ?? "Campaign could not be archived. Please try again."
+            throw NSError(domain: "CampaignsAPI", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: message])
+        }
     }
 
     func deleteCampaign(campaignId: UUID) async throws {
@@ -1692,7 +1714,13 @@ final class CampaignAssignmentsAPI {
             ])
         }
 
-        return try JSONDecoder().decode(CampaignAssignmentsResponse.self, from: data)
+        let result = try JSONDecoder().decode(CampaignAssignmentsResponse.self, from: data)
+        await MainActor.run {
+            OfflinePreloadCoordinator.shared.requireLocalCampaigns(
+                result.assignments.filter(\.isActive).map(\.campaignId)
+            )
+        }
+        return result
     }
 
     func respond(assignmentId: UUID, action: String) async throws {

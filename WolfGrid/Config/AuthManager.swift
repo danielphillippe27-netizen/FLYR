@@ -1,6 +1,7 @@
 import Foundation
 import Combine
 import Supabase
+import Auth
 import GoogleSignIn
 import AuthenticationServices
 import CryptoKit
@@ -92,6 +93,15 @@ final class AuthManager: ObservableObject {
                 return
             }
 
+            // A server outage or transient connection error is not evidence
+            // that the saved credentials were revoked. Keep them for retry.
+            if Self.isTransientSessionRestoreFailure(error) {
+                user = nil
+                #if DEBUG
+                print("🔍 Session restore temporarily unavailable; retained credentials: \(error.localizedDescription)")
+                #endif
+                return
+            }
             KeychainAuthStorage.clearAll()
             user = nil
             syncWorkspaceContext(for: nil)
@@ -101,7 +111,22 @@ final class AuthManager: ObservableObject {
         }
     }
 
+    static func isTransientSessionRestoreFailure(_ error: Error) -> Bool {
+        if let authError = error as? Auth.AuthError,
+           case .api(_, _, _, let response) = authError {
+            return response.statusCode >= 500 || response.statusCode == 429
+        }
+        let nsError = error as NSError
+        return nsError.domain == NSURLErrorDomain && nsError.code != NSURLErrorUserAuthenticationRequired
+    }
+
     func signOut() async {
+        // Finish the field session while this account still has credentials to
+        // save its progress. Backgrounding the app does not sign the user out.
+        await SessionManager.shared.stopBuildingSession(presentSummary: false)
+        if NetworkMonitor.shared.isOnline {
+            await OfflineSyncCoordinator.shared.flushBeforeSignOut()
+        }
         await SessionChatStore.shared.resetForAccountChange()
         KeychainAuthStorage.clearAll()
         do { try await client.auth.signOut() } catch {}

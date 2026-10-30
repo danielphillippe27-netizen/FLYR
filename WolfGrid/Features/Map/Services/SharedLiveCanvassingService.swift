@@ -317,6 +317,9 @@ final class SharedLiveCanvassingService: ObservableObject {
               let campaignId,
               let sessionId,
               let userId else { return }
+        // Recheck at the service boundary in case a queued real-session task resumed in a demo.
+        guard !(SessionManager.shared.isDemoSession && SessionManager.shared.sessionId == sessionId) else { return }
+
 
         if await WolfyPresencePublisherV2.shared.handle(campaign: campaignId, session: sessionId, user: userId,
                                                        location: location, paused: isPaused) { return }

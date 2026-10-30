@@ -473,44 +473,20 @@ final class VisitsAPI {
         let uniqueAddressIds = deduplicated(addressIds)
         guard !uniqueAddressIds.isEmpty else { return [] }
 
+        let persistenceTrace = PerfTrace.begin("home_status", "persist_and_enqueue")
+        defer { persistenceTrace.end(status: "finished") }
         let now = Date()
-        let previousStatusRows = await campaignRepository.getStatuses(campaignId: campaignId)
-        let baseRevisions = Dictionary(uniqueKeysWithValues: uniqueAddressIds.map {
-            (
-                $0.uuidString.lowercased(),
-                CampaignStatusRevisionChain.baseRevision(from: previousStatusRows[$0]?.revision)
-            )
-        })
-        let localRows = await campaignRepository.updateStatusLocally(
-            addressIds: uniqueAddressIds,
-            campaignId: campaignId,
-            buildingId: sessionTargetId,
-            status: status,
-            notes: notes,
-            occurredAt: now,
-            sessionId: sessionId
-        )
-        guard !localRows.isEmpty else {
-            debugLog("⚠️ [VisitsAPI] Local status update returned no rows, falling back to direct remote sync")
-            return try await performRemoteTargetStatusUpdate(
-                addressIds: uniqueAddressIds,
-                campaignId: campaignId,
-                status: status,
-                notes: notes,
-                sessionId: sessionId,
-                sessionTargetId: sessionTargetId,
-                sessionEventType: sessionEventType,
-                location: location,
-                overrideReason: overrideReason
-            )
-        }
-
-        invalidateStatusCache(campaignId: campaignId)
-        cacheStatuses(localRows, scope: StatusFetchScope(campaignId: campaignId, farmCycleNumber: nil))
         let farmExecutionContext = await MainActor.run { SessionManager.shared.currentFarmExecutionContext }
         let matchingFarmExecutionContext = farmExecutionContext?.campaignId == campaignId ? farmExecutionContext : nil
-
-        let payload = AddressStatusOutboxPayload(
+        let databaseTrace = PerfTrace.begin("home_status", "atomic_local_save")
+        let localRows: [AddressStatusRow]
+        do {
+            localRows = try await campaignRepository.updateStatusLocally(
+                addressIds: uniqueAddressIds, campaignId: campaignId, buildingId: sessionTargetId,
+                status: status, notes: notes, occurredAt: now, sessionId: sessionId,
+                farmExecutionContext: matchingFarmExecutionContext
+            ) { baseRevisions in
+            AddressStatusOutboxPayload(
             campaignId: campaignId.uuidString,
             addressIds: uniqueAddressIds.map(\.uuidString),
             buildingId: sessionTargetId,
@@ -527,30 +503,14 @@ final class VisitsAPI {
             overrideReason: overrideReason
         )
 
-        await outboxRepository.enqueue(
-            entityType: "address_status",
-            entityId: uniqueAddressIds.map(\.uuidString).joined(separator: ","),
-            operation: .upsertAddressStatus,
-            payload: payload,
-            dependencyKey: matchingFarmExecutionContext.map {
-                "farm_touch:\($0.touchId.uuidString.lowercased())"
-            } ?? "address_status:\(campaignId.uuidString.lowercased()):\(uniqueAddressIds.map { $0.uuidString.lowercased() }.joined(separator: ","))"
-        )
-        if let matchingFarmExecutionContext,
-           sessionId != nil {
-            let occurredAt = OfflineDateCodec.date(from: payload.occurredAt) ?? now
-            for addressId in uniqueAddressIds {
-                await FarmOfflineRepository.shared.recordAddressOutcome(
-                    context: matchingFarmExecutionContext,
-                    addressId: addressId,
-                    status: status,
-                    notes: notes,
-                    occurredAt: occurredAt,
-                    dirty: true
-                )
             }
+            databaseTrace.end(status: "committed")
+        } catch {
+            databaseTrace.end(status: "failed")
+            throw error
         }
-
+        invalidateStatusCache(campaignId: campaignId)
+        cacheStatuses(localRows, scope: StatusFetchScope(campaignId: campaignId, farmCycleNumber: nil))
         if NetworkMonitor.shared.isOnline {
             await MainActor.run {
                 OfflineSyncCoordinator.shared.scheduleProcessOutbox()
@@ -1128,7 +1088,7 @@ final class VisitsAPI {
         if let baseRevision {
             currentRevision = baseRevision
         } else {
-            currentRevision = await campaignRepository.getStatuses(campaignId: campaignId)[addressId]?.revision ?? 0
+            currentRevision = await campaignRepository.getStatuses(campaignId: campaignId, addressIds: [addressId])[addressId]?.revision ?? 0
         }
         var canonicalParams: [String: AnyCodable] = [
             "p_campaign_id": AnyCodable(campaignId),

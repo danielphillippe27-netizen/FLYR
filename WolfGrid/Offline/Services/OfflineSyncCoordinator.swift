@@ -26,6 +26,7 @@ final class OfflineSyncCoordinator: ObservableObject {
     @Published private(set) var lastSyncAt: Date?
     @Published private(set) var conflicts: [CampaignMutationConflict] = []
     @Published private(set) var automaticallyAcceptedStatusRows: [UUID: AddressStatusRow] = [:]
+    @Published private(set) var resolvedBuildingLocations: [UUID: ManualAddressCreateOutboxPayload] = [:]
 
     private let outboxRepository = OutboxRepository.shared
     private let campaignRepository = CampaignRepository.shared
@@ -145,6 +146,13 @@ final class OfflineSyncCoordinator: ObservableObject {
         }
     }
 
+    func flushBeforeSignOut() async {
+        // A session end may already have scheduled a sync. Let that finish
+        // before attempting another pass and clearing the account credentials.
+        await processingTask?.value
+        await processOutbox()
+    }
+
     func processOutbox() async {
         guard networkMonitor.isOnline else {
             await refreshPendingCount()
@@ -161,6 +169,7 @@ final class OfflineSyncCoordinator: ObservableObject {
         let currentBuild = Int(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "") ?? 0
         await outboxRepository.resumeUpgradeBlockedEntries(currentBuild: currentBuild)
         await outboxRepository.resetStaleProcessing()
+        await CampaignMapEditStore.shared.resumePending()
 
         while networkMonitor.isOnline {
             let pending = await outboxRepository.fetchPending(limit: 20)
@@ -679,12 +688,32 @@ final class OfflineSyncCoordinator: ObservableObject {
             await CampaignDownloadService.shared.recordSuccessfulSync(campaignId: payload.campaignId)
 
         case .createManualAddress:
-            guard let payload = entry.decodedPayload(ManualAddressCreateOutboxPayload.self),
+            guard var payload = entry.decodedPayload(ManualAddressCreateOutboxPayload.self),
                   let addressId = UUID(uuidString: payload.addressId) else {
                 throw OutboxProcessingError.invalidPayload(operation: entry.operation, entryId: entry.id)
             }
 
-            try await BuildingLinkService.shared.performRemoteCreateManualAddress(
+            if payload.addressProvenance == AutomaticBuildingLocation.provenance {
+                let description = await AutomaticBuildingLocation.reverseGeocode(payload)
+                try Task.checkCancellation()
+                // Freeze even a failed lookup before submitting. An ambiguous
+                // network retry must never reuse the mutation ID with new text.
+                let attempted = description ?? AutomaticBuildingLocation.unresolvedPayload(payload)
+                try await outboxRepository.saveResolvedManualAddressCreate(entryId: entry.id, payload: attempted)
+                payload = attempted
+            }
+            if payload.addressProvenance == AutomaticBuildingLocation.resolvedProvenance {
+                await campaignRepository.updateManualAddressGeocodeLocally(
+                    campaignId: payload.campaignId, addressId: addressId,
+                    coordinate: nil, formatted: payload.formatted,
+                    houseNumber: payload.houseNumber, streetName: payload.streetName,
+                    locality: payload.locality, region: payload.region, postalCode: payload.postalCode
+                )
+                resolvedBuildingLocations[addressId] = payload
+            }
+            try Task.checkCancellation()
+
+            let response = try await BuildingLinkService.shared.performRemoteCreateManualAddress(
                 campaignId: payload.campaignId,
                 input: ManualAddressCreateInput(
                     coordinate: CLLocationCoordinate2D(
@@ -708,6 +737,12 @@ final class OfflineSyncCoordinator: ObservableObject {
                 addressId: addressId,
                 clientMutationId: entry.clientMutationId ?? entry.id
             )
+            if AutomaticBuildingLocation.isAutomatic(payload.addressProvenance),
+               response.address.id != addressId {
+                // Do not send queued outcomes to a different home if an older
+                // server unexpectedly deduplicates this location.
+                throw OutboxProcessingError.invalidPayload(operation: entry.operation, entryId: entry.id)
+            }
             await CampaignDownloadService.shared.recordSuccessfulSync(campaignId: payload.campaignId)
 
         case .linkAddressToBuilding:

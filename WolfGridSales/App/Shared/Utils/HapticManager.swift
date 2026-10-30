@@ -48,6 +48,11 @@ enum HapticManager {
         gen.notificationOccurred(.success)
     }
 
+    /// House selections and pin drops share the native pin-save vibration pattern.
+    static func mapSelection() {
+        success()
+    }
+
     /// Error actions
     static func error() {
         let gen = UINotificationFeedbackGenerator()

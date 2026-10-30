@@ -15,6 +15,18 @@ class MapboxManager {
 }
 
 final class DisplayLinkRecoveringMapView: MapView {
+    var onValidLayout: (() -> Void)?
+    private var lastValidLayoutSize: CGSize = .zero
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        guard bounds.width.isFinite, bounds.height.isFinite,
+              bounds.width > 96, bounds.height > 96,
+              bounds.size != lastValidLayoutSize else { return }
+        lastValidLayoutSize = bounds.size
+        DispatchQueue.main.async { [weak self] in self?.onValidLayout?() }
+    }
+
     override func didMoveToWindow() {
         super.didMoveToWindow()
         refreshDisplayLinkState()
@@ -88,6 +100,52 @@ final class MapboxOfflineService {
         }
     }
 
+    func campaignRegionStorageBytes(campaignId: String) async -> UInt64 {
+        await withCheckedContinuation { continuation in
+            tileStore.tileRegion(forId: tileRegionIdentifier(for: campaignId)) { result in
+                continuation.resume(returning: (try? result.get().completedResourceSize) ?? 0)
+            }
+        }
+    }
+
+    /// Checks stored resources and descriptors instead of trusting an old download flag.
+    func hasCompleteCampaignRegion(campaignId: String) async -> Bool {
+        let regionId = tileRegionIdentifier(for: campaignId)
+        let complete: Bool = await withCheckedContinuation { continuation in
+            tileStore.tileRegion(forId: regionId) { result in
+                guard case .success(let region) = result else {
+                    continuation.resume(returning: false)
+                    return
+                }
+                continuation.resume(returning: region.requiredResourceCount > 0 &&
+                    region.completedResourceCount >= region.requiredResourceCount)
+            }
+        }
+        guard complete else { return false }
+        let styleURIs = MapTheme.campaignOfflineStyleURIs
+        for styleURI in styleURIs {
+            let ready: Bool = await withCheckedContinuation { continuation in
+                offlineManager.stylePack(for: styleURI) { result in
+                    guard case .success(let pack) = result else {
+                        continuation.resume(returning: false)
+                        return
+                    }
+                    continuation.resume(returning: pack.requiredResourceCount > 0 &&
+                        pack.completedResourceCount >= pack.requiredResourceCount)
+                }
+            }
+            guard ready else { return false }
+        }
+        let descriptors = styleURIs.map {
+            offlineManager.createTilesetDescriptor(for: TilesetDescriptorOptions(styleURI: $0, zoomRange: zoomRange, tilesets: nil))
+        }
+        return await withCheckedContinuation { continuation in
+            tileStore.tileRegionContainsDescriptors(forId: regionId, descriptors: descriptors) { result in
+                continuation.resume(returning: (try? result.get()) == true)
+            }
+        }
+    }
+
     private func loadStylePack(
         styleURI: StyleURI,
         onProgress: @escaping (Double) -> Void
@@ -97,7 +155,7 @@ final class MapboxOfflineService {
             metadata: ["scope": "campaign-offline", "style_uri": styleURI.rawValue],
             acceptExpired: false
         ) else {
-            return
+            throw CampaignOfflineMapError.missingRegionGeometry
         }
 
         try await withCheckedThrowingContinuation { continuation in

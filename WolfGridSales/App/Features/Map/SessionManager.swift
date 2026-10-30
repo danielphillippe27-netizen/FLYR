@@ -590,6 +590,8 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         showBackgroundLocationUpgradePrompt = true
     }
 
+    private var lastDemoTimerDiagnosticSecond = -1
+
     private func startElapsedTimer() {
         timer?.invalidate()
         let newTimer = Timer.scheduledTimer(
@@ -615,6 +617,13 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
             return
         }
         elapsedTime = currentActiveElapsedTime()
+        if isDemoSession {
+            let second = Int(elapsedTime)
+            if second != lastDemoTimerDiagnosticSecond, second < 3 || second.isMultiple(of: 10) {
+                lastDemoTimerDiagnosticSecond = second
+                PerfTrace.event("demo_playback", "timer", fields: ["seconds": second, "homes": completedCount])
+            }
+        }
         evaluateLongRunningSession()
 
         // Periodic refresh of Live Activity so lock screen widget timer stays correct
@@ -654,6 +663,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         isPaused: Bool,
         force: Bool = false
     ) async {
+        guard !isDemoSession else { return }
         await sharedLiveCanvassingService.publishTeamPresence(
             campaignId: campaignId,
             sessionId: sessionId,
@@ -1324,6 +1334,9 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         initialLocation: CLLocationCoordinate2D? = nil
     ) {
         sessionRestoredThisLaunch = false
+        lastDemoTimerDiagnosticSecond = -1
+        isDemoSession = true
+        Task { await liveActivityManager.end() }
         sessionId = UUID()
         SessionManager.lastEndedSummaryMapSnapshot = nil
         self.campaignId = campaignId
@@ -1990,6 +2003,9 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
             appointmentsSet = appointmentAddressIds.count
         }
         refreshCompletedBuildingSnapshot()
+        if completedCount == 1 || completedCount == targetCount {
+            PerfTrace.event("demo_playback", "progress", fields: ["homes": completedCount, "targets": targetCount])
+        }
     }
 
     func markUndoLocallyAfterPersistedOutcome(_ targetId: String) async {
@@ -2943,11 +2959,13 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
                 return
             }
         }
-        await safetyBeaconService.endSession(location: finalLocation)
-        await sharedLiveCanvassingService.clearTeamPresence(
-            campaignId: finalCampaignId,
-            userId: finalUserId
-        )
+        if !finalIsDemoSession {
+            await safetyBeaconService.endSession(location: finalLocation)
+            await sharedLiveCanvassingService.clearTeamPresence(
+                campaignId: finalCampaignId,
+                userId: finalUserId
+            )
+        }
         if !finalIsDemoSession, let userId = finalUserId {
             do {
                 try await SessionParticipantsService.shared.markParticipantLeft(
@@ -2962,7 +2980,9 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
                 }
             }
         }
-        await sharedLiveCanvassingService.leaveCurrentSession()
+        if !finalIsDemoSession {
+            await sharedLiveCanvassingService.leaveCurrentSession()
+        }
         activeSharedLiveSessionId = nil
         // #endregion
         await liveActivityManager.end()
@@ -3615,7 +3635,6 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
             lastLiveActivityPeriodicSync = nil
             lastSharedLivePresencePeriodicSync = nil
             lastTeamLivePresencePeriodicSync = nil
-            await liveActivityManager.end()
             return
         }
         guard isActive, let liveActivityState else {

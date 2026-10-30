@@ -14,6 +14,7 @@ struct FarmMapView: View {
     @EnvironmentObject private var uiState: AppUIState
     @ObservedObject private var sessionManager = SessionManager.shared
     @StateObject private var viewModel: FarmMapViewModel
+    @AppStorage("campaign_map_coverage_mode") private var coverageMode = false
     @State private var displayMode: DisplayMode = .buildings
     @State private var mapView: MapView?
     @State private var layerManager: MapLayerManager?
@@ -23,6 +24,7 @@ struct FarmMapView: View {
     @State private var selectedAddress: MapLayerManager.AddressTapResult?
     @State private var selectedAddressIdForCard: UUID?
     @State private var showLocationCard = false
+    @State private var coverageStatusesLoaded = false
     @State private var addressStatuses: [UUID: AddressStatus] = [:]
     @State private var resolvedAddressIdsByBuilding: [String: [UUID]] = [:]
     @State private var deletedAddressIds: Set<UUID> = []
@@ -103,6 +105,9 @@ struct FarmMapView: View {
             .onChange(of: viewModel.isLoadingBuildings) { _, isLoading in
                 refreshBuildingRenderMonitoring(reset: isLoading)
             }
+            .onChange(of: coverageMode) { _, enabled in
+                layerManager?.setCoverageMode(enabled)
+            }
             .onChange(of: displayMode) { _, _ in
                 refreshBuildingRenderMonitoring(reset: false)
             }
@@ -173,6 +178,16 @@ struct FarmMapView: View {
                 updateMapData()
             }
             Spacer(minLength: 8)
+            Menu {
+                Toggle("Coverage Mode", isOn: $coverageMode)
+            } label: {
+                Image(systemName: "gearshape.fill")
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundColor(.white)
+                    .padding(12)
+                    .background(Color.black.opacity(0.8), in: RoundedRectangle(cornerRadius: 12))
+            }
+            .accessibilityLabel("Map settings")
             closeButton
         }
         .padding(.top, 8)
@@ -180,6 +195,30 @@ struct FarmMapView: View {
         .safeAreaPadding(.top, 48)
         .safeAreaPadding(.leading, 4)
         .safeAreaPadding(.trailing, 4)
+        .overlay(alignment: .top) {
+            if coverageMode {
+                Text(farmCoverageLabel)
+                    .font(.system(size: 14, weight: .semibold).monospacedDigit())
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 12).padding(.vertical, 7)
+                    .background(Color.black.opacity(0.8), in: Capsule())
+                    .padding(.top, 104)
+                    .allowsHitTesting(false)
+            }
+        }
+    }
+
+    private var farmCoverageLabel: String {
+        let homes = visibleAddresses
+        guard coverageStatusesLoaded, !homes.isEmpty else { return "Coverage —" }
+        let count = homes.filter { home in
+            let status = addressStatuses[home.id] ?? (farmCycleNumber == nil ? home.resolvedStatus : .none)
+            switch status {
+            case .none, .untouched, .doNotKnock: return false
+            default: return true
+            }
+        }.count
+        return "\(Int((Double(count) / Double(homes.count) * 100).rounded()))% covered"
     }
 
     private var closeButton: some View {
@@ -249,6 +288,7 @@ struct FarmMapView: View {
         let styleLoaded = map.mapboxMap.onStyleLoaded.observe { _ in
             Self.removeStyleBuildingLayers(map: map)
             manager.setupLayers()
+            manager.setCoverageMode(coverageMode)
             updateMapData()
             fitMapToFarmIfNeeded(map: map, force: true)
             refreshBuildingRenderMonitoring(reset: false)
@@ -1353,6 +1393,7 @@ struct FarmMapView: View {
     private func mergeStatusesIntoMap(_ statuses: [UUID: AddressStatus]) {
         guard let manager = layerManager else { return }
 
+        coverageStatusesLoaded = true
         let visibleAddressIds = Set(visibleAddresses.map(\.id))
         addressStatuses = addressStatuses.filter { visibleAddressIds.contains($0.key) }
 

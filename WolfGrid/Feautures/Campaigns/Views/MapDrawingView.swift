@@ -6,6 +6,9 @@ struct MapDrawingView: View {
     let initialCenter: CLLocationCoordinate2D?
     @Environment(\.colorScheme) private var colorScheme
 
+    @AppStorage("stormMapsEnabled") private var stormMapsEnabled = false
+    @State private var showStorms = false
+    @EnvironmentObject private var uiState: AppUIState
     @State private var polygonVertices: [CLLocationCoordinate2D] = []
     @State private var useSatellite: Bool = true
     @State private var isDrawingEnabled: Bool = true
@@ -116,6 +119,14 @@ struct MapDrawingView: View {
                 }
             }
         }
+        .fullScreenCover(isPresented: $showStorms) {
+            StormCampaignBrowser(initialCenter: mapCenter) { id in
+                showStorms = false
+                uiState.selectCampaign(id: id, name: "Storm campaign", boundaryCoordinates: [])
+                uiState.selectedTabIndex = 1
+                dismiss()
+            }
+        }
         .navigationTitle("Draw on Map")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
@@ -173,6 +184,13 @@ struct MapDrawingView: View {
                     .background(.ultraThinMaterial, in: Circle())
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("Map style")
+
+            if stormMapsEnabled {
+                mapToolButton(title: "Storms", systemImage: "cloud.bolt.rain.fill", isSelected: showStorms, isEnabled: true) {
+                    showStorms = true
+                }
+            }
         }
     }
 

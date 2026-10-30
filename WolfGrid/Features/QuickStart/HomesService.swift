@@ -35,12 +35,11 @@ final class HomesService {
             tags: quickStartTags,
             addressesJSON: [],
             workspaceId: workspaceId,
-            mapMode: CampaignMapMode.standardPins.rawValue
+            mapMode: CampaignMapMode.hybrid.rawValue
         )
 
-        print("🌐 [QuickStart] Creating instant Standard Mode campaign shell")
+        print("🌐 [QuickStart] Creating radius campaign shell")
         let campaign = try await CampaignsAPI.shared.createV2(payload)
-        try await updateQuickStartBoundary(campaignId: campaign.id, center: center, radiusMeters: radiusMeters)
         return campaign
     }
 
@@ -50,12 +49,6 @@ final class HomesService {
         limitHomes: Int,
         workspaceId: UUID
     ) async throws -> (campaign: CampaignV2, isNew: Bool) {
-        if let existing = try await CampaignsAPI.shared.fetchQuickStartMapCampaign(workspaceId: workspaceId) {
-            print("✅ [QuickStart] Reusing existing campaign \(existing.id)")
-            try await updateQuickStartBoundary(campaignId: existing.id, center: center, radiusMeters: radiusMeters)
-            return (existing, false)
-        }
-
         let campaign = try await createQuickStartCampaignShell(
             center: center,
             radiusMeters: radiusMeters,
@@ -76,7 +69,6 @@ final class HomesService {
             campaignId: campaignId,
             polygonGeoJSON: polygonGeoJSON
         )
-        try await CampaignsAPI.shared.enableStandardPinsMode(campaignId: campaignId)
     }
 
     func prepareQuickStartCampaignData(

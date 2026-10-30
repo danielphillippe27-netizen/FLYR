@@ -278,13 +278,22 @@ import OSLog
     }
     private func hideEmbeddedAccessories(in root:Entity) {
         for child in root.children {
-            if child.name.hasPrefix("wolfy_item_") { child.isEnabled=false }
-            hideEmbeddedAccessories(in:child)
+            if child.name.hasPrefix("wolfy_item_") {
+                child.isEnabled=false
+            } else {
+                hideEmbeddedAccessories(in:child)
+            }
         }
     }
     @discardableResult private func setEmbeddedAccessory(_ id:String,enabled:Bool,in root:Entity) -> Bool {
         guard let entity=root.findEntity(named:"wolfy_item_\(id)") else { return false }
-        entity.isEnabled=enabled
+        // USDZ exports each item as an Xform with a same-named Mesh child.
+        // Both may already be disabled in a loaded model, so restore the whole subtree.
+        func setEnabled(_ node:Entity) {
+            node.isEnabled=enabled
+            for child in node.children { setEnabled(child) }
+        }
+        setEnabled(entity)
         return true
     }
     func rotate(_ radians: Float) {

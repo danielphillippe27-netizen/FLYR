@@ -47,26 +47,43 @@ private actor BuildingFetchDeduper {
 
 private actor MapBundleFetchDeduper {
     private var tasks: [String: Task<CampaignMapBundleFetchResult, Error>] = [:]
+    private var callbacks: [String: [@Sendable (CanonicalCampaignTiles) async -> Void]] = [:]
+    private var publishedTiles: [String: CanonicalCampaignTiles] = [:]
+
+    private func key(_ campaignId: String, _ localSignature: String?) -> String {
+        let signature = localSignature?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return "\(campaignId.lowercased())|\(signature?.isEmpty == false ? signature! : "none")"
+    }
 
     func task(
         for campaignId: String,
         localSignature: String?,
+        onTilesReady: (@Sendable (CanonicalCampaignTiles) async -> Void)?,
         creating createTask: () -> Task<CampaignMapBundleFetchResult, Error>
     ) -> (task: Task<CampaignMapBundleFetchResult, Error>, isExisting: Bool) {
-        let signature = localSignature?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let key = "\(campaignId.lowercased())|\(signature?.isEmpty == false ? signature! : "none")"
-        if let existing = tasks[key] {
-            return (existing, true)
+        let key = key(campaignId, localSignature)
+        if let callback = onTilesReady {
+            if let tiles = publishedTiles[key] { Task { await callback(tiles) } }
+            else { callbacks[key, default: []].append(callback) }
         }
+        if let existing = tasks[key] { return (existing, true) }
         let task = createTask()
         tasks[key] = task
         return (task, false)
     }
 
+    func publish(_ tiles: CanonicalCampaignTiles, for campaignId: String, localSignature: String?) async {
+        let key = key(campaignId, localSignature)
+        publishedTiles[key] = tiles
+        let listeners = callbacks.removeValue(forKey: key) ?? []
+        for listener in listeners { await listener(tiles) }
+    }
+
     func clear(for campaignId: String, localSignature: String?) {
-        let signature = localSignature?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let key = "\(campaignId.lowercased())|\(signature?.isEmpty == false ? signature! : "none")"
+        let key = key(campaignId, localSignature)
         tasks.removeValue(forKey: key)
+        callbacks.removeValue(forKey: key)
+        publishedTiles.removeValue(forKey: key)
     }
 }
 
@@ -379,6 +396,9 @@ struct CanonicalCampaignMapBundle: Codable, Sendable {
     let builtAt: String?
     let expiresAt: String?
     let updatedAt: String?
+    var tiles: CanonicalCampaignTiles? = nil
+    var canonicalSignature: String? = nil
+    var storageFormat: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case campaignId = "campaign_id"
@@ -401,6 +421,9 @@ struct CanonicalCampaignMapBundle: Codable, Sendable {
         case builtAt = "built_at"
         case expiresAt = "expires_at"
         case updatedAt = "updated_at"
+        case tiles
+        case canonicalSignature = "canonical_signature"
+        case storageFormat = "schema"
     }
 }
 
@@ -664,16 +687,21 @@ final class BuildingLinkService {
 
     func fetchCanonicalCampaignMapBundle(
         campaignId: String,
-        localSignature: String?
+        localSignature: String?,
+        onTilesReady: (@Sendable (CanonicalCampaignTiles) async -> Void)? = nil
     ) async throws -> CampaignMapBundleFetchResult {
         let taskResult = await mapBundleFetchDeduper.task(
             for: campaignId,
-            localSignature: localSignature
+            localSignature: localSignature,
+            onTilesReady: onTilesReady
         ) { [self] in
             Task { [self] in
                 try await fetchCanonicalCampaignMapBundleUncoalesced(
                     campaignId: campaignId,
-                    localSignature: localSignature
+                    localSignature: localSignature,
+                    onTilesReady: { [mapBundleFetchDeduper] tiles in
+                        await mapBundleFetchDeduper.publish(tiles, for: campaignId, localSignature: localSignature)
+                    }
                 )
             }
         }
@@ -701,30 +729,88 @@ final class BuildingLinkService {
 
     private func fetchCanonicalCampaignMapBundleUncoalesced(
         campaignId: String,
-        localSignature: String?
+        localSignature: String?,
+        preferTiles: Bool = true,
+        tileAttempt: Int = 0,
+        onTilesReady: (@Sendable (CanonicalCampaignTiles) async -> Void)? = nil
     ) async throws -> CampaignMapBundleFetchResult {
         let encodedCampaignId = encodedPathComponent(campaignId)
-        guard var components = URLComponents(string: "\(baseURL)/api/campaigns/\(encodedCampaignId)/map-bundle") else {
+        var mapBundleBaseURL = baseURL
+        #if DEBUG
+        let diagnosticEnvironment = ProcessInfo.processInfo.environment
+        if campaignId.lowercased() == "0934c3ac-b179-413a-9fe2-7c2f1f1dcf23",
+           let stageURL = diagnosticEnvironment["WOLFGRID_MAP_TEST_URL"], !stageURL.isEmpty {
+            mapBundleBaseURL = stageURL
+        }
+        #endif
+        guard var components = URLComponents(string: "\(mapBundleBaseURL)/api/campaigns/\(encodedCampaignId)/map-bundle") else {
             throw BuildingLinkError.invalidURL
         }
         if let signature = localSignature?.trimmingCharacters(in: .whitespacesAndNewlines),
            !signature.isEmpty {
             components.queryItems = [URLQueryItem(name: "signature", value: signature)]
         }
+        if preferTiles {
+            components.queryItems = (components.queryItems ?? []) + [
+                URLQueryItem(name: "format", value: "tiles-v3"), URLQueryItem(name: "platform", value: "ios")
+            ]
+        }
+        #if DEBUG
+        if mapBundleBaseURL != baseURL, let share = diagnosticEnvironment["WOLFGRID_MAP_TEST_SHARE"], !share.isEmpty,
+           var access = URLComponents(string: mapBundleBaseURL) {
+            access.queryItems = [URLQueryItem(name: "_vercel_share", value: share)]
+            if let accessURL = access.url { _ = try await URLSession.shared.data(from: accessURL) }
+        }
+        #endif
         guard let url = components.url else {
             throw BuildingLinkError.invalidURL
         }
 
         print("🧪 [MAP_DEBUG] canonical_map_bundle_fetch_start campaign=\(campaignId) signature=\(localSignature ?? "none")")
-        let (data, response) = try await authorizedDataRequest(
-            url: url,
-            timeoutInterval: 30,
-            suppressHTTPWarning: true
-        )
+        let requestTrace = PerfTrace.begin("campaign_open", "map_bundle_http", fields: ["campaign": campaignId])
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await authorizedDataRequest(
+                url: url,
+                timeoutInterval: 90,
+                suppressHTTPWarning: true
+            )
+        } catch {
+            requestTrace.end(status: "error", fields: ["error": error.localizedDescription])
+            throw error
+        }
         guard let httpResponse = response as? HTTPURLResponse else {
+            requestTrace.end(status: "invalid_response")
             throw BuildingLinkError.fetchFailed
         }
+        requestTrace.end(status: "received", fields: [
+            "httpStatus": httpResponse.statusCode,
+            "bytes": data.count,
+            "serverTiming": httpResponse.value(forHTTPHeaderField: "Server-Timing") ?? "unavailable"
+        ])
 
+        if preferTiles && httpResponse.statusCode == 409 {
+            let status = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["status"] as? String
+            if status == "disabled" || status == "unavailable" && !(String(data: data, encoding: .utf8)?.contains("tiles-v3") ?? false) {
+                // Existing campaigns are deliberately outside the no-backfill rollout.
+                return try await fetchCanonicalCampaignMapBundleUncoalesced(campaignId: campaignId,
+                    localSignature: localSignature, preferTiles: false, onTilesReady: onTilesReady)
+            }
+            // A usable cached map can remain on screen while a replacement is
+            // prepared; avoid keeping a rapid retry loop running for minutes.
+            // Keep roughly the same readiness window for a first download,
+            // but back off instead of making 90 requests two seconds apart.
+            let maxTileAttempts = localSignature == nil ? 20 : 3
+            if status == "preparing", tileAttempt < maxTileAttempts {
+                let retrySeconds = localSignature == nil ? min(10, 2 + tileAttempt * 2) : 2
+                try await Task.sleep(for: .seconds(retrySeconds))
+                try Task.checkCancellation()
+                return try await fetchCanonicalCampaignMapBundleUncoalesced(campaignId: campaignId,
+                    localSignature: localSignature, tileAttempt: tileAttempt + 1, onTilesReady: onTilesReady)
+            }
+            throw CampaignTileReadinessError(status: status ?? "unavailable")
+        }
         if httpResponse.statusCode == 304 {
             print("🧪 [MAP_DEBUG] canonical_map_bundle_not_modified campaign=\(campaignId)")
             return .notModified
@@ -737,10 +823,57 @@ final class BuildingLinkService {
             throw BuildingLinkError.fetchFailed
         }
 
+        let decodeTrace = PerfTrace.begin("campaign_open", "map_bundle_decode", fields: [
+            "campaign": campaignId, "bytes": data.count
+        ])
         let bundle: CanonicalCampaignMapBundle
         do {
-            bundle = try JSONDecoder().decode(CanonicalCampaignMapBundle.self, from: data)
+            let schema = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["schema"] as? String
+            if schema == "tiles-v3" {
+                let compact = try Self.decodeCompactCampaignMapBundle(data, campaignId: campaignId)
+                await onTilesReady?(compact.tiles)
+                let session = try await supabaseClient.auth.session
+                let userId = session.user.id
+                let workspaceId = await MainActor.run { WorkspaceContext.shared.workspaceId }
+                let geometryTrace = PerfTrace.begin("campaign_open", "exact_geometry", fields: ["campaign": campaignId])
+                let geometryURL: URL
+                do {
+                    geometryURL = try await CanonicalTilePackageStore.shared.downloadExactGeometry(compact.tiles)
+                    geometryTrace.end(status: "ready")
+                } catch {
+                    geometryTrace.end(status: "error")
+                    throw error
+                }
+                try Task.checkCancellation()
+                guard try await supabaseClient.auth.session.user.id == userId,
+                      await MainActor.run(body: { WorkspaceContext.shared.workspaceId }) == workspaceId else {
+                    throw CancellationError()
+                }
+                let indexTrace = PerfTrace.begin("campaign_open", "compact_index", fields: ["campaign": campaignId])
+                let index: CanonicalCompactFieldIndex
+                do {
+                    index = try await CanonicalCompactCampaignStore.shared.save(data: data, campaignId: campaignId,
+                        userId: userId.uuidString, workspaceId: workspaceId?.uuidString, geometryURL: geometryURL)
+                    indexTrace.end(status: "ready")
+                } catch {
+                    indexTrace.end(status: "error")
+                    throw error
+                }
+                let snapshotTrace = PerfTrace.begin("campaign_open", "field_snapshot", fields: ["campaign": campaignId])
+                do {
+                    bundle = try index.fieldBundle()
+                    snapshotTrace.end(status: "ready")
+                } catch {
+                    snapshotTrace.end(status: "error")
+                    throw error
+                }
+                CanonicalTileHTTP.shared.registerIfPresent(compact.tiles)
+            } else {
+                bundle = try JSONDecoder().decode(CanonicalCampaignMapBundle.self, from: data)
+            }
+            decodeTrace.end(status: "success")
         } catch {
+            decodeTrace.end(status: "error")
             print(
                 "❌ [BuildingLinkService] map-bundle decode failed campaign=\(campaignId) " +
                 "error=\(String(reflecting: error))"
@@ -753,6 +886,30 @@ final class BuildingLinkService {
             "parcels=\(bundle.parcels.features.count) links=\(bundle.links.count) status=\(bundle.linksStatus ?? "unknown")"
         )
         return .bundle(bundle)
+    }
+
+    /// Fetch compact field metadata independently of the legacy bundle. A 409
+    /// means this campaign has not been opted into compact tiles yet.
+    func fetchCompactCampaignMapBundle(campaignId: String) async throws -> (Data, CanonicalCompactCampaign)? {
+        let encodedCampaignId = encodedPathComponent(campaignId)
+        guard var components = URLComponents(string: "\(baseURL)/api/campaigns/\(encodedCampaignId)/map-bundle") else {
+            throw BuildingLinkError.invalidURL
+        }
+        components.queryItems = [URLQueryItem(name: "format", value: "tiles-v3"),
+                                 URLQueryItem(name: "platform", value: "ios")]
+        guard let url = components.url else { throw BuildingLinkError.invalidURL }
+        let (data, response) = try await authorizedDataRequest(url: url, timeoutInterval: 30, suppressHTTPWarning: true)
+        guard let response = response as? HTTPURLResponse else { throw BuildingLinkError.fetchFailed }
+        if response.statusCode == 409 { return nil }
+        guard response.statusCode == 200 else { throw BuildingLinkError.fetchFailed }
+        return (data, try Self.decodeCompactCampaignMapBundle(data, campaignId: campaignId))
+    }
+
+    static func decodeCompactCampaignMapBundle(_ data: Data, campaignId: String) throws -> CanonicalCompactCampaign {
+        let compact = try JSONDecoder().decode(CanonicalCompactCampaign.self, from: data)
+        guard compact.schema == "tiles-v3", compact.campaignId.caseInsensitiveCompare(campaignId) == .orderedSame,
+              compact.tiles.geometryPack != nil else { throw BuildingLinkError.fetchFailed }
+        return compact
     }
 
     func fetchCampaignReconciliationStatus(campaignId: String) async throws -> CanonicalMapReconciliation? {
@@ -1105,6 +1262,36 @@ final class BuildingLinkService {
         forceReverseGeocode: Bool = false,
         includeLinkedCandidates: Bool = false
     ) async throws -> BuildingAddressCandidateResponse {
+        let trace = PerfTrace.begin("address_picker", "candidate_search", fields: ["building": buildingId])
+        defer { trace.end(status: "finished") }
+        if forceReverseGeocode, NetworkMonitor.shared.isOnline, let seedCoordinate {
+            let geocodeTrace = PerfTrace.begin("address_picker", "direct_reverse_geocode")
+            if let candidate = try? await mapboxReverseGeocodeCandidate(at: seedCoordinate) {
+                geocodeTrace.end(status: "resolved")
+                return BuildingAddressCandidateResponse(
+                    buildingId: buildingId, radiusMeters: radiusMeters,
+                    trustDecision: AddressCandidateTrustDecision(
+                        usedReverseGeocode: true, reason: "client_reverse_geocode",
+                        nearestCandidateDistanceMeters: nil, nearestCandidateRejectedReason: nil
+                    ), candidates: [candidate]
+                )
+            }
+            geocodeTrace.end(status: "fallback_to_candidate_service")
+        }
+        // An explicit reverse-geocode request still uses the network. Ordinary
+        // nearby choices should be usable immediately from the campaign cache.
+        if !forceReverseGeocode, let seedCoordinate {
+            let local = try await fallbackAddressCandidates(
+                campaignId: campaignId, buildingId: buildingId,
+                buildingIdentifiers: buildingIdentifiers, seedCoordinate: seedCoordinate,
+                radiusMeters: radiusMeters, limit: limit, allowRemoteFetch: false,
+                includeLinkedCandidates: includeLinkedCandidates
+            )
+            if !local.candidates.isEmpty {
+                PerfTrace.event("address_picker", "local_candidates_ready", fields: ["count": local.candidates.count])
+                return local
+            }
+        }
         if !NetworkMonitor.shared.isOnline, let seedCoordinate {
             return try await fallbackAddressCandidates(
                 campaignId: campaignId,
@@ -1233,9 +1420,15 @@ final class BuildingLinkService {
         allowRemoteFetch: Bool = true,
         includeLinkedCandidates: Bool = false
     ) async throws -> BuildingAddressCandidateResponse {
-        let cachedBundle = await campaignRepository.getCampaignMapBundle(campaignId: campaignId)
+        let loadedAddresses = await MainActor.run { MapFeaturesService.shared.addresses(for: campaignId) }
+        let cachedAddresses: AddressFeatureCollection?
+        if let loadedAddresses, !loadedAddresses.features.isEmpty {
+            cachedAddresses = loadedAddresses
+        } else {
+            cachedAddresses = await campaignRepository.getCampaignMapBundle(campaignId: campaignId)?.addresses
+        }
         let addressCollection: AddressFeatureCollection
-        if let cachedAddresses = cachedBundle?.addresses, !cachedAddresses.features.isEmpty {
+        if let cachedAddresses, !cachedAddresses.features.isEmpty {
             addressCollection = cachedAddresses
         } else if allowRemoteFetch, NetworkMonitor.shared.isOnline {
             addressCollection = try await fetchCampaignAddresses(campaignId: campaignId)
@@ -1298,7 +1491,7 @@ final class BuildingLinkService {
             let distanceMeters = addressLocation.distance(from: seedLocation)
             guard distanceMeters <= radiusMeters else { return nil }
 
-            let distanceScore = max(0, 1 - distanceMeters / max(radiusMeters, 1))
+            let distanceScore: Double = Swift.max(0.0, 1.0 - distanceMeters / Swift.max(radiusMeters, 1.0))
             let sourceScore = feature.properties.source?.lowercased() == "manual" ? 0.05 : 0
             let score = min(1, distanceScore * 0.95 + sourceScore)
 
@@ -1558,7 +1751,8 @@ final class BuildingLinkService {
             deleted: deleteManualAddress
         )
 
-        if !NetworkMonitor.shared.isOnline {
+        let awaitsCreation = await outboxRepository.hasUnsyncedManualAddressCreate(campaignId: campaignId, addressId: addressId)
+        if !NetworkMonitor.shared.isOnline || awaitsCreation {
             try await enqueueUnlinkAddressFromBuilding(
                 campaignId: campaignId,
                 buildingId: normalizedBuildingId,
@@ -1650,16 +1844,10 @@ final class BuildingLinkService {
     func createManualAddress(
         campaignId: String,
         input: ManualAddressCreateInput,
+        addressId: UUID = UUID(),
         syncBehavior: ManualAddressCreateSyncBehavior = .waitForRemoteWhenOnline
     ) async throws -> ManualAddressCreateResponse {
-        let addressId = UUID()
         let clientMutationId = UUID().uuidString
-        await campaignRepository.upsertManualAddressLocally(
-            campaignId: campaignId,
-            addressId: addressId,
-            input: input
-        )
-
         let localResponse = makeManualAddressCreateResponse(
             addressId: addressId,
             input: input
@@ -1671,10 +1859,15 @@ final class BuildingLinkService {
                 addressId: addressId,
                 input: input,
                 clientMutationId: clientMutationId,
-                scheduleImmediateSync: true
+                scheduleImmediateSync: true,
+                persistLocation: true
             )
             return localResponse
         }
+
+        await campaignRepository.upsertManualAddressLocally(
+            campaignId: campaignId, addressId: addressId, input: input
+        )
 
         if !NetworkMonitor.shared.isOnline {
             try await enqueueCreateManualAddress(
@@ -1746,7 +1939,11 @@ final class BuildingLinkService {
         let (responseData, response) = try await authorizedDataRequest(url: url, method: "POST", body: data)
         try ensureSuccessfulResponse(response, data: responseData)
         let decoder = JSONDecoder.supabaseDates
-        return try decoder.decode(ManualAddressCreateResponse.self, from: responseData)
+        let result = try decoder.decode(ManualAddressCreateResponse.self, from: responseData)
+        if (input.parcelId != nil || input.campaignParcelId != nil), let warning = result.parcelWarning {
+            throw BuildingLinkError.parcelLinkFailed(warning)
+        }
+        return result
     }
 
     @discardableResult
@@ -1779,10 +1976,11 @@ final class BuildingLinkService {
     }
 
     func deleteManualAddress(campaignId: String, addressId: UUID) async throws {
-        try await deleteAddress(campaignId: campaignId, addressId: addressId)
+        _ = try await deleteAddress(campaignId: campaignId, addressId: addressId)
     }
 
-    func deleteAddress(campaignId: String, addressId: UUID) async throws {
+    @discardableResult
+    func deleteAddress(campaignId: String, addressId: UUID) async throws -> Bool {
         let clientMutationId = UUID().uuidString
         let occurredAt = OfflineDateCodec.string(from: Date())
         let baseRevision = await MainActor.run {
@@ -1790,7 +1988,8 @@ final class BuildingLinkService {
         }
         await campaignRepository.deleteAddressLocally(campaignId: campaignId, addressId: addressId.uuidString)
 
-        if !NetworkMonitor.shared.isOnline {
+        let awaitsCreation = await outboxRepository.hasUnsyncedManualAddressCreate(campaignId: campaignId, addressId: addressId)
+        if !NetworkMonitor.shared.isOnline || awaitsCreation {
             try await enqueueDeleteAddress(
                 campaignId: campaignId,
                 addressId: addressId,
@@ -1798,7 +1997,7 @@ final class BuildingLinkService {
                 baseRevision: baseRevision,
                 occurredAt: occurredAt
             )
-            return
+            return false
         }
 
         do {
@@ -1810,6 +2009,7 @@ final class BuildingLinkService {
                 occurredAt: occurredAt
             )
             await CampaignDownloadService.shared.recordSuccessfulSync(campaignId: campaignId)
+            return true
         } catch {
             try await enqueueDeleteAddress(
                 campaignId: campaignId,
@@ -1818,6 +2018,7 @@ final class BuildingLinkService {
                 baseRevision: baseRevision,
                 occurredAt: occurredAt
             )
+            return false
         }
     }
 
@@ -1846,6 +2047,23 @@ final class BuildingLinkService {
         ]
         let body = try JSONSerialization.data(withJSONObject: payload.compactMapValues { $0 })
         let (data, response) = try await authorizedDataRequest(url: url, method: "DELETE", body: body)
+        let status = (response as? HTTPURLResponse)?.statusCode
+        let apiError = (try? JSONDecoder().decode(APIErrorResponse.self, from: data))?.error
+        // Manual pins require the revision-aware endpoint. Imported campaign
+        // addresses are explicitly rejected there and use the general endpoint.
+        if (status == 409 && apiError == "Only manual addresses can be deleted from tools") ||
+            (status == 404 && apiError == "Address not found") {
+            guard let generalURL = URL(string: "\(baseURL)/api/campaigns/\(campaignId)/addresses/\(addressId.uuidString)") else {
+                throw BuildingLinkError.invalidURL
+            }
+            let (generalData, generalResponse) = try await authorizedDataRequest(url: generalURL, method: "DELETE")
+            let generalStatus = (generalResponse as? HTTPURLResponse)?.statusCode
+            let generalError = (try? JSONDecoder().decode(APIErrorResponse.self, from: generalData))?.error
+            // A replay after a successful deletion is a successful outcome.
+            if generalStatus == 404 && generalError == "Address not found" { return }
+            try ensureSuccessfulResponse(generalResponse, data: generalData)
+            return
+        }
         try ensureSuccessfulResponse(response, data: data)
     }
 
@@ -1910,7 +2128,8 @@ final class BuildingLinkService {
             coordinate: coordinate
         )
 
-        if !NetworkMonitor.shared.isOnline {
+        let awaitsCreation = await outboxRepository.hasUnsyncedManualAddressCreate(campaignId: campaignId, addressId: addressId)
+        if !NetworkMonitor.shared.isOnline || awaitsCreation {
             try await enqueueMoveAddress(
                 campaignId: campaignId,
                 addressId: addressId,
@@ -2220,9 +2439,10 @@ final class BuildingLinkService {
         addressId: UUID,
         input: ManualAddressCreateInput,
         clientMutationId: String,
-        scheduleImmediateSync: Bool = true
+        scheduleImmediateSync: Bool = true,
+        persistLocation: Bool = false
     ) async throws {
-        let outboxId = await outboxRepository.enqueue(
+        guard let entry = OutboxRepository.makeEntry(
             entityType: "address",
             entityId: "\(campaignId.lowercased()):\(addressId.uuidString.lowercased())",
             operation: .createManualAddress,
@@ -2247,13 +2467,21 @@ final class BuildingLinkService {
             ),
             clientMutationId: clientMutationId,
             dependencyKey: "address:\(campaignId.lowercased()):\(addressId.uuidString.lowercased())"
-        )
-        guard outboxId != nil else {
-            throw BuildingLinkError.fetchFailed
+        ) else { throw BuildingLinkError.fetchFailed }
+        let saveTrace = PerfTrace.begin("address_picker", "local_create_transaction")
+        defer { saveTrace.end(status: "returned") }
+        if persistLocation {
+            try await campaignRepository.persistManualAddressLocally(
+                campaignId: campaignId, addressId: addressId, input: input, outboxEntry: entry
+            )
+        } else {
+            try await outboxRepository.insert(entry)
         }
-        await OfflineSyncCoordinator.shared.refreshPendingCount()
-        if scheduleImmediateSync && NetworkMonitor.shared.isOnline {
-            await MainActor.run {
+        // Location and sync intent are durable. Badge counting and starting
+        // network work must not delay the caller's placement UI.
+        Task { @MainActor in
+            await OfflineSyncCoordinator.shared.refreshPendingCount()
+            if scheduleImmediateSync && NetworkMonitor.shared.isOnline {
                 OfflineSyncCoordinator.shared.scheduleProcessOutbox()
             }
         }
@@ -2399,13 +2627,15 @@ final class BuildingLinkService {
             throw BuildingLinkError.fetchFailed
         }
 
-        let localSnapshot = await campaignRepository.deleteBuildingLocally(
+        var localSnapshot = await campaignRepository.deleteBuildingLocally(
             campaignId: campaignId,
             buildingId: normalizedBuildingId
         )
 
-        if !NetworkMonitor.shared.isOnline {
+        let awaitsCreation = await outboxRepository.hasUnsyncedManualAddressCreate(campaignId: campaignId, buildingId: normalizedBuildingId)
+        if !NetworkMonitor.shared.isOnline || awaitsCreation {
             try await enqueueDeleteBuilding(campaignId: campaignId, buildingId: normalizedBuildingId)
+            localSnapshot.pendingSync = true
             return localSnapshot
         }
 
@@ -2414,6 +2644,7 @@ final class BuildingLinkService {
             await CampaignDownloadService.shared.recordSuccessfulSync(campaignId: campaignId)
         } catch {
             try await enqueueDeleteBuilding(campaignId: campaignId, buildingId: normalizedBuildingId)
+            localSnapshot.pendingSync = true
         }
 
         return localSnapshot
@@ -2887,15 +3118,18 @@ struct ManualBuildingCreateInput {
 struct ManualAddressCreateResponse: Decodable {
     let address: CampaignAddressResponse
     let linkedBuildingId: String?
+    let parcelWarning: String?
 
     enum CodingKeys: String, CodingKey {
         case address
         case linkedBuildingId = "linked_building_id"
+        case parcelWarning = "parcel_warning"
     }
 
     init(address: CampaignAddressResponse, linkedBuildingId: String?) {
         self.address = address
         self.linkedBuildingId = linkedBuildingId
+        self.parcelWarning = nil
     }
 }
 
@@ -3237,11 +3471,20 @@ enum ManualShapeServiceError: LocalizedError {
 
 // MARK: - Supporting Types
 
+struct CampaignTileReadinessError: LocalizedError {
+    let status: String
+    var errorDescription: String? {
+        status == "preparing" ? "Your campaign map is still preparing. Please try again shortly." :
+            "Your campaign map could not finish preparing. Please try again."
+    }
+}
+
 enum BuildingLinkError: LocalizedError {
     case invalidURL
     case fetchFailed
     case decodingFailed
     case notAuthenticated
+    case parcelLinkFailed(String)
 
     var errorDescription: String? {
         switch self {
@@ -3253,6 +3496,8 @@ enum BuildingLinkError: LocalizedError {
             return "The server response couldn't be read."
         case .notAuthenticated:
             return "You need to sign in again before making this change."
+        case .parcelLinkFailed(let reason):
+            return "The pin was saved, but its parcel link could not be confirmed (\(reason))."
         }
     }
 }

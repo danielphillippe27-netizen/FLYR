@@ -297,7 +297,7 @@ private enum CampaignAddressDecoding {
 
 /// Response model for campaign_addresses Supabase queries.
 /// Uses flexible decoding so numeric/UUID fields that Supabase returns as strings still decode.
-struct CampaignAddressResponse: Codable {
+struct CampaignAddressResponse: Codable, Sendable {
     let id: UUID
     let houseNumber: String?
     let streetName: String?

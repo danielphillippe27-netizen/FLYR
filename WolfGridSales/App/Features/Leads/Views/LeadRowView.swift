@@ -1,7 +1,9 @@
 import SwiftUI
 
-/// Compact row for the Field Leads inbox list (~72pt height).
+/// Compact, theme-aware contact row for the Field Leads inbox.
 struct FieldLeadRowView: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @ScaledMetric(relativeTo: .body) private var avatarSize = 36
     let lead: FieldLead
     var isSelectionMode = false
     var isSelected = false
@@ -18,62 +20,34 @@ struct FieldLeadRowView: View {
                         .foregroundColor(isSelected ? .accent : .muted)
                 }
 
-                Image(systemName: "mappin.circle.fill")
-                    .font(.system(size: 20))
-                    .foregroundColor(.accent)
-                
+                avatar
+
                 VStack(alignment: .leading, spacing: 4) {
                     Text(lead.displayNameOrUnknown)
-                        .font(.system(size: 16, weight: .semibold))
+                        .font(.system(.body, weight: .semibold))
                         .foregroundColor(.text)
                         .lineLimit(1)
-                    
+
                     Text(lead.listDisplayAddress)
-                        .font(.system(size: 15, weight: .regular))
-                        .foregroundColor(.text)
-                        .lineLimit(1)
-                    
-                    HStack(spacing: 4) {
-                        Text(lead.relativeTimeDisplay)
-                            .font(.system(size: 13))
-                            .foregroundColor(.muted)
-                        if !lead.noteOrQRPreview.isEmpty {
-                            Text("•")
-                                .foregroundColor(.muted)
-                            Text(lead.noteOrQRPreview)
-                                .font(.system(size: 13))
-                                .foregroundColor(.muted)
-                                .lineLimit(1)
-                        }
-                        if let crmLabel = lead.crmSyncStatusLabel {
-                            Text("•")
-                                .foregroundColor(.muted)
-                            Text(crmLabel)
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundColor(lead.syncStatus == .failed ? Color.red : Color.muted)
-                                .lineLimit(1)
-                        }
-                    }
-                }
-                
-                Spacer(minLength: 8)
-                
-                if isSelectionMode {
-                    Text(isSelected ? "Selected" : "Select")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundColor(isSelected ? .accent : .muted)
-                } else {
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 14, weight: .semibold))
+                        .font(.subheadline)
                         .foregroundColor(.muted)
+                        .lineLimit(1)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                Text(lead.relativeTimeDisplay)
+                    .font(.caption)
+                    .foregroundColor(.muted)
+                    .fixedSize(horizontal: true, vertical: false)
             }
             .padding(.horizontal, 16)
-            .padding(.vertical, 12)
-            .frame(height: 72)
+            .padding(.vertical, 10)
+            .frame(minHeight: 64)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
         .contextMenu {
             if !isSelectionMode, let onEnterSelectionMode {
                 Button {
@@ -91,6 +65,29 @@ struct FieldLeadRowView: View {
                 }
             }
         }
+    }
+
+    private var initials: String {
+        let parts = (lead.name ?? "").split(whereSeparator: { $0.isWhitespace })
+        guard let first = parts.first else { return "" }
+        let lastInitial = parts.count > 1 ? String(parts.last?.prefix(1) ?? "") : ""
+        return (String(first.prefix(1)) + lastInitial).uppercased()
+    }
+
+    private var avatar: some View {
+        Group {
+            if initials.isEmpty {
+                Image(systemName: "person.fill")
+                    .font(.system(.subheadline, weight: .medium))
+            } else {
+                Text(initials)
+                    .font(.system(.subheadline, weight: .semibold))
+            }
+        }
+        .foregroundColor(Color(white: colorScheme == .dark ? 0.84 : 0.28))
+        .frame(width: avatarSize, height: avatarSize)
+        .background(Color(white: colorScheme == .dark ? 0.16 : 0.94), in: Circle())
+        .accessibilityHidden(true)
     }
 }
 

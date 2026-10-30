@@ -1,3 +1,4 @@
+import { readAllRows } from '@/lib/sales-leads/read-all-rows';
 import { NextRequest, NextResponse } from 'next/server';
 import { resolveUserFromRequest } from '@/app/api/_utils/request-user';
 import {
@@ -222,16 +223,14 @@ export async function GET(request: NextRequest) {
         'id, workspace_id, sales_contact_id, converted_contact_id, legacy_contact_id, legacy_dialler_lead_id, legacy_master_lead_id, assigned_user_id, assigned_sales_rep_id, created_by_user_id, name, company, phone, phone_e164, email, email_normalized, list_id, list_name, website, website_domain, address, city, region, country_code, source, external_id, lead_fingerprint, lead_state, attempt_count, last_attempted_at, next_follow_up_at, follow_up_name, demo_link_follow_up_id, disposition, is_starred, notes, metadata, created_at, updated_at'
       )
       .eq('workspace_id', workspaceId)
-      .order('created_at', { ascending: false });
+      .order('created_at', { ascending: false })
+      .order('id', { ascending: true });
 
     if (focusedLeadId) query = query.eq('id', focusedLeadId);
 
     query = query.eq('assigned_user_id', requestUser.id);
 
-    const { data, error } = await query.limit(2000);
-    if (error) throw error;
-
-    const leads = (data ?? []) as SalesLead[];
+    const leads = await readAllRows<SalesLead>(query);
     if (focusedLeadId && request.nextUrl.searchParams.get('refreshGoogleRating') === '1') {
       const index = leads.findIndex((lead) => lead.id === focusedLeadId);
       if (index >= 0) leads[index] = await refreshGooglePlaceDetails({

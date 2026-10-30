@@ -24,6 +24,9 @@ struct PendingSalespersonDiallerListSelection: Identifiable, Equatable {
 
 @MainActor
 final class AppUIState: ObservableObject {
+    // Fullscreen maps own rendering while the Session tab is covered.
+    @Published var fullscreenMapOwners: Set<UUID> = []
+    var hasFullscreenMap: Bool { !fullscreenMapOwners.isEmpty }
     @Published var pendingBusinessCardActivity: BusinessCardPushRoute?
     @Published var showTabBar: Bool = true
     @Published private(set) var calendarTabPresentationDepth: Int = 0

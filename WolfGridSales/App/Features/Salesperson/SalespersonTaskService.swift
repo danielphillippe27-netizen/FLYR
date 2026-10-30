@@ -11,6 +11,7 @@ enum SalespersonCalendarEventType: String {
 struct SalespersonCalendarItem: Identifiable, Equatable, Sendable {
     let id: String
     let sourceId: UUID
+    let isSalesTask: Bool
     let eventType: String
     let title: String
     let startAt: Date
@@ -35,6 +36,7 @@ struct SalespersonCalendarItem: Identifiable, Equatable, Sendable {
     fileprivate init(from row: SalespersonCalendarRow) {
         id = "event-\(row.id.uuidString)"
         sourceId = row.id
+        isSalesTask = false
         eventType = row.eventType
         title = row.title
         startAt = row.startAt
@@ -46,6 +48,23 @@ struct SalespersonCalendarItem: Identifiable, Equatable, Sendable {
         conferenceJoinURL = row.conferenceJoinURL.flatMap(URL.init(string:))
         attendeeEmails = row.attendeeEmails
     }
+    fileprivate init?(task: SalespersonCompanionTaskRow) {
+        guard let dueAt = task.dueAt else { return nil }
+        id = "task-\(task.id.uuidString)"
+        sourceId = task.id
+        isSalesTask = true
+        eventType = SalespersonCalendarEventType.followUp.rawValue
+        title = task.title
+        startAt = dueAt
+        endAt = dueAt.addingTimeInterval(1800)
+        notes = task.notes
+        location = nil
+        contactName = nil
+        conferenceProvider = nil
+        conferenceJoinURL = nil
+        attendeeEmails = []
+    }
+
 }
 
 private struct SalespersonCalendarRow: Decodable {
@@ -95,6 +114,14 @@ private struct SalespersonCalendarRow: Decodable {
     }
 }
 
+private struct SalespersonCompanionTaskRow: Decodable {
+    let id: UUID
+    let title: String
+    let dueAt: Date?
+    let notes: String?
+    enum CodingKeys: String, CodingKey { case id, title, notes; case dueAt = "due_at" }
+}
+
 actor SalespersonCalendarService {
     static let shared = SalespersonCalendarService()
 
@@ -119,20 +146,38 @@ actor SalespersonCalendarService {
         }
     }
 
-    func fetchAllCalendarItems() async -> [SalespersonCalendarItem] {
-        guard let userId = await MainActor.run(body: { AuthManager.shared.user?.id }) else { return [] }
-        do {
-            let rows: [SalespersonCalendarRow] = try await client
-                .from("calendar_events")
-                .select("id,event_type,title,start_at,end_at,notes,location,contact_name,conference_provider,conference_join_url,attendee_emails")
-                .eq("user_id", value: userId)
-                .is("deleted_at", value: nil)
-                .order("start_at", ascending: true)
-                .execute()
-                .value
-            return rows.map(SalespersonCalendarItem.init)
-        } catch {
-            return []
+    func fetchAllCalendarItems() async throws -> [SalespersonCalendarItem] {
+        guard let userId = await MainActor.run(body: { AuthManager.shared.user?.id }) else {
+            throw NSError(domain: "FollowUp", code: 401, userInfo: [NSLocalizedDescriptionKey: "Sign in to load your follow-ups."])
+        }
+        guard let workspaceId = await MainActor.run(body: { WorkspaceContext.shared.workspaceId }) else { return [] }
+        let rows: [SalespersonCalendarRow] = try await client
+            .from("calendar_events")
+            .select("id,event_type,title,start_at,end_at,notes,location,contact_name,conference_provider,conference_join_url,attendee_emails")
+            .eq("user_id", value: userId)
+            .eq("workspace_id", value: workspaceId)
+            .is("deleted_at", value: nil)
+            .order("start_at", ascending: true)
+            .execute()
+            .value
+        let tasks: [SalespersonCompanionTaskRow] = try await client
+            .from("sales_tasks").select("id,title,due_at,notes")
+            .neq("task_type", value: "demo_follow_up")
+            .eq("assigned_user_id", value: userId)
+            .eq("workspace_id", value: workspaceId)
+            .eq("status", value: "open")
+            .order("due_at", ascending: true).execute().value
+        return (rows.map(SalespersonCalendarItem.init) + tasks.compactMap { SalespersonCalendarItem(task: $0) })
+            .sorted { $0.startAt < $1.startAt }
+    }
+
+    func completeItem(_ item: SalespersonCalendarItem) async throws {
+        if item.isSalesTask {
+            try await client.from("sales_tasks")
+                .update(["status": AnyCodable("completed"), "completed_at": AnyCodable(Date())])
+                .eq("id", value: item.sourceId).execute()
+        } else {
+            try await deleteEvent(id: item.sourceId)
         }
     }
 
@@ -151,6 +196,7 @@ struct ZoomConnectionStatus: Decodable, Sendable {
 }
 
 struct ZoomMeetingDraft: Encodable, Sendable {
+    var leadId: String? = nil
     let title: String
     let startAt: Date
     let endAt: Date

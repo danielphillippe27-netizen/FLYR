@@ -110,7 +110,7 @@ final class CampaignV2Store: ObservableObject {
         let found = campaigns.first { $0.id == id }
         if logCampaignLookups, let campaign = found {
             print("📦 [STORE DEBUG] Found campaign: '\(campaign.name)'")
-        } else if found == nil {
+        } else if logCampaignLookups && found == nil {
             print("❌ [STORE DEBUG] Campaign with ID \(id) not found")
         }
         return found

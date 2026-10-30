@@ -73,7 +73,9 @@ struct WolfGridApp: App {
         WindowGroup {
             Group {
                 #if DEBUG
-                if ProcessInfo.processInfo.arguments.contains("--wolfy-pack-prototype") {
+                if ProcessInfo.processInfo.arguments.contains("--canonical-tiles-verification") {
+                    CanonicalTileVerificationView()
+                } else if ProcessInfo.processInfo.arguments.contains("--wolfy-pack-prototype") {
                     WolfyPackPrototypeEntryView()
                 } else if ProcessInfo.processInfo.arguments.contains("--wolfy-map-prototype") {
                     WolfyMapPrototypeEntryView()
@@ -92,6 +94,9 @@ struct WolfGridApp: App {
                 .environmentObject(campaignDownloadService)
                 .environmentObject(offlinePreloadCoordinator)
                 .task {
+                    #if DEBUG
+                    guard !ProcessInfo.processInfo.arguments.contains("--canonical-tiles-verification") else { return }
+                    #endif
                     // Health check in background with lower priority - don't block UI
                     Task.detached(priority: .utility) {
                         #if DEBUG
@@ -101,14 +106,37 @@ struct WolfGridApp: App {
                     }
                     offlineSyncCoordinator.scheduleProcessOutbox()
                     offlinePreloadCoordinator.schedule(reason: "app_task")
+                    #if DEBUG
+                    if let testCampaign = ProcessInfo.processInfo.environment["WOLFGRID_OFFLINE_TEST_CAMPAIGN"],
+                       UUID(uuidString: testCampaign) != nil {
+                        Task { @MainActor in
+                            for _ in 0..<60 {
+                                if AuthManager.shared.user != nil { break }
+                                try? await Task.sleep(for: .seconds(1))
+                            }
+                            guard AuthManager.shared.user != nil else { return }
+                            await campaignDownloadService.makeAvailableOffline(campaignId: testCampaign)
+                            await campaignDownloadService.refreshState(campaignId: testCampaign)
+                            let state = campaignDownloadService.state(for: testCampaign)
+                            let verified = campaignDownloadService.readiness(for: testCampaign)?.isVerified == true
+                            print("🧪 [OFFLINE_TEST] status=\(state?.status ?? "missing") verified=\(verified)")
+                        }
+                    }
+                    #endif
                 }
                 .onChange(of: networkMonitor.isOnline) { isOnline in
+                    #if DEBUG
+                    guard !ProcessInfo.processInfo.arguments.contains("--canonical-tiles-verification") else { return }
+                    #endif
                     if isOnline {
                         offlineSyncCoordinator.scheduleProcessOutbox()
                         offlinePreloadCoordinator.schedule(reason: "network_online")
                     }
                 }
                 .onChange(of: scenePhase) { phase in
+                    #if DEBUG
+                    guard !ProcessInfo.processInfo.arguments.contains("--canonical-tiles-verification") else { return }
+                    #endif
                     guard phase == .active else { return }
                     offlinePreloadCoordinator.schedule(reason: "foreground")
                 }
@@ -316,6 +344,7 @@ struct AuthGate: View {
     @EnvironmentObject var uiState: AppUIState
     @EnvironmentObject var entitlementsService: EntitlementsService
     @Environment(\.scenePhase) private var scenePhase
+    @State private var isStarting = true
     #if DEBUG
     @State private var e2ePresencePublished = false
     @State private var e2ePresenceError: String?
@@ -325,6 +354,18 @@ struct AuthGate: View {
 
     var body: some View {
         Group {
+            if isStarting {
+                VStack(spacing: 16) {
+                    ProgressView()
+                        .controlSize(.large)
+                    Text("Loading WolfGrid…")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color.bg)
+                .accessibilityElement(children: .combine)
+            } else {
             switch routeState.route {
             case .login:
                 SignInView()
@@ -348,6 +389,7 @@ struct AuthGate: View {
                 MainTabView()
                 #endif
             }
+            }
         }
         .accessibilityIdentifier(routeAccessibilityIdentifier)
         .preferredColorScheme(uiState.colorScheme)
@@ -360,8 +402,15 @@ struct AuthGate: View {
             #if DEBUG
             print("🔍 Loading session in background...")
             #endif
+            let startupTrace = PerfTrace.begin("app_start", "restore_and_route")
+            let sessionTrace = PerfTrace.begin("app_start", "restore_session")
             await auth.loadSession()
+            sessionTrace.end()
+            let routeTrace = PerfTrace.begin("app_start", "resolve_route")
             await routeState.resolveRoute()
+            routeTrace.end()
+            isStarting = false
+            startupTrace.end()
 
             if let userId = auth.user?.id {
                 await uiState.loadAppearancePreference(userID: userId)
@@ -373,6 +422,7 @@ struct AuthGate: View {
             }
         }
         .onChange(of: auth.user?.id) { _, newUserId in
+            guard !isStarting else { return }
             if newUserId == nil {
                 Task { @MainActor in
                     await routeState.resolveRoute()
@@ -397,7 +447,7 @@ struct AuthGate: View {
             }
         }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .active, auth.user != nil {
+            if phase == .active, !isStarting, auth.user != nil {
                 Task {
                     await routeState.resolveRoute()
                     await PushRegistrationService.shared.uploadPendingTokenIfPossible()

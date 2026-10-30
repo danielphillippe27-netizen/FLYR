@@ -19,6 +19,18 @@ final class UnlinkedHomeAddressResolver {
 
     private init() {}
 
+    /// Stable partition: the estimate (or its existing-address match) stays first,
+    /// regardless of server rank, without changing order among other suggestions.
+    static func reverseGeocodeFirst(
+        _ candidates: [BuildingAddressCandidate], matchedAddressIds: Set<UUID>
+    ) -> [BuildingAddressCandidate] {
+        let isEstimate: (BuildingAddressCandidate) -> Bool = {
+            $0.isReverseGeocode || matchedAddressIds.contains($0.id)
+        }
+        return candidates.filter(isEstimate) + candidates.filter { !isEstimate($0) }
+    }
+
+
     func resolve(
         campaignId: String,
         buildingId: String,
@@ -284,5 +296,64 @@ final class UnlinkedHomeAddressResolver {
 
         let normalized = normalizedWords.joined(separator: " ")
         return normalized.isEmpty ? nil : normalized
+    }
+}
+
+/// Owns normalized identities off the UI thread. Geometry/source keys scope the
+/// cache; a locally inserted pin can advance it without normalizing the farm again.
+actor CampaignAddressMatchIndex {
+    private var sourceKey: String?
+    private var byIdentity: [String: [AddressFeature]] = [:]
+    private var identityByAddressId: [String: String] = [:]
+
+    func prepare(key: String, features: [AddressFeature]) {
+        guard sourceKey != key else { return }
+        byIdentity.removeAll(keepingCapacity: true)
+        identityByAddressId.removeAll(keepingCapacity: true)
+        for feature in features { insert(feature) }
+        sourceKey = key
+        PerfTrace.event("address_picker", "match_index_built", fields: ["addresses": features.count])
+    }
+
+    func upsert(_ feature: AddressFeature, from oldKey: String, to newKey: String) {
+        guard sourceKey == oldKey else { return }
+        insert(feature)
+        sourceKey = newKey
+    }
+
+    private func insert(_ feature: AddressFeature) {
+        let id = (feature.properties.id ?? feature.id ?? "").lowercased()
+        guard UUID(uuidString: id) != nil else { return }
+        if let oldIdentity = identityByAddressId.removeValue(forKey: id) {
+            byIdentity[oldIdentity]?.removeAll { ($0.properties.id ?? $0.id ?? "").lowercased() == id }
+        }
+        guard let identity = UnlinkedHomeAddressResolver.normalizedAddressIdentity(
+            houseNumber: feature.properties.houseNumber, streetName: feature.properties.streetName,
+            postalCode: feature.properties.postalCode, formatted: feature.properties.formatted
+        ) else { return }
+        byIdentity[identity, default: []].append(feature)
+        identityByAddressId[id] = identity
+    }
+
+    func match(_ candidate: BuildingAddressCandidate, key: String, features: [AddressFeature]) -> AddressFeature? {
+        prepare(key: key, features: features)
+        guard let identity = UnlinkedHomeAddressResolver.normalizedAddressIdentity(
+            houseNumber: candidate.houseNumber, streetName: candidate.resolvedStreetName,
+            postalCode: candidate.postalCode, formatted: candidate.displayAddress
+        ) else { return nil }
+        let origin = CLLocation(latitude: candidate.coordinate.latitude, longitude: candidate.coordinate.longitude)
+        var closest: (AddressFeature, CLLocationDistance)?
+        let matches = byIdentity[identity] ?? []
+        for feature in matches {
+            guard UnlinkedHomeAddressResolver.campaignAddressMatches(
+                reverseCandidate: candidate, houseNumber: feature.properties.houseNumber,
+                streetName: feature.properties.streetName, postalCode: feature.properties.postalCode,
+                formatted: feature.properties.formatted
+            ), let coordinate = CampaignTargetResolver.coordinate(for: feature.geometry) else { continue }
+            let distance = origin.distance(from: CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude))
+            if closest == nil || distance < closest!.1 { closest = (feature, distance) }
+        }
+        PerfTrace.event("address_picker", "match_index_lookup", fields: ["candidates": matches.count])
+        return closest?.0
     }
 }

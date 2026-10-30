@@ -74,6 +74,14 @@ struct SessionParcelAutoCompleteTarget {
         return []
     }
 
+    static func rings(from geometry: CanonicalWKBGeometry) -> [[CLLocationCoordinate2D]] {
+        switch geometry {
+        case .polygon(let rings): return rings.map(coordinates(from:))
+        case .multiPolygon(let polygons): return polygons.flatMap { rings(from: $0) }
+        default: return []
+        }
+    }
+
     func contains(_ coordinate: CLLocationCoordinate2D) -> Bool {
         guard CLLocationCoordinate2DIsValid(coordinate), bbox.contains(coordinate) else { return false }
         return rings.contains { Self.ringContains(coordinate, ring: $0) }
@@ -256,6 +264,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
     @Published private(set) var visitOverlayRevision: Int = 0
     @Published var autoCompleteEnabled = false
     @Published var isPaused = false
+    private(set) var isMapEditing = false
     @Published var showLongSessionPrompt = false
     @Published var sessionEndError: String?
     /// GPS/location error state for UI (e.g. "Searching for GPS...", "Location denied")
@@ -596,6 +605,8 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         showBackgroundLocationUpgradePrompt = true
     }
 
+    private var lastDemoTimerDiagnosticSecond = -1
+
     private func startElapsedTimer() {
         timer?.invalidate()
         let newTimer = Timer.scheduledTimer(
@@ -622,6 +633,13 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
             return
         }
         elapsedTime = currentActiveElapsedTime()
+        if isDemoSession {
+            let second = Int(elapsedTime)
+            if second != lastDemoTimerDiagnosticSecond, second < 3 || second.isMultiple(of: 10) {
+                lastDemoTimerDiagnosticSecond = second
+                PerfTrace.event("demo_playback", "timer", fields: ["seconds": second, "homes": completedCount])
+            }
+        }
         evaluateLongRunningSession()
 
         // Periodic refresh of Live Activity so lock screen widget timer stays correct
@@ -720,7 +738,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
 
     @discardableResult
     private func endIfInactive(ignorePaused: Bool = false) -> Bool {
-        guard sessionId != nil, isActive, (ignorePaused || !isPaused), !isEndingSession,
+        guard !isDemoSession, sessionId != nil, isActive, (ignorePaused || !isPaused), !isEndingSession,
               let lastMeaningfulMovementAt else { return false }
         let cutoff = lastMeaningfulMovementAt.addingTimeInterval(inactivityLimit)
         guard Date() >= cutoff else { return false }
@@ -736,6 +754,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         isPaused: Bool,
         force: Bool = false
     ) async {
+        guard !isDemoSession else { return }
         await sharedLiveCanvassingService.publishTeamPresence(
             campaignId: campaignId,
             sessionId: sessionId,
@@ -1335,6 +1354,21 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         }
     }
 
+    func setMapEditing(_ editing: Bool) {
+        isMapEditing = editing
+        resetAutoCompleteDwell()
+    }
+
+    /// Keep a session's saved target membership/history, while replacing its
+    /// field coordinates and removing inference points for removed map items.
+    func applyMapCorrectionTargets(_ targets: [ResolvedCampaignTarget]) {
+        guard sessionId != nil else { return }
+        let available = Set(targets.map { $0.id.lowercased() })
+        buildingCentroids = buildingCentroids.filter { available.contains($0.key.lowercased()) }
+        resetAutoCompleteDwell()
+        configureAutoCompleteCoordinates(targets.reduce(into: [:]) { $0[$1.id] = $1.coordinate })
+    }
+
     private func setResolvedAddressIds(_ addressIds: [UUID], for targetId: String) {
         let uniqueAddressIds = Array(Set(addressIds))
         targetAddressIdsByTargetId[normalizeVisitKey(targetId)] = uniqueAddressIds
@@ -1349,6 +1383,11 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
             return buildingId
         }
         return UUID(uuidString: targetId) == nil ? targetId : nil
+    }
+
+    func directSessionTargetId(forAddressId addressId: UUID) -> String? {
+        let key = normalizeAddressKey(addressId)
+        return targetAddressIdsByTargetId[key] != nil || targetBuildingIdsByTargetId[key] != nil ? key : nil
     }
 
     func resolvedSessionTargetId(forAddressId addressId: UUID, buildingId: String? = nil) -> String? {
@@ -1424,6 +1463,67 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         print("✅ [SessionManager] Started route-based session with \(route.stopCount) waypoints")
     }
 
+    #if DEBUG
+    /// Uses the production dwell/completion pipeline on a separate demo instance.
+    /// No GPS subscription, session persistence, microphone or backend writes.
+    static func verifyCanonicalAutoRecord(building: BuildingFeature, addressId: UUID,
+                                          neighbourBuilding: BuildingFeature, neighbourAddressId: UUID,
+                                          coordinate: CLLocationCoordinate2D,
+                                          exactGeometry: CanonicalWKBGeometry? = nil) async throws -> Int {
+        enum VerificationFailure: Error { case incorrectTarget, invalidFixAccepted, duplicateCompletion }
+        let id = building.properties.canonicalBuildingIdentifier ?? building.properties.id
+        let neighbourId = neighbourBuilding.properties.canonicalBuildingIdentifier ?? neighbourBuilding.properties.id
+        for useParcel in [false, true] {
+            let session = SessionManager()
+            // Keep the physical phone's GPS from replacing the injected campaign
+            // location while exercising the real dwell and completion pipeline.
+            session.locationManager.delegate = nil
+            session.locationManager.stopUpdatingLocation()
+            session.isDemoSession = true
+            session.sessionId = UUID()
+            session.isActive = true
+            session.sessionMode = .doorKnocking
+            session.autoCompleteEnabled = true
+            session.targetBuildings = [id, neighbourId]
+            session.buildingCentroids = [id: CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude),
+                neighbourId: CLLocation(latitude: coordinate.latitude + 0.001, longitude: coordinate.longitude)]
+            session.configureSessionTargetMappings(addressIdsByTargetId: [id: [addressId], neighbourId: [neighbourAddressId]],
+                buildingIdsByTargetId: [id: id, neighbourId: neighbourId])
+            let parcelRings = exactGeometry.map { SessionParcelAutoCompleteTarget.rings(from: $0) }
+                ?? SessionParcelAutoCompleteTarget.rings(from: building.geometry)
+            if useParcel {
+                guard let target = SessionParcelAutoCompleteTarget(targetId: id, buildingId: id,
+                    addressIds: [addressId], rings: parcelRings), target.contains(coordinate) else {
+                    throw VerificationFailure.incorrectTarget
+                }
+                session.configureParcelAutoCompleteTargets([target])
+            }
+            defer { session.resetAutoCompleteDwell(); session.isActive = false }
+            func fix(_ accuracy: Double, _ speed: Double) -> CLLocation {
+                CLLocation(coordinate: coordinate, altitude: 0, horizontalAccuracy: accuracy,
+                    verticalAccuracy: 5, course: 0, speed: speed, timestamp: Date())
+            }
+            await session.checkAutoComplete(location: fix(50, 0))
+            await session.checkAutoComplete(location: fix(5, 5))
+            guard session.dwellTracker.isEmpty else { throw VerificationFailure.invalidFixAccepted }
+            let location = fix(5, 0)
+            session.currentLocation = location
+            await session.checkAutoComplete(location: location)
+            guard session.confirmedVisitedTargets.isEmpty else { throw VerificationFailure.incorrectTarget }
+            try await Task.sleep(for: .seconds(5.2))
+            await session.checkAutoComplete(location: location)
+            print("CANONICAL_AUTORECORD_DIAGNOSTIC parcel=\(useParcel) expectedAddress=\(addressId.uuidString.lowercased()) expectedBuilding=\(id.lowercased()) addresses=\(session.confirmedVisitedAddressIds) buildings=\(session.confirmedVisitedBuildingIds) targets=\(session.confirmedVisitedTargets) dwell=\(session.dwellTracker.mapValues { Date().timeIntervalSince($0.enteredAt) }) delay=\(session.autoCompleteDwellSeconds) last=\(String(describing: session.lastAutoCompleteTime)) pending=\(session.pendingVisitedTargets) failures=\(session.failedVisitedTargets)")
+            guard session.confirmedVisitedAddressIds == [addressId.uuidString.lowercased()],
+                  session.confirmedVisitedBuildingIds == [id.lowercased()], session.completedCount == 1 else {
+                throw VerificationFailure.incorrectTarget
+            }
+            await session.checkAutoComplete(location: location)
+            guard session.completedCount == 1 else { throw VerificationFailure.duplicateCompletion }
+        }
+        return 2
+    }
+    #endif
+
     func startDemoBuildingSession(
         campaignId: UUID,
         targetBuildings: [String],
@@ -1432,6 +1532,9 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         initialLocation: CLLocationCoordinate2D? = nil
     ) {
         sessionRestoredThisLaunch = false
+        lastDemoTimerDiagnosticSecond = -1
+        isDemoSession = true
+        Task { await liveActivityManager.end() }
         sessionId = UUID()
         SessionManager.lastEndedSummaryMapSnapshot = nil
         self.campaignId = campaignId
@@ -1448,6 +1551,8 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         resetAutoCompleteDwell()
         lastAutoCompleteTime = nil
         startTime = Date()
+        lastMeaningfulMovementAt = nil
+        lastMeaningfulMovementLocation = nil
         pathCoordinates = []
         distanceMeters = 0
         elapsedTime = 0
@@ -1777,6 +1882,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         isActive = true
         presentBackgroundLocationUpgradePromptIfNeeded()
 
+
         if enableSharedLiveCanvassing, !isDemoSession {
             activeSharedLiveSessionId = sharedLiveSessionIdOverride ?? newSessionId
         } else {
@@ -2095,6 +2201,9 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
             appointmentsSet = appointmentAddressIds.count
         }
         refreshCompletedBuildingSnapshot()
+        if completedCount == 1 || completedCount == targetCount {
+            PerfTrace.event("demo_playback", "progress", fields: ["homes": completedCount, "targets": targetCount])
+        }
     }
 
     func markUndoLocallyAfterPersistedOutcome(_ targetId: String) async {
@@ -2488,6 +2597,12 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
                 return
             }
             guard let sid = session.id else { return }
+            if await outboxRepository.hasUnfinishedEndSession(id: sid) {
+                print("⏳ [SessionManager] Skipping remote session with a locally queued end \(sid)")
+                OfflineSyncCoordinator.shared.scheduleProcessOutbox()
+                await liveActivityManager.end()
+                return
+            }
             // Legacy route sessions may not have campaign_id. Auto-close them so only campaign sessions can resume.
             guard let restoredCampaignId = session.campaign_id else {
                 print("⚠️ [SessionManager] Found legacy active session without campaign_id. Ending it automatically.")
@@ -3025,20 +3140,6 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
             NotificationCenter.default.post(name: .sessionEnded, object: nil)
         }
 
-        if !finalIsDemoSession {
-            try? await SessionEventsAPI.shared.logLifecycleEvent(
-                sessionId: sid,
-                eventType: .sessionEnded,
-                lat: finalLocation?.coordinate.latitude,
-                lon: finalLocation?.coordinate.longitude
-            )
-        }
-
-        await awaitInFlightVisitConfirmations()
-        if !finalIsDemoSession {
-            await flushPendingEvents()
-            await VisitsAPI.shared.flushPending()
-        }
         // #region agent log
         if !finalIsDemoSession {
             do {
@@ -3073,11 +3174,27 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
                 return
             }
         }
-        await safetyBeaconService.endSession(location: finalLocation)
-        await sharedLiveCanvassingService.clearTeamPresence(
-            campaignId: finalCampaignId,
-            userId: finalUserId
-        )
+        if !finalIsDemoSession {
+            try? await SessionEventsAPI.shared.logLifecycleEvent(
+                sessionId: sid,
+                eventType: .sessionEnded,
+                lat: finalLocation?.coordinate.latitude,
+                lon: finalLocation?.coordinate.longitude
+            )
+        }
+
+        await awaitInFlightVisitConfirmations()
+        if !finalIsDemoSession {
+            await flushPendingEvents()
+            await VisitsAPI.shared.flushPending()
+        }
+        if !finalIsDemoSession {
+            await safetyBeaconService.endSession(location: finalLocation)
+            await sharedLiveCanvassingService.clearTeamPresence(
+                campaignId: finalCampaignId,
+                userId: finalUserId
+            )
+        }
         if !finalIsDemoSession, let userId = finalUserId {
             do {
                 try await SessionParticipantsService.shared.markParticipantLeft(
@@ -3092,7 +3209,9 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
                 }
             }
         }
-        await sharedLiveCanvassingService.leaveCurrentSession()
+        if !finalIsDemoSession {
+            await sharedLiveCanvassingService.leaveCurrentSession()
+        }
         activeSharedLiveSessionId = nil
         // #endregion
         await liveActivityManager.end()
@@ -3180,13 +3299,15 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
             isPaused: false,
             endTime: OfflineDateCodec.string(from: endTime)
         )
-        _ = await outboxRepository.enqueue(
+        guard await outboxRepository.enqueue(
             entityType: "session",
             entityId: sessionId.uuidString,
             operation: .endSession,
             payload: payload,
             dependencyKey: "session:\(sessionId.uuidString.lowercased())"
-        )
+        ) != nil else {
+            throw NSError(domain: "SessionManager", code: 1, userInfo: [NSLocalizedDescriptionKey: "Could not queue the session end for syncing."])
+        }
         if NetworkMonitor.shared.isOnline {
             OfflineSyncCoordinator.shared.scheduleProcessOutbox()
         }
@@ -3200,6 +3321,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
     }
 
     private func checkAutoComplete(location: CLLocation) async {
+        guard !isMapEditing else { return }
         guard sessionId != nil, isActive, !isPaused else { return }
         guard autoCompleteEnabled else { return }
         if let lastTime = lastAutoCompleteTime, Date().timeIntervalSince(lastTime) < autoCompleteDebounceSeconds {
@@ -3748,7 +3870,6 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
             lastLiveActivityPeriodicSync = nil
             lastSharedLivePresencePeriodicSync = nil
             lastTeamLivePresencePeriodicSync = nil
-            await liveActivityManager.end()
             return
         }
         guard isActive, let liveActivityState else {

@@ -30,12 +30,12 @@ final class FlyerModeManager: ObservableObject {
     private var completedAddressIds = Set<UUID>()
     private var parcelAutoCompleteTargets: [SessionParcelAutoCompleteTarget] = []
 
-    func load(campaignId _: UUID, featuresService: MapFeaturesService) async {
+    func load(campaignId: UUID, featuresService: MapFeaturesService) async {
         addresses = []
         currentAddress = nil
 
-        let buildingFeatures = featuresService.buildings?.features ?? []
-        let addressFeatures = featuresService.addresses?.features ?? []
+        let buildingFeatures = featuresService.buildings(for: campaignId.uuidString)?.features ?? []
+        let addressFeatures = featuresService.addresses(for: campaignId.uuidString)?.features ?? []
         addresses = addressesFromFlyerTargets(
             CampaignTargetResolver.flyerTargets(buildings: buildingFeatures, addresses: addressFeatures)
         )
@@ -127,6 +127,11 @@ final class FlyerModeManager: ObservableObject {
     }
 
     private func checkProximity(location: CLLocation) async {
+        guard !SessionManager.shared.isMapEditing else {
+            dwellTracker.removeAll()
+            currentAddress = nil
+            return
+        }
         let threshold = adaptiveThresholdMeters(for: location)
         let renderedAddress = await renderedTargetProvider?(location, threshold)
         var candidateAddresses = addresses

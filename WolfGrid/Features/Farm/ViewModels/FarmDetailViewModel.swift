@@ -7,7 +7,17 @@ final class FarmDetailViewModel: ObservableObject {
     @Published var touches: [FarmTouch] = []
     @Published var cycles: [FarmCycle] = []
     @Published var leads: [FarmLead] = []
-    @Published var addresses: [FarmAddressViewRow] = []
+    @Published var leadsLoadFailed = false
+    @Published var touchesLoadFailed = false
+    @Published var visitedHomeCount: Int?
+    @Published var homeVisitCount: Int?
+    @Published var homeVisitCountIsMinimum = false
+    @Published var addressesLoadFailed = false
+    @Published var addresses: [FarmAddressSummary] = []
+    @Published var linkedCampaignId: UUID?
+    @Published var isLoadingAddresses = false
+    @Published var addressesHaveMore = false
+    private var addressesLoaded = false
     @Published var upcomingTouches: [FarmTouch] = []
     @Published var recommendations: [FarmRecommendation] = []
     
@@ -27,17 +37,21 @@ final class FarmDetailViewModel: ObservableObject {
     // MARK: - Load Farm Data
     
     func loadFarmData() async {
+        let trace = PerfTrace.begin("farm_open", "load_details", fields: ["farm": farmId.uuidString])
         isLoading = true
         errorMessage = nil
-        defer { isLoading = false }
+        defer {
+            isLoading = false
+            trace.end(status: farm == nil ? "error" : "ready")
+        }
 
-        await loadFarm()
-
+        async let farmTask: Void = loadFarm()
         async let touchesTask: Void = loadTouches()
         async let leadsTask: Void = loadLeads()
-        async let addressesTask: Void = loadAddresses()
+        async let linkedCampaignTask: Void = loadLinkedCampaign()
+        async let visitsTask: Void = loadVisitedHomes()
 
-        _ = await (touchesTask, leadsTask, addressesTask)
+        _ = await (farmTask, touchesTask, leadsTask, linkedCampaignTask, visitsTask)
 
         recalculateCycles()
         
@@ -49,10 +63,15 @@ final class FarmDetailViewModel: ObservableObject {
     }
     
     private func loadFarm() async {
+        if farm == nil {
+            farm = await FarmOfflineRepository.shared.getCachedFarm(id: farmId)
+        }
         do {
             farm = try await farmService.fetchFarm(id: farmId)
         } catch {
-            errorMessage = "Failed to load farm: \(error.localizedDescription)"
+            if farm == nil {
+                errorMessage = "Failed to load farm: \(error.localizedDescription)"
+            }
             print("❌ [FarmDetailViewModel] Error loading farm: \(error)")
         }
     }
@@ -60,7 +79,9 @@ final class FarmDetailViewModel: ObservableObject {
     private func loadTouches() async {
         do {
             touches = try await touchService.fetchTouches(farmId: farmId)
+            touchesLoadFailed = false
         } catch {
+            touchesLoadFailed = true
             errorMessage = "Failed to load touches: \(error.localizedDescription)"
             print("❌ [FarmDetailViewModel] Error loading touches: \(error)")
         }
@@ -69,26 +90,54 @@ final class FarmDetailViewModel: ObservableObject {
     private func loadLeads() async {
         do {
             leads = try await leadService.fetchLeads(farmId: farmId)
+            leadsLoadFailed = false
         } catch {
+            leadsLoadFailed = true
             errorMessage = "Failed to load leads: \(error.localizedDescription)"
             print("❌ [FarmDetailViewModel] Error loading leads: \(error)")
         }
     }
 
-    private func loadAddresses() async {
-        guard farm != nil else {
-            addresses = []
-            return
-        }
-
+    private func loadVisitedHomes() async {
         do {
-            addresses = try await farmService.fetchAddresses(farmId: farmId)
+            let progress = try await farmService.fetchVisitedHomeCount(farmId: farmId)
+            visitedHomeCount = progress.homes
+            homeVisitCount = progress.visits
+            homeVisitCountIsMinimum = progress.minimum
         } catch {
-            addresses = []
-            print("⚠️ [FarmDetailViewModel] Error loading addresses: \(error)")
+            visitedHomeCount = nil
+            homeVisitCount = nil
+            print("❌ [FarmDetailViewModel] Error loading home visits: \(error)")
         }
     }
-    
+
+    private func loadLinkedCampaign() async {
+        let trace = PerfTrace.begin("farm_open", "linked_campaign", fields: ["farm": farmId.uuidString])
+        linkedCampaignId = await farmService.linkedCampaignId(farmId: farmId)
+        trace.end(status: linkedCampaignId == nil ? "unavailable" : "ready")
+    }
+
+    func loadAddresses(reset: Bool = false) async {
+        guard !isLoadingAddresses, reset || !addressesLoaded || addressesHaveMore else { return }
+        isLoadingAddresses = true
+        let trace = PerfTrace.begin("farm_open", "address_page", fields: ["farm": farmId.uuidString, "offset": reset ? 0 : addresses.count])
+        defer { isLoadingAddresses = false }
+        do {
+            let page = try await farmService.fetchAddressSummaryPage(
+                farmId: farmId, offset: reset ? 0 : addresses.count
+            )
+            if reset { addresses = page.addresses } else { addresses.append(contentsOf: page.addresses) }
+            addressesHaveMore = page.hasMore
+            addressesLoaded = true
+            addressesLoadFailed = false
+            trace.end(status: "ready", fields: ["count": page.addresses.count, "hasMore": page.hasMore])
+        } catch {
+            trace.end(status: "error")
+            addressesLoadFailed = true
+            print("⚠️ [FarmDetailViewModel] Error loading address page: \(error)")
+        }
+    }
+
     // MARK: - Calculate Upcoming Touches
     
     private func calculateUpcomingTouches() {
@@ -319,10 +368,11 @@ final class FarmDetailViewModel: ObservableObject {
             ?? cycles.sorted { $0.startDate < $1.startDate }.first
 
         do {
-            let persisted = try await touchService.createTouch(
+            let persisted = try await touchService.createSessionTouchLocally(
                 FarmTouch(
                     farmId: farm.id,
-                    cycleNumber: cycle?.cycleNumber,
+                    cycleNumber: cycle?.cycleNumber ?? FarmCycleResolver.nextCycleNumber(
+                        existingTouches: touches, touchesPerInterval: max(1, farm.touchesPerInterval ?? farm.frequency)),
                     date: Date(),
                     type: type,
                     mode: type.defaultModeRawValue,

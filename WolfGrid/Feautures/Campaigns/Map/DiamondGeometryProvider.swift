@@ -30,25 +30,26 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
     static let buildingLeadGlowLayerId = "diamond-buildings-lead-glow"
     static let buildingAddressNumberLayerId = "diamond-buildings-address-numbers"
     static let addressCircleLayerId = "diamond-addresses-circles"
+    static let addressOverviewLayerId = "diamond-addresses-overview"
     static let selectedAddressCircleLayerId = "diamond-addresses-selected"
     static let addressNumberLayerId = "diamond-addresses-numbers"
     static let parcelOverviewMinZoom: Double = 0.0
     static let parcelOverviewMaxZoom: Double = 24.0
-    static let addressLayerMinZoom: Double = 11.8
-    static let addressNumberLayerMinZoom: Double = 17.0
+    static let addressLayerMinZoom: Double = 10.0
+    static let addressNumberLayerMinZoom: Double = 16.0
     static var addressNumberZoomOpacityExpression: Exp {
         Exp(.interpolate) {
             Exp(.linear)
             Exp(.zoom)
             Self.addressNumberLayerMinZoom
             0.0
-            17.25
+            16.25
             0.28
-            17.5
+            16.5
             0.62
-            17.8
+            16.8
             0.9
-            18.1
+            17.1
             1.0
         }
     }
@@ -61,10 +62,21 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
         if isAddressMode {
             return Self.addressNumberZoomOpacityExpression
         }
-        return Exp(.switchCase) {
-            linkedExpression
-            Self.addressNumberZoomOpacityExpression
+        // Mapbox requires zoom to be the input of the top-level interpolation.
+        // Putting that interpolation inside a case rejects the entire tile layer.
+        return Exp(.interpolate) {
+            Exp(.linear)
+            Exp(.zoom)
+            Self.addressNumberLayerMinZoom
             0.0
+            16.25
+            Exp(.switchCase) { linkedExpression; 0.28; 0.0 }
+            16.5
+            Exp(.switchCase) { linkedExpression; 0.62; 0.0 }
+            16.8
+            Exp(.switchCase) { linkedExpression; 0.9; 0.0 }
+            17.1
+            Exp(.switchCase) { linkedExpression; 1.0; 0.0 }
         }
     }
 
@@ -159,11 +171,40 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
     private let parcelOverviewMaxZoom = VectorTileDiamondGeometryProvider.parcelOverviewMaxZoom
     private let buildingCapHeightMeters = 1.2
     private let addressLayerMinZoom = VectorTileDiamondGeometryProvider.addressLayerMinZoom
-    private let addressCylinderHeightMeters = 3.0
+    private let addressCylinderHeightMeters = 5.5
     private let addressLabelCapClearanceMeters = 0.05
     private let selectedBuildingHeightScale = 1.0
     private var territoryBoundary: GeoJSONObject?
     private var currentAddressUsesCirclePolygons = false
+    private var canonicalBuildingIds: [String]?
+    private var coveredTownhomeBuildingIds: Set<String> = []
+
+    func applyCoveredTownhomeBuildings(_ ids: Set<String>, on mapView: MapView) throws {
+        guard coveredTownhomeBuildingIds != ids else { return }
+        coveredTownhomeBuildingIds = ids
+        try applyTerritoryBoundary(territoryBoundary, on: mapView)
+    }
+    private var canonicalAddressIds: [String]?
+    private var canonicalParcelIds: [String]?
+
+    func applyCanonicalScope(buildings: [String]?, addresses: [String]?, parcels: [String]?, on mapView: MapView) throws {
+        guard canonicalBuildingIds != buildings || canonicalAddressIds != addresses || canonicalParcelIds != parcels else { return }
+        canonicalBuildingIds = buildings
+        canonicalAddressIds = addresses
+        canonicalParcelIds = parcels
+        try applyTerritoryBoundary(territoryBoundary, on: mapView)
+    }
+
+    private func canonicalIdentityFilter(_ ids: [String]?) -> Exp {
+        // An expression operand avoids Mapbox treating ["==", 1, 1] as a
+        // legacy property filter (which requires a string property name).
+        guard let ids else { return Exp(.eq) { Exp(.literal) { 1 }; 1 } }
+        return Exp(.inExpression) { Exp(.get) { "canonical_id" }; Exp(.literal) { ids } }
+    }
+
+    private func canonicalParcelFilter() -> Exp {
+        Exp(.all) { scopedPolygonFilter(); canonicalIdentityFilter(canonicalParcelIds) }
+    }
 
     func installGeometry(
         for campaignId: String,
@@ -242,9 +283,7 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
                 minzoom: manifest.addressMinzoom ?? 10,
                 maxzoom: manifest.addressMaxzoom ?? 16,
                 bounds: manifest.bounds,
-                promoteIds: [
-                    addressLayer: manifest.addressPromoteId ?? manifest.promoteIds?.addressCircles ?? manifest.promoteIds?.addresses ?? "address_id"
-                ]
+                promoteIds: addressPromoteIds(manifest: manifest, addressLayer: addressLayer, pointLayer: addressPointLayer)
             )
             addressSourceForLayers = addressSourceId
         } else {
@@ -291,39 +330,50 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
                 $0.filter = diamondRenderableBuildingFilter()
             }
         }
-        if map.allLayerIdentifiers.contains(where: { $0.id == buildingAddressNumberLayerId }) {
-            try map.updateLayer(withId: buildingAddressNumberLayerId, type: SymbolLayer.self) {
+        for layerId in [buildingAddressNumberLayerId, buildingAddressNumberLayerId + "-shadow"] where map.layerExists(withId: layerId) {
+            try map.updateLayer(withId: layerId, type: SymbolLayer.self) {
                 $0.filter = singleAddressBuildingNumberFilter()
             }
         }
         if map.allLayerIdentifiers.contains(where: { $0.id == parcelFillLayerId }) {
             try map.updateLayer(withId: parcelFillLayerId, type: FillLayer.self) {
-                $0.filter = scopedPolygonFilter()
+                $0.filter = canonicalParcelFilter()
             }
         }
         if map.allLayerIdentifiers.contains(where: { $0.id == parcelLineLayerId }) {
             try map.updateLayer(withId: parcelLineLayerId, type: LineLayer.self) {
-                $0.filter = scopedPolygonFilter()
+                $0.filter = canonicalParcelFilter()
             }
         }
         if map.allLayerIdentifiers.contains(where: { $0.id == addressCircleLayerId }) {
-            try? map.updateLayer(withId: addressCircleLayerId, type: FillExtrusionLayer.self) {
-                $0.filter = addressGeometryFilter(usesCirclePolygons: true)
+            if currentAddressUsesCirclePolygons {
+                try map.updateLayer(withId: addressCircleLayerId, type: FillExtrusionLayer.self) {
+                    $0.filter = addressGeometryFilter(usesCirclePolygons: true)
+                }
+            } else {
+                try map.updateLayer(withId: addressCircleLayerId, type: CircleLayer.self) {
+                    $0.filter = addressGeometryFilter(usesCirclePolygons: false)
+                }
             }
-            try? map.updateLayer(withId: addressCircleLayerId, type: CircleLayer.self) {
+        }
+        if map.layerExists(withId: Self.addressOverviewLayerId) {
+            try map.updateLayer(withId: Self.addressOverviewLayerId, type: CircleLayer.self) {
                 $0.filter = addressGeometryFilter(usesCirclePolygons: false)
             }
         }
         if map.allLayerIdentifiers.contains(where: { $0.id == selectedAddressCircleLayerId }) {
-            try? map.updateLayer(withId: selectedAddressCircleLayerId, type: FillExtrusionLayer.self) {
-                $0.filter = addressGeometryFilter(usesCirclePolygons: true)
-            }
-            try? map.updateLayer(withId: selectedAddressCircleLayerId, type: CircleLayer.self) {
-                $0.filter = addressGeometryFilter(usesCirclePolygons: false)
+            if currentAddressUsesCirclePolygons {
+                try map.updateLayer(withId: selectedAddressCircleLayerId, type: FillExtrusionLayer.self) {
+                    $0.filter = addressGeometryFilter(usesCirclePolygons: true)
+                }
+            } else {
+                try map.updateLayer(withId: selectedAddressCircleLayerId, type: CircleLayer.self) {
+                    $0.filter = addressGeometryFilter(usesCirclePolygons: false)
+                }
             }
         }
-        if map.allLayerIdentifiers.contains(where: { $0.id == addressNumberLayerId }) {
-            try map.updateLayer(withId: addressNumberLayerId, type: SymbolLayer.self) {
+        for layerId in [addressNumberLayerId, addressNumberLayerId + "-shadow"] where map.layerExists(withId: layerId) {
+            try map.updateLayer(withId: layerId, type: SymbolLayer.self) {
                 $0.filter = addressGeometryFilter(usesCirclePolygons: currentAddressUsesCirclePolygons)
             }
         }
@@ -338,10 +388,13 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
 
     private func removeExistingDiamondLayers(from map: MapboxMap) throws {
         for layerId in [
+            Self.addressOverviewLayerId,
             addressNumberLayerId,
+            addressNumberLayerId + "-shadow",
             selectedAddressCircleLayerId,
             addressCircleLayerId,
             buildingAddressNumberLayerId,
+            buildingAddressNumberLayerId + "-shadow",
             buildingLeadGlowLayerId,
             buildingLineLayerId,
             buildingFillLayerId,
@@ -417,6 +470,12 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
     }
 
     private func tileTemplateWithAccessToken(_ tileTemplate: String) async -> String {
+        #if DEBUG
+        if tileTemplate.hasPrefix("https://canonical-tiles.wolfgrid.invalid/") { return tileTemplate }
+        #endif
+        // Canonical tile requests are authenticated by the HTTP interceptor,
+        // which obtains the current session rather than freezing a JWT in a URL.
+        if tileTemplate.contains("/map-tiles/") { return tileTemplate }
         guard let session = try? await SupabaseManager.shared.client.auth.session,
               let encodedToken = session.accessToken.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) else {
             return tileTemplate
@@ -446,7 +505,7 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
         fill.fillExtrusionBase = .expression(MapLayerManager.buildingExtrusionBaseExpression)
         fill.fillExtrusionOpacity = .constant(1.0)
         MapTheme.configureExtrusionDepth(&fill)
-        fill.minZoom = 12
+        fill.minZoom = 10
         fill.filter = renderableFilter
 
         try map.addLayer(fill)
@@ -470,7 +529,7 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
         // Selection is shown by recoloring the extrusion; keep footprint outlines silent.
         selectedGlow.lineOpacity = .constant(0.0)
         selectedGlow.lineOpacityTransition = StyleTransition(duration: 0.2, delay: 0)
-        selectedGlow.minZoom = 12
+        selectedGlow.minZoom = 10
         selectedGlow.filter = renderableFilter
 
         try map.addLayer(selectedGlow, layerPosition: .above(buildingFillLayerId))
@@ -481,13 +540,25 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
         // selection-only, so normal homes do not carry an always-on footprint outline.
     }
 
+    /// Match the rooftop numbers with a blurred shadow rather than a glyph outline.
+    private static func addressNumberShadow(for labels: SymbolLayer) -> SymbolLayer {
+        var shadow = labels
+        shadow.id = labels.id + "-shadow"
+        shadow.textColor = .constant(StyleColor(UIColor.black.withAlphaComponent(0.65)))
+        shadow.textHaloColor = .constant(StyleColor(UIColor.black.withAlphaComponent(0.65)))
+        shadow.textHaloWidth = .constant(0.75)
+        shadow.textHaloBlur = .constant(3.5)
+        shadow.textTranslate = .constant([0, 1.5])
+        shadow.textTranslateAnchor = .constant(.viewport)
+        return shadow
+    }
+
     private func addBuildingAddressNumberLayer(map: MapboxMap, sourceId: String, sourceLayer: String) throws {
         var labels = SymbolLayer(id: buildingAddressNumberLayerId, source: sourceId)
         labels.sourceLayer = sourceLayer
         labels.textField = .expression(houseNumberLabelExpression())
         labels.textColor = .constant(StyleColor(.white))
-        labels.textHaloColor = .constant(StyleColor(.black))
-        labels.textHaloWidth = .constant(1.4)
+        labels.textHaloWidth = .constant(0)
         labels.textSize = .expression(
             Exp(.interpolate) {
                 Exp(.linear)
@@ -524,6 +595,7 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
         labels.minZoom = Self.addressNumberLayerMinZoom
         labels.filter = singleAddressBuildingNumberFilter()
         try map.addLayer(labels, layerPosition: .above(buildingLineLayerId))
+        try map.addLayer(Self.addressNumberShadow(for: labels), layerPosition: .below(labels.id))
     }
 
     private func houseNumberLabelExpression() -> Exp {
@@ -559,7 +631,7 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
     }
 
     private func addParcelLayers(map: MapboxMap, sourceId: String, sourceLayer: String) throws {
-        let parcelFilter = scopedPolygonFilter()
+        let parcelFilter = canonicalParcelFilter()
 
         var fill = FillLayer(id: parcelFillLayerId, source: sourceId)
         fill.sourceLayer = sourceLayer
@@ -629,6 +701,14 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
         try map.addLayer(line, layerPosition: .above(parcelFillLayerId))
     }
 
+    private func addressPromoteIds(manifest: DiamondManifest, addressLayer: String, pointLayer: String?) -> [String: String] {
+        var result = [addressLayer: manifest.addressPromoteId ?? manifest.promoteIds?.addressCircles ?? manifest.promoteIds?.addresses ?? "address_id"]
+        if let pointLayer, pointLayer != addressLayer {
+            result[pointLayer] = manifest.promoteIds?.addresses ?? "address_id"
+        }
+        return result
+    }
+
     private func addAddressLayers(map: MapboxMap, sourceId: String, sourceLayer: String, usesCirclePolygons: Bool) throws {
         currentAddressUsesCirclePolygons = usesCirclePolygons
         let pointFilter = scopedPointFilter()
@@ -656,13 +736,9 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
             var selected = FillExtrusionLayer(id: selectedAddressCircleLayerId, source: sourceId)
             selected.sourceLayer = sourceLayer
             selected.fillExtrusionColor = .constant(StyleColor(MapStatusColor.selectedHome))
-            selected.fillExtrusionOpacity = .expression(
-                Exp(.switchCase) {
-                    isSelectedUnvisitedStatusExpression()
-                    1.0
-                    0.0
-                }
-            )
+            // The base cylinder already applies selectedHome per feature.
+            // Extrusion opacity is layer-wide; feature-state here rejects the layer.
+            selected.fillExtrusionOpacity = .constant(0.0)
             selected.fillExtrusionHeight = .expression(addressCylinderHeightExpression())
             selected.fillExtrusionBase = .expression(addressCylinderBaseExpression())
             selected.fillExtrusionColorTransition = StyleTransition(duration: 0.18, delay: 0)
@@ -684,10 +760,10 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
                 Exp(.interpolate) {
                     Exp(.linear)
                     Exp(.zoom)
-                    11.8
-                    2.5
+                    10
+                    4
                     13
-                    3
+                    4.5
                     14
                     4
                     17
@@ -740,8 +816,7 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
         labels.sourceLayer = sourceLayer
         labels.textField = .expression(houseNumberLabelExpression())
         labels.textColor = .constant(StyleColor(.white))
-        labels.textHaloColor = .constant(StyleColor(.black))
-        labels.textHaloWidth = .constant(1.4)
+        labels.textHaloWidth = .constant(0)
         labels.textSize = .expression(
             Exp(.interpolate) {
                 Exp(.linear)
@@ -754,7 +829,7 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
         )
         labels.textAnchor = .constant(.center)
         labels.textJustify = .constant(.center)
-        labels.textOffset = .constant([0, -0.35])
+        labels.textOffset = .constant(usesCirclePolygons ? [0, 0] : [0, -0.35])
         labels.textPitchAlignment = .constant(.viewport)
         labels.textRotationAlignment = .constant(.viewport)
         labels.textVariableAnchor = .constant([.center])
@@ -762,7 +837,7 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
         labels.textIgnorePlacement = .constant(true)
         labels.textOcclusionOpacity = .constant(1.0)
         labels.textOpacity = .expression(
-            Self.linkedAddressNumberOpacityExpression(linkedExpression: Self.linkedAddressNumberExpression)
+            Self.addressNumberZoomOpacityExpression
         )
         labels.symbolPlacement = .constant(.point)
         labels.symbolZOrder = .constant(.auto)
@@ -785,6 +860,7 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
         labels.minZoom = Self.addressNumberLayerMinZoom
         labels.filter = addressNumberFilter(usesCirclePolygons: usesCirclePolygons)
         try map.addLayer(labels, layerPosition: .above(selectedAddressCircleLayerId))
+        try map.addLayer(Self.addressNumberShadow(for: labels), layerPosition: .below(labels.id))
     }
 
     private func scopedPointFilter() -> Exp {
@@ -796,7 +872,10 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
     }
 
     private func addressGeometryFilter(usesCirclePolygons: Bool) -> Exp {
-        usesCirclePolygons ? scopedPolygonFilter() : scopedPointFilter()
+        Exp(.all) {
+            usesCirclePolygons ? scopedPolygonFilter() : scopedPointFilter()
+            canonicalIdentityFilter(canonicalAddressIds)
+        }
     }
 
     private func addressNumberFilter(usesCirclePolygons: Bool) -> Exp {
@@ -873,6 +952,9 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
         // filter to renderable footprint geometry and minimum area only.
         Exp(.all) {
             polygonGeometryFilter()
+            canonicalIdentityFilter(canonicalBuildingIds.map { ids in
+                ids.filter { !coveredTownhomeBuildingIds.contains($0.lowercased()) }
+            })
             Exp(.switchCase) {
                 Exp(.gt) {
                     Exp(.coalesce) {
@@ -916,13 +998,13 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
             Exp(.switchCase) {
                 isSelectedExpression()
                 1.0
-                0.36
+                0.65
             }
             12.0
             Exp(.switchCase) {
                 isSelectedExpression()
                 1.0
-                0.42
+                0.7
             }
             14.0
             Exp(.switchCase) {
@@ -963,13 +1045,13 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
             Exp(.switchCase) {
                 isSelectedExpression()
                 0.42
-                0.035
+                0.12
             }
             12.0
             Exp(.switchCase) {
                 isSelectedExpression()
                 0.42
-                0.045
+                0.12
             }
             14.0
             Exp(.switchCase) {
@@ -1007,11 +1089,19 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
         selectedOverridesStatus: Bool = false
     ) -> Exp {
         return Exp(.switchCase) {
+            Exp(.eq) { Exp(.coalesce) { Exp(.featureState) { "edit_selected" }; false }; true }
+            UIColor.white
             isTeammateOwnedExpression()
             MapStatusColor.teammateTouched
 
             selectedOverridesStatus ? isSelectedHighlightVisibleExpression() : isSelectedUnvisitedStatusExpression()
             MapStatusColor.selectedHome
+
+            Exp(.any) {
+                Exp(.gt) { scansTotalExpression(); 0 }
+                Exp(.eq) { Exp(.coalesce) { Exp(.featureState) { "card_engaged" }; false }; true }
+            }
+            MapStatusColor.qrScanned
 
             statusMatchColorExpression(defaultColor: defaultColor)
         }
@@ -1030,6 +1120,10 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
             MapStatusColor.flyerUntouched
             "no_answer"
             MapStatusColor.noOneHome
+            "attempted"
+            MapStatusColor.noOneHome
+            "not_home"
+            MapStatusColor.noOneHome
             "talked"
             MapStatusColor.conversations
             "hot"
@@ -1042,6 +1136,8 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
             MapStatusColor.touched
             "lead"
             MapStatusColor.lead
+            "interested"
+            MapStatusColor.lead
             "future_seller"
             MapStatusColor.hotLead
             "hot_lead"
@@ -1050,6 +1146,8 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
             MapStatusColor.hotLead
             "follow_up"
             MapStatusColor.hotLead
+            "pending_visited"
+            MapStatusColor.pendingVisited
             "do_not_knock"
             MapStatusColor.doNotKnock
             "not_interested"

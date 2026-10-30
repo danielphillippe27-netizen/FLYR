@@ -3,6 +3,9 @@ import UIKit
 import Supabase
 
 struct SettingsView: View {
+    @AppStorage("stormMapsEnabled") private var stormMapsEnabled = false
+    @AppStorage("farmsEnabled") private var farmsEnabled = false
+    @AppStorage("showCampaignDemoController") private var showCampaignDemoController = false
     @StateObject private var vm = SettingsViewModel()
     @StateObject private var auth = AuthManager.shared
     @Environment(\.dismiss) private var dismiss
@@ -18,6 +21,19 @@ struct SettingsView: View {
     @State private var deleteAccountError: String?
     @State private var calendarMessage: String?
     @State private var showMapInfoSheet = false
+
+    private func betaLabel(_ title: String) -> some View {
+        HStack(spacing: 8) {
+            Text(title)
+            Text("BETA")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.orange)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 3)
+                .background(.orange.opacity(0.12), in: Capsule())
+        }
+        .accessibilityElement(children: .combine)
+    }
 
     private var appVersionText: String {
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0"
@@ -57,12 +73,36 @@ struct SettingsView: View {
                     
                     WorkspaceCoverageSettingsSection()
 
+                    Section {
+                        Toggle(isOn: $farmsEnabled) {
+                            betaLabel("Farm")
+                        }
+                    }
+
+                    Section {
+                        Toggle(isOn: $stormMapsEnabled) {
+                            betaLabel("Storms")
+                        }
+                    } header: {
+                        Text("Campaign Maps")
+                    } footer: {
+                        Text("Show the Storms button when creating a campaign. Find recent hail storms, select a weather area, or draw your own. Workspace Storm Maps access is required.")
+                    }
+
                     // Appearance
                     appearanceSection
 
                     // Apple Health
                     appleHealthSection
                     
+                    Section {
+                        Toggle("Show Demo Controller", isOn: $showCampaignDemoController)
+                    } header: {
+                        Text("Demo Videos")
+                    } footer: {
+                        Text("Show a small Demo Controller button at the bottom of campaign details to create demo videos.")
+                    }
+
                     // App Info
                     appInfoSection
                 } else {

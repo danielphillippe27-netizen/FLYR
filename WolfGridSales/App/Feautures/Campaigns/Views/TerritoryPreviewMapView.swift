@@ -87,6 +87,11 @@ struct TerritoryPreviewMapView: UIViewRepresentable {
         context.coordinator.polygonAnnotationManager = polygonManager
 
         context.coordinator.mapView = mapView
+        mapView.onValidLayout = { [weak coordinator = context.coordinator, weak mapView] in
+            guard let mapView else { return }
+            coordinator?.applyPreferredCamera(on: mapView, force: true)
+        }
+
         context.coordinator.useDarkStyle = useDarkStyle
         context.coordinator.center = center
         context.coordinator.polygon = polygon
@@ -190,6 +195,8 @@ struct TerritoryPreviewMapView: UIViewRepresentable {
         }
 
         func setCameraToPolygonBounds(_ polygon: [CLLocationCoordinate2D], on mapView: MapView, force: Bool = false) {
+            guard mapView.bounds.width > 96, mapView.bounds.height > 96 else { return }
+
             let signature = polygon
                 .map { "\($0.latitude),\($0.longitude)" }
                 .joined(separator: "|")
@@ -203,7 +210,7 @@ struct TerritoryPreviewMapView: UIViewRepresentable {
             let centerLon = (minLon + maxLon) / 2
             let center = CLLocationCoordinate2D(latitude: centerLat, longitude: centerLon)
             let padding = UIEdgeInsets(top: 24, left: 24, bottom: 24, right: 24)
-            let fallback = CameraOptions(center: center, padding: padding, zoom: 14, bearing: 0, pitch: 0)
+            let fallback = CameraOptions(center: center, zoom: 14, bearing: 0, pitch: 0)
             let cameraOptions = (try? mapView.mapboxMap.camera(
                 for: polygon,
                 camera: fallback,
@@ -218,6 +225,8 @@ struct TerritoryPreviewMapView: UIViewRepresentable {
         }
 
         func setCameraToCenter(_ center: CLLocationCoordinate2D, on mapView: MapView, force: Bool = false) {
+            guard mapView.bounds.width > 96, mapView.bounds.height > 96 else { return }
+
             lastPolygonSignature = nil
             if !force,
                let last = lastCameraCenter,

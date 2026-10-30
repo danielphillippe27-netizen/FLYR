@@ -18,7 +18,6 @@ import {
 } from '@/lib/scraper/d2dJobSignals';
 import { normalizePhoneMarket, normalizePhoneNumber, type SupportedPhoneMarket } from '@/lib/dialer/phone';
 import {
-  attachDiallerLeadToMaster,
   ensureSalespersonLeadMaster,
   findSalespersonLeadMaster,
 } from '@/lib/sales-leads/master-list';
@@ -83,7 +82,7 @@ const requestSchema = z.object({
   industry: z.string().trim().min(2).max(120),
   countryCode: z.string().trim().min(2).max(2).default('US'),
   region: z.string().trim().max(80).optional(),
-  pageSize: z.number().int().min(1).max(20).default(12),
+  pageSize: z.number().int().min(1).max(20).default(20),
   relatedTerms: z.array(z.string().trim().min(2).max(120)).max(12).optional(),
   workspaceId: z.string().uuid().optional(),
   listName: z.string().trim().min(1).max(120).optional(),
@@ -334,6 +333,7 @@ async function saveScraperResults(params: {
   const contactIdByLeadKey = new Map<string, string>();
   let masterAddedCount = 0;
   let masterSkippedCount = 0;
+  const createdMasterIds = new Set<string>();
 
   await forEachWithConcurrency(uniqueLeads.values(), 8, async (lead) => {
     const leadKey = scraperLeadKey(lead, phoneMarket);
@@ -494,6 +494,7 @@ async function saveScraperResults(params: {
       warning = warning ?? masterResult.warning;
     } else if (masterResult.created) {
       masterAddedCount += 1;
+      if (masterResult.row?.id) createdMasterIds.add(masterResult.row.id);
     } else if (masterResult.existing) {
       masterSkippedCount += 1;
     }
@@ -512,7 +513,7 @@ async function saveScraperResults(params: {
   });
 
   let listId: string | null = null;
-  const masterLeadIds = Array.from(masterIdByLeadKey.values());
+  const masterLeadIds = [...new Set(masterIdByLeadKey.values())];
   if (contactIds.size > 0 || masterLeadIds.length > 0) {
     const { data: createdList, error: listError } = await params.admin
       .from('smart_lists')
@@ -582,123 +583,21 @@ async function saveScraperResults(params: {
     );
   }
 
-  const dialableLeads = Array.from(leadsForDialer.values()).flatMap((lead) => {
-    const normalizedPhone = normalizePhoneNumber(lead.phone, phoneMarket);
-    if (!normalizedPhone.isValid || !normalizedPhone.e164) return [];
-    const jobSignals = (lead.jobSignals ?? []).slice(0, 2);
-    return [{
-      workspace_id: workspaceId,
-      user_id: params.userId,
-      name: compactWhitespace(lead.name || 'Lead'),
-      phone: normalizedPhone.e164,
-      phone_e164: normalizedPhone.e164,
-      phone_country_code: normalizedPhone.countryCode,
-      phone_area_code: normalizedPhone.areaCode,
-      phone_area_label: normalizedPhone.areaLabel,
-      company: compactWhitespace(lead.name || '') || null,
-      email: null,
-      disposition: null,
-      notes: lead.website || lead.googleMapsUrl
-        ? [
-            `List: ${listName}`,
-            ...jobSignals.map((signal) => `Hiring signal: ${signal.source} - ${signal.title} (${signal.url})`),
-            lead.website ? `Website: ${lead.website}` : '',
-            lead.googleMapsUrl ? `Maps: ${lead.googleMapsUrl}` : '',
-          ]
-            .filter(Boolean)
-            .join('\n')
-        : [`List: ${listName}`, ...jobSignals.map((signal) => `Hiring signal: ${signal.source} - ${signal.title} (${signal.url})`)]
-            .filter(Boolean)
-            .join('\n'),
-      called_at: null,
-      master_lead_id: masterIdByLeadKey.get(scraperLeadKey(lead, phoneMarket)) ?? null,
-    }];
-  });
-
-  let dialerImportedCount = 0;
-  let dialerSkippedCount = 0;
-  const dialerLeadIds: string[] = [];
-  // sales_leads is now the dialer queue for salesperson/prospecting leads.
-  if (false && dialableLeads.length > 0) {
-    const { data: existingDialerRows, error: existingDialerError } = await params.admin
-      .from('sales_leads')
-      .select('id, phone')
-      .eq('workspace_id', workspaceId)
-      .eq('user_id', params.userId);
-
-    if (existingDialerError) {
-      console.warn('[salesperson/google-places] dialer lookup failed', existingDialerError);
-      warning = warning ?? 'Saved the list, but could not check existing dialer leads.';
-    } else {
-      const existingIdByPhone = new Map(
-        (existingDialerRows ?? [])
-          .map((row) => [
-            normalizePhoneNumber(row.phone, phoneMarket).e164 || String(row.phone ?? '').trim(),
-            String((row as { id?: unknown }).id ?? '').trim(),
-          ] as const)
-          .filter(([phone, id]) => Boolean(phone && id))
-      );
-      const existingPhones = new Set(
-        Array.from(existingIdByPhone.keys())
-          .filter(Boolean)
-      );
-      const dialerInserts = dialableLeads.filter((lead) => {
-        const normalized = normalizePhoneNumber(lead.phone, phoneMarket).e164 || lead.phone.trim();
-        if (existingPhones.has(normalized)) {
-          dialerSkippedCount += 1;
-          const existingId = existingIdByPhone.get(normalized);
-          if (existingId) dialerLeadIds.push(existingId);
-          return false;
-        }
-        existingPhones.add(normalized);
-        return true;
-      });
-
-      // sales_leads is now the dialer queue for salesperson/prospecting leads.
-      dialerInserts.length = 0;
-
-      if (dialerInserts.length > 0) {
-        const masterIdByPhone = new Map(
-          dialerInserts
-            .map((lead) => [
-              normalizePhoneNumber(lead.phone, phoneMarket).e164 || lead.phone.trim(),
-              (lead as { master_lead_id?: string | null }).master_lead_id ?? null,
-            ] as const)
-            .filter(([phone, masterId]) => Boolean(phone && masterId))
-        );
-        const insertPayload = dialerInserts.map((lead) => {
-          const payload = { ...lead };
-          delete (payload as { master_lead_id?: string | null }).master_lead_id;
-          return payload;
-        });
-        const { data: insertedDialerRows, error: dialerInsertError } = await params.admin
-          .from('sales_leads')
-          .insert(insertPayload)
-          .select('id, phone');
-
-        if (dialerInsertError) {
-          console.warn('[salesperson/google-places] dialer insert failed', dialerInsertError);
-          warning = warning ?? 'Saved the list, but could not add leads to the dialer queue.';
-        } else {
-          dialerImportedCount = insertedDialerRows?.length ?? dialerInserts.length;
-          for (const row of insertedDialerRows ?? []) {
-            const id = String((row as { id?: unknown }).id ?? '').trim();
-            if (id) dialerLeadIds.push(id);
-            const phone = normalizePhoneNumber((row as { phone?: unknown }).phone as string | undefined, phoneMarket).e164
-              || String((row as { phone?: unknown }).phone ?? '').trim();
-            await attachDiallerLeadToMaster(params.admin, masterIdByPhone.get(phone), id);
-          }
-        }
-      }
-    }
-  }
+  // Canonical sales_leads rows are the queue; only dialable members enter it.
+  const dialerLeadIds = [...new Set(Array.from(leadsForDialer.values()).flatMap((lead) => {
+    const phone = normalizePhoneNumber(lead.phone, phoneMarket);
+    const id = masterIdByLeadKey.get(scraperLeadKey(lead, phoneMarket));
+    return phone.isValid && phone.e164 && id ? [id] : [];
+  }))];
+  const dialerImportedCount = dialerLeadIds.filter((id) => createdMasterIds.has(id)).length;
+  const dialerSkippedCount = dialerLeadIds.length - dialerImportedCount;
 
   const contactIdList = Array.from(contactIds);
   return {
     listId,
     listName,
     contactIds: contactIdList,
-    contactCount: contactIdList.length,
+    contactCount: masterLeadIds.length,
     dialerLeadIds,
     dialerImportedCount,
     dialerSkippedCount,

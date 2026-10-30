@@ -38,6 +38,15 @@ struct StandardCampaignMapMarker: Equatable {
             && lhs.coordinate.longitude == rhs.coordinate.longitude
             && lhs.title == rhs.title
             && lhs.status == rhs.status
+            && lhs.address.formatted == rhs.address.formatted
+            && lhs.address.gersId == rhs.address.gersId
+            && lhs.address.buildingGersId == rhs.address.buildingGersId
+            && lhs.address.houseNumber == rhs.address.houseNumber
+            && lhs.address.streetName == rhs.address.streetName
+            && lhs.address.source == rhs.address.source
+            && lhs.address.parcelId == rhs.address.parcelId
+            && lhs.address.campaignParcelId == rhs.address.campaignParcelId
+            && lhs.address.hasParcelLink == rhs.address.hasParcelLink
     }
 }
 
@@ -49,6 +58,39 @@ struct StandardCampaignMapCamera: Equatable {
         lhs.center.latitude == rhs.center.latitude
             && lhs.center.longitude == rhs.center.longitude
             && lhs.zoom == rhs.zoom
+    }
+}
+
+private struct StandardCampaignCluster {
+    let coordinates: [CLLocationCoordinate2D]
+}
+
+private enum StandardCampaignClustering {
+    private static let iconCache: NSCache<NSNumber, UIImage> = {
+        let cache = NSCache<NSNumber, UIImage>()
+        cache.countLimit = 128
+        return cache
+    }()
+
+    static func icon(count: Int) -> UIImage {
+        let key = NSNumber(value: count)
+        if let cached = iconCache.object(forKey: key) { return cached }
+        let text = String(count)
+        let size: CGFloat = count >= 1000 ? 56 : 48
+        let image = UIGraphicsImageRenderer(size: CGSize(width: size, height: size)).image { _ in
+            UIColor.white.setFill()
+            UIBezierPath(ovalIn: CGRect(x: 1, y: 1, width: size - 2, height: size - 2)).fill()
+            UIColor(red: 225 / 255, green: 0, blue: 25 / 255, alpha: 1).setFill()
+            UIBezierPath(ovalIn: CGRect(x: 4, y: 4, width: size - 8, height: size - 8)).fill()
+            let attributes: [NSAttributedString.Key: Any] = [
+                .font: UIFont.boldSystemFont(ofSize: 16), .foregroundColor: UIColor.white
+            ]
+            let label = text as NSString
+            let measured = label.size(withAttributes: attributes)
+            label.draw(at: CGPoint(x: (size - measured.width) / 2, y: (size - measured.height) / 2), withAttributes: attributes)
+        }
+        iconCache.setObject(image, forKey: key)
+        return image
     }
 }
 
@@ -137,6 +179,8 @@ struct StandardCampaignGoogleMapView: UIViewRepresentable {
     let initialCamera: StandardCampaignMapCamera?
     let selectedCircleCenter: CLLocationCoordinate2D?
     let showUserLocation: Bool
+    var userLocation: CLLocation? = nil
+    var userHeading: CLLocationDirection? = nil
     let useSatelliteMap: Bool
     let useDarkMapStyle: Bool
     let contentInsets: UIEdgeInsets
@@ -145,6 +189,7 @@ struct StandardCampaignGoogleMapView: UIViewRepresentable {
     let onMapTap: (CLLocationCoordinate2D) -> Void
     let onMapLongPress: (CLLocationCoordinate2D, CGPoint) -> Void
     let onCameraIdle: (StandardCampaignMapCamera) -> Void
+    var onUserMapInteraction: () -> Void = {}
     let onTripleTap: () -> Void
 
     func makeCoordinator() -> Coordinator {
@@ -176,9 +221,12 @@ struct StandardCampaignGoogleMapView: UIViewRepresentable {
         let tripleTapGesture = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleTripleTap(_:)))
         tripleTapGesture.numberOfTapsRequired = 3
         tripleTapGesture.cancelsTouchesInView = false
+        tripleTapGesture.delaysTouchesBegan = false
+        tripleTapGesture.delaysTouchesEnded = false
         mapView.addGestureRecognizer(tripleTapGesture)
 
         DispatchQueue.main.async {
+            context.coordinator.syncUserLocation(on: mapView)
             context.coordinator.syncMarkers(on: mapView)
             context.coordinator.syncPath(on: mapView)
             context.coordinator.syncBoundary(on: mapView)
@@ -195,7 +243,7 @@ struct StandardCampaignGoogleMapView: UIViewRepresentable {
         uiView.padding = contentInsets
         uiView.mapType = useSatelliteMap ? .hybrid : .normal
         applyTheme(to: uiView)
-        uiView.isMyLocationEnabled = showUserLocation
+        context.coordinator.syncUserLocation(on: uiView)
         context.coordinator.syncMarkers(on: uiView)
         context.coordinator.syncPath(on: uiView)
         context.coordinator.syncBoundary(on: uiView)
@@ -224,6 +272,7 @@ struct StandardCampaignGoogleMapView: UIViewRepresentable {
 
     final class Coordinator: NSObject, GMSMapViewDelegate {
         var parent: StandardCampaignGoogleMapView
+        private var lastMarkerData: [UUID: StandardCampaignMapMarker] = [:]
         private var markersByAddressId: [UUID: GMSMarker] = [:]
         private var pathPolyline: GMSPolyline?
         private var boundaryPolygon: GMSPolygon?
@@ -233,33 +282,193 @@ struct StandardCampaignGoogleMapView: UIViewRepresentable {
         private var lastMarkerCount = 0
         private var lastFallbackCenter: CLLocationCoordinate2D?
 
+        private(set) var userLocationMarker: GMSMarker?
+        private(set) var userHeadingMarker: GMSMarker?
+        private var userAccuracyCircle: GMSCircle?
+
+        private static let userLocationIcon = UIGraphicsImageRenderer(size: CGSize(width: 22, height: 22)).image { context in
+            context.cgContext.setShadow(offset: .zero, blur: 2, color: UIColor.black.withAlphaComponent(0.2).cgColor)
+            UIColor.white.setFill()
+            UIBezierPath(ovalIn: CGRect(x: 2, y: 2, width: 18, height: 18)).fill()
+            context.cgContext.setShadow(offset: .zero, blur: 0)
+            UIColor.systemBlue.setFill()
+            UIBezierPath(ovalIn: CGRect(x: 5, y: 5, width: 12, height: 12)).fill()
+        }
+
+        private static let userHeadingIcon = UIGraphicsImageRenderer(size: CGSize(width: 72, height: 72)).image { context in
+            let center = CGPoint(x: 36, y: 36)
+            let cone = UIBezierPath()
+            cone.move(to: center)
+            cone.addArc(withCenter: center, radius: 34, startAngle: -.pi * 2 / 3,
+                        endAngle: -.pi / 3, clockwise: true)
+            cone.close()
+            context.cgContext.addPath(cone.cgPath)
+            context.cgContext.clip()
+            let colors = [UIColor.systemBlue.withAlphaComponent(0.5).cgColor,
+                          UIColor.systemBlue.withAlphaComponent(0.02).cgColor] as CFArray
+            if let gradient = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors, locations: [0, 1]) {
+                context.cgContext.drawRadialGradient(gradient, startCenter: center, startRadius: 6,
+                    endCenter: center, endRadius: 34, options: [.drawsBeforeStartLocation])
+            }
+        }
+
+        func syncUserLocation(on mapView: GMSMapView) {
+            guard parent.showUserLocation, let location = parent.userLocation,
+                  CLLocationCoordinate2DIsValid(location.coordinate) else {
+                userLocationMarker?.map = nil
+                userHeadingMarker?.map = nil
+                userAccuracyCircle?.map = nil
+                // The SDK can supply its native location dot before the session's first fix.
+                mapView.isMyLocationEnabled = parent.showUserLocation
+                return
+            }
+            mapView.isMyLocationEnabled = false
+            let dot = userLocationMarker ?? GMSMarker()
+            if userLocationMarker == nil {
+                dot.icon = Self.userLocationIcon
+                dot.groundAnchor = CGPoint(x: 0.5, y: 0.5)
+                dot.title = "Your location"
+                dot.isTappable = false
+                dot.zIndex = 1001
+                userLocationMarker = dot
+            }
+            dot.position = location.coordinate
+            if dot.map == nil { dot.map = mapView }
+
+            let accuracy = userAccuracyCircle ?? GMSCircle()
+            if userAccuracyCircle == nil {
+                accuracy.fillColor = UIColor.systemBlue.withAlphaComponent(0.10)
+                accuracy.strokeColor = UIColor.systemBlue.withAlphaComponent(0.18)
+                accuracy.strokeWidth = 1
+                accuracy.isTappable = false
+                userAccuracyCircle = accuracy
+            }
+            accuracy.position = location.coordinate
+            accuracy.radius = location.horizontalAccuracy.isFinite ? max(0, location.horizontalAccuracy) : 0
+            if accuracy.map == nil { accuracy.map = mapView }
+
+            guard let heading = parent.userHeading, heading.isFinite else {
+                userHeadingMarker?.map = nil
+                return
+            }
+            let pointer = userHeadingMarker ?? GMSMarker()
+            if userHeadingMarker == nil {
+                pointer.icon = Self.userHeadingIcon
+                pointer.groundAnchor = CGPoint(x: 0.5, y: 0.5)
+                pointer.isFlat = true
+                pointer.isTappable = false
+                pointer.zIndex = 1000
+                userHeadingMarker = pointer
+            }
+            pointer.position = location.coordinate
+            let normalizedHeading = heading.truncatingRemainder(dividingBy: 360)
+            pointer.rotation = normalizedHeading >= 0 ? normalizedHeading : normalizedHeading + 360
+            if pointer.map == nil { pointer.map = mapView }
+        }
+
         init(parent: StandardCampaignGoogleMapView) {
             self.parent = parent
         }
 
-        func syncMarkers(on mapView: GMSMapView) {
-            let incomingByID = Dictionary(uniqueKeysWithValues: parent.markers.map { ($0.addressId, $0) })
+        private var clusterLayout = StandardCampaignClusterLayout()
+        private var clusterPoints: [UUID: StandardCampaignClusterLayout.Point] = [:]
+        private var clusterMarkers: [StandardCampaignClusterLayout.Cell: GMSMarker] = [:]
+        private var renderedClusters: [StandardCampaignClusterLayout.Cell: [UUID: StandardCampaignClusterLayout.Point]] = [:]
+        private var isCameraMoving = false
+        private var cameraGestureTrace: PerfTrace.Span?
+        private(set) var clusterSyncCount = 0
+        private(set) var clusterMarkerCreationCount = 0
 
-            for (addressId, marker) in markersByAddressId where incomingByID[addressId] == nil {
-                marker.map = nil
-                markersByAddressId[addressId] = nil
+        private func syncClusters(on mapView: GMSMapView) {
+            let started = ProcessInfo.processInfo.systemUptime
+            guard let plan = clusterLayout.update(points: clusterPoints, zoom: mapView.camera.zoom,
+                                                  isMoving: isCameraMoving) else { return }
+            clusterSyncCount += 1
+            for cell in Array(clusterMarkers.keys) where plan.clusters[cell] == nil {
+                clusterMarkers.removeValue(forKey: cell)?.map = nil
             }
+            for (cell, members) in plan.clusters {
+                // Keep the same Google overlay if membership and positions did not change.
+                guard renderedClusters[cell] != members || clusterMarkers[cell] == nil else { continue }
+                let coordinates = members.values.map {
+                    CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude)
+                }
+                var bounds = GMSCoordinateBounds()
+                coordinates.forEach { bounds = bounds.includingCoordinate($0) }
+                var east = bounds.northEast.longitude
+                let west = bounds.southWest.longitude
+                if east < west { east += 360 }
+                var longitude = (west + east) / 2
+                if longitude > 180 { longitude -= 360 }
+                let marker: GMSMarker
+                if let existing = clusterMarkers[cell] { marker = existing }
+                else {
+                    marker = GMSMarker()
+                    clusterMarkers[cell] = marker
+                    clusterMarkerCreationCount += 1
+                }
+                marker.position = CLLocationCoordinate2D(
+                    latitude: (bounds.northEast.latitude + bounds.southWest.latitude) / 2,
+                    longitude: longitude)
+                marker.icon = StandardCampaignClustering.icon(count: members.count)
+                marker.groundAnchor = CGPoint(x: 0.5, y: 0.5)
+                marker.title = "\(members.count) homes"
+                marker.snippet = "Tap to zoom in"
+                marker.userData = StandardCampaignCluster(coordinates: coordinates)
+                marker.zIndex = 100
+                if marker.map !== mapView { marker.map = mapView }
+            }
+            renderedClusters = plan.clusters
+            for (id, marker) in markersByAddressId {
+                if plan.individualIDs.contains(id) {
+                    if marker.map !== mapView { marker.map = mapView }
+                } else if marker.map != nil { marker.map = nil }
+            }
+            PerfTrace.event("map_2d", "cluster_layout", fields: [
+                "durationMs": Int((ProcessInfo.processInfo.systemUptime - started) * 1000),
+                "pins": clusterPoints.count, "clusters": clusterMarkers.count,
+                "individuals": plan.individualIDs.count, "rebuilds": clusterSyncCount,
+                "clusterMarkersCreated": clusterMarkerCreationCount
+            ])
+        }
 
-            for markerData in parent.markers {
+        func syncMarkers(on mapView: GMSMapView) {
+            let started = ProcessInfo.processInfo.systemUptime
+            let incomingByID = Dictionary(parent.markers.filter { CLLocationCoordinate2DIsValid($0.coordinate) }
+                .map { ($0.addressId, $0) }, uniquingKeysWith: { _, latest in latest })
+            for addressId in Array(markersByAddressId.keys) where incomingByID[addressId] == nil {
+                markersByAddressId.removeValue(forKey: addressId)?.map = nil
+                clusterPoints[addressId] = nil
+            }
+            var changed = 0
+            for markerData in incomingByID.values {
                 let marker = markersByAddressId[markerData.addressId] ?? {
                     let marker = GMSMarker(position: markerData.coordinate)
-                    marker.map = mapView
+                    // Attach only individual pins after clustering; hidden pins need no map work.
                     markersByAddressId[markerData.addressId] = marker
                     return marker
                 }()
-
+                // Equality includes geocoding/link metadata, so unchanged view
+                // updates do not touch a Google overlay at all.
+                guard lastMarkerData[markerData.addressId] != markerData else { continue }
+                marker.userData = markerData.address
+                changed += 1
+                clusterPoints[markerData.addressId] = StandardCampaignClusterLayout.Point(
+                    latitude: markerData.coordinate.latitude, longitude: markerData.coordinate.longitude)
                 marker.position = markerData.coordinate
                 marker.title = markerData.title
                 marker.snippet = markerData.status.displayName
                 marker.icon = StandardCampaignMarkerIcon.image(for: markerData.status)
                 marker.groundAnchor = CGPoint(x: 0.5, y: 0.5)
-                marker.userData = markerData.address
                 marker.appearAnimation = .none
+            }
+            lastMarkerData = incomingByID
+            syncClusters(on: mapView)
+            if changed > 0 {
+                PerfTrace.event("map_2d", "sync_markers", fields: [
+                    "durationMs": Int((ProcessInfo.processInfo.systemUptime - started) * 1000),
+                    "pins": incomingByID.count, "changed": changed, "moving": isCameraMoving
+                ])
             }
         }
 
@@ -391,7 +600,20 @@ struct StandardCampaignGoogleMapView: UIViewRepresentable {
         }
 
         func mapView(_ mapView: GMSMapView, idleAt position: GMSCameraPosition) {
+            isCameraMoving = false
+            syncClusters(on: mapView)
+            cameraGestureTrace?.end(fields: ["zoom": position.zoom, "clusterRebuilds": clusterSyncCount])
+            cameraGestureTrace = nil
             parent.onCameraIdle(StandardCampaignMapCamera(center: position.target, zoom: position.zoom))
+        }
+
+        func mapView(_ mapView: GMSMapView, willMove gesture: Bool) {
+            isCameraMoving = true
+            if gesture {
+                cameraGestureTrace?.end(status: "interrupted")
+                cameraGestureTrace = PerfTrace.begin("map_2d", "camera_gesture", fields: ["pins": parent.markers.count])
+                parent.onUserMapInteraction()
+            }
         }
 
         @objc func handleTripleTap(_ gesture: UITapGestureRecognizer) {
@@ -400,11 +622,25 @@ struct StandardCampaignGoogleMapView: UIViewRepresentable {
         }
 
         func mapView(_ mapView: GMSMapView, didTap marker: GMSMarker) -> Bool {
+            if let cluster = marker.userData as? StandardCampaignCluster {
+                parent.onUserMapInteraction()
+                var bounds = GMSCoordinateBounds()
+                cluster.coordinates.forEach { bounds = bounds.includingCoordinate($0) }
+                if let camera = mapView.camera(for: bounds, insets: UIEdgeInsets(top: 72, left: 64, bottom: 72, right: 64)) {
+                    mapView.animate(to: GMSCameraPosition(
+                        target: camera.target,
+                        zoom: min(18, max(mapView.camera.zoom + 1, camera.zoom))
+                    ))
+                }
+                return true
+            }
             guard let address = marker.userData as? MapLayerManager.AddressTapResult else {
                 return false
             }
 
+            let trace = PerfTrace.begin("map_2d", "marker_tap", fields: ["pins": parent.markers.count])
             parent.onMarkerTap(address)
+            trace.end(status: "callback_returned")
             mapView.selectedMarker = nil
             return true
         }

@@ -684,6 +684,10 @@ final class CampaignRepository {
     static let shared = CampaignRepository()
 
     private let dbQueue = OfflineDatabase.shared.dbQueue
+    // Access only inside dbQueue closures; SQLite's change counter invalidates local edits.
+    private var decodedMapBundles: [String: (revision: Int, bundle: OfflineCampaignMapBundle)] = [:]
+    private var decodedMapBundleOrder: [String] = []
+
 
     private init() {}
 
@@ -2401,15 +2405,32 @@ final class CampaignRepository {
                     linksByAddress[normalizedAddressId] = link
                 }
 
+                // Index address aliases once. Scanning and decoding the whole campaign
+                // for every link makes map opening quadratic and blocks all cache reads.
+                let addressRecords = try CachedAddressRecord
+                    .filter(Column("campaign_id") == campaignId)
+                    .fetchAll(db)
+                var addressesByCacheId = Dictionary(uniqueKeysWithValues: addressRecords.map { ($0.id, $0) })
+                var cacheIdsByAddressId: [String: [String]] = [:]
+                let scopedPrefix = "\(campaignId.lowercased()):"
+                for record in addressRecords {
+                    let feature = OfflineJSONCodec.decode(AddressFeature.self, from: record.payloadJSON)
+                    let unscopedId = record.id.lowercased().hasPrefix(scopedPrefix)
+                        ? String(record.id.dropFirst(scopedPrefix.count))
+                        : record.id
+                    let aliases = Set([feature?.properties.id, feature?.id, unscopedId]
+                        .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+                        .filter { !$0.isEmpty })
+                    for alias in aliases {
+                        cacheIdsByAddressId[alias, default: []].append(record.id)
+                    }
+                }
+
                 func applyAddressLink(addressId: String, buildingId: String) throws {
                     let normalizedAddressId = addressId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
                     guard !normalizedAddressId.isEmpty else { return }
-                    let addressRecords = try CachedAddressRecord
-                        .filter(Column("campaign_id") == campaignId)
-                        .fetchAll(db)
-                        .filter { Self.record($0, campaignId: campaignId, matchesAddressId: normalizedAddressId) }
-
-                    for addressRecord in addressRecords {
+                    for cacheId in cacheIdsByAddressId[normalizedAddressId] ?? [] {
+                        guard let addressRecord = addressesByCacheId[cacheId] else { continue }
                         let feature = OfflineJSONCodec.decode(AddressFeature.self, from: addressRecord.payloadJSON)
                         let updatedFeature = feature.map {
                             AddressFeature(
@@ -2444,6 +2465,7 @@ final class CampaignRepository {
                             updatedAt: updatedAt
                         )
                         try updated.save(db)
+                        addressesByCacheId[cacheId] = updated
                     }
                 }
 
@@ -2563,8 +2585,22 @@ final class CampaignRepository {
         )
     }
 
+    /// Same presence rule as getCampaignMapBundle, without loading or decoding map geometry.
+    func hasCampaignMapBundle(campaignId: String) async -> Bool {
+        (try? await dbQueue.read { db in
+            try !CachedBuildingRecord.filter(Column("campaign_id") == campaignId).isEmpty(db) ||
+                !CachedAddressRecord.filter(Column("campaign_id") == campaignId).isEmpty(db) ||
+                !CachedParcelRecord.filter(Column("campaign_id") == campaignId).isEmpty(db) ||
+                !CachedRoadRecord.filter(Column("campaign_id") == campaignId).isEmpty(db)
+        }) ?? false
+    }
+
     func getCampaignMapBundle(campaignId: String) async -> OfflineCampaignMapBundle? {
         try? await dbQueue.read { db in
+            let revision = db.totalChangesCount
+            if let cached = self.decodedMapBundles[campaignId], cached.revision == revision {
+                return cached.bundle
+            }
             let buildingRecords = try CachedBuildingRecord
                 .filter(Column("campaign_id") == campaignId)
                 .fetchAll(db)
@@ -2622,13 +2658,20 @@ final class CampaignRepository {
                 )
             }
 
-            return OfflineCampaignMapBundle(
+            let bundle = OfflineCampaignMapBundle(
                 buildings: BuildingFeatureCollection(type: "FeatureCollection", features: linkedBundle.buildings),
                 addresses: AddressFeatureCollection(type: "FeatureCollection", features: linkedBundle.addresses),
                 parcels: ParcelFeatureCollection(type: "FeatureCollection", features: parcels),
                 roads: RoadFeatureCollection(type: "FeatureCollection", features: roads),
                 metadata: metadataRecord?.metadata
             )
+            self.decodedMapBundles[campaignId] = (revision, bundle)
+            self.decodedMapBundleOrder.removeAll { $0 == campaignId }
+            self.decodedMapBundleOrder.append(campaignId)
+            while self.decodedMapBundleOrder.count > 2 {
+                self.decodedMapBundles.removeValue(forKey: self.decodedMapBundleOrder.removeFirst())
+            }
+            return bundle
         }
     }
 

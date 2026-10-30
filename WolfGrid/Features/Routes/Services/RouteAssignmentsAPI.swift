@@ -51,6 +51,13 @@ final class RouteAssignmentsAPI {
         let role = RouteJSON.string(from: obj["role"]) ?? "member"
         let rows = RouteJSON.dictionaryArray(from: obj["assignments"])
         let assignments = rows.compactMap { RouteAssignmentSummary(apiAssignment: $0) }
+        let activeCampaignIds = assignments.filter {
+            !["completed", "complete", "cancelled", "canceled", "archived", "declined"]
+                .contains($0.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+        }.compactMap(\.campaignId)
+        await MainActor.run {
+            OfflinePreloadCoordinator.shared.requireLocalCampaigns(activeCampaignIds)
+        }
         return (assignments, role)
     }
 

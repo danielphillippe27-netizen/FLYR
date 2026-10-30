@@ -91,6 +91,102 @@ actor FarmService {
         return farm
     }
 
+    struct VisitProgressRow: Decodable {
+        struct Session: Decodable { let mode: String? }
+        let session: Session?
+        let farmAddressId: UUID
+        let status: String
+        let occurredAt: Date
+
+        enum CodingKeys: String, CodingKey {
+            case farmAddressId = "farm_address_id"
+            case session = "farm_touches"
+            case status
+            case occurredAt = "occurred_at"
+        }
+    }
+
+    private struct CampaignVisitID: Decodable { let id: UUID }
+    private struct FarmCampaignMatch: Decodable { let id: UUID }
+
+    /// Count each farm address once, regardless of how many sessions visited it.
+    func fetchVisitedHomeCount(farmId: UUID) async throws -> (homes: Int, visits: Int, minimum: Bool) {
+        guard NetworkMonitor.shared.isOnline else {
+            throw URLError(.notConnectedToInternet)
+        }
+        var visited = Set<UUID>()
+        var visitCount = 0
+        var offset = 0
+        let pageSize = 1000
+        let decoder = await MainActor.run { JSONDecoder.supabaseDates }
+        while true {
+            let data = try await client.from("farm_touch_addresses")
+                .select("farm_address_id,status,occurred_at,farm_touches!inner(mode)")
+                .eq("farm_id", value: farmId.uuidString)
+                .order("farm_address_id", ascending: true)
+                .order("farm_touch_id", ascending: true)
+                .range(from: offset, to: offset + pageSize - 1)
+                .execute().data
+            let rows = try decoder.decode([VisitProgressRow].self, from: data)
+            for row in rows where row.status != "none" && row.status != "do_not_knock" && row.occurredAt <= Date() && ["doorknock", "flyer", "pop_by"].contains(row.session?.mode ?? "doorknock") {
+                visited.insert(row.farmAddressId)
+                visitCount += 1
+            }
+            if rows.count < pageSize { break }
+            offset += pageSize
+        }
+        var legacyHomes = Set<UUID>()
+        if let campaignId = await fetchLinkedCampaignId(farmId: farmId) {
+            var campaignOffset = 0
+            while true {
+                let campaignRows: [CampaignVisitID] = try await client.from("campaign_addresses")
+                    .select("id").eq("campaign_id", value: campaignId.uuidString)
+                    .eq("visited", value: true).order("id", ascending: true)
+                    .range(from: campaignOffset, to: campaignOffset + pageSize - 1).execute().value
+                for start in stride(from: 0, to: campaignRows.count, by: 100) {
+                    let ids = campaignRows[start..<min(start + 100, campaignRows.count)].map { $0.id.uuidString }
+                    let matches: [FarmCampaignMatch] = try await client.from("farm_addresses")
+                        .select("id").eq("farm_id", value: farmId.uuidString)
+                        .in("campaign_address_id", values: ids).execute().value
+                    legacyHomes.formUnion(matches.map(\.id))
+                }
+                if campaignRows.count < pageSize { break }
+                campaignOffset += pageSize
+            }
+        }
+        let unmatched = legacyHomes.subtracting(visited)
+        return (visited.union(legacyHomes).count, visitCount + unmatched.count, !unmatched.isEmpty)
+    }
+
+    /// Small, stable pages for the details list; the map has its own tiled data.
+    func fetchAddressSummaryPage(farmId: UUID, offset: Int, limit: Int = 50) async throws -> FarmAddressSummaryPage {
+        let size = max(1, min(limit, 100))
+        if !NetworkMonitor.shared.isOnline {
+            let cached = await offlineRepository.getCachedAddresses(farmId: farmId)
+                .sorted { $0.farmAddressId.uuidString < $1.farmAddressId.uuidString }
+            let page = Array(cached.dropFirst(offset).prefix(size + 1))
+            return FarmAddressSummaryPage(addresses: page.prefix(size).map {
+                FarmAddressSummary(id: $0.farmAddressId, formatted: $0.formatted)
+            }, hasMore: page.count > size)
+        }
+        let rows: [FarmAddressSummary] = try await client.from("farm_addresses")
+            .select("id,formatted")
+            .eq("farm_id", value: farmId.uuidString)
+            .order("id", ascending: true)
+            .range(from: offset, to: offset + size)
+            .execute().value
+        return FarmAddressSummaryPage(addresses: Array(rows.prefix(size)), hasMore: rows.count > size)
+    }
+
+    func linkedCampaignId(farmId: UUID) async -> UUID? {
+        if !NetworkMonitor.shared.isOnline {
+            let touches = await offlineRepository.getCachedTouches(farmId: farmId)
+            if let id = touches.compactMap(\.campaignId).first { return id }
+            return await offlineRepository.getCachedAddresses(farmId: farmId).compactMap(\.campaignId).first
+        }
+        return await fetchLinkedCampaignId(farmId: farmId)
+    }
+
     func fetchAddresses(farmId: UUID) async throws -> [FarmAddressViewRow] {
         if !NetworkMonitor.shared.isOnline {
             return await offlineRepository.getCachedAddresses(farmId: farmId)

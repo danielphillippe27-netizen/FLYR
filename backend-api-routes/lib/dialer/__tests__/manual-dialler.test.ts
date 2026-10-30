@@ -6,8 +6,10 @@ import vm from 'node:vm';
 import ts from 'typescript';
 const require = createRequire(import.meta.url);
 
-function runtimeHarness({ inCall = false, lastLead = false } = {}) {
+function runtimeHarness({ inCall = false, lastLead = false, completedCurrent = false, currentAtEnd = false } = {}) {
   const leads = [{ id: 'one', name: 'First', phone: '+14165550101' }, ...lastLead ? [] : [{ id: 'two', name: 'Second', phone: '+14165550102' }]];
+  if (completedCurrent) Object.assign(leads[0], { called_at: '2026-10-27T17:44:47Z', latest_call_outcome: 'answered' });
+  if (currentAtEnd) leads.push(leads.shift()!);
   const state: any[] = ['tab', leads, 'one', inCall ? 'call-one' : null, false, null, 0, inCall, false, false];
   let index = 0;
   const requests: any[] = [];
@@ -20,6 +22,7 @@ function runtimeHarness({ inCall = false, lastLead = false } = {}) {
   };
   const overrides: Record<string, any> = {
     react,
+    './SharedActiveCallBar': { SharedActiveCallBar: 'SharedActiveCallBar' },
     '@/lib/hooks/useDialerDevice': { useDialerDevice: () => ({ isInCall: inCall, hangUp: () => hangs++ }) },
     '@/lib/workspace-context': { useWorkspace: () => ({ currentWorkspaceId: 'workspace' }) },
     '@/lib/dialer/phone': { normalizePhoneNumber: () => ({ isValid: true }) },
@@ -59,6 +62,20 @@ test('Next call hangs up an active call and waits for Dial', async () => {
 test('Last lead does not wrap into an automatic call', async () => {
   const h = runtimeHarness({ lastLead: true });
   assert.equal((await h.context.placeNextDiallerCall()).ok, false);
+  assert.equal(h.requests.length, 0);
+});
+
+test('Next call advances after the active lead becomes completed', async () => {
+  const h = runtimeHarness({ completedCurrent: true });
+  assert.equal((await h.context.placeNextDiallerCall()).ok, true);
+  assert.equal(h.state[2], 'two');
+  assert.equal(h.requests.length, 0);
+});
+
+test('Next call finds a pending lead even when the completed active lead is last', async () => {
+  const h = runtimeHarness({ completedCurrent: true, currentAtEnd: true });
+  assert.equal((await h.context.placeNextDiallerCall()).ok, true);
+  assert.equal(h.state[2], 'two');
   assert.equal(h.requests.length, 0);
 });
 

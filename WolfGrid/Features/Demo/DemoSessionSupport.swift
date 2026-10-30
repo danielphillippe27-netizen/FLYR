@@ -83,8 +83,10 @@ enum DemoCameraAngle: String, CaseIterable, Identifiable {
     case birdsEye
     case normal3D
     case streetSide
+    case stationary
     case fixed
     case fixedPullback
+    case birdZoomIn
 
     var id: String { rawValue }
 
@@ -93,8 +95,10 @@ enum DemoCameraAngle: String, CaseIterable, Identifiable {
         case .birdsEye: return "Bird"
         case .normal3D: return "3D"
         case .streetSide: return "Street"
+        case .stationary: return "Fixed"
         case .fixed: return "Orbit"
         case .fixedPullback: return "Back"
+        case .birdZoomIn: return "Bird zoom in"
         }
     }
 
@@ -103,14 +107,17 @@ enum DemoCameraAngle: String, CaseIterable, Identifiable {
         case .birdsEye: return "Top-down route reveal"
         case .normal3D: return "Angled 3D campaign fly-through"
         case .streetSide: return "Low street-side tracking shot"
+        case .stationary: return "Position the map, then keep the camera still while homes turn green"
         case .fixed: return "Frame the camera yourself, then orbit from that position"
         case .fixedPullback: return "Frame the camera yourself, then crane back to a high overhead view"
+        case .birdZoomIn: return "Zoom in from an overhead view"
         }
     }
 }
 
 enum DemoHitPattern: String, CaseIterable, Identifiable {
     case allGreen
+    case asIs
     case streetSegments
     case random
 
@@ -119,6 +126,7 @@ enum DemoHitPattern: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .allGreen: return "All green"
+        case .asIs: return "As is"
         case .streetSegments: return "Segments"
         case .random: return "Random"
         }
@@ -127,6 +135,7 @@ enum DemoHitPattern: String, CaseIterable, Identifiable {
     var detailLabel: String {
         switch self {
         case .allGreen: return "Every home gets hit and turns green"
+        case .asIs: return "Reveal current outcomes in a simulated route"
         case .streetSegments: return "Hide the marker and sweep homes green by street segment"
         case .random: return "Mixed canvassing outcomes across the route"
         }
@@ -150,6 +159,9 @@ struct DemoSessionLaunchConfiguration: Identifiable, Equatable {
     let recordingViewStyle: DemoRecordingViewStyle
     let cameraAngle: DemoCameraAngle
     let hitPattern: DemoHitPattern
+    var saveVideo: Bool = false
+    var showWolfy: Bool = false
+    var recordedSessionID: UUID? = nil
 
     var id: UUID { campaign.id }
 }
@@ -448,7 +460,8 @@ enum DemoSessionRoutePlanner {
 
 enum DemoFounderAccess {
     private static let founderEmails: Set<String> = [
-        "danielfounder@gmail.com"
+        "danielfounder@gmail.com",
+        "daniel.phillippe27@gmail.com"
     ]
 
     private static let founderUserIDs: Set<String> = [
@@ -476,7 +489,7 @@ final class DemoSessionSimulator: ObservableObject {
     @Published private(set) var currentDisplayLabel: String?
 
     private var runTask: Task<Void, Never>?
-    private var suppressFinishCallback = false
+    private var runID = UUID()
 
     func start(
         steps: [DemoSessionStep],
@@ -497,14 +510,15 @@ final class DemoSessionSimulator: ObservableObject {
         isRunning = true
         currentTarget = nil
         currentDisplayLabel = nil
-        suppressFinishCallback = false
+        let activeRunID = UUID()
+        runID = activeRunID
 
         runTask = Task { @MainActor [weak self] in
             guard let self else { return }
 
             for step in steps {
                 guard !Task.isCancelled else {
-                    self.finish(.stopped, onFinish: onFinish)
+                    self.finish(.stopped, runID: activeRunID, onFinish: onFinish)
                     return
                 }
 
@@ -517,13 +531,24 @@ final class DemoSessionSimulator: ObservableObject {
                 let totalDuration = speed.secondsPerHome
                 let moveDuration = pausesAtHomes ? max(0.12, totalDuration * 0.62) : max(0.12, totalDuration)
                 let pulseDuration = pausesAtHomes ? max(0.08, totalDuration - moveDuration) : 0
-                let travelPath = pausesAtHomes ? step.travelPath : Self.continuousTravelPath(for: step)
+                let fullTravelPath = pausesAtHomes ? step.travelPath : Self.continuousTravelPath(for: step)
+                // No location marker is rendered in demos. Avoid publishing dozens of
+                // intermediate points per home and rebuilding the whole map each time.
+                let maximumUpdates = max(1, Int(ceil(moveDuration * 4)))
+                let travelPath: [CLLocationCoordinate2D]
+                if fullTravelPath.count > maximumUpdates {
+                    travelPath = (1...maximumUpdates).map { index in
+                        fullTravelPath[min(fullTravelPath.count - 1, index * fullTravelPath.count / maximumUpdates - 1)]
+                    }
+                } else {
+                    travelPath = fullTravelPath
+                }
 
                 if travelPath.count >= 2 {
                     let pathSteps = max(1, travelPath.count)
                     for coordinate in travelPath {
                         guard !Task.isCancelled else {
-                            self.finish(.stopped, onFinish: onFinish)
+                            self.finish(.stopped, runID: activeRunID, onFinish: onFinish)
                             return
                         }
                         await onLocationUpdate(coordinate, true)
@@ -531,23 +556,71 @@ final class DemoSessionSimulator: ObservableObject {
                     }
                 } else {
                     await onLocationUpdate(target.coordinate, false)
-                    if pausesAtHomes {
-                        try? await Task.sleep(nanoseconds: UInt64(moveDuration * 1_000_000_000))
-                    }
+                    try? await Task.sleep(nanoseconds: UInt64(moveDuration * 1_000_000_000))
                 }
 
                 if pulseDuration > 0 {
                     try? await Task.sleep(nanoseconds: UInt64(pulseDuration * 1_000_000_000))
                 }
                 guard !Task.isCancelled else {
-                    self.finish(.stopped, onFinish: onFinish)
+                    self.finish(.stopped, runID: activeRunID, onFinish: onFinish)
                     return
                 }
 
                 await onTargetHit(target)
             }
 
-            self.finish(.completed, onFinish: onFinish)
+            self.finish(.completed, runID: activeRunID, onFinish: onFinish)
+        }
+    }
+
+    /// Play the actual route and outcomes at their recorded relative timestamps.
+    func startRecorded(
+        timeline: RecordedReplayTimeline,
+        speed: DemoSessionSpeed,
+        onLocation: @escaping @MainActor (CLLocationCoordinate2D, Bool) async -> Void,
+        onVisit: @escaping @MainActor (RecordedReplayVisit) -> Void,
+        onFinish: @escaping @MainActor (FinishReason) -> Void
+    ) {
+        stop(notify: false)
+        isRunning = true
+        currentTarget = nil
+        currentDisplayLabel = nil
+        let activeRunID = UUID()
+        runID = activeRunID
+        let playbackDuration: TimeInterval = speed == .slow ? 60 : speed == .medium ? 30 : 15
+        runTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            let start = ProcessInfo.processInfo.systemUptime
+            var nextVisit = 0
+            var nextGap = 0
+            var lastProgressBucket = -1
+            while !Task.isCancelled {
+                let progress = min(1, max(0, (ProcessInfo.processInfo.systemUptime - start) / playbackDuration))
+                let bucket = Int(progress * 10)
+                if bucket > lastProgressBucket {
+                    lastProgressBucket = bucket
+                    PerfTrace.event("demo_playback", "progress", fields: ["mode": "recorded", "percent": bucket * 10, "visits": nextVisit])
+                }
+                var breakTrail = false
+                while nextGap < timeline.gapEndFractions.count && timeline.gapEndFractions[nextGap] <= progress {
+                    breakTrail = true
+                    nextGap += 1
+                }
+                await onLocation(timeline.coordinate(at: progress), breakTrail)
+                var applied = 0
+                while nextVisit < timeline.visits.count && timeline.timeFraction(for: timeline.visits[nextVisit]) <= progress && applied < 32 {
+                    onVisit(timeline.visits[nextVisit])
+                    nextVisit += 1
+                    applied += 1
+                }
+                if progress >= 1 && nextVisit == timeline.visits.count {
+                    self.finish(.completed, runID: activeRunID, onFinish: onFinish)
+                    return
+                }
+                try? await Task.sleep(nanoseconds: 66_666_667)
+            }
+            self.finish(.stopped, runID: activeRunID, onFinish: onFinish)
         }
     }
 
@@ -569,7 +642,8 @@ final class DemoSessionSimulator: ObservableObject {
         isRunning = true
         currentTarget = nil
         currentDisplayLabel = nil
-        suppressFinishCallback = false
+        let activeRunID = UUID()
+        runID = activeRunID
 
         runTask = Task { @MainActor [weak self] in
             guard let self else { return }
@@ -577,7 +651,7 @@ final class DemoSessionSimulator: ObservableObject {
             let perHomeDelay = speed.secondsPerHome
             for batch in batches {
                 guard !Task.isCancelled else {
-                    self.finish(.stopped, onFinish: onFinish)
+                    self.finish(.stopped, runID: activeRunID, onFinish: onFinish)
                     return
                 }
 
@@ -591,7 +665,7 @@ final class DemoSessionSimulator: ObservableObject {
 
                 for target in targets {
                     guard !Task.isCancelled else {
-                        self.finish(.stopped, onFinish: onFinish)
+                        self.finish(.stopped, runID: activeRunID, onFinish: onFinish)
                         return
                     }
                     self.currentDisplayLabel = Self.houseDisplayLabel(for: target, in: targets)
@@ -600,13 +674,13 @@ final class DemoSessionSimulator: ObservableObject {
                 }
             }
 
-            self.finish(.completed, onFinish: onFinish)
+            self.finish(.completed, runID: activeRunID, onFinish: onFinish)
         }
     }
 
     func stop(notify: Bool = true, onFinish: ((FinishReason) -> Void)? = nil) {
         guard runTask != nil || isRunning else { return }
-        suppressFinishCallback = !notify
+        runID = UUID()
         runTask?.cancel()
         runTask = nil
         currentTarget = nil
@@ -617,15 +691,13 @@ final class DemoSessionSimulator: ObservableObject {
         }
     }
 
-    private func finish(_ reason: FinishReason, onFinish: @escaping (FinishReason) -> Void) {
+    private func finish(_ reason: FinishReason, runID completedRunID: UUID, onFinish: @escaping (FinishReason) -> Void) {
+        guard runID == completedRunID else { return }
         runTask = nil
         currentTarget = nil
         currentDisplayLabel = nil
         isRunning = false
-        if !suppressFinishCallback {
-            onFinish(reason)
-        }
-        suppressFinishCallback = false
+        onFinish(reason)
     }
 
     private static func continuousTravelPath(for step: DemoSessionStep) -> [CLLocationCoordinate2D] {
@@ -707,27 +779,35 @@ struct DemoSessionConfigSheet: View {
     let campaigns: [CampaignV2]
     let defaultCampaignID: UUID
     let onStart: (DemoSessionLaunchConfiguration) -> Void
+    let saveVideo: Bool
+    let recordedSessionID: UUID?
 
     @Environment(\.dismiss) private var dismiss
     @State private var selectedCampaignID: UUID
     @State private var homeCount: Double = 20
-    @State private var speed: DemoSessionSpeed = .medium
+    @State private var speed: DemoSessionSpeed = .fast
     @State private var pathMode: DemoPathMode = .pauseAtHomes
     @State private var recordingViewStyle: DemoRecordingViewStyle = .creatorOverlay
     @State private var cameraAngle: DemoCameraAngle = .normal3D
     @State private var hitPattern: DemoHitPattern = .allGreen
+    @State private var showWolfy = false
 
     init(
         campaigns: [CampaignV2],
         defaultCampaignID: UUID,
+        saveVideo: Bool = false,
+        recordedSessionID: UUID? = nil,
         onStart: @escaping (DemoSessionLaunchConfiguration) -> Void
     ) {
         self.campaigns = campaigns
         self.defaultCampaignID = defaultCampaignID
+        self.saveVideo = saveVideo
+        self.recordedSessionID = recordedSessionID
         self.onStart = onStart
         _selectedCampaignID = State(initialValue: defaultCampaignID)
-        let defaultCount = campaigns.first(where: { $0.id == defaultCampaignID })?.addresses.count ?? 20
-        _homeCount = State(initialValue: Double(max(1, defaultCount)))
+        _homeCount = State(initialValue: 20)
+        if recordedSessionID != nil { _hitPattern = State(initialValue: .asIs) }
+        if saveVideo { _recordingViewStyle = State(initialValue: .cleanMap) }
     }
 
     private var selectedCampaign: CampaignV2? {
@@ -735,7 +815,9 @@ struct DemoSessionConfigSheet: View {
     }
 
     private var availableHomeCount: Int {
-        max(1, selectedCampaign?.addresses.count ?? campaigns.first(where: { $0.id == defaultCampaignID })?.addresses.count ?? 1)
+        let campaign = selectedCampaign ?? campaigns.first(where: { $0.id == defaultCampaignID })
+        // List metadata includes the house count before address detail has finished loading.
+        return max(1, max(campaign?.addresses.count ?? 0, campaign?.totalFlyers ?? 0))
     }
 
     private var clampedHomeCount: Int {
@@ -753,8 +835,9 @@ struct DemoSessionConfigSheet: View {
 
     var body: some View {
         NavigationStack {
+            ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                Text("DEMO MODE")
+                Text(recordedSessionID == nil ? "DEMO MODE" : "RECORDED ACTIVITY")
                     .font(.flyrCaption)
                     .foregroundColor(.red)
 
@@ -767,8 +850,10 @@ struct DemoSessionConfigSheet: View {
                         }
                     }
                     .pickerStyle(.menu)
+                    .disabled(recordedSessionID != nil)
                 }
 
+                if recordedSessionID == nil {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
                         Text("Home count")
@@ -793,17 +878,19 @@ struct DemoSessionConfigSheet: View {
                     }
                 }
 
+                }
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Speed")
                         .font(.flyrHeadline)
                     Picker("Speed", selection: $speed) {
                         ForEach(DemoSessionSpeed.allCases) { option in
-                            Text(option.detailLabel).tag(option)
+                            Text(recordedSessionID == nil ? option.detailLabel : option.title).tag(option)
                         }
                     }
                     .pickerStyle(.segmented)
                 }
 
+                if recordedSessionID == nil {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Path mode")
                         .font(.flyrHeadline)
@@ -818,12 +905,14 @@ struct DemoSessionConfigSheet: View {
                         .font(.flyrCaption)
                         .foregroundColor(.secondary)
                 }
+                }
 
+                if !saveVideo {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Recording view")
                         .font(.flyrHeadline)
                     Picker("Recording view", selection: $recordingViewStyle) {
-                        ForEach(DemoRecordingViewStyle.allCases) { option in
+                        ForEach(DemoRecordingViewStyle.allCases.filter { !saveVideo || $0 != .landscapeMap }) { option in
                             Text(option.title).tag(option)
                         }
                     }
@@ -832,6 +921,7 @@ struct DemoSessionConfigSheet: View {
                     Text(recordingViewStyle.detailLabel)
                         .font(.flyrCaption)
                         .foregroundColor(.secondary)
+                }
                 }
 
                 VStack(alignment: .leading, spacing: 8) {
@@ -842,7 +932,7 @@ struct DemoSessionConfigSheet: View {
                             Text(option.title).tag(option)
                         }
                     }
-                    .pickerStyle(.segmented)
+                    .pickerStyle(.menu)
 
                     Text(cameraAngle.detailLabel)
                         .font(.flyrCaption)
@@ -853,15 +943,23 @@ struct DemoSessionConfigSheet: View {
                     Text("Hit pattern")
                         .font(.flyrHeadline)
                     Picker("Hit pattern", selection: $hitPattern) {
-                        ForEach(DemoHitPattern.allCases) { option in
+                        ForEach(DemoHitPattern.allCases.filter { recordedSessionID == nil || $0 == .allGreen || $0 == .asIs }) { option in
                             Text(option.title).tag(option)
                         }
                     }
                     .pickerStyle(.segmented)
 
-                    Text(hitPattern.detailLabel)
+                    Text(recordedSessionID == nil ? hitPattern.detailLabel : (hitPattern == .asIs ? "Use the status recorded at each visit" : "Show recorded visits in green"))
                         .font(.flyrCaption)
                         .foregroundColor(.secondary)
+                }
+
+                if saveVideo {
+                    Toggle("Show Wolfy on 3D maps", isOn: $showWolfy)
+                    Text(recordedSessionID == nil
+                         ? "This is a simulated reveal of the campaign, not a chronological recording of a past session."
+                         : "This replay uses this device’s GPS timestamps and recorded visit outcomes. Other zones show their current status because starting colors are not stored.")
+                        .font(.flyrCaption).foregroundColor(.secondary)
                 }
 
                 Button {
@@ -871,15 +969,18 @@ struct DemoSessionConfigSheet: View {
                             campaign: selectedCampaign,
                             homeCount: clampedHomeCount,
                             speed: speed,
-                            pathMode: pathMode,
+                            pathMode: recordedSessionID == nil ? pathMode : .continuous,
                             recordingViewStyle: recordingViewStyle,
                             cameraAngle: cameraAngle,
-                            hitPattern: hitPattern
+                            hitPattern: hitPattern,
+                            saveVideo: saveVideo,
+                            showWolfy: showWolfy,
+                            recordedSessionID: recordedSessionID
                         )
                     )
                     dismiss()
                 } label: {
-                    Text("Start Simulated Session")
+                    Text(saveVideo ? "Create Replay Video" : "Start Simulated Session")
                         .font(.flyrHeadline)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 14)
@@ -890,10 +991,10 @@ struct DemoSessionConfigSheet: View {
                 .buttonStyle(.plain)
                 .disabled(selectedCampaign == nil)
 
-                Spacer()
             }
             .padding(20)
-            .navigationTitle("Demo Session")
+            }
+            .navigationTitle(saveVideo ? "Create Replay" : "Demo Session")
             .navigationBarTitleDisplayMode(.inline)
             .onAppear {
                 clampHomeCountToAvailable()

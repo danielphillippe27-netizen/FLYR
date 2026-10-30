@@ -1,5 +1,5 @@
 export const STORMS_DEMO_URL = 'https://wolfgrid.app/features/storms';
-export const STORMS_DEMO_TITLE = 'WolfGrid Storms Demo';
+export const STORMS_DEMO_TITLE = 'Storm';
 export const STORMS_DEMO_SUBJECT = 'Your WolfGrid Storms demo';
 
 export function stormsDemoBody(recipientName?: string | null): string {

@@ -7,6 +7,7 @@ import Supabase
 private enum HomeRoute: Hashable {
     case calendar
     case campaigns
+    case farms
     case campaign(UUID)
     case activity
     case appointments
@@ -51,6 +52,8 @@ struct HomeView: View {
                         CalendarTabView(showsMoreBackButton: true)
                     case .campaigns:
                         CampaignsView()
+                    case .farms:
+                        FarmsView()
                     case .campaign(let campaignID):
                         NewCampaignDetailView(campaignID: campaignID, store: campaignStore)
                     case .activity:
@@ -153,6 +156,9 @@ struct HomeView: View {
                         ) {
                             HomeGridTile(title: "Campaigns", icon: .system("scope")) {
                                 selectedRoute = .campaigns
+                            }
+                            HomeGridTile(title: "Farm", icon: .system("leaf")) {
+                                selectedRoute = .farms
                             }
                             HomeGridTile(title: "My Business Card", icon: .system("person.crop.rectangle")) { selectedRoute = .businessCard }
                             HomeGridTile(title: "Activity", icon: .system("figure.walk")) {

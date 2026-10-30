@@ -138,6 +138,8 @@ final class CampaignsAPI {
             .eq("workspace_id", value: workspaceId.uuidString)
             .order("created_at", ascending: false)
             .execute()
+        if await MainActor.run(body: { AuthManager.shared.user?.id == userId }) {
+        }
         return response.value
     }
 
@@ -150,6 +152,8 @@ final class CampaignsAPI {
             .eq("workspace_id", value: workspaceId.uuidString)
             .order("created_at", ascending: false)
             .execute()
+        if await MainActor.run(body: { AuthManager.shared.user?.id == userId }) {
+        }
         return response.value
     }
 
@@ -353,9 +357,13 @@ final class CampaignsAPI {
             coverageScore: dbRow.coverageScore,
             dataQuality: dbRow.dataQuality,
             standardModeRecommended: dbRow.standardModeRecommended,
-            dataQualityReason: dbRow.dataQualityReason
+            dataQualityReason: dbRow.dataQualityReason,
+            tags: dbRow.tags
         )
         
+        await MainActor.run {
+            OfflinePreloadCoordinator.shared.requireLocalCampaigns([campaign.id], refreshExisting: true)
+        }
         print("✅ [API DEBUG] Campaign creation completed")
         return campaign
     }
@@ -440,7 +448,7 @@ final class CampaignsAPI {
     }
 
     private static func isHiddenFromCampaignLists(_ row: CampaignDBRow) -> Bool {
-        isQuickStartCampaign(tags: row.tags) || isFarmBackedCampaign(description: row.description, tags: row.tags)
+        isFarmBackedCampaign(description: row.description, tags: row.tags)
     }
 
     private static func isFarmBackedCampaign(description: String?, tags: String?) -> Bool {
@@ -608,6 +616,7 @@ final class CampaignsAPI {
         do {
             let countRes: PostgrestResponse<[CampaignCountRow]> = try await client
                 .rpc("get_campaign_address_counts")
+                .in("campaign_id", values: dbRows.map { $0.id.uuidString })
                 .execute()
             let counts = Dictionary(
                 uniqueKeysWithValues: countRes.value.map { ($0.campaignId, $0.addressCount) }
@@ -657,7 +666,8 @@ final class CampaignsAPI {
             coverageScore: dbRow.coverageScore,
             dataQuality: dbRow.dataQuality,
             standardModeRecommended: dbRow.standardModeRecommended,
-            dataQualityReason: dbRow.dataQualityReason
+            dataQualityReason: dbRow.dataQualityReason,
+            tags: dbRow.tags
         )
     }
 
@@ -1727,7 +1737,13 @@ final class CampaignAssignmentsAPI {
             ])
         }
 
-        return try JSONDecoder().decode(CampaignAssignmentsResponse.self, from: data)
+        let result = try JSONDecoder().decode(CampaignAssignmentsResponse.self, from: data)
+        await MainActor.run {
+            OfflinePreloadCoordinator.shared.requireLocalCampaigns(
+                result.assignments.filter(\.isActive).map(\.campaignId)
+            )
+        }
+        return result
     }
 
     func respond(assignmentId: UUID, action: String) async throws {
@@ -1906,7 +1922,8 @@ final class CampaignsV2APISupabase: CampaignsV2APIType {
             coverageScore: dbRow.coverageScore,
             dataQuality: dbRow.dataQuality,
             standardModeRecommended: dbRow.standardModeRecommended,
-            dataQualityReason: dbRow.dataQualityReason
+            dataQualityReason: dbRow.dataQualityReason,
+            tags: dbRow.tags
         )
     }
     

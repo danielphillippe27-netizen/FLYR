@@ -1,3 +1,4 @@
+import { readAllRows } from '@/lib/sales-leads/read-all-rows';
 import { NextRequest, NextResponse } from 'next/server';
 import { getDialerRequestContext, type DialerRequestContext } from '@/lib/dialer/server';
 import type { SalesLead } from '@/types/database';
@@ -53,11 +54,11 @@ export async function GET(request: NextRequest) {
       .select('*')
       .eq('workspace_id', context.workspaceId)
       .order('created_at', { ascending: false })
-      .limit(5000);
+      .order('id', { ascending: true });
     leadQuery = scopeLeadQuery(leadQuery, context);
 
-    const [leadResult, listResult] = await Promise.all([
-      leadQuery,
+    const [leads, listResult] = await Promise.all([
+      readAllRows<SalesLead>(leadQuery),
       context.admin
         .from('smart_lists')
         .select('id,name,criteria,created_at')
@@ -66,12 +67,10 @@ export async function GET(request: NextRequest) {
         .order('created_at', { ascending: false })
         .limit(1000),
     ]);
-    if (leadResult.error) throw leadResult.error;
     if (listResult.error) {
       console.warn('[dialer/smart-list-imports] smart_lists lookup failed; using lead metadata', listResult.error);
     }
 
-    const leads = (leadResult.data ?? []) as SalesLead[];
     const smartLists = (listResult.data ?? []) as SmartListRow[];
     const lists = new Map<string, { id: string; name: string; createdAt: string; leads: SalesLead[] }>();
 
@@ -122,6 +121,7 @@ export async function GET(request: NextRequest) {
           name: list.name,
           description: 'Your list · available on iOS and web',
           count: uniqueLeads.length,
+          leadIds: uniqueLeads.map((lead) => lead.id),
           dialableCount,
           leads: importable,
           createdAt: list.createdAt,

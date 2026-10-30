@@ -9,6 +9,7 @@ import { EmailComposer } from './EmailComposer';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { useWorkspace } from '@/lib/workspace-context';
+import { mergeSavedListMembership, type SavedLeadList } from '@/lib/sales-leads/saved-list-membership';
 import type { SalesLead } from '@/types/database';
 
 type LeadList = {
@@ -81,11 +82,14 @@ export function ProContactsView() {
   const { currentWorkspaceId } = useWorkspace();
   const searchParams = useSearchParams();
   const requestedLeadId = searchParams.get('leadId');
+  const requestedListId = searchParams.get('listId');
   const openedRequest = useRef('');
+  const requestSequence = useRef(0);
+  const [savedLists, setSavedLists] = useState<SavedLeadList[]>([]);
   const [leads, setLeads] = useState<SalesLead[]>([]);
   const [selected, setSelected] = useState<SalesLead | null>(null);
   const [query, setQuery] = useState('');
-  const [mode, setMode] = useState<ViewMode>('contacts');
+  const [mode, setMode] = useState<ViewMode>(requestedListId ? 'lists' : 'contacts');
   const [selectedListId, setSelectedListId] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [emailOpen, setEmailOpen] = useState(false);
@@ -102,8 +106,10 @@ export function ProContactsView() {
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
+    const requestId = ++requestSequence.current;
     if (!currentWorkspaceId) {
       setLeads([]);
+      setSavedLists([]);
       setLoading(false);
       return;
     }
@@ -111,22 +117,30 @@ export function ProContactsView() {
     setLoading(true);
     try {
       const params = new URLSearchParams({ workspaceId: currentWorkspaceId });
-      const response = await fetch(`/api/salesperson/leads?${params}`, { cache: 'no-store' });
+      const [response, listData] = await Promise.all([
+        fetch(`/api/salesperson/leads?${params}`, { cache: 'no-store' }),
+        fetch(`/api/dialer/smart-list-imports?${params}`, { cache: 'no-store' })
+          .then(async (result) => result.ok ? await result.json() : null).catch(() => null),
+      ]);
       const data = await response.json();
+      if (requestId !== requestSequence.current) return;
       if (!response.ok) throw new Error(data.error || 'Unable to load contacts.');
       const nextLeads = (data.leads ?? []) as SalesLead[];
       setLeads(nextLeads);
+      if (Array.isArray(listData?.lists)) setSavedLists(listData.lists);
       setSelected((current) => nextLeads.find((lead) => lead.id === current?.id) ?? null);
       setError(null);
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : 'Unable to load contacts.');
+      if (requestId === requestSequence.current) setError(loadError instanceof Error ? loadError.message : 'Unable to load contacts.');
     } finally {
-      setLoading(false);
+      if (requestId === requestSequence.current) setLoading(false);
     }
   }, [currentWorkspaceId]);
 
   useEffect(() => {
+    setSavedLists([]);
     void load();
+    return () => { requestSequence.current += 1; };
   }, [load]);
 
   const normalizedQuery = query.trim().toLowerCase();
@@ -149,10 +163,14 @@ export function ProContactsView() {
         grouped.set(id, { id, title, leads: [lead], newestAt: lead.created_at });
       }
     }
-    return [...grouped.values()]
-      .map((group) => ({ ...group, leads: group.leads.sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at)) }))
-      .sort((a, b) => Date.parse(b.newestAt) - Date.parse(a.newestAt));
-  }, [leads]);
+    return mergeSavedListMembership([...grouped.values()], savedLists, leads);
+  }, [leads, savedLists]);
+
+  useEffect(() => {
+    if (!requestedListId) return;
+    setMode('lists');
+    setSelectedListId(requestedListId);
+  }, [requestedListId]);
 
   useEffect(() => {
     const key = `${currentWorkspaceId}:${requestedLeadId}`;

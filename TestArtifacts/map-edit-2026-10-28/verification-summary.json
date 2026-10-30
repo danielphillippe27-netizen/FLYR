@@ -1,0 +1,50 @@
+{
+  "result": "PASS",
+  "scope": "iOS simulator implementation and production backend verification using isolated fixtures",
+  "ios_tests": {
+    "passed": 68,
+    "failed": 0,
+    "configuration": "Debug iOS Simulator"
+  },
+  "backend_tests": {
+    "passed": 11,
+    "failed": 0,
+    "typecheck": "PASS"
+  },
+  "database_transactions": "PASS",
+  "pmtiles_rendering": [
+    {
+      "phase": "map_edit_moved_overlay_hit",
+      "result": "PASS",
+      "tile_original_suppressed": true
+    },
+    {
+      "addresses_preserved": 13328,
+      "phase": "map_edit_remove_reopen_sync",
+      "result": "PASS",
+      "selected_items": 2
+    },
+    {
+      "phase": "map_edit_undo_restores_tiles",
+      "result": "PASS",
+      "server_revision": 4
+    }
+  ],
+  "release_status": {
+    "database_migration": "applied to FLYR APP (kfnsnwqylsdsbgnwgxva), recorded in migration history",
+    "backend_route": "deployed and promoted on wolfgrid.app",
+    "physical_phone_trial": "not performed",
+    "deployment_id": "dpl_DURhwaR36wvhM7uVnPK5s2A7Sos9",
+    "app_store_release": "not performed"
+  },
+  "live_backend_tests": {
+    "staged": 12,
+    "production": 12,
+    "source_address_and_history_preserved": true,
+    "fixtures_cleaned_up": true
+  },
+  "production_error_scan": {
+    "window": "20 minutes following deployment",
+    "entries": 0
+  }
+}

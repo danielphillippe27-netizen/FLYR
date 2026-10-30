@@ -19,7 +19,23 @@ struct BusinessCardContent: Codable, Equatable {
 }
 struct BusinessCardProfile: Codable { let id: UUID; var content: BusinessCardContent; var published: Bool }
 struct BusinessCardProfileResponse: Codable { var profile: BusinessCardProfile? }
-struct BusinessCardShare: Codable, Identifiable { let id: UUID; let url: String; let message: String; let phone: String }
+struct BusinessCardShare: Codable, Identifiable {
+    let id: UUID
+    let url: String
+    let message: String
+    let phone: String
+
+    static func networkingMessage(firstName: String) -> String {
+        let name = firstName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let greeting = name.isEmpty ? "Hi" : "Hi \(name)"
+        return "\(greeting), it was nice to connect! Here’s my business card with all my info. Let’s keep in touch!"
+    }
+
+    func withMessage(_ introduction: String) -> BusinessCardShare {
+        let text = introduction.trimmingCharacters(in: .whitespacesAndNewlines)
+        return BusinessCardShare(id: id, url: url, message: text.isEmpty ? url : "\(text)\n\n\(url)", phone: phone)
+    }
+}
 struct BusinessCardActivityResponse: Codable {
     struct Share: Codable, Identifiable {
         struct Event: Codable, Identifiable { let id: UUID; let event_type: String; let detail: String?; let created_at: String }
@@ -289,6 +305,9 @@ struct BusinessCardSendView: View {
     var phone = ""
     var email = ""
     var saveLead: (() async throws -> UUID)? = nil
+    var networkingFirstName: String? = nil
+    var compact = false
+    @State private var customIntroduction = ""
     @Environment(\.colorScheme) private var colorScheme
     @State private var share: BusinessCardShare?
     @State private var showOptions = false
@@ -310,33 +329,51 @@ struct BusinessCardSendView: View {
     private var interactionCount: Int { status.interactionCount }
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Button { message = ""; showOptions = true } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: lastOpen == nil ? "person.crop.rectangle" : "checkmark.circle.fill")
-                        .frame(width: 20)
-                    VStack(spacing: 4) {
-                        Text(busy ? "Preparing card…" : lastOpen != nil ? "Business Card opened" : sent ? "Business Card sent" : linkStatus ?? "Send Business Card")
-                            .font(.system(size: 17, weight: .semibold))
-                        if let opened = lastOpen {
-                            TimelineView(.periodic(from: .now, by: 30)) { context in
-                                Text("Viewed \(RelativeDateTimeFormatter().localizedString(for: opened, relativeTo: context.date)) · \(interactionCount) \(interactionCount == 1 ? "interaction" : "interactions")")
-                                    .font(.caption)
+            Button {
+                message = ""
+                if let networkingFirstName {
+                    customIntroduction = BusinessCardShare.networkingMessage(firstName: networkingFirstName)
+                }
+                showOptions = true
+            } label: {
+                if compact {
+                    Text(busy ? "Preparing…" : "Send Business Card")
+                        .font(.system(size: 15, weight: .semibold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+                        .padding(.horizontal, 8)
+                        .frame(maxWidth: .infinity, minHeight: 48)
+                        .foregroundStyle(ink)
+                        .background(Color(cardHex: colorScheme == .dark ? "#352447" : "#EFE4FC"), in: RoundedRectangle(cornerRadius: 12))
+                        .opacity(canShare ? 1 : 0.45)
+                } else {
+                    HStack(spacing: 8) {
+                        Image(systemName: lastOpen == nil ? "person.crop.rectangle" : "checkmark.circle.fill")
+                            .frame(width: 20)
+                        VStack(spacing: 4) {
+                            Text(busy ? "Preparing card…" : lastOpen != nil ? "Business Card opened" : sent ? "Business Card sent" : linkStatus ?? "Send Business Card")
+                                .font(.system(size: 17, weight: .semibold))
+                            if let opened = lastOpen {
+                                TimelineView(.periodic(from: .now, by: 30)) { context in
+                                    Text("Viewed \(RelativeDateTimeFormatter().localizedString(for: opened, relativeTo: context.date)) · \(interactionCount) \(interactionCount == 1 ? "interaction" : "interactions")")
+                                        .font(.caption)
+                                }
+                            } else if sent || linkStatus != nil {
+                                Text("Not opened yet").font(.caption)
                             }
-                        } else if sent || linkStatus != nil {
-                            Text("Not opened yet").font(.caption)
+                        }
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 28)
+                        .padding(.vertical, 12)
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                        .background(Color(cardHex: colorScheme == .dark ? "#352447" : "#EFE4FC"), in: RoundedRectangle(cornerRadius: 10))
+                        .overlay(alignment: .trailing) {
+                            if busy { ProgressView().tint(ink).padding(.trailing, 8) }
                         }
                     }
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, 28)
-                    .padding(.vertical, 12)
-                    .frame(maxWidth: .infinity, minHeight: 44)
-                    .background(Color(cardHex: colorScheme == .dark ? "#352447" : "#EFE4FC"), in: RoundedRectangle(cornerRadius: 10))
-                    .overlay(alignment: .trailing) {
-                        if busy { ProgressView().tint(ink).padding(.trailing, 8) }
-                    }
+                    .foregroundStyle(ink)
+                    .opacity(canShare ? 1 : 0.45)
                 }
-                .foregroundStyle(ink)
-                .opacity(canShare ? 1 : 0.45)
             }
             .buttonStyle(.plain)
             .disabled(busy || !canShare)
@@ -361,20 +398,35 @@ struct BusinessCardSendView: View {
             if let next = pendingChannel { channel = next; pendingChannel = nil }
         }) {
             NavigationStack {
-                VStack(spacing: 8) {
-                    option("Text", icon: "message", enabled: BusinessCardRecipient.validPhone(phone)) { await prepare(.text) }
-                    option("Email", icon: "envelope", enabled: BusinessCardRecipient.validEmail(email)) { await prepare(.email) }
-                    option("QR Code", icon: "qrcode") { await prepare(.qr) }
-                    option("Copy Link", icon: "link") { await prepare(nil) }
-                    if busy { ProgressView("Preparing card…") }
-                    if !message.isEmpty { Text(message).font(.caption).foregroundStyle(.secondary) }
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 8) {
+                        if networkingFirstName != nil {
+                            Text("Message")
+                                .font(.subheadline.weight(.semibold))
+                            TextField("Your message", text: $customIntroduction, axis: .vertical)
+                                .lineLimit(3...5)
+                                .padding(12)
+                                .background(Color.bgSecondary, in: RoundedRectangle(cornerRadius: 12))
+                                .accessibilityLabel("Business card message")
+                                .disabled(busy)
+                            Text("Your business card link is added automatically.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        option("Text", icon: "message", enabled: BusinessCardRecipient.validPhone(phone)) { await prepare(.text) }
+                        option("Email", icon: "envelope", enabled: BusinessCardRecipient.validEmail(email)) { await prepare(.email) }
+                        option("QR Code", icon: "qrcode") { await prepare(.qr) }
+                        option("Copy Link", icon: "link") { await prepare(nil) }
+                        if busy { ProgressView("Preparing card…") }
+                        if !message.isEmpty { Text(message).font(.caption).foregroundStyle(.secondary) }
+                    }
+                    .padding(20)
                 }
-                .padding(20)
                 .navigationTitle("Send Business Card")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showOptions = false }.disabled(busy) } }
             }
-            .presentationDetents([.medium])
+            .presentationDetents(networkingFirstName == nil ? [.medium] : [.medium, .large])
             .presentationDragIndicator(.visible)
             .interactiveDismissDisabled(busy)
         }
@@ -432,7 +484,7 @@ struct BusinessCardSendView: View {
             var body: [String: Any] = ["contactId": id.uuidString, "idempotencyKey": pendingKey.uuidString]
             if let addressID { body["addressId"] = addressID.uuidString }
             let value: BusinessCardShare = try await BusinessCardAPI.request("shares", body: body)
-            share = value
+            share = networkingFirstName == nil ? value : value.withMessage(customIntroduction)
             if let selected {
                 if selected == .qr { linkStatus = "Business Card QR ready" }
                 pendingChannel = selected

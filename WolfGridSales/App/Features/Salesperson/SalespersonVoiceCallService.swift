@@ -66,6 +66,7 @@ final class SalespersonVoiceCallService: NSObject, ObservableObject {
     private var lastRegisteredDeviceToken: Data?
     private var lastRegisteredIdentity: String?
     private var lastRegisteredToken: String?
+    private var registrationValidUntil: Date?
     private var accountSubscription: AnyCancellable?
     private var assignedVoiceNumber: String?
     private var voiceScope: String?
@@ -114,6 +115,7 @@ final class SalespersonVoiceCallService: NSObject, ObservableObject {
                     self.isRegisteredForIncomingCalls = false
                     self.lastRegisteredIdentity = nil
                     self.lastRegisteredToken = nil
+                    self.registrationValidUntil = nil
                     self.lastRegisteredDeviceToken = nil
                 }
             }
@@ -142,6 +144,16 @@ final class SalespersonVoiceCallService: NSObject, ObservableObject {
             return
         }
 
+        // A healthy registration can be reused across tabs and foreground events.
+        if !force,
+           voiceScope == currentVoiceScope,
+           telnyxClient.isRegistered,
+           lastRegisteredDeviceToken == voipDeviceToken,
+           let registrationValidUntil,
+           registrationValidUntil.timeIntervalSinceNow > 60 {
+            return
+        }
+
         isRegistering = true
         defer { isRegistering = false }
 
@@ -160,6 +172,7 @@ final class SalespersonVoiceCallService: NSObject, ObservableObject {
             lastRegisteredDeviceToken = registrationDeviceToken
             lastRegisteredIdentity = tokenResponse.identity
             lastRegisteredToken = tokenResponse.token
+            registrationValidUntil = tokenResponse.expiresAt ?? Date().addingTimeInterval(300)
             isRegisteredForIncomingCalls = tokenResponse.incomingAllowed == true
             registrationError = tokenResponse.voipPushConfigured
                 ? nil
@@ -231,7 +244,7 @@ final class SalespersonVoiceCallService: NSObject, ObservableObject {
 
         registrationError = nil
         hasIncomingCall = false
-        try await connect(tokenResponse: tokenResponse, forceReconnect: activeCalls.isEmpty)
+        try await connect(tokenResponse: tokenResponse)
 
         let uuid = UUID(uuidString: callRequestId) ?? UUID()
         let handle = CXHandle(type: .generic, value: label)
@@ -450,6 +463,7 @@ final class SalespersonVoiceCallService: NSObject, ObservableObject {
         }
 
         var request = URLRequest(url: url)
+        request.timeoutInterval = 12
         request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
         let (data, response) = try await URLSession.shared.data(for: request)
         if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {

@@ -7,7 +7,7 @@ import CoreLocation
 
 /// Shared campaign status palette. Mirrors the web map status config.
 enum MapStatusColor {
-    static let untouchedLight = UIColor(hex: "#cfd8e3")!  // Light blue-grey (unvisited on light maps)
+    static let untouchedLight = UIColor(hex: "#b6d1e6")!  // Pale blue-grey with a visible cool tint (unvisited on light maps)
     static let untouchedDark = UIColor(hex: "#475569")!   // Dark Slate (unvisited on dark maps)
     static var useLightMapBuildingDefault = false
     static var untouched: UIColor {
@@ -94,10 +94,10 @@ final class MapLayerManager {
     // MARK: - Address markers zoom (3D cylinders + house number labels)
     
     /// Shared layer min zoom for 3D address markers.
-    private static let addressMarkersLayerMinZoom: Double = 11.8
+    private static let addressMarkersLayerMinZoom: Double = 10.0
     /// Campaign opening can fit the full territory near zoom 11. Keep campaign
     /// footprints visible there so they do not appear to vanish after first paint.
-    private static let buildingLayerMinZoom: Double = 10.5
+    private static let buildingLayerMinZoom: Double = 10.0
     /// House numbers are only readable at close range; keep them out of overview zooms.
     private static let addressNumbersLayerMinZoom: Double = 17.0
     private static let addressHouseIconImageId = "campaign-address-house-emblem"
@@ -830,12 +830,12 @@ final class MapLayerManager {
         Exp(.interpolate) {
             Exp(.linear)
             Exp(.zoom)
-            11.8
-            0.0
-            12.2
-            0.42
+            10.0
+            0.75
+            11.0
+            0.85
             12.8
-            0.72
+            0.92
             13.5
             0.92
             14.2
@@ -1065,11 +1065,11 @@ final class MapLayerManager {
         Exp(.interpolate) {
             Exp(.linear)
             Exp(.zoom)
-            13.5
+            10.0
             Exp(.switchCase) {
                 Self.isSelectedExpression
                 0.42
-                0.0
+                0.12
             }
             14.0
             Exp(.switchCase) {
@@ -1106,11 +1106,11 @@ final class MapLayerManager {
         Exp(.interpolate) {
             Exp(.linear)
             Exp(.zoom)
-            13.5
+            10.0
             Exp(.switchCase) {
                 Self.isSelectedExpression
                 1.0
-                0.0
+                0.62
             }
             14.0
             Exp(.switchCase) {
@@ -1302,8 +1302,20 @@ final class MapLayerManager {
     /// When false, 3D building extrusion layer is not added (campaign map shows flat map + addresses/roads only).
     var includeBuildingsLayer: Bool = true
 
-    /// When false, address circle layer (purple pins) is not added; addresses source is still created and updated for logic.
+    /// Legacy default visibility; address layers stay installed for mode switching.
     var includeAddressesLayer: Bool = true
+
+    // Keep the selected display mode through source refreshes and style reloads.
+    // Installation flags cannot represent visibility: both layer families are installed.
+    private var desiredAddressExtrusionVisibility: Bool?
+    private var addressExtrusionsVisible: Bool {
+        desiredAddressExtrusionVisibility ?? includeAddressesLayer
+    }
+
+    func setAddressExtrusionVisibility(isVisible: Bool) {
+        desiredAddressExtrusionVisibility = isVisible
+        applyAddressExtrusionVisibilityIfNeeded()
+    }
 
     /// When false, campaign roads are still loaded into the source but we skip the visual overlay so
     /// the base map's native road styling stays unchanged.
@@ -1917,6 +1929,7 @@ final class MapLayerManager {
                 MapStatusColor.untouched
             }
         )
+        layer.visibility = .constant(addressExtrusionsVisible ? .visible : .none)
         layer.fillExtrusionOpacity = .expression(Self.addressMarkersZoomOpacityExpression)
         layer.fillExtrusionHeight = .expression(Self.addressMarkerExtrusionHeightExpression)
         layer.fillExtrusionBase = .expression(Self.addressMarkerExtrusionBaseExpression)
@@ -1955,6 +1968,7 @@ final class MapLayerManager {
         }
 
         var selectedLayer = FillExtrusionLayer(id: Self.selectedAddressesLayerId, source: Self.addressesSourceId)
+        selectedLayer.visibility = .constant(addressExtrusionsVisible ? .visible : .none)
         selectedLayer.fillExtrusionColor = .expression(
             Exp(.switchCase) {
                 Self.isSelectedUnvisitedExpression
@@ -2076,6 +2090,38 @@ final class MapLayerManager {
         }
     }
 
+    /// Use explicit cap elevation in address mode and preserve rooftop placement otherwise.
+    private static func addressNumberElevationExpression(isAddressMode: Bool) -> Exp {
+        Exp(.switchCase) {
+            Self.manualPinMarkerExpression
+            Exp(.coalesce) {
+                Exp(.get) { "label_z_offset" }
+                Self.addressNumberRoofClearance
+            }
+            isAddressMode
+            // Cylinder labels need the full cap height above ground. Rooftop
+            // auto-elevation does not reliably lift labels over address cylinders.
+            Self.addressMarkerExtrusionHeight + 0.05
+            Exp(.coalesce) {
+                    Exp(.get) { "label_z_offset" }
+                    Self.addressNumberRoofClearance
+                }
+        }
+    }
+
+    /// Render a soft, screen-aligned shadow independently of the crisp white glyphs.
+    private static func addressNumberShadow(for labels: SymbolLayer) -> SymbolLayer {
+        var shadow = labels
+        shadow.id = labels.id + "-shadow"
+        shadow.textColor = .constant(StyleColor(UIColor.black.withAlphaComponent(0.65)))
+        shadow.textHaloColor = .constant(StyleColor(UIColor.black.withAlphaComponent(0.65)))
+        shadow.textHaloWidth = .constant(0.75)
+        shadow.textHaloBlur = .constant(3.5)
+        shadow.textTranslate = .constant([0, 1.5])
+        shadow.textTranslateAnchor = .constant(.viewport)
+        return shadow
+    }
+
     private func setupAddressNumbersLayer() {
         guard let mapView = mapView else { return }
 
@@ -2103,9 +2149,7 @@ final class MapLayerManager {
             }
         )
         layer.textColor = .constant(StyleColor(.white))
-        layer.textHaloColor = .constant(StyleColor(.black))
-        layer.textHaloWidth = .constant(1.4)
-        layer.textHaloBlur = .constant(0.4)
+        layer.textHaloWidth = .constant(0)
         layer.textAnchor = .constant(.center)
         layer.textJustify = .constant(.center)
         layer.textOffset = .constant([0, -0.35])
@@ -2125,10 +2169,7 @@ final class MapLayerManager {
         layer.symbolZElevate = .constant(true)
         layer.symbolElevationReference = .constant(.ground)
         layer.symbolZOffset = .expression(
-            Exp(.coalesce) {
-                Exp(.get) { "label_z_offset" }
-                Self.addressNumberRoofClearance
-            }
+            Self.addressNumberElevationExpression(isAddressMode: false)
         )
         layer.textAllowOverlap = .constant(true)
         layer.textIgnorePlacement = .constant(true)
@@ -2152,6 +2193,10 @@ final class MapLayerManager {
             } else {
                 try mapView.mapboxMap.addLayer(layer)
             }
+            try mapView.mapboxMap.addLayer(
+                Self.addressNumberShadow(for: layer),
+                layerPosition: .below(Self.addressNumbersLayerId)
+            )
             print("✅ [MapLayer] Added address numbers symbol layer (\(Self.addressNumbersLayerId))")
         } catch {
             print("❌ [MapLayer] Error adding address numbers layer: \(error)")
@@ -2611,7 +2656,13 @@ final class MapLayerManager {
             VectorTileDiamondGeometryProvider.addressCircleLayerId,
             VectorTileDiamondGeometryProvider.selectedAddressCircleLayerId,
             VectorTileDiamondGeometryProvider.addressNumberLayerId
-        ]
+        ].flatMap { layerId in
+            if layerId == VectorTileDiamondGeometryProvider.addressNumberLayerId ||
+                layerId == VectorTileDiamondGeometryProvider.buildingAddressNumberLayerId {
+                return [layerId, layerId + "-shadow"]
+            }
+            return [layerId]
+        }
 
         let existingLayerIds = Set(mapView.mapboxMap.allLayerIdentifiers.map(\.id))
         guard layerIds.contains(where: existingLayerIds.contains) else { return }
@@ -2624,12 +2675,13 @@ final class MapLayerManager {
         let shouldShowParcels = desiredDiamondParcelVisibility ?? (desiredDiamondBuildingVisibility || desiredDiamondAddressVisibility)
 
         for layerId in layerIds where existingLayerIds.contains(layerId) {
-            let isAddressCircleLayer = layerId == VectorTileDiamondGeometryProvider.addressCircleLayerId ||
-                layerId == VectorTileDiamondGeometryProvider.selectedAddressCircleLayerId
-            let isAddressNumberLayer = layerId == VectorTileDiamondGeometryProvider.addressNumberLayerId
-            let isBuildingAddressNumberLayer = layerId == VectorTileDiamondGeometryProvider.buildingAddressNumberLayerId
-            let isParcelLayer = layerId == VectorTileDiamondGeometryProvider.parcelFillLayerId ||
-                layerId == VectorTileDiamondGeometryProvider.parcelLineLayerId
+            let baseLayerId = layerId.hasSuffix("-shadow") ? String(layerId.dropLast(7)) : layerId
+            let isAddressCircleLayer = baseLayerId == VectorTileDiamondGeometryProvider.addressCircleLayerId ||
+                baseLayerId == VectorTileDiamondGeometryProvider.selectedAddressCircleLayerId
+            let isAddressNumberLayer = baseLayerId == VectorTileDiamondGeometryProvider.addressNumberLayerId
+            let isBuildingAddressNumberLayer = baseLayerId == VectorTileDiamondGeometryProvider.buildingAddressNumberLayerId
+            let isParcelLayer = baseLayerId == VectorTileDiamondGeometryProvider.parcelFillLayerId ||
+                baseLayerId == VectorTileDiamondGeometryProvider.parcelLineLayerId
             let shouldShow: Bool
             if isParcelLayer {
                 shouldShow = shouldShowParcels
@@ -2644,16 +2696,16 @@ final class MapLayerManager {
             }
             let visibility: Visibility = shouldShow ? .visible : .none
 
-            if layerId == VectorTileDiamondGeometryProvider.parcelFillLayerId {
+            if baseLayerId == VectorTileDiamondGeometryProvider.parcelFillLayerId {
                 try? mapView.mapboxMap.updateLayer(withId: layerId, type: FillLayer.self) {
                     $0.visibility = .constant(visibility)
                 }
-            } else if layerId == VectorTileDiamondGeometryProvider.buildingFillLayerId {
+            } else if baseLayerId == VectorTileDiamondGeometryProvider.buildingFillLayerId {
                 try? mapView.mapboxMap.updateLayer(withId: layerId, type: FillExtrusionLayer.self) {
                     $0.visibility = .constant(visibility)
                 }
-            } else if layerId == VectorTileDiamondGeometryProvider.addressCircleLayerId ||
-                        layerId == VectorTileDiamondGeometryProvider.selectedAddressCircleLayerId {
+            } else if baseLayerId == VectorTileDiamondGeometryProvider.addressCircleLayerId ||
+                        baseLayerId == VectorTileDiamondGeometryProvider.selectedAddressCircleLayerId {
                 if installedDiamondManifest?.sourceLayers?.addressCircles?.isEmpty == false {
                     try? mapView.mapboxMap.updateLayer(withId: layerId, type: FillExtrusionLayer.self) {
                         $0.visibility = .constant(visibility)
@@ -2663,8 +2715,8 @@ final class MapLayerManager {
                         $0.visibility = .constant(visibility)
                     }
                 }
-            } else if layerId == VectorTileDiamondGeometryProvider.addressNumberLayerId ||
-                        layerId == VectorTileDiamondGeometryProvider.buildingAddressNumberLayerId {
+            } else if baseLayerId == VectorTileDiamondGeometryProvider.addressNumberLayerId ||
+                        baseLayerId == VectorTileDiamondGeometryProvider.buildingAddressNumberLayerId {
                 try? mapView.mapboxMap.updateLayer(withId: layerId, type: SymbolLayer.self) {
                     $0.visibility = .constant(visibility)
                 }
@@ -3006,9 +3058,8 @@ final class MapLayerManager {
                 ), !clippedPolygons.isEmpty else {
                     continue
                 }
-                let displayPolygons = clippedPolygons.map {
-                    insetPolygonRing($0, insetMeters: 0.38) ?? $0
-                }
+                // Extend each status segment to the building's exterior walls.
+                let displayPolygons = clippedPolygons
 
                 let properties: [String: Any] = [
                     "gers_id": gersId,
@@ -3183,7 +3234,7 @@ final class MapLayerManager {
 
     private func applyAddressExtrusionVisibilityIfNeeded() {
         guard let mapView = mapView else { return }
-        let visibility: Visibility = includeAddressesLayer ? .visible : .none
+        let visibility: Visibility = addressExtrusionsVisible ? .visible : .none
 
         if mapView.mapboxMap.layerExists(withId: Self.addressesLayerId) {
             try? mapView.mapboxMap.updateLayer(withId: Self.addressesLayerId, type: FillExtrusionLayer.self) {
@@ -3325,8 +3376,10 @@ final class MapLayerManager {
         guard mapView.mapboxMap.layerExists(withId: Self.addressNumbersLayerId) else { return }
 
         do {
-            try mapView.mapboxMap.updateLayer(withId: Self.addressNumbersLayerId, type: SymbolLayer.self) {
-                $0.visibility = .constant(isVisible ? .visible : .none)
+            for layerId in [Self.addressNumbersLayerId, Self.addressNumbersLayerId + "-shadow"] {
+                try mapView.mapboxMap.updateLayer(withId: layerId, type: SymbolLayer.self) {
+                    $0.visibility = .constant(isVisible ? .visible : .none)
+                }
             }
             if mapView.mapboxMap.layerExists(withId: Self.addressLabelHitboxLayerId) {
                 try mapView.mapboxMap.updateLayer(withId: Self.addressLabelHitboxLayerId, type: CircleLayer.self) {
@@ -3386,11 +3439,21 @@ final class MapLayerManager {
             }
         }
 
-        if map.layerExists(withId: Self.addressNumbersLayerId) {
-            try? map.updateLayer(withId: Self.addressNumbersLayerId, type: SymbolLayer.self) {
+        for layerId in [Self.addressNumbersLayerId, Self.addressNumbersLayerId + "-shadow"] where map.layerExists(withId: layerId) {
+            try? map.updateLayer(withId: layerId, type: SymbolLayer.self) {
                 $0.minZoom = addressLabelMinZoom
                 $0.textOpacity = .expression(Self.addressNumbersZoomOpacityExpression)
                 $0.filter = Self.addressNumberLabelFilter(isAddressMode: isAddressMode)
+                $0.symbolZOffset = .expression(Self.addressNumberElevationExpression(isAddressMode: isAddressMode))
+                $0.textOffset = .expression(
+                    Exp(.switchCase) {
+                        Self.manualPinMarkerExpression
+                        Exp(.literal) { [0.0, 0.0] }
+                        isAddressMode
+                        Exp(.literal) { [0.0, 0.0] }
+                        Exp(.literal) { [0.0, -0.35] }
+                    }
+                )
             }
         }
 
@@ -3471,8 +3534,8 @@ final class MapLayerManager {
             }
         }
 
-        if map.layerExists(withId: VectorTileDiamondGeometryProvider.addressNumberLayerId) {
-            try? map.updateLayer(withId: VectorTileDiamondGeometryProvider.addressNumberLayerId, type: SymbolLayer.self) {
+        for layerId in [VectorTileDiamondGeometryProvider.addressNumberLayerId, VectorTileDiamondGeometryProvider.addressNumberLayerId + "-shadow"] where map.layerExists(withId: layerId) {
+            try? map.updateLayer(withId: layerId, type: SymbolLayer.self) {
                 $0.minZoom = addressLabelMinZoom
                 $0.textOpacity = .expression(
                     VectorTileDiamondGeometryProvider.linkedAddressNumberOpacityExpression(
@@ -3483,8 +3546,8 @@ final class MapLayerManager {
             }
         }
 
-        if map.layerExists(withId: VectorTileDiamondGeometryProvider.buildingAddressNumberLayerId) {
-            try? map.updateLayer(withId: VectorTileDiamondGeometryProvider.buildingAddressNumberLayerId, type: SymbolLayer.self) {
+        for layerId in [VectorTileDiamondGeometryProvider.buildingAddressNumberLayerId, VectorTileDiamondGeometryProvider.buildingAddressNumberLayerId + "-shadow"] where map.layerExists(withId: layerId) {
+            try? map.updateLayer(withId: layerId, type: SymbolLayer.self) {
                 $0.minZoom = addressLabelMinZoom
                 $0.textOpacity = .expression(
                     VectorTileDiamondGeometryProvider.linkedAddressNumberOpacityExpression(
@@ -7288,6 +7351,7 @@ final class MapLayerManager {
         try? mapView.mapboxMap.removeLayer(withId: Self.addressHouseIconLayerId)
         try? mapView.mapboxMap.removeLayer(withId: Self.addressLabelHitboxLayerId)
         try? mapView.mapboxMap.removeLayer(withId: Self.addressNumbersLayerId)
+        try? mapView.mapboxMap.removeLayer(withId: Self.addressNumbersLayerId + "-shadow")
         try? mapView.mapboxMap.removeLayer(withId: Self.manualAddressPreviewLayerId)
         try? mapView.mapboxMap.removeLayer(withId: Self.teammatePresenceCircleLayerId)
         try? mapView.mapboxMap.removeLayer(withId: Self.teammatePresenceLabelLayerId)

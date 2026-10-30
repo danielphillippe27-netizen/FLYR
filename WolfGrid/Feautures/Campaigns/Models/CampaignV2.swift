@@ -427,6 +427,7 @@ struct CampaignV2: Identifiable, Codable, Equatable {
     var dataQuality: CampaignDataQuality?
     var standardModeRecommended: Bool?
     var dataQualityReason: String?
+    var tags: String?
 
     var presentationMapMode: CampaignMapMode {
         CampaignMapMode.resolvedForPresentation(
@@ -480,6 +481,7 @@ struct CampaignV2: Identifiable, Codable, Equatable {
         dataQuality = try container.decodeIfPresent(CampaignDataQuality.self, forKey: .dataQuality)
         standardModeRecommended = try container.decodeIfPresent(Bool.self, forKey: .standardModeRecommended)
         dataQualityReason = try container.decodeIfPresent(String.self, forKey: .dataQualityReason)
+        tags = try container.decodeIfPresent(String.self, forKey: .tags)
         
         // New fields with defaults for backward compatibility
         totalFlyers = try container.decodeIfPresent(Int.self, forKey: .totalFlyers) ?? 0
@@ -518,7 +520,7 @@ struct CampaignV2: Identifiable, Codable, Equatable {
         case provisionStatus, provisionSource, provisionPhase
         case addressesReadyAt, mapReadyAt, optimizedAt
         case hasParcels, buildingLinkConfidence, mapMode
-        case coverageScore, dataQuality, standardModeRecommended, dataQualityReason
+        case coverageScore, dataQuality, standardModeRecommended, dataQualityReason, tags
         case progress // For backward compatibility only
     }
     
@@ -550,6 +552,7 @@ struct CampaignV2: Identifiable, Codable, Equatable {
         try container.encodeIfPresent(dataQuality, forKey: .dataQuality)
         try container.encodeIfPresent(standardModeRecommended, forKey: .standardModeRecommended)
         try container.encodeIfPresent(dataQualityReason, forKey: .dataQualityReason)
+        try container.encodeIfPresent(tags, forKey: .tags)
     }
     
     init(
@@ -577,7 +580,8 @@ struct CampaignV2: Identifiable, Codable, Equatable {
         coverageScore: Int? = nil,
         dataQuality: CampaignDataQuality? = nil,
         standardModeRecommended: Bool? = nil,
-        dataQualityReason: String? = nil
+        dataQualityReason: String? = nil,
+        tags: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -604,6 +608,7 @@ struct CampaignV2: Identifiable, Codable, Equatable {
         self.dataQuality = dataQuality
         self.standardModeRecommended = standardModeRecommended
         self.dataQualityReason = dataQualityReason
+        self.tags = tags
     }
     
     static func == (lhs: CampaignV2, rhs: CampaignV2) -> Bool {

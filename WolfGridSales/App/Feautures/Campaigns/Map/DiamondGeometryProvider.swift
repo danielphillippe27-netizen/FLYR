@@ -34,7 +34,7 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
     static let addressNumberLayerId = "diamond-addresses-numbers"
     static let parcelOverviewMinZoom: Double = 0.0
     static let parcelOverviewMaxZoom: Double = 24.0
-    static let addressLayerMinZoom: Double = 11.8
+    static let addressLayerMinZoom: Double = 10.0
     static let addressNumberLayerMinZoom: Double = 17.0
     static var addressNumberZoomOpacityExpression: Exp {
         Exp(.interpolate) {
@@ -291,8 +291,8 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
                 $0.filter = diamondRenderableBuildingFilter()
             }
         }
-        if map.allLayerIdentifiers.contains(where: { $0.id == buildingAddressNumberLayerId }) {
-            try map.updateLayer(withId: buildingAddressNumberLayerId, type: SymbolLayer.self) {
+        for layerId in [buildingAddressNumberLayerId, buildingAddressNumberLayerId + "-shadow"] where map.layerExists(withId: layerId) {
+            try map.updateLayer(withId: layerId, type: SymbolLayer.self) {
                 $0.filter = singleAddressBuildingNumberFilter()
             }
         }
@@ -322,8 +322,8 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
                 $0.filter = addressGeometryFilter(usesCirclePolygons: false)
             }
         }
-        if map.allLayerIdentifiers.contains(where: { $0.id == addressNumberLayerId }) {
-            try map.updateLayer(withId: addressNumberLayerId, type: SymbolLayer.self) {
+        for layerId in [addressNumberLayerId, addressNumberLayerId + "-shadow"] where map.layerExists(withId: layerId) {
+            try map.updateLayer(withId: layerId, type: SymbolLayer.self) {
                 $0.filter = addressGeometryFilter(usesCirclePolygons: currentAddressUsesCirclePolygons)
             }
         }
@@ -339,9 +339,11 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
     private func removeExistingDiamondLayers(from map: MapboxMap) throws {
         for layerId in [
             addressNumberLayerId,
+            addressNumberLayerId + "-shadow",
             selectedAddressCircleLayerId,
             addressCircleLayerId,
             buildingAddressNumberLayerId,
+            buildingAddressNumberLayerId + "-shadow",
             buildingLeadGlowLayerId,
             buildingLineLayerId,
             buildingFillLayerId,
@@ -446,7 +448,7 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
         fill.fillExtrusionBase = .expression(MapLayerManager.buildingExtrusionBaseExpression)
         fill.fillExtrusionOpacity = .constant(1.0)
         MapTheme.configureExtrusionDepth(&fill)
-        fill.minZoom = 12
+        fill.minZoom = 10
         fill.filter = renderableFilter
 
         try map.addLayer(fill)
@@ -470,7 +472,7 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
         // Selection is shown by recoloring the extrusion; keep footprint outlines silent.
         selectedGlow.lineOpacity = .constant(0.0)
         selectedGlow.lineOpacityTransition = StyleTransition(duration: 0.2, delay: 0)
-        selectedGlow.minZoom = 12
+        selectedGlow.minZoom = 10
         selectedGlow.filter = renderableFilter
 
         try map.addLayer(selectedGlow, layerPosition: .above(buildingFillLayerId))
@@ -481,13 +483,25 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
         // selection-only, so normal homes do not carry an always-on footprint outline.
     }
 
+    /// Match the rooftop numbers with a blurred shadow rather than a glyph outline.
+    private static func addressNumberShadow(for labels: SymbolLayer) -> SymbolLayer {
+        var shadow = labels
+        shadow.id = labels.id + "-shadow"
+        shadow.textColor = .constant(StyleColor(UIColor.black.withAlphaComponent(0.65)))
+        shadow.textHaloColor = .constant(StyleColor(UIColor.black.withAlphaComponent(0.65)))
+        shadow.textHaloWidth = .constant(0.75)
+        shadow.textHaloBlur = .constant(3.5)
+        shadow.textTranslate = .constant([0, 1.5])
+        shadow.textTranslateAnchor = .constant(.viewport)
+        return shadow
+    }
+
     private func addBuildingAddressNumberLayer(map: MapboxMap, sourceId: String, sourceLayer: String) throws {
         var labels = SymbolLayer(id: buildingAddressNumberLayerId, source: sourceId)
         labels.sourceLayer = sourceLayer
         labels.textField = .expression(houseNumberLabelExpression())
         labels.textColor = .constant(StyleColor(.white))
-        labels.textHaloColor = .constant(StyleColor(.black))
-        labels.textHaloWidth = .constant(1.4)
+        labels.textHaloWidth = .constant(0)
         labels.textSize = .expression(
             Exp(.interpolate) {
                 Exp(.linear)
@@ -524,6 +538,7 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
         labels.minZoom = Self.addressNumberLayerMinZoom
         labels.filter = singleAddressBuildingNumberFilter()
         try map.addLayer(labels, layerPosition: .above(buildingLineLayerId))
+        try map.addLayer(Self.addressNumberShadow(for: labels), layerPosition: .below(labels.id))
     }
 
     private func houseNumberLabelExpression() -> Exp {
@@ -684,10 +699,10 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
                 Exp(.interpolate) {
                     Exp(.linear)
                     Exp(.zoom)
-                    11.8
-                    2.5
+                    10
+                    4
                     13
-                    3
+                    4.5
                     14
                     4
                     17
@@ -740,8 +755,7 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
         labels.sourceLayer = sourceLayer
         labels.textField = .expression(houseNumberLabelExpression())
         labels.textColor = .constant(StyleColor(.white))
-        labels.textHaloColor = .constant(StyleColor(.black))
-        labels.textHaloWidth = .constant(1.4)
+        labels.textHaloWidth = .constant(0)
         labels.textSize = .expression(
             Exp(.interpolate) {
                 Exp(.linear)
@@ -754,7 +768,7 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
         )
         labels.textAnchor = .constant(.center)
         labels.textJustify = .constant(.center)
-        labels.textOffset = .constant([0, -0.35])
+        labels.textOffset = .constant(usesCirclePolygons ? [0, 0] : [0, -0.35])
         labels.textPitchAlignment = .constant(.viewport)
         labels.textRotationAlignment = .constant(.viewport)
         labels.textVariableAnchor = .constant([.center])
@@ -785,6 +799,7 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
         labels.minZoom = Self.addressNumberLayerMinZoom
         labels.filter = addressNumberFilter(usesCirclePolygons: usesCirclePolygons)
         try map.addLayer(labels, layerPosition: .above(selectedAddressCircleLayerId))
+        try map.addLayer(Self.addressNumberShadow(for: labels), layerPosition: .below(labels.id))
     }
 
     private func scopedPointFilter() -> Exp {
@@ -916,13 +931,13 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
             Exp(.switchCase) {
                 isSelectedExpression()
                 1.0
-                0.36
+                0.65
             }
             12.0
             Exp(.switchCase) {
                 isSelectedExpression()
                 1.0
-                0.42
+                0.7
             }
             14.0
             Exp(.switchCase) {
@@ -963,13 +978,13 @@ final class VectorTileDiamondGeometryProvider: DiamondGeometryProvider {
             Exp(.switchCase) {
                 isSelectedExpression()
                 0.42
-                0.035
+                0.12
             }
             12.0
             Exp(.switchCase) {
                 isSelectedExpression()
                 0.42
-                0.045
+                0.12
             }
             14.0
             Exp(.switchCase) {

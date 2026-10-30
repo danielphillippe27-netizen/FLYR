@@ -325,12 +325,23 @@ actor FieldLeadsService {
             query = query.eq("address", value: address)
         }
 
-        let response = try await query
-            .order("updated_at", ascending: false)
-            .limit(limit ?? 500)
-            .execute()
-
-        return try JSONDecoder.supabaseDates.decode([ContactLeadRow].self, from: response.data)
+        // Campaign outreach must include contacts beyond the first server page.
+        let pageSize = min(limit ?? 500, 500)
+        var rows: [ContactLeadRow] = []
+        while true {
+            let remaining = limit.map { $0 - rows.count } ?? pageSize
+            if remaining <= 0 { break }
+            let count = min(pageSize, remaining)
+            let response = try await query
+                .order("updated_at", ascending: false)
+                .order("id", ascending: true)
+                .range(from: rows.count, to: rows.count + count - 1)
+                .execute()
+            let page = try JSONDecoder.supabaseDates.decode([ContactLeadRow].self, from: response.data)
+            rows.append(contentsOf: page)
+            if page.count < count { break }
+        }
+        return rows
     }
 
     private func insertContactLead(_ lead: FieldLead, workspaceId: UUID?) async throws -> FieldLead {

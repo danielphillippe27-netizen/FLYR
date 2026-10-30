@@ -5,6 +5,7 @@ struct SalespersonCommunicationsView: View {
     @ObservedObject private var workspace = WorkspaceContext.shared
     @EnvironmentObject private var uiState: AppUIState
     @State private var isShowingConversation = false
+    @State private var visitedFilters: Set<SalespersonCommunicationFilter> = []
 
     var body: some View {
         VStack(spacing: 0) {
@@ -22,6 +23,12 @@ struct SalespersonCommunicationsView: View {
                 .id("\(auth.user?.id.uuidString ?? "signed-out"):\(workspace.workspaceId?.uuidString ?? "no-workspace")")
         }
         .background(Color(uiColor: .systemBackground))
+        .onAppear {
+            visitedFilters.insert(uiState.salespersonCommunicationFilter)
+        }
+        .onChange(of: uiState.salespersonCommunicationFilter) { _, filter in
+            visitedFilters.insert(filter)
+        }
         .onChange(of: isShowingConversation) { _, isShowing in
             withAnimation(.easeOut(duration: 0.2)) {
                 uiState.showTabBar = !isShowing
@@ -96,33 +103,18 @@ struct SalespersonCommunicationsView: View {
         .padding(.bottom, 10)
     }
 
-    @ViewBuilder
     private var selectedContent: some View {
-        switch uiState.salespersonCommunicationFilter {
-        case .inbox:
-            SalespersonInboxView(
-                source: "all",
-                title: "Inbox",
-                isShowingThread: $isShowingConversation
-            )
-        case .messages:
-            SalespersonInboxView(
-                source: "sms",
-                title: "Messages",
-                isShowingThread: $isShowingConversation
-            )
-        case .email:
-            SalespersonInboxView(
-                source: "email",
-                title: "Email",
-                isShowingThread: $isShowingConversation
-            )
-        case .phone:
-            SalespersonInboxView(
-                source: "call",
-                title: "Phone",
-                isShowingThread: $isShowingConversation
-            )
+        ZStack {
+            ForEach(SalespersonCommunicationFilter.allCases.filter { visitedFilters.contains($0) }) { filter in
+                SalespersonInboxView(
+                    source: filter == .inbox ? "all" : (filter == .messages ? "sms" : "email"),
+                    title: filter == .inbox ? "Inbox" : (filter == .messages ? "Messages" : "Email"),
+                    isShowingThread: $isShowingConversation
+                )
+                .opacity(uiState.salespersonCommunicationFilter == filter ? 1 : 0)
+                .allowsHitTesting(uiState.salespersonCommunicationFilter == filter)
+                .accessibilityHidden(uiState.salespersonCommunicationFilter != filter)
+            }
         }
     }
 

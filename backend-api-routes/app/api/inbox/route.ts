@@ -9,6 +9,7 @@ import {
   telnyxSmsFromNumber,
 } from "@/lib/dialer/telnyx-messaging";
 import { appendCommunication, sendManagedEmail, sendManagedSms } from "@/lib/sales-pro/communications";
+import { unmatchedDialerMessages } from "@/lib/sales-pro/inbox-message-identity";
 import { syncICloudInbox } from "@/lib/email/icloud-sync";
 import { counterpartyEmail, replyEmailForEvents } from "@/lib/email/thread-identity";
 import { getSalespersonSmsFromNumber } from "@/lib/dialer/salesperson-settings";
@@ -448,6 +449,7 @@ export async function GET(request: NextRequest) {
     }
 
     const canonicalInboxThreads: InboxThread[] = [];
+    const canonicalMessageIdentities: Array<{ channel: string; provider: unknown; provider_event_id: unknown }> = [];
     let canonicalQuery = admin.from("communication_threads")
       .select("*,sales_contacts(id,name,phone,email,address),communication_events(*)")
       .eq("workspace_id", workspaceId).eq("assigned_user_id", context!.user.id).eq("sales_contacts.owner_user_id", context!.user.id).eq("sales_contacts.workspace_id", workspaceId).neq("status", "archived")
@@ -465,6 +467,9 @@ export async function GET(request: NextRequest) {
           .filter((event) => source === "all" ? ["sms", "email"].includes(event.channel) : (source === "call" ? ["call", "voicemail"].includes(event.channel) : event.channel === source))
           .sort((left, right) => Date.parse(left.occurred_at) - Date.parse(right.occurred_at));
         if (!matchingEvents.length) return null;
+        canonicalMessageIdentities.push(...matchingEvents.map((event) => ({
+          channel: event.channel, provider: event.provider, provider_event_id: event.provider_event_id,
+        })));
         const events: InboxEvent[] = await Promise.all(matchingEvents.map(async (event) => ({
           id: event.id, source: event.channel, kind: event.event_kind, direction: event.direction,
           title: event.subject || event.event_kind.replaceAll("_", " "), preview: event.body, body: event.body,
@@ -559,7 +564,7 @@ export async function GET(request: NextRequest) {
     for (const contact of phoneContacts.values()) contacts.set(contact.id, contact);
 
     const events = [
-      ...messageRows.map((row) => {
+      ...unmatchedDialerMessages(messageRows, canonicalMessageIdentities).map((row) => {
         const direction = row.direction === "outbound" ? "outbound" : "inbound";
         const rowContact = clean(row.contact_id) ? contacts.get(String(row.contact_id)) ?? null : null;
         const matchedContact = rowContact ?? contactForPhone(

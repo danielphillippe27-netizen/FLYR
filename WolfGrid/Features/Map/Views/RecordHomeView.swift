@@ -32,7 +32,9 @@ struct RecordHomeView: View {
 
     var body: some View {
         Group {
-            if sessionManager.isNetworkingSession {
+            if uiState.hasFullscreenMap {
+                Color.bg
+            } else if sessionManager.isNetworkingSession {
                 NetworkingSessionView()
             } else if sessionManager.isActive, sessionManager.campaignId == nil {
                 legacySessionFallbackView
@@ -51,7 +53,7 @@ struct RecordHomeView: View {
         }
         .toolbar((inSessionMode || showingCampaignMap) ? .hidden : .visible, for: .navigationBar)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .ignoresSafeArea(inSessionMode ? .all : [])
+        .ignoresSafeArea(inSessionMode && !sessionManager.isNetworkingSession ? .all : [])
         // End session summary is presented from MainTabView.fullScreenCover so it always shows on top
     }
 
@@ -109,7 +111,9 @@ private struct PendingNetworkingAppointment {
 
 struct NetworkingSessionView: View {
     private enum LeadField: Hashable {
-        case name
+        case firstName
+        case lastName
+        case socialHandle
         case phone
         case email
         case notes
@@ -124,7 +128,11 @@ struct NetworkingSessionView: View {
     @State private var saveErrorMessage: String?
     @State private var isSavingLead = false
 
-    @State private var leadName = ""
+    @State private var leadFirstName = ""
+    @State private var leadLastName = ""
+    @State private var leadSocialHandle = ""
+    @State private var savedLead: FieldLead?
+    @State private var leadDraftID = UUID()
     @State private var leadPhone = ""
     @State private var leadEmail = ""
     @State private var leadNotes = ""
@@ -142,13 +150,18 @@ struct NetworkingSessionView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     networkingHeader
-                    headerCard
                     conversationCard
                     leadForm
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 16)
             }
+        }
+        .safeAreaInset(edge: .bottom) {
+            bottomActions
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+                .background(Color.bg)
         }
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
@@ -215,18 +228,27 @@ struct NetworkingSessionView: View {
     }
 
     private var networkingHeader: some View {
-        ZStack {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(formattedElapsedTime)
+                    .font(.system(size: 16, weight: .bold, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundColor(.text)
+                Text(sessionManager.isActive ? "Live now" : (isStarting ? "Starting..." : "Ready"))
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(.accentDefault)
+            }
+            .accessibilityElement(children: .combine)
+
             Text("Networking")
                 .font(.system(size: 20, weight: .bold))
                 .foregroundColor(.text)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
                 .frame(maxWidth: .infinity)
 
-            HStack {
-                Spacer()
-                endSessionButton
-            }
+            endSessionButton
         }
-        .frame(maxWidth: .infinity)
     }
 
     private var endSessionButton: some View {
@@ -243,21 +265,6 @@ struct NetworkingSessionView: View {
         }
         .buttonStyle(.plain)
         .disabled(isEndingSession)
-    }
-
-    private var headerCard: some View {
-        VStack(spacing: 4) {
-            Text(formattedElapsedTime)
-                .font(.system(size: 32, weight: .bold, design: .rounded))
-                .foregroundColor(.text)
-            Text(sessionManager.isActive ? "Live now" : (isStarting ? "Starting..." : "Ready"))
-                .font(.system(size: 13, weight: .medium))
-                .foregroundColor(.accentDefault)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(14)
-        .background(Color.bgSecondary)
-        .clipShape(RoundedRectangle(cornerRadius: 16))
     }
 
     private var conversationCard: some View {
@@ -278,6 +285,7 @@ struct NetworkingSessionView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 12))
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Decrease conversations")
 
                 Text("\(sessionManager.conversationsHad)")
                     .font(.system(size: 40, weight: .bold, design: .rounded))
@@ -295,20 +303,8 @@ struct NetworkingSessionView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 12))
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Increase conversations")
             }
-
-            Button {
-                sessionManager.recordConversation()
-            } label: {
-                Text("Tap for Conversation")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundColor(.white)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 12)
-                    .background(Color.info)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-            }
-            .buttonStyle(.plain)
         }
         .padding(14)
         .background(Color.bgSecondary)
@@ -367,9 +363,29 @@ struct NetworkingSessionView: View {
                 .font(.flyrHeadline)
                 .foregroundColor(.text)
 
-            networkingField("Name", text: $leadName, field: .name, keyboard: .default, capitalization: .words, submitLabel: .next)
+            HStack(spacing: 12) {
+                networkingField("First name", text: $leadFirstName, field: .firstName, keyboard: .default, capitalization: .words, submitLabel: .next)
+                networkingField("Last name", text: $leadLastName, field: .lastName, keyboard: .default, capitalization: .words, submitLabel: .next)
+            }
             networkingField("Phone", text: $leadPhone, field: .phone, keyboard: .phonePad, capitalization: .never, disableAutocorrection: true, submitLabel: .next)
             networkingField("Email", text: $leadEmail, field: .email, keyboard: .emailAddress, capitalization: .never, disableAutocorrection: true, submitLabel: .next)
+
+            HStack(spacing: 6) {
+                Text("@")
+                    .foregroundColor(.muted)
+                TextField("Social media handle", text: $leadSocialHandle)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .focused($focusedField, equals: .socialHandle)
+                    .submitLabel(.next)
+                    .onSubmit { focusedField = .notes }
+                    .accessibilityLabel("Social media handle")
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(Color.bgSecondary)
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .foregroundColor(.text)
 
             TextField("Notes", text: $leadNotes)
                 .padding(.horizontal, 14)
@@ -399,28 +415,52 @@ struct NetworkingSessionView: View {
                     }
                 }
             }
+        }
+        .disabled(isSavingLead)
+    }
 
+    private var bottomActions: some View {
+        HStack(alignment: .top, spacing: 12) {
             Button {
-                Task { await saveLead() }
+                focusedField = nil
+                Task {
+                    do {
+                        _ = try await saveLead(resetAfterSave: true)
+                    } catch {
+                        saveErrorMessage = error.localizedDescription
+                    }
+                }
             } label: {
-                HStack {
-                    Spacer()
+                Group {
                     if isSavingLead {
-                        ProgressView()
-                            .tint(.white)
+                        ProgressView().tint(.white)
                     } else {
-                        Text("Save Lead")
+                        Text("Save")
                             .font(.system(size: 16, weight: .semibold))
                     }
-                    Spacer()
                 }
+                .frame(maxWidth: .infinity, minHeight: 48)
                 .foregroundColor(.white)
-                .padding(.vertical, 12)
                 .background(canSaveLead ? Color.info : Color.gray.opacity(0.35))
                 .clipShape(RoundedRectangle(cornerRadius: 12))
             }
             .buttonStyle(.plain)
             .disabled(!canSaveLead || isSavingLead)
+            .frame(maxWidth: .infinity)
+
+            BusinessCardSendView(
+                phone: leadPhone,
+                email: leadEmail,
+                saveLead: {
+                    focusedField = nil
+                    return try await saveLead(resetAfterSave: false)
+                },
+                networkingFirstName: leadFirstName,
+                compact: true
+            )
+            .id(leadDraftID)
+            .frame(maxWidth: .infinity)
+            .disabled(isSavingLead)
         }
     }
 
@@ -441,11 +481,15 @@ struct NetworkingSessionView: View {
             .submitLabel(submitLabel)
             .onSubmit {
                 switch field {
-                case .name:
+                case .firstName:
+                    focusedField = .lastName
+                case .lastName:
                     focusedField = .phone
                 case .phone:
                     focusedField = .email
                 case .email:
+                    focusedField = .socialHandle
+                case .socialHandle:
                     focusedField = .notes
                 case .notes:
                     focusedField = nil
@@ -453,6 +497,7 @@ struct NetworkingSessionView: View {
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
+            .frame(maxWidth: .infinity)
             .background(Color.bgSecondary)
             .clipShape(RoundedRectangle(cornerRadius: 12))
             .foregroundColor(.text)
@@ -467,7 +512,7 @@ struct NetworkingSessionView: View {
     }
 
     private var canSaveLead: Bool {
-        [leadName, leadPhone, leadEmail, leadNotes].contains {
+        [leadFirstName, leadLastName, leadPhone, leadEmail, normalizedSocialHandle, leadNotes].contains {
             !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
     }
@@ -501,18 +546,24 @@ struct NetworkingSessionView: View {
         }
     }
 
-    private func saveLead() async {
-        guard let userId = AuthManager.shared.user?.id else { return }
+    @MainActor
+    private func saveLead(resetAfterSave: Bool) async throws -> UUID {
+        guard !isSavingLead, canSaveLead else { throw BusinessCardAPI.failure("Enter this contact’s details first.") }
+        guard let userId = AuthManager.shared.user?.id else { throw BusinessCardAPI.failure("Sign in to save this contact.") }
         isSavingLead = true
         saveErrorMessage = nil
         defer { isSavingLead = false }
 
-        let trimmedName = leadName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedName = [leadFirstName, leadLastName]
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
         let trimmedPhone = leadPhone.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedEmail = leadEmail.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedNotes = leadNotes.trimmingCharacters(in: .whitespacesAndNewlines)
 
         let lead = FieldLead(
+            id: savedLead?.id ?? leadDraftID,
             userId: userId,
             address: networkingLeadAddress,
             name: trimmedName.isEmpty ? nil : trimmedName,
@@ -522,35 +573,47 @@ struct NetworkingSessionView: View {
             notes: combinedLeadNotes(baseNotes: trimmedNotes),
             qrCode: nil,
             campaignId: nil,
-            sessionId: sessionManager.sessionId
+            sessionId: sessionManager.sessionId,
+            createdAt: savedLead?.createdAt ?? Date()
         )
 
-        do {
+        let persistedLead: FieldLead
+        if savedLead != nil {
+            persistedLead = try await FieldLeadsService.shared.updateLead(lead)
+        } else {
             let outcome = try await FieldLeadsService.shared.addLeadDetailed(
                 lead,
                 workspaceId: WorkspaceContext.shared.workspaceId
             )
+            persistedLead = outcome.lead
             if outcome.createdNew {
-                await MainActor.run {
-                    sessionManager.recordLeadCreated()
-                }
+                sessionManager.recordLeadCreated()
             }
-
-            try? await persistContactMetadata(for: outcome.lead)
-            NotificationCenter.default.post(name: .leadSavedFromSession, object: nil)
-
-            await MainActor.run {
-                HapticManager.success()
-                leadName = ""
-                leadPhone = ""
-                leadEmail = ""
-                leadNotes = ""
-                pendingFollowUp = nil
-                pendingAppointment = nil
-            }
-        } catch {
-            saveErrorMessage = error.localizedDescription
         }
+        savedLead = persistedLead
+        try? await persistContactMetadata(for: persistedLead)
+        NotificationCenter.default.post(name: .leadSavedFromSession, object: nil)
+        HapticManager.success()
+
+        if resetAfterSave {
+            leadFirstName = ""
+            leadLastName = ""
+            leadSocialHandle = ""
+            leadPhone = ""
+            leadEmail = ""
+            leadNotes = ""
+            pendingFollowUp = nil
+            pendingAppointment = nil
+            savedLead = nil
+            leadDraftID = UUID()
+        }
+        return persistedLead.id
+    }
+
+    private var normalizedSocialHandle: String {
+        leadSocialHandle.trimmingCharacters(in: .whitespacesAndNewlines)
+            .drop(while: { $0 == "@" })
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private var networkingLeadAddress: String {
@@ -562,6 +625,9 @@ struct NetworkingSessionView: View {
 
     private func combinedLeadNotes(baseNotes: String) -> String? {
         var parts: [String] = []
+        if !normalizedSocialHandle.isEmpty {
+            parts.append("Social: @\(normalizedSocialHandle)")
+        }
         if !baseNotes.isEmpty {
             parts.append(baseNotes)
         }

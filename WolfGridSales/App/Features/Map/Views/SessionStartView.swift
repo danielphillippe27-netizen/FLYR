@@ -4,6 +4,26 @@ private struct SessionRouteAssignmentDetailSheetItem: Identifiable {
     let id: UUID
 }
 
+private struct SessionActionCardStyle: ButtonStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let fill: Color
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .background {
+                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    .fill(fill)
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 24, style: .continuous)
+                            .strokeBorder(.white.opacity(0.12), lineWidth: 1)
+                    }
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: configuration.isPressed)
+    }
+}
+
 struct SessionStartView: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var entitlementsService: EntitlementsService
@@ -58,6 +78,9 @@ struct SessionStartView: View {
                     openCampaign(pre)
                 }
                 await loadData()
+            }
+            .task(id: visibleMapPrefetchKey) {
+                await prefetchVisibleCampaignMaps()
             }
             .navigationDestination(isPresented: $showCampaignMap) {
                 campaignMapDestination
@@ -127,10 +150,9 @@ struct SessionStartView: View {
     private var sessionActionButtons: some View {
         HStack(spacing: 12) {
             quickActionButton(
-                title: "Standard",
-                systemImage: "mappin",
-                assetImage: "StandardPushpin",
-                backgroundColor: .yellow
+                title: "Quick Start",
+                systemImage: "bolt.fill",
+                fill: Color(red: 0.88, green: 0.66, blue: 0.08)
             ) {
                 HapticManager.light()
                 if entitlementsService.canUsePro {
@@ -142,8 +164,8 @@ struct SessionStartView: View {
 
             quickActionButton(
                 title: "Networking",
-                systemImage: "person.2.circle",
-                backgroundColor: .info
+                systemImage: "person.badge.plus",
+                fill: Color(red: 0.10, green: 0.36, blue: 0.72)
             ) {
                 HapticManager.light()
                 showNetworkingSession = true
@@ -152,50 +174,48 @@ struct SessionStartView: View {
             quickActionButton(
                 title: "Join Session",
                 systemImage: "person.2.fill",
-                backgroundColor: .success
+                fill: Color(red: 0.06, green: 0.43, blue: 0.28)
             ) {
                 HapticManager.light()
                 showJoinSessionCodeSheet = true
             }
         }
         .padding(.horizontal)
+        .padding(.top, 8)
+        .padding(.bottom, 8)
     }
 
     private func quickActionButton(
         title: String,
         systemImage: String,
-        assetImage: String? = nil,
-        backgroundColor: Color,
+        fill: Color,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
-            VStack(spacing: 10) {
-                if let assetImage {
-                    Image(assetImage)
-                        .resizable()
-                        .scaledToFit()
-                        .frame(width: 42, height: 42)
-                } else {
-                    Image(systemName: systemImage)
-                        .font(.system(size: 24, weight: .semibold))
-                        .foregroundColor(.black)
-                }
+            VStack(spacing: 9) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 20, weight: .semibold))
+                    .frame(width: 40, height: 40)
+                    .background {
+                        Circle()
+                            .fill(.white.opacity(0.10))
+                            .overlay {
+                                Circle().strokeBorder(.white.opacity(0.16), lineWidth: 1)
+                            }
+                    }
+                    .accessibilityHidden(true)
 
                 Text(title)
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundColor(.black)
+                    .font(.system(size: 14, weight: .semibold))
                     .multilineTextAlignment(.center)
                     .lineLimit(2)
                     .minimumScaleFactor(0.85)
             }
-            .frame(maxWidth: .infinity, minHeight: 104)
-            .padding(.horizontal, 8)
-            .background(
-                RoundedRectangle(cornerRadius: 12)
-                    .fill(backgroundColor)
-            )
+            .foregroundStyle(.white)
+            .padding(.horizontal, 6)
+            .frame(maxWidth: .infinity, minHeight: 96)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(SessionActionCardStyle(fill: fill))
     }
 
     private var campaignList: some View {
@@ -390,6 +410,40 @@ struct SessionStartView: View {
     }
 
     // MARK: - Helpers
+
+    // Include navigation in the task identity: stop scheduling speculative work
+    // as soon as a map opens, while the selected map reuses any in-flight fetch.
+    private var visibleMapPrefetchKey: String {
+        let ids = campaigns.prefix(maxVisibleCampaignItems).map { $0.id.uuidString }.joined(separator: ",")
+        return "\(workspaceContext.workspaceId?.uuidString ?? "none")|\(showCampaignMap)|\(showQuickCampaign)|\(showNetworkingSession)|\(ids)"
+    }
+
+    @MainActor
+    private func prefetchVisibleCampaignMaps() async {
+        guard !showCampaignMap, !showQuickCampaign, !showNetworkingSession else { return }
+        let ids = campaigns.prefix(maxVisibleCampaignItems).map { $0.id.uuidString }
+        // A small rolling window avoids flooding the connection with all campaigns.
+        await withTaskGroup(of: Void.self) { group in
+            var next = ids.makeIterator()
+            for _ in 0..<2 {
+                guard let id = next.next(), !Task.isCancelled else { break }
+                group.addTask {
+                    await CampaignDownloadService.shared.prefetchMapBundleIfNeeded(campaignId: id)
+                }
+            }
+            while await group.next() != nil {
+                guard !Task.isCancelled else {
+                    group.cancelAll()
+                    return
+                }
+                if let id = next.next() {
+                    group.addTask {
+                        await CampaignDownloadService.shared.prefetchMapBundleIfNeeded(campaignId: id)
+                    }
+                }
+            }
+        }
+    }
 
     private func openCampaign(_ campaign: CampaignV2) {
         PerfTrace.event("session_start", "open_campaign", fields: [

@@ -2,6 +2,35 @@ import XCTest
 @testable import WolfGrid
 
 final class CampaignMapModeResolutionTests: XCTestCase {
+    @MainActor
+    func test2DManualPinsRemainModelsBeside3DBuildingsWithoutPromotingRegularAddresses() throws {
+        let manualID = UUID().uuidString.lowercased()
+        let regularID = UUID().uuidString.lowercased()
+        for status in ["no_answer", "talked", "hot_lead", "future_seller", "appointment"] {
+            let input: [String: Any] = ["type": "FeatureCollection", "features": [
+                ["type": "Feature", "id": manualID,
+                 "geometry": ["type": "Point", "coordinates": [-79.38, 43.65]],
+                 "properties": ["id": manualID, "source": "field_manual_pin", "status": status]],
+                ["type": "Feature", "id": regularID,
+                 "geometry": ["type": "Point", "coordinates": [-79.381, 43.65]],
+                 "properties": ["id": regularID, "source": "campaign", "status": "untouched"]]
+            ]]
+            let result = try MapLayerManager.convertAddressPointsToCirclePolygons(
+                JSONSerialization.data(withJSONObject: input))
+            let json = try XCTUnwrap(JSONSerialization.jsonObject(with: result) as? [String: Any])
+            let features = try XCTUnwrap(json["features"] as? [[String: Any]])
+            let manual = try XCTUnwrap(features.first { $0["id"] as? String == manualID })
+            let properties = try XCTUnwrap(manual["properties"] as? [String: Any])
+            XCTAssertEqual((manual["geometry"] as? [String: Any])?["type"] as? String, "Point")
+            XCTAssertEqual(properties["feature_type"] as? String, "manual_pin")
+            XCTAssertEqual(properties["status"] as? String, status)
+            XCTAssertEqual(properties["id"] as? String, manualID)
+            let regular = try XCTUnwrap(features.first { $0["id"] as? String == regularID })
+            XCTAssertEqual((regular["geometry"] as? [String: Any])?["type"] as? String, "Polygon")
+            XCTAssertNil((regular["properties"] as? [String: Any])?["feature_type"])
+        }
+    }
+
     func testStandardAlwaysUsesGoogleBeforeAndDuringSessions() {
         for dataResolved in [false, true] {
             for hasBuildings in [false, true] {
@@ -221,6 +250,11 @@ final class CampaignMapModeResolutionTests: XCTestCase {
         // The 100 m input is clamped to the same 14 m reference used by rendering.
         // Unrelated explicit address IDs must not prevent geometric roof clearance.
         let roofs = try [building(height: 10), building(height: 100)]
+        let allRoofs = roofs + [try building(height: 14, longitude: -79.38012), try building(height: 100, longitude: -79.4)]
+        let relevantRoofs = MapLayerManager.buildingsRelevantToAddressMarkers(addresses: [address], buildings: allRoofs, orderedAddressIdsByBuilding: [:])
+        XCTAssertEqual(relevantRoofs.count, 3)
+        XCTAssertEqual(try MapLayerManager.smartAddressMarkerPointCollection(addresses: [address], buildings: relevantRoofs, orderedAddressIdsByBuilding: [:]),
+                       try MapLayerManager.smartAddressMarkerPointCollection(addresses: [address], buildings: allRoofs, orderedAddressIdsByBuilding: [:]))
         let marker = try properties(MapLayerManager.smartAddressMarkerPointCollection(
             addresses: [address], buildings: roofs, orderedAddressIdsByBuilding: [:]))
         let label = try properties(MapLayerManager.buildAddressNumberLabelPointGeoJSON(

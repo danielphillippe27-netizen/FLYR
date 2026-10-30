@@ -699,6 +699,32 @@ enum OfflineMigrations {
             )
         }
 
+        migrator.registerMigration("campaign_map_content_revision_v1") { db in
+            try db.execute(sql: "CREATE TABLE campaign_map_content_revisions (campaign_id TEXT PRIMARY KEY NOT NULL, revision INTEGER NOT NULL)")
+            let tables = ["cached_buildings", "cached_addresses", "cached_parcels", "cached_roads", "cached_building_address_links", "local_fallback_buildings", "cached_campaign_map_bundles"]
+            for table in tables {
+                for (operation, row) in [("INSERT", "NEW"), ("DELETE", "OLD")] {
+                    try db.execute(sql: """
+                        CREATE TRIGGER revision_\(table)_\(operation.lowercased()) AFTER \(operation) ON \(table)
+                        BEGIN
+                            INSERT INTO campaign_map_content_revisions(campaign_id, revision) VALUES (\(row).campaign_id, 1)
+                            ON CONFLICT(campaign_id) DO UPDATE SET revision = revision + 1;
+                        END
+                        """)
+                }
+                try db.execute(sql: """
+                    CREATE TRIGGER revision_\(table)_update AFTER UPDATE ON \(table)
+                    BEGIN
+                        INSERT INTO campaign_map_content_revisions(campaign_id, revision) VALUES (OLD.campaign_id, 1)
+                        ON CONFLICT(campaign_id) DO UPDATE SET revision = revision + 1;
+                        INSERT INTO campaign_map_content_revisions(campaign_id, revision)
+                        SELECT NEW.campaign_id, 1 WHERE NEW.campaign_id != OLD.campaign_id
+                        ON CONFLICT(campaign_id) DO UPDATE SET revision = revision + 1;
+                    END
+                    """)
+            }
+        }
+
         return migrator
     }
 }

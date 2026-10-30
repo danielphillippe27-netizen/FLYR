@@ -11,6 +11,7 @@ struct QuickStartMapView: View {
     @StateObject private var locationManager = LocationManager()
 
     @State private var createdCampaignId: UUID?
+    @State private var pendingCampaignId: UUID?
     @State private var quickStartInitialCenter: CLLocationCoordinate2D?
     @State private var isPreparingCampaign = false
     @State private var errorMessage: String?
@@ -38,7 +39,6 @@ struct QuickStartMapView: View {
                 if let campaignId = createdCampaignId {
                     CampaignMapView(
                         campaignId: campaignId.uuidString,
-                        quickStartEnabled: true,
                         initialCenter: quickStartInitialCenter
                     )
                 } else {
@@ -51,7 +51,7 @@ struct QuickStartMapView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .navigationTitle("Standard")
+        .navigationTitle("Quick Start")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(createdCampaignId != nil ? .hidden : .visible, for: .navigationBar)
         .task {
@@ -153,7 +153,7 @@ struct QuickStartMapView: View {
                         .frame(width: 320, height: 214)
                         .clipped()
 
-                    Text("Opening Standard")
+                    Text("Opening Quick Start")
                         .font(.flyrTitle2)
                         .fontWeight(.semibold)
 
@@ -184,7 +184,7 @@ struct QuickStartMapView: View {
         hasAttemptedPreparation = true
         isPreparingCampaign = true
         errorMessage = nil
-        quickStartInitialCenter = location.coordinate
+        if pendingCampaignId == nil { quickStartInitialCenter = location.coordinate }
 
         Task {
             let workspaceId = await RoutePlansAPI.shared.resolveWorkspaceId(preferred: WorkspaceContext.shared.workspaceId)
@@ -198,15 +198,25 @@ struct QuickStartMapView: View {
             }
 
             do {
-                let quickStart = try await HomesService.shared.quickStartCampaignForCurrentLocation(
-                    center: location.coordinate,
-                    radiusMeters: radiusMeters,
-                    limitHomes: limitHomes,
-                    workspaceId: workspaceId
+                let campaignId: UUID
+                if let pendingCampaignId {
+                    campaignId = pendingCampaignId
+                } else {
+                    let quickStart = try await HomesService.shared.quickStartCampaignForCurrentLocation(
+                        center: location.coordinate,
+                        radiusMeters: radiusMeters,
+                        limitHomes: limitHomes,
+                        workspaceId: workspaceId
+                    )
+                    campaignId = quickStart.campaign.id
+                    pendingCampaignId = campaignId
+                }
+                try await HomesService.shared.prepareQuickStartCampaignData(
+                    campaignId: campaignId, center: quickStartInitialCenter, radiusMeters: radiusMeters
                 )
                 await MainActor.run {
-                    print("✅ [QuickStart] Campaign ready: \(quickStart.campaign.id) new=\(quickStart.isNew)")
-                    createdCampaignId = quickStart.campaign.id
+                    print("✅ [QuickStart] Campaign ready: \(campaignId)")
+                    createdCampaignId = campaignId
                     isPreparingCampaign = false
                 }
             } catch {

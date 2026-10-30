@@ -145,6 +145,7 @@ struct AddressCaptureMetadata: Sendable {
 struct OfflineDeletedBuildingSnapshot: Sendable {
     let buildingIdentifiers: [String]
     let deletedAddressIds: [String]
+    var pendingSync = false
 }
 
 private struct CachedCampaignRecord: Codable, FetchableRecord, PersistableRecord {
@@ -721,9 +722,45 @@ enum CampaignStatusRevisionChain {
 final class CampaignRepository {
     static let shared = CampaignRepository()
 
-    private let dbQueue = OfflineDatabase.shared.dbQueue
+    private let dbQueue: DatabaseQueue
+    // Access only inside dbQueue closures; map-table triggers invalidate affected campaigns.
+    private var decodedMapBundles: [String: (revision: Int, bundle: OfflineCampaignMapBundle)] = [:]
+    private var decodedMapBundleOrder: [String] = []
+    private let decodedMapBundleLock = NSLock()
 
-    private init() {}
+    private func cachedMapBundle(campaignId: String, revision: Int) -> OfflineCampaignMapBundle? {
+        decodedMapBundleLock.lock(); defer { decodedMapBundleLock.unlock() }
+        guard let cached = decodedMapBundles[campaignId], cached.revision == revision else { return nil }
+        return cached.bundle
+    }
+
+    private func cacheMapBundle(_ bundle: OfflineCampaignMapBundle, campaignId: String, revision: Int) {
+        decodedMapBundleLock.lock(); defer { decodedMapBundleLock.unlock() }
+        decodedMapBundles[campaignId] = (revision, bundle)
+        decodedMapBundleOrder.removeAll { $0 == campaignId }
+        decodedMapBundleOrder.append(campaignId)
+        while decodedMapBundleOrder.count > 2 {
+            decodedMapBundles.removeValue(forKey: decodedMapBundleOrder.removeFirst())
+        }
+    }
+
+
+    private let metadataReadQueue: DatabaseQueue?
+
+    private init() {
+        let queue = OfflineDatabase.shared.dbQueue
+        dbQueue = queue
+        // A short read on its own connection avoids waiting behind unrelated
+        // work queued on the writer. If it cannot open, retain the old path.
+        var configuration = Configuration()
+        configuration.readonly = true
+        metadataReadQueue = try? DatabaseQueue(path: queue.path, configuration: configuration)
+    }
+
+    init(dbQueue: DatabaseQueue, metadataReadQueue: DatabaseQueue? = nil) {
+        self.dbQueue = dbQueue
+        self.metadataReadQueue = metadataReadQueue
+    }
 
     func upsertCampaign(
         id: String,
@@ -814,7 +851,6 @@ final class CampaignRepository {
             let addressCounts = try Self.cachedAddressCounts(db)
 
             let campaigns = campaignRecords.compactMap { record -> CampaignV2? in
-                guard !Self.isQuickStartCampaign(payloadJSON: record.payloadJSON) else { return nil }
                 guard let campaignId = UUID(uuidString: record.id) else { return nil }
                 return Self.cachedCampaign(
                     campaignId: campaignId,
@@ -1005,9 +1041,9 @@ final class CampaignRepository {
                     campaignId: campaignId,
                     sourceId: sourceId,
                     externalId: feature.properties.gersId ?? feature.properties.buildingId,
-                    geometryGeoJSON: OfflineJSONCodec.encode(feature.geometry) ?? "{}",
+                    geometryGeoJSON: OfflineJSONCodec.encodeMapCache(feature.geometry) ?? "{}",
                     propertiesJSON: OfflineJSONCodec.encode(feature.properties),
-                    payloadJSON: OfflineJSONCodec.encode(feature),
+                    payloadJSON: OfflineJSONCodec.encodeMapCache(feature),
                     updatedAt: updatedAt
                 )
                 try record.save(db)
@@ -1018,9 +1054,12 @@ final class CampaignRepository {
     func upsertAddresses(campaignId: String, features: [AddressFeature]) async {
         let updatedAt = OfflineDateCodec.string(from: Date())
         try? await dbQueue.write { db in
+            let pendingLocations = try Self.pendingManualAddressRecords(in: db, campaignId: campaignId)
+            let pendingIds = try Self.pendingAddressMutationIds(in: db, campaignId: campaignId)
             try CachedAddressRecord.filter(Column("campaign_id") == campaignId).deleteAll(db)
             for feature in features {
                 let sourceId = feature.properties.id ?? feature.id ?? UUID().uuidString
+                guard !pendingIds.contains(sourceId.lowercased()) else { continue }
                 let coordinate = feature.geometry.asPoint
                 let formatted = feature.properties.formatted?.trimmingCharacters(in: .whitespacesAndNewlines)
                 let record = CachedAddressRecord(
@@ -1034,11 +1073,73 @@ final class CampaignRepository {
                     postalCode: feature.properties.postalCode,
                     latitude: coordinate?[safe: 1],
                     longitude: coordinate?[safe: 0],
-                    payloadJSON: OfflineJSONCodec.encode(feature),
+                    payloadJSON: OfflineJSONCodec.encodeMapCache(feature),
                     updatedAt: updatedAt
                 )
                 try record.save(db)
             }
+            for record in pendingLocations { try record.save(db) }
+        }
+    }
+
+    private static func pendingManualAddressRecords(in db: Database, campaignId: String) throws -> [CachedAddressRecord] {
+        try CachedAddressRecord.fetchAll(db, sql: """
+            SELECT a.* FROM cached_addresses a
+            WHERE lower(a.campaign_id) = ? AND EXISTS (
+                SELECT 1 FROM sync_outbox o
+                WHERE o.operation IN ('create_manual_address', 'unlink_address_from_building',
+                    'link_address_to_building', 'move_address', 'delete_address', 'delete_manual_address')
+                  AND o.synced_at IS NULL
+                  AND lower(o.entity_id) = lower(a.id)
+            )
+            """, arguments: [campaignId.lowercased()])
+    }
+
+    static func pendingAddressMutationIds(in db: Database, campaignId: String) throws -> Set<String> {
+        Set(try String.fetchAll(db, sql: """
+            SELECT lower(json_extract(CASE WHEN json_valid(payload_json) THEN payload_json ELSE '{}' END, '$.addressId')) FROM sync_outbox
+            WHERE synced_at IS NULL AND json_valid(payload_json)
+              AND operation IN ('create_manual_address', 'unlink_address_from_building',
+                  'link_address_to_building', 'move_address', 'delete_address', 'delete_manual_address')
+              AND lower(json_extract(CASE WHEN json_valid(payload_json) THEN payload_json ELSE '{}' END, '$.campaignId')) = ?
+              AND json_extract(CASE WHEN json_valid(payload_json) THEN payload_json ELSE '{}' END, '$.addressId') IS NOT NULL
+            """, arguments: [campaignId.lowercased()]))
+    }
+
+    func mergingPendingAddressMutations(campaignId: String, into addresses: AddressFeatureCollection) async -> AddressFeatureCollection {
+        (try? await dbQueue.read { db in
+            let pendingIds = try Self.pendingAddressMutationIds(in: db, campaignId: campaignId)
+            let pendingFeatures = try Self.pendingManualAddressRecords(in: db, campaignId: campaignId)
+                .compactMap { OfflineJSONCodec.decode(AddressFeature.self, from: $0.payloadJSON) }
+            return AddressFeatureCollection(type: addresses.type, features:
+                addresses.features.filter { !pendingIds.contains(($0.properties.id ?? $0.id ?? "").lowercased()) } + pendingFeatures)
+        }) ?? addresses
+    }
+
+    /// A stale rendered footprint must reuse an already saved location after
+    /// navigating away and back, rather than manufacture a second address UUID.
+    func cachedBuildingLocation(campaignId: String, buildingId: String) async throws -> CachedBuildingLocation? {
+        try await dbQueue.read { db in
+            let records = try CachedAddressRecord.fetchAll(db, sql: """
+                SELECT a.* FROM cached_addresses a
+                JOIN cached_building_address_links l
+                  ON lower(a.id) = lower(l.campaign_id || ':' || l.address_id)
+                WHERE lower(l.campaign_id) = ? AND lower(l.building_id) = ?
+                ORDER BY a.id
+                """, arguments: [campaignId.lowercased(), buildingId.lowercased()])
+            let ids = records.compactMap { Self.uuidValue(from: $0, campaignId: campaignId) }
+            guard let record = records.first,
+                  let id = Self.uuidValue(from: record, campaignId: campaignId),
+                  let feature = OfflineJSONCodec.decode(AddressFeature.self, from: record.payloadJSON),
+                  let latitude = record.latitude, let longitude = record.longitude else { return nil }
+            let properties = feature.properties
+            return CachedBuildingLocation(response: ManualAddressCreateResponse(
+                address: CampaignAddressResponse(
+                    id: id, houseNumber: properties.houseNumber, streetName: properties.streetName,
+                    formatted: properties.formatted, locality: properties.locality,
+                    region: record.province, postalCode: properties.postalCode, gersId: properties.gersId, buildingGersId: buildingId
+                ), linkedBuildingId: buildingId
+            ), coordinate: CLLocationCoordinate2D(latitude: latitude, longitude: longitude), linkedAddressIds: ids, source: properties.source)
         }
     }
 
@@ -1056,9 +1157,9 @@ final class CampaignRepository {
                     id: cacheScopedId(campaignId: campaignId, entityId: sourceId),
                     campaignId: campaignId,
                     externalId: feature.properties.externalId ?? feature.properties.parcelId,
-                    geometryGeoJSON: OfflineJSONCodec.encode(feature.geometry) ?? "{}",
+                    geometryGeoJSON: OfflineJSONCodec.encodeMapCache(feature.geometry) ?? "{}",
                     propertiesJSON: OfflineJSONCodec.encode(feature.properties),
-                    payloadJSON: OfflineJSONCodec.encode(feature),
+                    payloadJSON: OfflineJSONCodec.encodeMapCache(feature),
                     updatedAt: updatedAt
                 )
                 try record.save(db)
@@ -1071,9 +1172,21 @@ final class CampaignRepository {
         addressId: UUID,
         input: ManualAddressCreateInput
     ) async {
+        try? await persistManualAddressLocally(campaignId: campaignId, addressId: addressId, input: input)
+    }
+
+    /// The map exposes actions only after both the location and its creation
+    /// request are committed together. A failed enqueue cannot leave a usable
+    /// local address that will never exist on the server.
+    func persistManualAddressLocally(
+        campaignId: String,
+        addressId: UUID,
+        input: ManualAddressCreateInput,
+        outboxEntry: OutboxEntry? = nil
+    ) async throws {
         guard CLLocationCoordinate2DIsValid(input.coordinate),
               let geometry = Self.pointGeometry(for: input.coordinate) else {
-            return
+            throw BuildingLinkError.fetchFailed
         }
 
         let trimmedFormatted = input.formatted.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1101,13 +1214,14 @@ final class CampaignRepository {
                 hasBuildingLink: input.buildingId != nil,
                 hasParcelLink: input.hasParcelLink,
                 labelVisibilityMode: input.buildingId == nil ? "address_mode_only" : "all_modes",
+                pinPlacement: input.hasParcelLink == true ? "building_parcel_centroid" : nil,
                 labelAnchorLon: input.coordinate.longitude,
                 labelAnchorLat: input.coordinate.latitude,
                 labelPriority: 95
             )
         )
 
-        try? await dbQueue.write { db in
+        try await dbQueue.write { db in
             let record = CachedAddressRecord(
                 id: cacheScopedId(campaignId: campaignId, entityId: addressId.uuidString),
                 campaignId: campaignId,
@@ -1119,10 +1233,12 @@ final class CampaignRepository {
                 postalCode: input.postalCode,
                 latitude: input.coordinate.latitude,
                 longitude: input.coordinate.longitude,
-                payloadJSON: OfflineJSONCodec.encode(feature),
+                payloadJSON: OfflineJSONCodec.encodeMapCache(feature),
                 updatedAt: updatedAt
             )
             try record.save(db)
+
+            if let outboxEntry { try outboxEntry.insert(db) }
 
             guard let buildingId = input.buildingId?.trimmingCharacters(in: .whitespacesAndNewlines),
                   !buildingId.isEmpty else {
@@ -1223,7 +1339,7 @@ final class CampaignRepository {
                     postalCode: postalCode ?? record.postalCode,
                     latitude: coordinate?.latitude ?? record.latitude,
                     longitude: coordinate?.longitude ?? record.longitude,
-                    payloadJSON: updatedFeature.flatMap { OfflineJSONCodec.encode($0) } ?? record.payloadJSON,
+                    payloadJSON: updatedFeature.flatMap { OfflineJSONCodec.encodeMapCache($0) } ?? record.payloadJSON,
                     updatedAt: updatedAt
                 )
                 try updated.save(db)
@@ -1234,8 +1350,14 @@ final class CampaignRepository {
     func upsertBuildingAddressLinks(campaignId: String, links: [BuildingAddressLink]) async {
         let updatedAt = OfflineDateCodec.string(from: Date())
         try? await dbQueue.write { db in
+            let pendingIds = try Self.pendingAddressMutationIds(in: db, campaignId: campaignId)
+            let protected = try CachedBuildingAddressLinkRecord
+                .filter(Column("campaign_id") == campaignId)
+                .fetchAll(db)
+                .filter { ($0.source ?? "").lowercased().hasPrefix("manual") }
             try CachedBuildingAddressLinkRecord.filter(Column("campaign_id") == campaignId).deleteAll(db)
             for link in links {
+                guard !pendingIds.contains(link.addressId.lowercased()) else { continue }
                 let record = CachedBuildingAddressLinkRecord(
                     id: cacheScopedId(campaignId: campaignId, entityId: "\(link.buildingId.lowercased()):\(link.addressId.lowercased())"),
                     campaignId: campaignId,
@@ -1247,6 +1369,7 @@ final class CampaignRepository {
                 )
                 try record.save(db)
             }
+            for record in protected { try record.save(db) }
         }
     }
 
@@ -1378,7 +1501,7 @@ final class CampaignRepository {
                         postalCode: addressRecord.postalCode,
                         latitude: addressRecord.latitude,
                         longitude: addressRecord.longitude,
-                        payloadJSON: updatedFeature.flatMap { OfflineJSONCodec.encode($0) } ?? addressRecord.payloadJSON,
+                        payloadJSON: updatedFeature.flatMap { OfflineJSONCodec.encodeMapCache($0) } ?? addressRecord.payloadJSON,
                         updatedAt: updatedAt
                     )
                     try updated.save(db)
@@ -1541,17 +1664,7 @@ final class CampaignRepository {
                 let feature = OfflineJSONCodec.decode(AddressFeature.self, from: record.payloadJSON)
                 let updatedFeature: AddressFeature?
                 if let feature {
-                    let updatedProperties = AddressProperties(
-                        id: feature.properties.id,
-                        gersId: feature.properties.gersId,
-                        buildingGersId: normalizedBuildingId,
-                        houseNumber: feature.properties.houseNumber,
-                        streetName: feature.properties.streetName,
-                        postalCode: feature.properties.postalCode,
-                        locality: feature.properties.locality,
-                        formatted: feature.properties.formatted,
-                        source: feature.properties.source
-                    )
+                    let updatedProperties = feature.properties.linkingBuilding(normalizedBuildingId)
                     let geometry = coordinate.flatMap(Self.pointGeometry(for:)) ?? feature.geometry
                     updatedFeature = AddressFeature(
                         type: feature.type,
@@ -1574,7 +1687,7 @@ final class CampaignRepository {
                     postalCode: record.postalCode,
                     latitude: coordinate?.latitude ?? record.latitude,
                     longitude: coordinate?.longitude ?? record.longitude,
-                    payloadJSON: updatedFeature.flatMap { OfflineJSONCodec.encode($0) } ?? record.payloadJSON,
+                    payloadJSON: updatedFeature.flatMap { OfflineJSONCodec.encodeMapCache($0) } ?? record.payloadJSON,
                     updatedAt: updatedAt
                 )
                 try updated.save(db)
@@ -1681,9 +1794,9 @@ final class CampaignRepository {
                 localGeometryId: fallbackId,
                 campaignId: campaignId,
                 addressId: normalizedAddressId,
-                geometryGeoJSON: OfflineJSONCodec.encode(geometry) ?? "{}",
+                geometryGeoJSON: OfflineJSONCodec.encodeMapCache(geometry) ?? "{}",
                 geometrySource: "manual_fallback",
-                payloadJSON: OfflineJSONCodec.encode(feature),
+                payloadJSON: OfflineJSONCodec.encodeMapCache(feature),
                 createdAt: now,
                 updatedAt: now,
                 syncStatus: "pending"
@@ -1757,7 +1870,7 @@ final class CampaignRepository {
                 postalCode: addressRecord.postalCode,
                 latitude: addressRecord.latitude,
                 longitude: addressRecord.longitude,
-                payloadJSON: updatedFeature.flatMap { OfflineJSONCodec.encode($0) } ?? addressRecord.payloadJSON,
+                payloadJSON: updatedFeature.flatMap { OfflineJSONCodec.encodeMapCache($0) } ?? addressRecord.payloadJSON,
                 updatedAt: now
             )
             try updatedAddressRecord.save(db)
@@ -1909,7 +2022,7 @@ final class CampaignRepository {
                         postalCode: record.postalCode,
                         latitude: record.latitude,
                         longitude: record.longitude,
-                        payloadJSON: updatedFeature.flatMap { OfflineJSONCodec.encode($0) } ?? record.payloadJSON,
+                        payloadJSON: updatedFeature.flatMap { OfflineJSONCodec.encodeMapCache($0) } ?? record.payloadJSON,
                         updatedAt: updatedAt
                     )
                     try updated.save(db)
@@ -1996,7 +2109,7 @@ final class CampaignRepository {
                     postalCode: record.postalCode,
                     latitude: coordinate.latitude,
                     longitude: coordinate.longitude,
-                    payloadJSON: movedFeature.flatMap { OfflineJSONCodec.encode($0) } ?? record.payloadJSON,
+                    payloadJSON: movedFeature.flatMap { OfflineJSONCodec.encodeMapCache($0) } ?? record.payloadJSON,
                     updatedAt: updatedAt
                 )
                 try updated.save(db)
@@ -2044,9 +2157,9 @@ final class CampaignRepository {
                     campaignId: record.campaignId,
                     sourceId: record.sourceId,
                     externalId: record.externalId,
-                    geometryGeoJSON: OfflineJSONCodec.encode(geometry) ?? record.geometryGeoJSON,
+                    geometryGeoJSON: OfflineJSONCodec.encodeMapCache(geometry) ?? record.geometryGeoJSON,
                     propertiesJSON: record.propertiesJSON,
-                    payloadJSON: movedFeature.flatMap { OfflineJSONCodec.encode($0) } ?? record.payloadJSON,
+                    payloadJSON: movedFeature.flatMap { OfflineJSONCodec.encodeMapCache($0) } ?? record.payloadJSON,
                     updatedAt: updatedAt
                 )
                 try updated.save(db)
@@ -2249,19 +2362,30 @@ final class CampaignRepository {
         status: AddressStatus,
         notes: String?,
         occurredAt: Date,
-        sessionId: UUID?
-    ) async -> [AddressStatusRow] {
+        sessionId: UUID?,
+        farmExecutionContext: FarmExecutionContext?,
+        makePayload: @escaping ([String: Int]) -> AddressStatusOutboxPayload
+    ) async throws -> [AddressStatusRow] {
         let timestamp = OfflineDateCodec.string(from: occurredAt)
         let campaignIdString = campaignId.uuidString
-        var rows: [AddressStatusRow] = []
 
-        try? await dbQueue.write { db in
+        let queuedAt = Date()
+        return try await dbQueue.write { db in
+            var rows: [AddressStatusRow] = []
+            var baseRevisions: [String: Int] = [:]
+            let transactionTrace = PerfTrace.begin("home_status", "status_transaction_commit")
+            db.afterNextTransaction(onCommit: { _ in transactionTrace.end(status: "committed") },
+                onRollback: { _ in transactionTrace.end(status: "rolled_back") })
+            PerfTrace.event("home_status", "database_queue_wait", fields: ["durationMs": Int(Date().timeIntervalSince(queuedAt) * 1000)])
+            let execution = PerfTrace.begin("home_status", "database_execution")
+            defer { execution.end(status: "finished") }
             for addressId in addressIds {
                 let existing = try CachedAddressStatusRecord
                     .filter(Column("campaign_id") == campaignIdString && Column("address_id") == addressId.uuidString)
                     .fetchOne(db)
                 let createdAt = OfflineDateCodec.date(from: existing?.updatedAt) ?? occurredAt
                 let existingRow = OfflineJSONCodec.decode(AddressStatusRow.self, from: existing?.payloadJSON)
+                baseRevisions[addressId.uuidString.lowercased()] = CampaignStatusRevisionChain.baseRevision(from: existingRow?.revision)
                 let existingVisitCount = existingRow?.visitCount ?? 0
                 let visitCount: Int
                 switch status {
@@ -2304,9 +2428,22 @@ final class CampaignRepository {
                 try record.save(db)
                 rows.append(localRow)
             }
+            let payload = makePayload(baseRevisions)
+            guard let entry = OutboxRepository.makeEntry(
+                entityType: "address_status", entityId: addressIds.map(\.uuidString).joined(separator: ","),
+                operation: .upsertAddressStatus, payload: payload,
+                dependencyKey: farmExecutionContext.map { "farm_touch:" + $0.touchId.uuidString.lowercased() }
+                    ?? "address_status:" + campaignId.uuidString.lowercased() + ":" + addressIds.map { $0.uuidString.lowercased() }.joined(separator: ",")
+            ) else { throw NSError(domain: "OfflineStatus", code: 1, userInfo: [NSLocalizedDescriptionKey: "Could not encode the status sync operation."]) }
+            try entry.insert(db)
+            if let farmExecutionContext, sessionId != nil {
+                for addressId in addressIds {
+                    try FarmOfflineRepository.persistAddressOutcome(in: db, context: farmExecutionContext,
+                        addressId: addressId, status: status, notes: notes, occurredAt: occurredAt, dirty: true)
+                }
+            }
+            return rows
         }
-
-        return rows
     }
 
     func upsertRoads(campaignId: String, corridors: [StreetCorridor]) async {
@@ -2324,7 +2461,7 @@ final class CampaignRepository {
                 let record = CachedRoadRecord(
                     id: cacheScopedId(campaignId: campaignId, entityId: corridor.id ?? "road-\(index)"),
                     campaignId: campaignId,
-                    geometryGeoJSON: OfflineJSONCodec.encode(geometry) ?? "{}",
+                    geometryGeoJSON: OfflineJSONCodec.encodeMapCache(geometry) ?? "{}",
                     propertiesJSON: OfflineJSONCodec.encode(properties),
                     updatedAt: updatedAt
                 )
@@ -2339,6 +2476,8 @@ final class CampaignRepository {
 
         do {
             try await dbQueue.write { db in
+                let pendingLocations = try Self.pendingManualAddressRecords(in: db, campaignId: campaignId)
+                let pendingIds = try Self.pendingAddressMutationIds(in: db, campaignId: campaignId)
                 let existingLinks = try CachedBuildingAddressLinkRecord
                     .filter(Column("campaign_id") == campaignId)
                     .fetchAll(db)
@@ -2372,9 +2511,9 @@ final class CampaignRepository {
                         campaignId: campaignId,
                         sourceId: sourceId,
                         externalId: feature.properties.gersId ?? feature.properties.buildingId,
-                        geometryGeoJSON: OfflineJSONCodec.encode(feature.geometry) ?? "{}",
+                        geometryGeoJSON: OfflineJSONCodec.encodeMapCache(feature.geometry) ?? "{}",
                         propertiesJSON: OfflineJSONCodec.encode(feature.properties),
-                        payloadJSON: OfflineJSONCodec.encode(feature),
+                        payloadJSON: OfflineJSONCodec.encodeMapCache(feature),
                         updatedAt: updatedAt
                     )
                     try record.save(db)
@@ -2382,6 +2521,7 @@ final class CampaignRepository {
 
                 for feature in bundle.addresses.features {
                     let sourceId = feature.properties.id ?? feature.id ?? UUID().uuidString
+                    guard !pendingIds.contains(sourceId.lowercased()) else { continue }
                     let coordinate = feature.geometry.asPoint
                     let formatted = feature.properties.formatted?.trimmingCharacters(in: .whitespacesAndNewlines)
                     let record = CachedAddressRecord(
@@ -2395,11 +2535,13 @@ final class CampaignRepository {
                         postalCode: feature.properties.postalCode,
                         latitude: coordinate?[safe: 1],
                         longitude: coordinate?[safe: 0],
-                        payloadJSON: OfflineJSONCodec.encode(feature),
+                        payloadJSON: OfflineJSONCodec.encodeMapCache(feature),
                         updatedAt: updatedAt
                     )
                     try record.save(db)
                 }
+
+                for record in pendingLocations { try record.save(db) }
 
                 for feature in bundle.parcels.features {
                     let sourceId = feature.properties.parcelId
@@ -2411,9 +2553,9 @@ final class CampaignRepository {
                         id: cacheScopedId(campaignId: campaignId, entityId: sourceId),
                         campaignId: campaignId,
                         externalId: feature.properties.externalId ?? feature.properties.parcelId,
-                        geometryGeoJSON: OfflineJSONCodec.encode(feature.geometry) ?? "{}",
+                        geometryGeoJSON: OfflineJSONCodec.encodeMapCache(feature.geometry) ?? "{}",
                         propertiesJSON: OfflineJSONCodec.encode(feature.properties),
-                        payloadJSON: OfflineJSONCodec.encode(feature),
+                        payloadJSON: OfflineJSONCodec.encodeMapCache(feature),
                         updatedAt: updatedAt
                     )
                     try record.save(db)
@@ -2424,7 +2566,7 @@ final class CampaignRepository {
                     let record = CachedRoadRecord(
                         id: cacheScopedId(campaignId: campaignId, entityId: sourceId),
                         campaignId: campaignId,
-                        geometryGeoJSON: OfflineJSONCodec.encode(feature.geometry) ?? "{}",
+                        geometryGeoJSON: OfflineJSONCodec.encodeMapCache(feature.geometry) ?? "{}",
                         propertiesJSON: OfflineJSONCodec.encode(feature.properties),
                         updatedAt: updatedAt
                     )
@@ -2437,6 +2579,7 @@ final class CampaignRepository {
                     let normalizedBuildingId = link.buildingId.trimmingCharacters(in: .whitespacesAndNewlines)
                     guard !normalizedAddressId.isEmpty,
                           !normalizedBuildingId.isEmpty,
+                          !pendingIds.contains(normalizedAddressId),
                           !protectedAddressIds.contains(normalizedAddressId) else {
                         continue
                     }
@@ -2447,15 +2590,32 @@ final class CampaignRepository {
                     linksByAddress[normalizedAddressId] = link
                 }
 
+                // Index address aliases once. Scanning and decoding the whole campaign
+                // for every link makes map opening quadratic and blocks all cache reads.
+                let addressRecords = try CachedAddressRecord
+                    .filter(Column("campaign_id") == campaignId)
+                    .fetchAll(db)
+                var addressesByCacheId = Dictionary(uniqueKeysWithValues: addressRecords.map { ($0.id, $0) })
+                var cacheIdsByAddressId: [String: [String]] = [:]
+                let scopedPrefix = "\(campaignId.lowercased()):"
+                for record in addressRecords {
+                    let feature = OfflineJSONCodec.decode(AddressFeature.self, from: record.payloadJSON)
+                    let unscopedId = record.id.lowercased().hasPrefix(scopedPrefix)
+                        ? String(record.id.dropFirst(scopedPrefix.count))
+                        : record.id
+                    let aliases = Set([feature?.properties.id, feature?.id, unscopedId]
+                        .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+                        .filter { !$0.isEmpty })
+                    for alias in aliases {
+                        cacheIdsByAddressId[alias, default: []].append(record.id)
+                    }
+                }
+
                 func applyAddressLink(addressId: String, buildingId: String) throws {
                     let normalizedAddressId = addressId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
                     guard !normalizedAddressId.isEmpty else { return }
-                    let addressRecords = try CachedAddressRecord
-                        .filter(Column("campaign_id") == campaignId)
-                        .fetchAll(db)
-                        .filter { Self.record($0, campaignId: campaignId, matchesAddressId: normalizedAddressId) }
-
-                    for addressRecord in addressRecords {
+                    for cacheId in cacheIdsByAddressId[normalizedAddressId] ?? [] {
+                        guard let addressRecord = addressesByCacheId[cacheId] else { continue }
                         let feature = OfflineJSONCodec.decode(AddressFeature.self, from: addressRecord.payloadJSON)
                         let updatedFeature = feature.map {
                             AddressFeature(
@@ -2486,10 +2646,11 @@ final class CampaignRepository {
                             postalCode: addressRecord.postalCode,
                             latitude: addressRecord.latitude,
                             longitude: addressRecord.longitude,
-                            payloadJSON: updatedFeature.flatMap { OfflineJSONCodec.encode($0) } ?? addressRecord.payloadJSON,
+                            payloadJSON: updatedFeature.flatMap { OfflineJSONCodec.encodeMapCache($0) } ?? addressRecord.payloadJSON,
                             updatedAt: updatedAt
                         )
                         try updated.save(db)
+                        addressesByCacheId[cacheId] = updated
                     }
                 }
 
@@ -2519,7 +2680,7 @@ final class CampaignRepository {
                     sourceVersion: bundle.sourceVersion,
                     displayModeHint: bundle.displayModeHint,
                     linksStatus: bundle.linksStatus,
-                    countsJSON: bundle.counts.flatMap { OfflineJSONCodec.encode($0) },
+                    countsJSON: bundle.tileMetadataCountsJSON,
                     layerFetchedAtJSON: bundle.layerFetchedAt.flatMap { OfflineJSONCodec.encode($0) },
                     reconciliationJSON: bundle.reconciliation.flatMap { OfflineJSONCodec.encode($0) },
                     reconciliationReportJSON: bundle.reconciliationReport.flatMap { OfflineJSONCodec.encode($0) },
@@ -2624,8 +2785,207 @@ final class CampaignRepository {
         }) ?? false
     }
 
+    private static func mapContentRevision(_ db: Database, campaignId: String) throws -> Int {
+        try Int.fetchOne(db, sql: "SELECT revision FROM campaign_map_content_revisions WHERE campaign_id = ?", arguments: [campaignId]) ?? 0
+    }
+
+    private struct MapBundleRecordSnapshot: @unchecked Sendable {
+        let revision: Int
+        let buildingRecords: [CachedBuildingRecord]
+        let fallbackRecords: [LocalFallbackBuildingRecord]
+        let addressRecords: [CachedAddressRecord]
+        let linkRecords: [CachedBuildingAddressLinkRecord]
+        let roadRecords: [CachedRoadRecord]
+        let parcelRecords: [CachedParcelRecord]
+        let metadataRecord: CachedCampaignMapBundleRecord?
+    }
+
+    private enum MapBundleRead: @unchecked Sendable {
+        case cached(OfflineCampaignMapBundle)
+        case snapshot(MapBundleRecordSnapshot)
+    }
+
     func getCampaignMapBundle(campaignId: String) async -> OfflineCampaignMapBundle? {
+        let trace = PerfTrace.begin("campaign_open", "local_map_snapshot", fields: ["campaign": campaignId])
+        let readTrace = PerfTrace.begin("campaign_open", "local_map_database_read", fields: ["campaign": campaignId])
+        let readQueue = metadataReadQueue ?? dbQueue
+        func readSnapshot(on queue: DatabaseQueue) async throws -> MapBundleRead? {
+        try await queue.read { db in
+            let revision = try Self.mapContentRevision(db, campaignId: campaignId)
+            if let cached = self.cachedMapBundle(campaignId: campaignId, revision: revision) {
+                return .cached(cached)
+            }
+            let buildings = try CachedBuildingRecord.filter(Column("campaign_id") == campaignId).fetchAll(db)
+            let fallbacks = try LocalFallbackBuildingRecord.filter(Column("campaign_id") == campaignId).fetchAll(db)
+            let addresses = try CachedAddressRecord.filter(Column("campaign_id") == campaignId).fetchAll(db)
+            let links = try CachedBuildingAddressLinkRecord.filter(Column("campaign_id") == campaignId).fetchAll(db)
+            let roads = try CachedRoadRecord.filter(Column("campaign_id") == campaignId).fetchAll(db)
+            let parcels = try CachedParcelRecord.filter(Column("campaign_id") == campaignId).fetchAll(db)
+            let metadata = try CachedCampaignMapBundleRecord.filter(Column("campaign_id") == campaignId).fetchOne(db)
+            guard !buildings.isEmpty || !addresses.isEmpty || !parcels.isEmpty || !roads.isEmpty else { return nil }
+            return .snapshot(MapBundleRecordSnapshot(revision: revision, buildingRecords: buildings,
+                fallbackRecords: fallbacks, addressRecords: addresses, linkRecords: links,
+                roadRecords: roads, parcelRecords: parcels, metadataRecord: metadata))
+        }
+        }
+        let read: MapBundleRead?
+        do { read = try await readSnapshot(on: readQueue) }
+        catch { read = try? await readSnapshot(on: dbQueue) }
+        readTrace.end(status: read == nil ? "missing" : "ready")
+        guard let read else {
+            trace.end(status: "missing")
+            return nil
+        }
+        switch read {
+        case .cached(let bundle):
+            trace.end(status: "memory_cache")
+            return bundle
+        case .snapshot(let snapshot):
+            let bundle = await Task.detached(priority: .userInitiated) {
+                Self.decodeMapBundleSnapshot(snapshot)
+            }.value
+            // A write during decoding may have changed the map. Never publish a
+            // stale snapshot: fall back to the original serialized read in that case.
+            let committed = (try? await readQueue.read { db -> Bool in
+                guard try Self.mapContentRevision(db, campaignId: campaignId) == snapshot.revision else { return false }
+                self.cacheMapBundle(bundle, campaignId: campaignId, revision: snapshot.revision)
+                return true
+            }) ?? false
+            if committed {
+                trace.end(status: "decoded_off_queue")
+                return bundle
+            }
+            let fresh = await getCampaignMapBundleLocked(campaignId: campaignId)
+            trace.end(status: "concurrent_write_serialized_retry")
+            return fresh
+        }
+    }
+
+    /// Decode small batches with one decoder while retaining the row-by-row
+    /// fallback for legacy records or an invalid payload.
+    private static func decodeCachedBatch<Record, Feature: Decodable>(
+        _ records: ArraySlice<Record>, payload: (Record) -> String?, fallback: (Record) -> Feature?
+    ) -> [Feature] {
+        let batchSize = 256
+        var result: [Feature] = []
+        result.reserveCapacity(records.count)
+        var start = records.startIndex
+        while start < records.endIndex {
+            let end = min(start + batchSize, records.endIndex)
+            let batch = records[start..<end]
+            let payloads = batch.compactMap(payload)
+            if payloads.count == batch.count,
+               let data = ("[" + payloads.joined(separator: ",") + "]").data(using: .utf8),
+               let decoded = try? JSONDecoder.supabaseDates.decode([Feature].self, from: data),
+               decoded.count == batch.count {
+                result.append(contentsOf: decoded)
+            } else {
+                result.append(contentsOf: batch.compactMap(fallback))
+            }
+            start = end
+        }
+        return result
+    }
+
+    private static func decodeMapBundleSnapshot(_ snapshot: MapBundleRecordSnapshot) -> OfflineCampaignMapBundle {
+        let buildingRecords = snapshot.buildingRecords
+        let fallbackRecords = snapshot.fallbackRecords
+        let addressRecords = snapshot.addressRecords
+        let linkRecords = snapshot.linkRecords
+        let roadRecords = snapshot.roadRecords
+        let parcelRecords = snapshot.parcelRecords
+        let metadataRecord = snapshot.metadataRecord
+        var buildings: [BuildingFeature] = []
+        var addresses: [AddressFeature] = []
+        var parcels: [ParcelFeature] = []
+        let decodeTrace = PerfTrace.begin("campaign_open", "local_map_decode", fields: [
+            "buildings": buildingRecords.count, "addresses": addressRecords.count, "parcels": parcelRecords.count
+        ])
+        if buildingRecords.count + addressRecords.count + parcelRecords.count >= 3_000 {
+            // Split each independent collection into ordered chunks. A large
+            // parcel collection no longer leaves the other decode workers idle.
+            let chunksPerKind = 2
+            let resultLock = NSLock()
+            var buildingChunks = [[BuildingFeature]?](repeating: nil, count: chunksPerKind)
+            var addressChunks = [[AddressFeature]?](repeating: nil, count: chunksPerKind)
+            var parcelChunks = [[ParcelFeature]?](repeating: nil, count: chunksPerKind)
+            func bounds(_ count: Int, _ chunk: Int) -> Range<Int> {
+                (count * chunk / chunksPerKind)..<(count * (chunk + 1) / chunksPerKind)
+            }
+            DispatchQueue.concurrentPerform(iterations: chunksPerKind * 3) { index in
+                let chunk = index % chunksPerKind
+                switch index / chunksPerKind {
+                case 0:
+                    let result: [BuildingFeature] = Self.decodeCachedBatch(buildingRecords[bounds(buildingRecords.count, chunk)], payload: { $0.payloadJSON }, fallback: Self.decodeCachedBuildingFeature(from:))
+                    resultLock.lock(); buildingChunks[chunk] = result; resultLock.unlock()
+                case 1:
+                    let result: [AddressFeature] = Self.decodeCachedBatch(addressRecords[bounds(addressRecords.count, chunk)], payload: { $0.payloadJSON }, fallback: { OfflineJSONCodec.decode(AddressFeature.self, from: $0.payloadJSON) })
+                    resultLock.lock(); addressChunks[chunk] = result; resultLock.unlock()
+                default:
+                    let result: [ParcelFeature] = Self.decodeCachedBatch(parcelRecords[bounds(parcelRecords.count, chunk)], payload: { $0.payloadJSON }, fallback: Self.decodeCachedParcelFeature(from:))
+                    resultLock.lock(); parcelChunks[chunk] = result; resultLock.unlock()
+                }
+            }
+            buildings = buildingChunks.flatMap { $0 ?? [] }
+            addresses = addressChunks.flatMap { $0 ?? [] }
+            parcels = parcelChunks.flatMap { $0 ?? [] }
+        } else {
+            buildings = buildingRecords.compactMap(Self.decodeCachedBuildingFeature(from:))
+            addresses = addressRecords.compactMap { OfflineJSONCodec.decode(AddressFeature.self, from: $0.payloadJSON) }
+            parcels = parcelRecords.compactMap(Self.decodeCachedParcelFeature(from:))
+        }
+        decodeTrace.end()
+        let fallbackBuildings = fallbackRecords.compactMap(Self.decodeLocalFallbackBuildingFeature(from:))
+        var seenBuildingIds = Set(buildings.compactMap { ($0.id ?? $0.properties.canonicalBuildingIdentifier)?.lowercased() })
+        let mergedBuildings = buildings + fallbackBuildings.filter { feature in
+            let identifier = (feature.id ?? feature.properties.canonicalBuildingIdentifier ?? feature.properties.id).lowercased()
+            return seenBuildingIds.insert(identifier).inserted
+        }
+        let linkTrace = PerfTrace.begin("campaign_open", "local_map_merge_links", fields: ["links": linkRecords.count])
+        let linkedBundle = Self.mergeCachedBuildingAddressLinks(
+            linkRecords,
+            buildings: mergedBuildings,
+            addresses: addresses
+        )
+        linkTrace.end()
+        let roads = roadRecords.compactMap { record -> RoadFeature? in
+            guard let geometry = OfflineJSONCodec.decode(MapFeatureGeoJSONGeometry.self, from: record.geometryGeoJSON),
+                  let properties = OfflineJSONCodec.decode(RoadProperties.self, from: record.propertiesJSON) else {
+                return nil
+            }
+            return RoadFeature(
+                type: "Feature",
+                id: properties.id ?? record.id,
+                geometry: geometry,
+                properties: properties
+            )
+        }
+
+        let bundle = OfflineCampaignMapBundle(
+            buildings: BuildingFeatureCollection(type: "FeatureCollection", features: linkedBundle.buildings),
+            addresses: AddressFeatureCollection(type: "FeatureCollection", features: linkedBundle.addresses),
+            parcels: ParcelFeatureCollection(type: "FeatureCollection", features: parcels),
+            roads: RoadFeatureCollection(type: "FeatureCollection", features: roads),
+            addressOrphans: metadataRecord?.addressOrphansJSON.flatMap {
+                OfflineJSONCodec.decode([AnyCodable].self, from: $0)
+            } ?? [],
+            buildingOrphans: metadataRecord?.buildingOrphansJSON.flatMap {
+                OfflineJSONCodec.decode([AnyCodable].self, from: $0)
+            } ?? [],
+            buildingUnits: metadataRecord?.buildingUnitsJSON.flatMap {
+                OfflineJSONCodec.decode([CanonicalTownhouseUnit].self, from: $0)
+            } ?? [],
+            metadata: metadataRecord?.metadata
+        )
+        return bundle
+    }
+
+    private func getCampaignMapBundleLocked(campaignId: String) async -> OfflineCampaignMapBundle? {
         try? await dbQueue.read { db in
+            let revision = try Self.mapContentRevision(db, campaignId: campaignId)
+            if let cached = self.cachedMapBundle(campaignId: campaignId, revision: revision) {
+                return cached
+            }
             let buildingRecords = try CachedBuildingRecord
                 .filter(Column("campaign_id") == campaignId)
                 .fetchAll(db)
@@ -2652,63 +3012,32 @@ final class CampaignRepository {
                 return nil
             }
 
-            let buildings = buildingRecords.compactMap { record in
-                Self.decodeCachedBuildingFeature(from: record)
-            }
-            let fallbackBuildings = fallbackRecords.compactMap(Self.decodeLocalFallbackBuildingFeature(from:))
-            var seenBuildingIds = Set(buildings.compactMap { ($0.id ?? $0.properties.canonicalBuildingIdentifier)?.lowercased() })
-            let mergedBuildings = buildings + fallbackBuildings.filter { feature in
-                let identifier = (feature.id ?? feature.properties.canonicalBuildingIdentifier ?? feature.properties.id).lowercased()
-                return seenBuildingIds.insert(identifier).inserted
-            }
-            let addresses = addressRecords.compactMap { record in
-                OfflineJSONCodec.decode(AddressFeature.self, from: record.payloadJSON)
-            }
-            let parcels = parcelRecords.compactMap(Self.decodeCachedParcelFeature(from:))
-            let linkedBundle = Self.mergeCachedBuildingAddressLinks(
-                linkRecords,
-                buildings: mergedBuildings,
-                addresses: addresses
-            )
-            let roads = roadRecords.compactMap { record -> RoadFeature? in
-                guard let geometry = OfflineJSONCodec.decode(MapFeatureGeoJSONGeometry.self, from: record.geometryGeoJSON),
-                      let properties = OfflineJSONCodec.decode(RoadProperties.self, from: record.propertiesJSON) else {
-                    return nil
-                }
-                return RoadFeature(
-                    type: "Feature",
-                    id: properties.id ?? record.id,
-                    geometry: geometry,
-                    properties: properties
-                )
-            }
-
-            return OfflineCampaignMapBundle(
-                buildings: BuildingFeatureCollection(type: "FeatureCollection", features: linkedBundle.buildings),
-                addresses: AddressFeatureCollection(type: "FeatureCollection", features: linkedBundle.addresses),
-                parcels: ParcelFeatureCollection(type: "FeatureCollection", features: parcels),
-                roads: RoadFeatureCollection(type: "FeatureCollection", features: roads),
-                addressOrphans: metadataRecord?.addressOrphansJSON.flatMap {
-                    OfflineJSONCodec.decode([AnyCodable].self, from: $0)
-                } ?? [],
-                buildingOrphans: metadataRecord?.buildingOrphansJSON.flatMap {
-                    OfflineJSONCodec.decode([AnyCodable].self, from: $0)
-                } ?? [],
-                buildingUnits: metadataRecord?.buildingUnitsJSON.flatMap {
-                    OfflineJSONCodec.decode([CanonicalTownhouseUnit].self, from: $0)
-                } ?? [],
-                metadata: metadataRecord?.metadata
-            )
+            let bundle = Self.decodeMapBundleSnapshot(MapBundleRecordSnapshot(
+                revision: revision, buildingRecords: buildingRecords, fallbackRecords: fallbackRecords,
+                addressRecords: addressRecords, linkRecords: linkRecords, roadRecords: roadRecords,
+                parcelRecords: parcelRecords, metadataRecord: metadataRecord
+            ))
+            self.cacheMapBundle(bundle, campaignId: campaignId, revision: revision)
+            return bundle
         }
     }
 
     func getCampaignMapBundleMetadata(campaignId: String) async -> CachedCampaignMapBundleMetadata? {
-        try? await dbQueue.read { db in
-            try CachedCampaignMapBundleRecord
-                .filter(Column("campaign_id") == campaignId)
-                .fetchOne(db)?
-                .metadata
+        func read(_ queue: DatabaseQueue) async throws -> CachedCampaignMapBundleMetadata? {
+            try await queue.read { db in
+                let trace = PerfTrace.begin("campaign_open", "local_metadata_query", fields: ["campaign": campaignId])
+                defer { trace.end() }
+                return try CachedCampaignMapBundleRecord
+                    .filter(Column("campaign_id") == campaignId)
+                    .fetchOne(db)?
+                    .metadata
+            }
         }
+        if let metadataReadQueue {
+            do { if let metadata = try await read(metadataReadQueue) { return metadata } }
+            catch { /* Fall back to the main queue if the reader is unavailable. */ }
+        }
+        return try? await read(dbQueue)
     }
 
     private static func mergeCachedBuildingAddressLinks(
@@ -2818,11 +3147,15 @@ final class CampaignRepository {
         return (updatedBuildings, updatedAddresses)
     }
 
-    func getStatuses(campaignId: UUID) async -> [UUID: AddressStatusRow] {
-        (try? await dbQueue.read { db in
-            let records = try CachedAddressStatusRecord
+    func getStatuses(campaignId: UUID, addressIds: [UUID]? = nil) async -> [UUID: AddressStatusRow] {
+        if let addressIds, addressIds.isEmpty { return [:] }
+        return (try? await dbQueue.read { db in
+            var request = CachedAddressStatusRecord
                 .filter(Column("campaign_id") == campaignId.uuidString)
-                .fetchAll(db)
+            if let addressIds {
+                request = request.filter(addressIds.map(\.uuidString).contains(Column("address_id")))
+            }
+            let records = try request.fetchAll(db)
 
             var rows: [UUID: AddressStatusRow] = [:]
             for record in records {
@@ -3187,7 +3520,8 @@ final class CampaignRepository {
             dataQuality: stringValue(payload["data_quality"]).flatMap(CampaignDataQuality.init(rawValue:))
                 ?? stringValue(payload["dataQuality"]).flatMap(CampaignDataQuality.init(rawValue:)),
             standardModeRecommended: boolValue(payload["standard_mode_recommended"]) ?? boolValue(payload["standardModeRecommended"]),
-            dataQualityReason: stringValue(payload["data_quality_reason"]) ?? stringValue(payload["dataQualityReason"])
+            dataQualityReason: stringValue(payload["data_quality_reason"]) ?? stringValue(payload["dataQualityReason"]),
+            tags: stringValue(payload["tags"])
         )
     }
 

@@ -14,6 +14,7 @@ struct BottomActionBar: View {
     @Binding var statsExpanded: Bool
     @Binding var isExpanded: Bool
     @Binding var satelliteMapEnabled: Bool
+    var coverageMode: Binding<Bool>? = nil
     var hideParcels: Binding<Bool>? = nil
     var use2DMap: Binding<Bool>? = nil
     var menuVariant: MenuVariant = .campaign
@@ -159,6 +160,17 @@ struct BottomActionBar: View {
 
                             Divider()
                                 .overlay(dividerColor)
+                        }
+
+                        if let coverageMode {
+                            toggleRow(
+                                title: "Coverage Mode",
+                                subtitle: "Show untouched homes in red and covered homes in green.",
+                                systemImage: "chart.pie.fill",
+                                tint: defaultIconTint,
+                                isOn: coverageMode
+                            )
+                            Divider().overlay(dividerColor)
                         }
 
                         toggleRow(

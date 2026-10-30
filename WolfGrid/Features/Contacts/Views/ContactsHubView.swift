@@ -342,7 +342,7 @@ struct ContactsHubView: View {
                             }
                         )
                         Divider()
-                            .padding(.leading, 56)
+                            .padding(.leading, 64)
                     }
                 }
                 .padding(.bottom, 24)

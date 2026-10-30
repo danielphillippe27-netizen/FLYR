@@ -9,6 +9,7 @@ struct SalespersonMainTabView: View {
     @ObservedObject private var workspace = WorkspaceContext.shared
     @EnvironmentObject private var uiState: AppUIState
     @Environment(\.scenePhase) private var scenePhase
+    @State private var visitedTabs: Set<Int> = [0]
 
     private enum Tab: Int {
         case home = 0
@@ -21,20 +22,12 @@ struct SalespersonMainTabView: View {
     var body: some View {
         VStack(spacing: 0) {
             SharedActiveCallBanner()
-            Group {
-                switch uiState.selectedTabIndex {
-                case Tab.home.rawValue:
-                    SalespersonHomeView()
-                case Tab.inbox.rawValue:
-                    SalespersonCommunicationsView()
-                case Tab.contacts.rawValue:
-                    SalespersonLeadsView(mode: .contacts)
-                case Tab.dialler.rawValue:
-                    SalespersonDiallerView()
-                case Tab.followUp.rawValue:
-                    SalespersonFollowUpHubView()
-                default:
-                    SalespersonHomeView()
+            ZStack {
+                ForEach(visitedTabs.sorted(), id: \.self) { index in
+                    tabContent(index)
+                        .opacity(uiState.selectedTabIndex == index ? 1 : 0)
+                        .allowsHitTesting(uiState.selectedTabIndex == index)
+                        .accessibilityHidden(uiState.selectedTabIndex != index)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -44,6 +37,7 @@ struct SalespersonMainTabView: View {
                     selectedIndex: uiState.selectedTabIndex,
                     onSelect: { index in
                         HapticManager.tabSwitch()
+                        visitedTabs.insert(index)
                         uiState.selectedTabIndex = index
                     },
                     onCreate: {},
@@ -57,6 +51,7 @@ struct SalespersonMainTabView: View {
         .background(Color.bg)
         .onAppear {
             normalizeSelectedTab()
+            visitedTabs.insert(uiState.selectedTabIndex)
             uiState.showTabBar = true
             Task {
                 await SalespersonVoiceCallService.shared.refreshRegistrationIfNeeded()
@@ -64,6 +59,7 @@ struct SalespersonMainTabView: View {
         }
         .onChange(of: uiState.selectedTabIndex) { _, _ in
             normalizeSelectedTab()
+            visitedTabs.insert(uiState.selectedTabIndex)
         }
         .onChange(of: scenePhase) { _, phase in
             guard phase == .active else { return }
@@ -71,6 +67,25 @@ struct SalespersonMainTabView: View {
                 await PushRegistrationService.shared.uploadPendingTokenIfPossible()
                 await SalespersonVoiceCallService.shared.refreshRegistrationIfNeeded()
             }
+        }
+    }
+
+    // Keep visited screens and their data alive; initialize each screen only when opened.
+    @ViewBuilder
+    private func tabContent(_ index: Int) -> some View {
+        switch index {
+        case Tab.home.rawValue:
+            SalespersonHomeView()
+        case Tab.inbox.rawValue:
+            SalespersonCommunicationsView()
+        case Tab.contacts.rawValue:
+            SalespersonLeadsView(mode: .contacts)
+        case Tab.dialler.rawValue:
+            SalespersonDiallerView()
+        case Tab.followUp.rawValue:
+            SalespersonFollowUpHubView()
+        default:
+            SalespersonHomeView()
         }
     }
 

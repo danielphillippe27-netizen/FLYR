@@ -70,7 +70,6 @@ actor AppleCalendarService {
         try eventStore.save(event, span: .thisEvent, commit: true)
     }
 
-    #if !WOLFGRID_SALES
     func fetchItems(start: Date, end: Date) async -> [CalendarItem] {
         guard currentAccessState() == .fullAccess else { return [] }
 
@@ -86,8 +85,6 @@ actor AppleCalendarService {
                 return lhs.startAt < rhs.startAt
             }
     }
-
-    #endif
 
     private func requestFullAccessToEvents() async throws -> Bool {
         try await withCheckedThrowingContinuation { continuation in
@@ -122,7 +119,6 @@ actor AppleCalendarService {
         }
     }
 
-    #if !WOLFGRID_SALES
     private func makeCalendarItem(from event: EKEvent) -> CalendarItem {
         let externalId = event.eventIdentifier ?? "\(event.calendarItemIdentifier)-\(event.startDate.timeIntervalSince1970)"
         let calendarName = event.calendar.title.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -148,8 +144,6 @@ actor AppleCalendarService {
             address: location?.nilIfEmpty ?? calendarName.nilIfEmpty
         )
     }
-
-    #endif
 
     private func accessState(for status: EKAuthorizationStatus) -> AppleCalendarAccessState {
         switch status {

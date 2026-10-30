@@ -1,8 +1,10 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import { sendCallDigit } from '@/lib/dialer/dtmf';
 
 type VoiceConnectionLike = {
+  sendDigits?: (digit: string) => void;
   disconnect: () => void;
   getLocalStream?: () => MediaStream | undefined;
   mute: (shouldMute?: boolean) => void;
@@ -42,6 +44,7 @@ type TelnyxCallLike = {
     telnyxLegId?: string;
   };
   answer?: (params?: { video?: boolean }) => Promise<void>;
+  dtmf?: (digit: string) => void;
   hangup: () => Promise<void>;
   muteAudio: () => void;
   unmuteAudio: () => void;
@@ -1116,6 +1119,18 @@ export function useDialerDevice() {
     setIsMuted(nextMuted);
   };
 
+  const sendDtmf = (digit: string): boolean => {
+    if (callPhase !== 'connected') return false;
+    try {
+      const provider = providerRef.current;
+      sendCallDigit(provider, provider === 'telnyx' ? telnyxCallRef.current : connectionRef.current, digit);
+      return true;
+    } catch (error) {
+      setDeviceError(error instanceof Error ? error.message : 'Could not send keypad tone.');
+      return false;
+    }
+  };
+
   const resetEndedPhase = () => {
     if (callPhase === 'ended') {
       setCallPhase('idle');
@@ -1148,6 +1163,7 @@ export function useDialerDevice() {
     rejectIncomingCall,
     hangUp,
     toggleMute,
+    sendDtmf,
     resetEndedPhase,
     isReady: setupState === 'ready',
     isConnecting: callPhase === 'connecting',

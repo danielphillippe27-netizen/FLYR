@@ -19,6 +19,7 @@ export type PlacesApiPlace = {
   internationalPhoneNumber?: string;
   googleMapsUri?: string;
   primaryType?: string;
+  types?: string[];
   primaryTypeDisplayName?: PlacesDisplayText;
   businessStatus?: string;
 };
@@ -256,6 +257,46 @@ function uniqueNormalizedTerms(terms: string[]): string[] {
 
 function includesAny(value: string, needles: string[]): boolean {
   return needles.some((needle) => value.includes(needle));
+}
+
+const ROOFING_CONTRACTOR_TERMS = [
+  'roofers',
+  'roofing contractor',
+  'roof repair contractor',
+  'roof replacement contractor',
+  'residential roofing contractor',
+  'commercial roofing contractor',
+  'flat roofing contractor',
+  'metal roofing contractor',
+];
+
+const SUPPLIER_WORDS = /\b(supply|supplies|supplier|suppliers|distributor|distributors|distribution|wholesale|wholesaler|wholesalers|manufacturer|manufacturers|manufacturing)\b/;
+const SUPPLIER_PRIMARY_TYPES = new Set([
+  'building_materials_store', 'hardware_store', 'home_improvement_store',
+  'home_goods_store', 'warehouse_store', 'wholesaler', 'store',
+]);
+
+function isRoofingContractorSearch(options: PlacesLeadSearchOptions): boolean {
+  const industry = normalizeText(options.industry);
+  return (!options.leadIntent || options.leadIntent === 'generic')
+    && /\b(roof|roofs|roofer|roofers|roofing)\b/.test(industry)
+    && !SUPPLIER_WORDS.test(industry);
+}
+
+function searchPlaceType(options: PlacesLeadSearchOptions): string | undefined {
+  return isRoofingContractorSearch(options) ? 'roofing_contractor' : options.includedType?.trim();
+}
+
+function matchesRoofingContractorSearch(place: PlacesApiPlace, options: PlacesLeadSearchOptions): boolean {
+  if (!isRoofingContractorSearch(options)) return true;
+  if (place.businessStatus && place.businessStatus !== 'OPERATIONAL') return false;
+  const businessDescription = normalizeText(`${place.displayName?.text ?? ''} ${place.primaryTypeDisplayName?.text ?? ''}`);
+  if (SUPPLIER_WORDS.test(businessDescription)) return false;
+  if (place.primaryType && SUPPLIER_PRIMARY_TYPES.has(place.primaryType)) return false;
+  // Use Google's categories as evidence, never the search phrase itself.
+  return place.primaryType === 'roofing_contractor'
+    || Boolean(place.types?.includes('roofing_contractor'))
+    || normalizeText(place.primaryTypeDisplayName?.text ?? '') === 'roofing contractor';
 }
 
 function inferRelatedIndustryTerms(industry: string): string[] {
@@ -759,8 +800,7 @@ function buildQueries(options: PlacesLeadSearchOptions): LeadSearchQuery[] {
                 ...(options.relatedTerms ?? []),
               ]).slice(0, MAX_AUTO_QUERY_TERMS)
         : uniqueNormalizedTerms([
-            industry,
-            ...inferRelatedIndustryTerms(industry),
+            ...(isRoofingContractorSearch(options) ? ROOFING_CONTRACTOR_TERMS : [industry, ...inferRelatedIndustryTerms(industry)]),
             ...(options.relatedTerms ?? []),
           ]).slice(0, MAX_AUTO_QUERY_TERMS);
 
@@ -799,7 +839,8 @@ function serializeLegacyPlace(
     internationalPhoneNumber: place.international_phone_number,
     googleMapsUri: place.url ?? googleMapsUrlFromPlaceId(placeId),
     primaryType: place.types?.[0],
-    primaryTypeDisplayName: { text: legacyTypeLabel(place.types) || query.industry },
+    types: place.types,
+    primaryTypeDisplayName: { text: legacyTypeLabel(place.types) },
     businessStatus: place.business_status,
   };
 }
@@ -884,7 +925,7 @@ async function callLegacyPlacesSearch(
           query: query.textQuery,
           language: options.languageCode ?? 'en',
           region: countryCode,
-          type: options.includedType?.trim(),
+          type: searchPlaceType(options),
           pagetoken: pageToken,
         })
       );
@@ -906,7 +947,8 @@ async function callLegacyPlacesSearch(
     if (!pageToken) break;
   }
 
-  const withDetails = await Promise.all(results.map((place) => callLegacyPlaceDetails(options, query, place)));
+  const relevantResults = results.filter((place) => matchesRoofingContractorSearch(serializeLegacyPlace(place, query), options));
+  const withDetails = await Promise.all(relevantResults.map((place) => callLegacyPlaceDetails(options, query, place)));
 
   return withDetails.map((place) => serializeLegacyPlace(place, query));
 }
@@ -927,8 +969,9 @@ async function callPlacesSearch(
   const countryCode = options.countryCode?.trim().toUpperCase();
   if (countryCode) baseBody.regionCode = countryCode;
 
-  const includedType = options.includedType?.trim();
+  const includedType = searchPlaceType(options);
   if (includedType) baseBody.includedType = includedType;
+  if (isRoofingContractorSearch(options)) baseBody.strictTypeFiltering = true;
 
   const places: PlacesApiPlace[] = [];
   let pageToken: string | undefined;
@@ -954,6 +997,7 @@ async function callPlacesSearch(
           'places.internationalPhoneNumber',
           'places.googleMapsUri',
           'places.primaryType',
+          'places.types',
           'places.primaryTypeDisplayName',
           'places.businessStatus',
           'nextPageToken',
@@ -1132,6 +1176,7 @@ export async function searchGooglePlacesLeadsForJobSignals(
 
     rawResultCount += places.length;
     const candidates = places
+      .filter((place) => matchesRoofingContractorSearch(place, options))
       .map((place) => {
         const prospect = serializeLead(place, {
           city: query.city,
@@ -1211,6 +1256,7 @@ export async function searchGooglePlacesLeads(
     rawResultCount += places.length;
 
     for (const place of places) {
+      if (!matchesRoofingContractorSearch(place, options)) continue;
       const prospect = serializeLead(place, query, options);
       if (!prospect.name) continue;
       if (!shouldKeepLead(prospect, options)) continue;

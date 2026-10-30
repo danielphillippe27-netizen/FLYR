@@ -17,16 +17,16 @@
                         <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
                         <subviews>
                             <imageView clipsSubviews="YES" userInteractionEnabled="NO" contentMode="scaleAspectFit" image="WolfGridSplash" translatesAutoresizingMaskIntoConstraints="NO" id="splash-image">
-                                <rect key="frame" x="16" y="16" width="361" height="820"/>
+                                <rect key="frame" x="0.0" y="0.0" width="393" height="852"/>
                             </imageView>
                         </subviews>
                         <viewLayoutGuide key="safeArea" id="safe-area"/>
                         <color key="backgroundColor" name="WolfGridSplashBackground"/>
                         <constraints>
-                            <constraint firstItem="splash-image" firstAttribute="leading" secondItem="launch-view" secondAttribute="leading" constant="16" id="splash-leading"/>
-                            <constraint firstAttribute="trailing" secondItem="splash-image" secondAttribute="trailing" constant="16" id="splash-trailing"/>
-                            <constraint firstItem="splash-image" firstAttribute="top" secondItem="launch-view" secondAttribute="top" constant="16" id="splash-top"/>
-                            <constraint firstAttribute="bottom" secondItem="splash-image" secondAttribute="bottom" constant="16" id="splash-bottom"/>
+                            <constraint firstItem="splash-image" firstAttribute="leading" secondItem="launch-view" secondAttribute="leading" id="splash-leading"/>
+                            <constraint firstAttribute="trailing" secondItem="splash-image" secondAttribute="trailing" id="splash-trailing"/>
+                            <constraint firstItem="splash-image" firstAttribute="top" secondItem="launch-view" secondAttribute="top" id="splash-top"/>
+                            <constraint firstAttribute="bottom" secondItem="splash-image" secondAttribute="bottom" id="splash-bottom"/>
                         </constraints>
                     </view>
                 </viewController>
@@ -35,9 +35,9 @@
         </scene>
     </scenes>
     <resources>
-        <image name="WolfGridSplash" width="360" height="780"/>
+        <image name="WolfGridSplash" width="1080" height="1920"/>
         <namedColor name="WolfGridSplashBackground">
-            <color red="0.0" green="0.0" blue="0.0" alpha="1" colorSpace="custom" customColorSpace="sRGB"/>
+            <color red="1.0" green="1.0" blue="1.0" alpha="1" colorSpace="custom" customColorSpace="sRGB"/>
         </namedColor>
     </resources>
 </document>

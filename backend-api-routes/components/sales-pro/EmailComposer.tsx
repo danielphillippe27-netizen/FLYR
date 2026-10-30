@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { STORMS_DEMO_TITLE, STORMS_DEMO_SUBJECT, stormsDemoBody } from '@/lib/email/storms-demo';
+import { WOLFGRID_DEMO_TITLE, WOLFGRID_DEMO_SUBJECT, wolfgridDemoBody, RECEPTION_TEMPLATE_TITLE, RECEPTION_TEMPLATE_SUBJECT, receptionBody } from '@/lib/email/wolfgrid-demo';
 import { Loader2, Send } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -47,7 +48,11 @@ export function EmailComposer({ open, onOpenChange, initialTo = '', leadId, onSe
         <form onSubmit={send} className="space-y-4">
           <label className="grid gap-1 text-sm">To<Input type="email" value={to} onChange={(event) => setTo(event.target.value)} required disabled={sending} autoFocus /></label>
           <label className="grid gap-1 text-sm">Subject<Input value={subject} onChange={(event) => setSubject(event.target.value)} required disabled={sending} /></label>
-          <Button type="button" variant="outline" size="sm" disabled={sending} onClick={() => { setSubject(STORMS_DEMO_SUBJECT); setBody(stormsDemoBody()); }}>{STORMS_DEMO_TITLE}</Button>
+          <div className="flex flex-wrap gap-2" aria-label="Message templates">
+            <Button type="button" variant="outline" size="sm" disabled={sending} onClick={() => { setSubject(WOLFGRID_DEMO_SUBJECT); setBody(wolfgridDemoBody()); }}>{WOLFGRID_DEMO_TITLE}</Button>
+            <Button type="button" variant="outline" size="sm" disabled={sending} onClick={() => { setSubject(STORMS_DEMO_SUBJECT); setBody(stormsDemoBody()); }}>{STORMS_DEMO_TITLE}</Button>
+            <Button type="button" variant="outline" size="sm" disabled={sending} onClick={() => { setSubject(RECEPTION_TEMPLATE_SUBJECT); setBody(receptionBody()); }}>{RECEPTION_TEMPLATE_TITLE}</Button>
+          </div>
           <label className="grid gap-1 text-sm">Message<Textarea value={body} onChange={(event) => setBody(event.target.value)} required rows={8} disabled={sending} /></label>
           {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
           <div className="flex justify-end gap-2">

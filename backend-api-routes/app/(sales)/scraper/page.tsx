@@ -3,8 +3,8 @@ import { SalespersonPlacesLeadFinder } from '@/components/scraper/SalespersonPla
 
 export default function ScraperPage() {
   return (
-    <div className="min-h-screen bg-gray-50">
-      <header className="border-b border-border bg-white px-6 py-5">
+    <div className="lead-finder-page min-h-screen bg-background text-foreground">
+      <header className="border-b border-border bg-card px-6 py-5">
         <div className="flex items-center gap-3">
           <span className="flex h-10 w-10 items-center justify-center rounded-lg bg-red-50 text-red-500"><Plus /></span>
           <div><h1 className="text-2xl font-bold">Add Leads</h1><p className="text-sm text-muted-foreground">Lead finder modes for sales outreach</p></div>

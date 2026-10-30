@@ -42,10 +42,18 @@ struct NewCampaignDetailView: View {
     /// When set, share card is shown for this specific activity (tapped from Activity list).
     @State private var selectedSessionForShare: SessionRecord? = nil
     @State private var supportFeedbackRoute: CampaignSupportFeedbackRoute?
+    @AppStorage("showCampaignDemoController") private var showCampaignDemoController = false
     @State private var showDemoConfigSheet = false
+    @State private var replayRequested = false
+    @State private var demoSaveVideo = false
+    @State private var replaySourceSessionID: UUID?
+    @State private var demoAccessMessage: String?
+    @State private var pendingDemoLaunchConfiguration: DemoSessionLaunchConfiguration?
+    @State private var demoPresentationSnapshot: CampaignDetailPresentation?
     @State private var activeDemoLaunchConfiguration: DemoSessionLaunchConfiguration?
     @State private var awaitingDemoSummary = false
     @State private var demoSummaryItem: EndSessionSummaryItem?
+    @State private var pendingDemoSummaryItem: EndSessionSummaryItem?
     @Namespace private var mapNamespace
 
     private static let campaignFeedbackQuickSuggestions: [String] = [
@@ -56,6 +64,9 @@ struct NewCampaignDetailView: View {
     ]
 
     private var presentation: CampaignDetailPresentation? {
+        if activeDemoLaunchConfiguration != nil, let demoPresentationSnapshot {
+            return demoPresentationSnapshot
+        }
         guard let campaign = hook.item else { return nil }
         return CampaignDetailPresentation(
             campaign: campaign,
@@ -101,8 +112,20 @@ struct NewCampaignDetailView: View {
         presentation?.isJustListedMearnsDemo == true
     }
 
-    private var isFounderDemoEnabled: Bool {
-        DemoFounderAccess.isAllowed(user: authManager.user)
+    private func openDemoController() {
+        guard showCampaignDemoController else { return }
+        guard sessionManager.sessionId == nil, !sessionManager.isEndingSession else {
+            demoAccessMessage = "End your current session before starting a demo recording."
+            return
+        }
+        guard hook.item != nil else {
+            demoAccessMessage = "This campaign is still loading. \(hook.error ?? "Try again once the campaign name appears.")"
+            return
+        }
+        HapticManager.medium()
+        demoSaveVideo = false
+        replaySourceSessionID = nil
+        showDemoConfigSheet = true
     }
 
     private var demoCampaignOptions: [CampaignV2] {
@@ -171,10 +194,10 @@ struct NewCampaignDetailView: View {
                         Text(hook.item?.name ?? "Loading...")
                             .font(.heading)
                             .foregroundColor(.text)
+                            .padding(.vertical, 8)
+                            .contentShape(Rectangle())
                             .onTapGesture(count: 3) {
-                                guard isFounderDemoEnabled, hook.item != nil else { return }
-                                HapticManager.medium()
-                                showDemoConfigSheet = true
+                                openDemoController()
                             }
                         
                         Spacer()
@@ -216,6 +239,8 @@ struct NewCampaignDetailView: View {
                             .buttonStyle(.plain)
                         }
                     }
+
+
                     
                     if let campaign = hook.item {
                         Text("Created \(campaign.createdAt, formatter: dateFormatter)")
@@ -628,6 +653,21 @@ struct NewCampaignDetailView: View {
                 .buttonStyle(.plain)
                 .padding(.top, 16)
                 
+                    if showCampaignDemoController {
+                        Button {
+                            openDemoController()
+                        } label: {
+                            Label("Demo Controller", systemImage: "video.fill")
+                                .font(.caption.weight(.semibold))
+                                .foregroundColor(.muted)
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 10)
+                                .background(Color.bgSecondary, in: Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityHint("Configure and start a demo recording")
+                    }
+
                 Spacer(minLength: 100) // Space for button
             }
             .padding()
@@ -662,11 +702,23 @@ struct NewCampaignDetailView: View {
         .fullScreenCover(isPresented: Binding(
             get: { showShareCardView || selectedSessionForShare != nil },
             set: { if !$0 { showShareCardView = false; selectedSessionForShare = nil } }
-        )) {
+        ), onDismiss: {
+            if replayRequested {
+                replayRequested = false
+                demoSaveVideo = true
+                showDemoConfigSheet = true
+            }
+        }) {
             ShareActivityGateView(
                 data: effectiveShareCardData(selectedSession: selectedSessionForShare),
                 sessionID: selectedSessionForShare?.id,
                 campaignMapSnapshot: nil,
+                onCreateReplay: hook.item == nil || sessionManager.sessionId != nil || sessionManager.isEndingSession ? nil : {
+                    replayRequested = true
+                    replaySourceSessionID = selectedSessionForShare?.id
+                    showShareCardView = false
+                    selectedSessionForShare = nil
+                },
                 onDismiss: {
                     showShareCardView = false
                     selectedSessionForShare = nil
@@ -678,17 +730,37 @@ struct NewCampaignDetailView: View {
                 FullAddressesSheet(addresses: campaign.addresses)
             }
         }
-        .sheet(isPresented: $showDemoConfigSheet) {
+        .alert("Demo Controller", isPresented: Binding(
+            get: { demoAccessMessage != nil },
+            set: { if !$0 { demoAccessMessage = nil } }
+        )) {
+            Button("OK", role: .cancel) { demoAccessMessage = nil }
+        } message: {
+            Text(demoAccessMessage ?? "")
+        }
+        .sheet(isPresented: $showDemoConfigSheet, onDismiss: {
+            guard let configuration = pendingDemoLaunchConfiguration else { return }
+            pendingDemoLaunchConfiguration = nil
+            awaitingDemoSummary = true
+            demoPresentationSnapshot = presentation
+            activeDemoLaunchConfiguration = configuration
+        }) {
             DemoSessionConfigSheet(
                 campaigns: demoCampaignOptions,
                 defaultCampaignID: hook.item?.id ?? campaignID,
+                saveVideo: demoSaveVideo,
+                recordedSessionID: replaySourceSessionID,
                 onStart: { configuration in
-                    awaitingDemoSummary = true
-                    activeDemoLaunchConfiguration = configuration
+                    pendingDemoLaunchConfiguration = configuration
+                    showDemoConfigSheet = false
                 }
             )
         }
-        .fullScreenCover(item: $activeDemoLaunchConfiguration) { configuration in
+        .fullScreenCover(item: $activeDemoLaunchConfiguration, onDismiss: {
+            guard let summary = pendingDemoSummaryItem else { return }
+            pendingDemoSummaryItem = nil
+            demoSummaryItem = summary
+        }) { configuration in
             CampaignMapView(
                 campaignId: configuration.campaign.id.uuidString,
                 showPreSessionStartButton: false,
@@ -747,12 +819,12 @@ struct NewCampaignDetailView: View {
         .onChange(of: sessionManager.pendingSessionSummary) { _, summary in
             guard awaitingDemoSummary, let summary else { return }
             let sessionID = sessionManager.pendingSessionSummarySessionId
-            activeDemoLaunchConfiguration = nil
-            demoSummaryItem = EndSessionSummaryItem(
+            pendingDemoSummaryItem = EndSessionSummaryItem(
                 data: summary,
                 sessionID: sessionID,
                 campaignMapSnapshot: SessionManager.lastEndedSummaryMapSnapshot
             )
+            activeDemoLaunchConfiguration = nil
             sessionManager.pendingSessionSummary = nil
             sessionManager.pendingSessionSummarySessionId = nil
         }
@@ -845,14 +917,15 @@ struct NewCampaignDetailView: View {
     private var offlineAvailabilitySection: some View {
         let campaignIdString = campaignID.uuidString
         let downloadState = campaignDownloadService.state(for: campaignIdString)
-        let isOfflineAvailable = downloadState?.isAvailableOffline == true
+        let isOfflineAvailable = downloadState?.isAvailableOffline == true && campaignDownloadService.readiness(for: campaignIdString)?.isVerified == true
         let isDownloading = downloadState?.status == "downloading"
         let isFailed = downloadState?.status == "failed"
         let statusTitle = offlineStatusTitle(isReady: isOfflineAvailable, isDownloading: isDownloading, isFailed: isFailed)
         let statusIcon = offlineStatusIcon(isReady: isOfflineAvailable, isDownloading: isDownloading, isFailed: isFailed)
         let statusColor = offlineStatusColor(isReady: isOfflineAvailable, isDownloading: isDownloading, isFailed: isFailed)
 
-        return HStack(spacing: 12) {
+        return VStack(alignment: .leading, spacing: 8) {
+        HStack(spacing: 12) {
             Image(systemName: statusIcon)
                 .font(.subheadline)
                 .foregroundColor(statusColor)
@@ -886,6 +959,21 @@ struct NewCampaignDetailView: View {
                 .background(Color.bgTertiary)
                 .clipShape(Capsule())
                 .buttonStyle(.plain)
+            }
+        }
+            Text(localDataSummary(
+                readiness: campaignDownloadService.readiness(for: campaignIdString),
+                isReady: isOfflineAvailable, isDownloading: isDownloading, isFailed: isFailed
+            ))
+            .font(.caption)
+            .foregroundColor(.muted)
+            if let bytes = campaignDownloadService.mapTileBytes[campaignIdString], bytes > 0 {
+                Text("Map tiles: \(ByteCountFormatter.string(fromByteCount: Int64(clamping: bytes), countStyle: .file))")
+                    .font(.caption)
+                    .foregroundColor(.muted)
+            }
+            if let updated = offlineUpdatedText(for: downloadState) {
+                Text(updated).font(.caption).foregroundColor(.muted)
             }
         }
         .padding(16)

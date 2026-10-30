@@ -1,0 +1,87 @@
+[
+  {
+    "path": "app/build.gradle.kts",
+    "baseline_sha256": "869ef349ba246fdd1ba12f13da15e568e15c36ac949c512538f4db9e308d5653",
+    "result_sha256": "8dd9cc3097c64fb44fb6300d2988f9d76d6ee8a31c3b42d69a628b53ee71fb0c"
+  },
+  {
+    "path": "app/src/main/java/com/wolfgrid/android/features/map/CampaignPinLayout.kt",
+    "baseline_sha256": null,
+    "result_sha256": "658da1b3a1a7cc484f135835306322b46a81ca578a8493e2dced66e573b5029e"
+  },
+  {
+    "path": "app/src/main/java/com/wolfgrid/android/features/map/CampaignPinClusters.kt",
+    "baseline_sha256": "99c279f2d9b350b506b10b27dcfcb996cf31379a6f7aaa56615d83c8e21404e8",
+    "result_sha256": "623d4c9f9f54544d9937cd3025cd1e0b52a817e56b9e8b0e15646c108ae20583"
+  },
+  {
+    "path": "app/src/main/java/com/wolfgrid/android/features/map/Map2DPerformance.kt",
+    "baseline_sha256": null,
+    "result_sha256": "123d4d6b49fb2ceb42c3b111616c6b8c74a873f67b1fd941903ed10c8b159c65"
+  },
+  {
+    "path": "app/src/main/java/com/wolfgrid/android/features/map/MapCameraControl.kt",
+    "baseline_sha256": "85405842715b0455cf2b26bbfd07993fcc27b14fa4000a766cb5ee3b567cb75e",
+    "result_sha256": "a69f528d8304588eee4557f561e9672a716a9061dc4dfa471767c1b167e31cea"
+  },
+  {
+    "path": "app/src/main/java/com/wolfgrid/android/features/map/WolfGridGoogle2DMap.kt",
+    "baseline_sha256": "fb13eb30cf4f135044db1ac5533f79d13c04e1ae31a22a089291e0904a1fe0f9",
+    "result_sha256": "dc5da48d640d2680daae767dce8e4aea5399d96681ef5f22918a8516da8667ea"
+  },
+  {
+    "path": "app/src/main/java/com/wolfgrid/android/features/campaign/CampaignManualPinTargets.kt",
+    "baseline_sha256": null,
+    "result_sha256": "230ccd99ef78fdb8e7a72c55e46a8e5c482a39d8d242c9da9dd84297b1956e4c"
+  },
+  {
+    "path": "app/src/main/java/com/wolfgrid/android/features/campaign/CampaignScreen.kt",
+    "baseline_sha256": "cccf4bd3da9797684d2a159600d6ad33aae2f6514382dd22aa142d3fa5232146",
+    "result_sha256": "bc2bd4ad57e8cade4832551fefe07aefbc9779838851593223b496a2628a0201"
+  },
+  {
+    "path": "app/src/main/java/com/wolfgrid/android/features/map/session/MapSessionScreen.kt",
+    "baseline_sha256": "e80288e4a3d751ef70f5fb21885dd12a94ab99d8bb4dd44cd3dc5448984ec564",
+    "result_sha256": "4469f6b32ffbef46ccb2649162d68aee6d6debf76ac296c09d278513f36c2ae8"
+  },
+  {
+    "path": "app/src/main/java/com/wolfgrid/android/features/map/session/ManualPinSaveGate.kt",
+    "baseline_sha256": null,
+    "result_sha256": "71e29963acae4efc1d8868bbc0724d91f29fb9052bbbfc8a0a45160c1fd962bf"
+  },
+  {
+    "path": "app/src/main/java/com/wolfgrid/android/features/map/session/SessionViewModel.kt",
+    "baseline_sha256": "e10f5935768b1a9cbe7aecf81253bf27da41976b9d4ac34e830dfa499d57d8d6",
+    "result_sha256": "89978b0a7176d348d23f02ababbe35fee271a44cc0d5046323224a69a80e387c"
+  },
+  {
+    "path": "app/src/main/java/com/wolfgrid/android/ui/WolfGridApp.kt",
+    "baseline_sha256": "03c792b33d340481183db8428818b138241ba756b1890dba69ad70cfd7205709",
+    "result_sha256": "5ededeb954d2476afee0706d3631d3c3fad8427d0ee3eb0ad1077de189fb6608"
+  },
+  {
+    "path": "app/src/test/java/com/wolfgrid/android/features/map/CampaignPinLayoutTest.kt",
+    "baseline_sha256": null,
+    "result_sha256": "0692e675a984d5b24e5efdfba54d40e49d26e6388daaa4d0d1faf6b55fdcc462"
+  },
+  {
+    "path": "app/src/test/java/com/wolfgrid/android/features/map/session/ManualPinSaveGateTest.kt",
+    "baseline_sha256": null,
+    "result_sha256": "e0a3c1e0042e386ff840b5e1b2886da40a831f5661f1137299372298ceba845f"
+  },
+  {
+    "path": "app/src/test/java/com/wolfgrid/android/features/campaign/CampaignManualPinTargetsTest.kt",
+    "baseline_sha256": null,
+    "result_sha256": "49a60ac526cf4be35bf9577e8e42724b5bf4c8b01fbe3ab52ba69d6ee60cfae7"
+  },
+  {
+    "path": "app/src/androidTest/java/com/wolfgrid/android/features/map/Map2DControlsTest.kt",
+    "baseline_sha256": null,
+    "result_sha256": "031690eea63e3ac21b548e2acf2562e13bff0e1fe26e369ab72905a4cfb6acd9"
+  },
+  {
+    "path": "docs/MAP_2D_PARITY.md",
+    "baseline_sha256": null,
+    "result_sha256": "05b186216e8ecaa3483c229761a47708596b3221e1f2d308a5ba4b260e86f934"
+  }
+]

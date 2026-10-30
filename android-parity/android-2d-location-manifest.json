@@ -1,0 +1,17 @@
+[
+  {
+    "path": "app/src/main/java/com/wolfgrid/android/features/map/GoogleMapUserLocation.kt",
+    "baseline_sha256": null,
+    "result_sha256": "2bfc4ebbbb44f6c9fbb55e61cb7c88f9cff0200b23eb49a2a121b8b11f9cd4e7"
+  },
+  {
+    "path": "app/src/main/java/com/wolfgrid/android/features/campaign/CampaignScreen.kt",
+    "baseline_sha256": "bc2bd4ad57e8cade4832551fefe07aefbc9779838851593223b496a2628a0201",
+    "result_sha256": "bd9a3fa9f3e68f494c64598a1e466d147c299a775ee9fdbc466bd7e9ae5b2072"
+  },
+  {
+    "path": "app/src/main/java/com/wolfgrid/android/features/map/session/MapSessionScreen.kt",
+    "baseline_sha256": "1d5e09de179a537da38ffddf0bf69dae2febf1e52b2fdca716cdae9f0162e612",
+    "result_sha256": "c4467c9849bc634b60bbf962eb9ce5a8f6a5b7fea39323bcbbd79a9eff634a0d"
+  }
+]

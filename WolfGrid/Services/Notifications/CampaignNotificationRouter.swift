@@ -110,10 +110,15 @@ final class FLYRAppDelegate: NSObject, UIApplicationDelegate {
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
         UNUserNotificationCenter.current().delegate = CampaignNotificationRouter.shared
+        RetiredRecordingCleanup.run()
         #if WOLFGRID_SALES
         SalespersonVoiceCallService.shared.start()
         #endif
         return true
+    }
+
+    func application(_ application: UIApplication, handleEventsForBackgroundURLSession identifier: String, completionHandler: @escaping () -> Void) {
+        RetiredRecordingCleanup.cancelTransfers(identifier: identifier, completion: completionHandler)
     }
 
     func application(

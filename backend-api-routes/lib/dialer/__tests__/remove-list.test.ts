@@ -19,6 +19,8 @@ function harness(fail = false) {
     'next/server': { NextResponse },
     '@/lib/dialer/server': { getDialerRequestContext: async () => ({ admin: query, workspaceId: 'workspace', requestUser: { id: 'owner' } }) },
     '@/lib/sales-leads/master-list': {},
+    '@/lib/dialer/phone': { normalizePhoneNumber: () => ({ e164: null }), phoneMarketFromCountryCode: () => 'CA' },
+    '@/lib/sales-leads/google-place-details': {},
     '@/lib/sales-pro/communications': {},
     '@/lib/email/demo': {},
     '@/lib/dialer/demo-email-handle': {},

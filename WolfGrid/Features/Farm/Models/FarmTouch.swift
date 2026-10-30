@@ -211,11 +211,24 @@ extension FarmTouch {
         return type.defaultModeRawValue
     }
 
+    /// Database values used by the web Farm contract, including legacy aliases.
+    var persistedModeRawValue: String {
+        switch effectiveModeRawValue {
+        case "door_knock", "door_knocking", "canvassing": return "doorknock"
+        case "flyer_drop": return "flyer"
+        case "mail", "letters", "newsletter": return "letter"
+        case "event", "community_event": return "pop_by"
+        case "ad": return "social_ad"
+        case "popby", "custom": return "pop_by"
+        default: return effectiveModeRawValue
+        }
+    }
+
     var effectiveModeDisplayName: String {
         switch effectiveModeRawValue {
         case "flyer":
             return "Flyer Run"
-        case "door_knock", "door_knocking":
+        case "doorknock", "door_knock", "door_knocking":
             return "Door Knock"
         case "event", "community_event":
             return "Community Event"
@@ -242,7 +255,7 @@ extension FarmTouch {
         switch effectiveModeRawValue {
         case "flyer":
             return "paperplane.fill"
-        case "door_knock", "door_knocking":
+        case "doorknock", "door_knock", "door_knocking":
             return "door.left.hand.closed"
         case "event", "community_event":
             return "calendar"
@@ -265,7 +278,7 @@ extension FarmTouch {
         switch effectiveModeRawValue {
         case "flyer":
             return "blue"
-        case "door_knock", "door_knocking":
+        case "doorknock", "door_knock", "door_knocking":
             return "green"
         case "event", "community_event":
             return "orange"

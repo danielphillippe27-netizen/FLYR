@@ -460,14 +460,28 @@ final class BuildingLinkService {
         }
 
         print("🧪 [MAP_DEBUG] canonical_map_bundle_fetch_start campaign=\(campaignId) signature=\(localSignature ?? "none")")
-        let (data, response) = try await authorizedDataRequest(
-            url: url,
-            timeoutInterval: 30,
-            suppressHTTPWarning: true
-        )
+        let requestTrace = PerfTrace.begin("campaign_open", "map_bundle_http", fields: ["campaign": campaignId])
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await authorizedDataRequest(
+                url: url,
+                timeoutInterval: 30,
+                suppressHTTPWarning: true
+            )
+        } catch {
+            requestTrace.end(status: "error", fields: ["error": error.localizedDescription])
+            throw error
+        }
         guard let httpResponse = response as? HTTPURLResponse else {
+            requestTrace.end(status: "invalid_response")
             throw BuildingLinkError.fetchFailed
         }
+        requestTrace.end(status: "received", fields: [
+            "httpStatus": httpResponse.statusCode,
+            "bytes": data.count,
+            "serverTiming": httpResponse.value(forHTTPHeaderField: "Server-Timing") ?? "unavailable"
+        ])
 
         if httpResponse.statusCode == 304 {
             print("🧪 [MAP_DEBUG] canonical_map_bundle_not_modified campaign=\(campaignId)")
@@ -481,7 +495,21 @@ final class BuildingLinkService {
             throw BuildingLinkError.fetchFailed
         }
 
-        let bundle = try JSONDecoder().decode(CanonicalCampaignMapBundle.self, from: data)
+        let decodeTrace = PerfTrace.begin("campaign_open", "map_bundle_decode", fields: [
+            "campaign": campaignId, "bytes": data.count
+        ])
+        let bundle: CanonicalCampaignMapBundle
+        do {
+            bundle = try JSONDecoder().decode(CanonicalCampaignMapBundle.self, from: data)
+            decodeTrace.end(status: "success")
+        } catch {
+            decodeTrace.end(status: "error")
+            print(
+                "❌ [BuildingLinkService] map-bundle decode failed campaign=\(campaignId) " +
+                "error=\(String(reflecting: error))"
+            )
+            throw error
+        }
         print(
             "🧪 [MAP_DEBUG] canonical_map_bundle_loaded campaign=\(campaignId) " +
             "buildings=\(bundle.buildings.features.count) addresses=\(bundle.addresses.features.count) " +

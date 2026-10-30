@@ -19,7 +19,7 @@ struct MapTheme {
     static let campaignSatelliteStyleURI = StyleURI(rawValue: "mapbox://styles/mapbox/satellite-streets-v12")!
 
     static var campaignOfflineStyleURIs: [StyleURI] {
-        [campaignOfflineLightStyleURI, campaignOfflineDarkStyleURI]
+        [campaignOfflineLightStyleURI, campaignOfflineDarkStyleURI, campaignSatelliteStyleURI]
     }
 
     /// Load the campaign map basemap with the same Mapbox styling used before the
@@ -259,6 +259,7 @@ struct MapTheme {
         let appLayerPrefixes = [
             "flyr-",
             "campaign-",
+            "diamond-",
             "buildings-",
             "crushed-buildings",
             "townhome-",
@@ -336,6 +337,7 @@ struct MapTheme {
         let appLayerPrefixes = [
             "flyr-",
             "campaign-",
+            "diamond-",
             "buildings-",
             "crushed-buildings",
             "townhome-",

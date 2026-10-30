@@ -304,11 +304,7 @@ enum Config {
 }
 
 enum OfflineFirstConfig {
-    #if DEBUG
     private static let defaultEnabled = true
-    #else
-    private static let defaultEnabled = false
-    #endif
 
     static var isEnabled: Bool {
         Config.boolValue(for: "OFFLINE_FIRST_MODE_ENABLED", default: defaultEnabled)

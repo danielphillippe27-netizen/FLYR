@@ -193,6 +193,31 @@ final class FarmOfflineRepository {
         }
     }
 
+    /// Commit the activity and its sync intent together before allowing Start.
+    func createSessionTouchLocally(_ touch: FarmTouch) async throws {
+        try await dbQueue.write { db in
+            try Self.persistSessionTouch(touch, in: db)
+        }
+    }
+
+    static func persistSessionTouch(_ touch: FarmTouch, in db: Database) throws {
+        guard let payloadJSON = OfflineJSONCodec.encode(touch),
+              let entry = OutboxRepository.makeEntry(entityType: "farm_touch",
+                entityId: touch.id.uuidString, operation: .createFarmTouch,
+                payload: FarmTouchOutboxPayload(touch: touch),
+                dependencyKey: "farm_touch:\(touch.id.uuidString.lowercased())") else {
+            throw NSError(domain: "FarmOfflineRepository", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: "Could not save the Farm session on this phone."])
+        }
+        let record = CachedFarmTouchRecord(id: touch.id.uuidString, farmId: touch.farmId.uuidString,
+            campaignId: touch.campaignId?.uuidString, cycleNumber: touch.cycleNumber,
+            date: OfflineDateCodec.string(from: touch.date), orderIndex: touch.orderIndex,
+            completed: touch.completed ? 1 : 0, dirty: 1, payloadJSON: payloadJSON,
+            cachedAt: OfflineDateCodec.string(from: Date()), syncedAt: nil)
+        try record.save(db)
+        try entry.insert(db)
+    }
+
     func upsertTouches(_ touches: [FarmTouch], dirty: Bool = false, syncedAt: Date? = Date()) async {
         let cachedAt = OfflineDateCodec.string(from: Date())
         try? await dbQueue.write { db in
@@ -412,6 +437,14 @@ final class FarmOfflineRepository {
         occurredAt: Date,
         dirty: Bool
     ) async {
+        try? await dbQueue.write { db in
+            try Self.persistAddressOutcome(in: db, context: context, addressId: addressId,
+                status: status, notes: notes, occurredAt: occurredAt, dirty: dirty)
+        }
+    }
+
+    static func persistAddressOutcome(in db: Database, context: FarmExecutionContext,
+        addressId: UUID, status: AddressStatus, notes: String?, occurredAt: Date, dirty: Bool) throws {
         let occurredAtString = OfflineDateCodec.string(from: occurredAt)
         let recordId = Self.statusRecordId(
             farmId: context.farmId,
@@ -426,7 +459,6 @@ final class FarmOfflineRepository {
             notes: notes,
             occurredAt: occurredAtString
         )
-        try? await dbQueue.write { db in
             let record = CachedFarmAddressStatusRecord(
                 id: recordId,
                 farmId: context.farmId.uuidString,
@@ -442,9 +474,7 @@ final class FarmOfflineRepository {
                 syncedAt: dirty ? nil : occurredAtString
             )
             try record.save(db)
-        }
-
-        await updateCachedAddressStatus(farmId: context.farmId, addressId: addressId, status: status, occurredAt: occurredAt)
+        try updateCachedAddressStatus(in: db, farmId: context.farmId, addressId: addressId, status: status, occurredAt: occurredAt)
     }
 
     func markAddressOutcomeSynced(
@@ -472,13 +502,13 @@ final class FarmOfflineRepository {
         }
     }
 
-    private func updateCachedAddressStatus(
+    private static func updateCachedAddressStatus(
+        in db: Database,
         farmId: UUID,
         addressId: UUID,
         status: AddressStatus,
         occurredAt: Date
-    ) async {
-        try? await dbQueue.write { db in
+    ) throws {
             guard let record = try CachedFarmAddressRecord.fetchOne(db, key: addressId.uuidString),
                   let existing = OfflineJSONCodec.decode(FarmAddressViewRow.self, from: record.payloadJSON),
                   existing.farmId == farmId else {
@@ -517,7 +547,6 @@ final class FarmOfflineRepository {
                 cachedAt: OfflineDateCodec.string(from: Date())
             )
             try updatedRecord.save(db)
-        }
     }
 
     private static func statusRecordId(

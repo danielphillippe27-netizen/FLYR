@@ -3,13 +3,18 @@ import CoreLocation
 
 struct FarmDetailView: View {
     @EnvironmentObject private var uiState: AppUIState
+    @EnvironmentObject private var campaignDownloadService: CampaignDownloadService
     @StateObject private var viewModel: FarmDetailViewModel
     @State private var showAnalytics = false
     @State private var showTouchPlanner = false
     @State private var isStartingTouch = false
     @State private var touchPreparationError: String?
-    @State private var selectedSessionType: FarmTouchType = .flyer
+    @State private var selectedSessionType: FarmTouchType = .doorKnock
     @State private var selectedPlanTouchId: UUID?
+    @State private var isLeadsExpanded = false
+    @State private var isAddressesExpanded = false
+    @State private var showAllAddresses = false
+    @State private var showAllLeads = false
 
     let farmId: UUID
 
@@ -64,18 +69,7 @@ struct FarmDetailView: View {
     }
 
     private var primaryCampaignIdForMap: UUID? {
-        let addressCampaignIds = viewModel.addresses.compactMap(\.campaignId)
-        let addressCounts = Dictionary(grouping: addressCampaignIds, by: { $0 })
-            .mapValues(\.count)
-
-        if let mostCommonAddressCampaignId = addressCounts.max(by: { lhs, rhs in
-            if lhs.value == rhs.value {
-                return lhs.key.uuidString.localizedStandardCompare(rhs.key.uuidString) == .orderedAscending
-            }
-            return lhs.value < rhs.value
-        })?.key {
-            return mostCommonAddressCampaignId
-        }
+        if let linkedCampaignId = viewModel.linkedCampaignId { return linkedCampaignId }
 
         let touchCampaignIds = viewModel.touches.compactMap(\.campaignId)
         let touchCounts = Dictionary(grouping: touchCampaignIds, by: { $0 })
@@ -92,15 +86,7 @@ struct FarmDetailView: View {
         if let polygonCenter = averageCoordinate(viewModel.farm?.polygonCoordinates ?? []) {
             return polygonCenter
         }
-        return averageCoordinate(viewModel.addresses.map(\.geom.coordinate))
-    }
-
-    private var plannedTouchCount: Int {
-        viewModel.touches.count
-    }
-
-    private var completedTouchCount: Int {
-        viewModel.touches.filter(\.completed).count
+        return nil
     }
 
     private func touchSort(_ lhs: FarmTouch, _ rhs: FarmTouch) -> Bool {
@@ -150,23 +136,105 @@ struct FarmDetailView: View {
         await viewModel.ensureSessionExecutionContext(type: type, campaignId: primaryCampaignIdForMap)
     }
 
+    private func offlineCard(campaignId: UUID) -> some View {
+        let id = campaignId.uuidString
+        let state = campaignDownloadService.state(for: id)
+        let ready = state?.isAvailableOffline == true && campaignDownloadService.readiness(for: id)?.isVerified == true
+        let downloading = state?.status == "downloading"
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Image(systemName: ready ? "checkmark.circle.fill" : "arrow.down.circle")
+                    .foregroundStyle(ready ? Color.success : Color.primary)
+                Text(ready ? "Downloaded" : "Not downloaded")
+                    .font(.subheading)
+                Spacer()
+                Button(ready ? "Update" : "Download") {
+                    Task {
+                        await campaignDownloadService.makeAvailableOffline(campaignId: id)
+                        await campaignDownloadService.refreshState(campaignId: id)
+                    }
+                }
+                .font(.label).padding(.horizontal, 14).padding(.vertical, 8)
+                .background(Color.bgTertiary).clipShape(Capsule()).buttonStyle(.plain)
+                .disabled(downloading)
+            }
+            Text(ready ? "Homes, parcels, and map data are saved on this device." : "Download the map and homes before working without service.")
+                .font(.caption).foregroundColor(.muted)
+        }
+        .padding(16).background(Color.bgSecondary).cornerRadius(12)
+        .task(id: id) { await campaignDownloadService.refreshState(campaignId: id) }
+    }
+
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 24) {
                 if let farm = viewModel.farm {
-                    FarmOverviewHeroCard(
-                        farm: farm,
-                        plannedTouchCount: plannedTouchCount,
-                        completedTouchCount: completedTouchCount
-                    )
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack {
+                            Text(farm.name).font(.heading).foregroundColor(.text)
+                            Spacer()
+                            Badge(text: farm.isActive ? "Active" : "Completed")
+                        }
+                        Text("Created \(farm.createdAt.formatted(date: .abbreviated, time: .omitted))")
+                            .font(.flyrCaption).foregroundColor(.muted)
+                    }
+                    FarmProgressCard(planned: farm.addressCount ?? 0, completed: viewModel.visitedHomeCount ?? 0, visits: viewModel.homeVisitCount ?? 0, visitsAreMinimum: viewModel.homeVisitCountIsMinimum,
+                                     isLoading: viewModel.isLoading, loadFailed: viewModel.visitedHomeCount == nil || farm.addressCount == nil)
 
                     FarmDetailSectionHeader(title: "Farm Area")
                     FarmAreaCard(
                         campaignId: primaryCampaignIdForMap,
                         mapCenter: farmMapCenter,
+                        polygon: farm.polygonCoordinates,
+                        isLoading: viewModel.isLoading,
                         selectedType: $selectedSessionType,
                         makeExecutionContext: makeMapSessionContext
                     )
+
+                    if let campaignId = primaryCampaignIdForMap {
+                        FarmDetailSectionHeader(title: "Offline")
+                        offlineCard(campaignId: campaignId)
+                    }
+
+                    FarmDetailSectionHeader(title: "Analytics")
+                    HStack(spacing: 10) {
+                        FarmHeroStatPill(value: farm.addressCount.map(String.init) ?? "—", label: "Homes")
+                        FarmHeroStatPill(value: viewModel.leadsLoadFailed || viewModel.isLoading ? "—" : "\(viewModel.leads.count)", label: "Farm leads")
+                        FarmHeroStatPill(value: viewModel.isLoading ? "—" : viewModel.visitedHomeCount.map(String.init) ?? "—", label: "Homes visited")
+                    }
+
+                    FarmExpandableSection(title: "Leads", icon: "tray.full.fill", count: viewModel.leadsLoadFailed || viewModel.isLoading ? nil : viewModel.leads.count, expanded: $isLeadsExpanded) {
+                        if viewModel.isLoading {
+                            ProgressView().frame(maxWidth: .infinity).padding()
+                        } else if viewModel.leadsLoadFailed {
+                            Text("Farm leads could not be loaded. Pull down to retry.").foregroundColor(.muted)
+                        } else if viewModel.leads.isEmpty {
+                            Text("No farm leads yet").foregroundColor(.muted)
+                        } else {
+                            ForEach(Array(viewModel.leads.sorted { $0.createdAt > $1.createdAt }.prefix(5))) { lead in
+                                RecentLeadRow(lead: lead)
+                            }
+                            if viewModel.leads.count > 5 {
+                                Button("See all \(viewModel.leads.count) leads") { showAllLeads = true }.foregroundColor(.accent)
+                            }
+                        }
+                    }
+                    FarmExpandableSection(title: "Addresses", icon: "house.fill", count: farm.addressCount, expanded: $isAddressesExpanded) {
+                        if viewModel.isLoadingAddresses && viewModel.addresses.isEmpty {
+                            ProgressView().frame(maxWidth: .infinity).padding()
+                        } else if viewModel.addressesLoadFailed && viewModel.addresses.isEmpty {
+                            Button("Could not load addresses. Tap to retry.") { Task { await viewModel.loadAddresses(reset: true) } }.foregroundColor(.accent)
+                        } else if viewModel.addresses.isEmpty {
+                            Text("No addresses available").foregroundColor(.muted)
+                        } else {
+                            ForEach(Array(viewModel.addresses.prefix(5))) { address in
+                                Text(address.formatted).foregroundColor(.text)
+                            }
+                            if viewModel.addresses.count > 5 || viewModel.addressesHaveMore {
+                                Button("View addresses") { showAllAddresses = true }.foregroundColor(.accent)
+                            }
+                        }
+                    }
 
                     FarmDetailSectionHeader(title: "Start Session")
                     StartSessionCard(
@@ -176,6 +244,7 @@ struct FarmDetailView: View {
                         onStart: startSession,
                         onManagePlans: { showTouchPlanner = true }
                     )
+                    .disabled(viewModel.isLoading)
 
                     FarmDetailSectionHeader(title: "Farm Plan")
                     FarmPlanCard(touches: planTouches)
@@ -183,6 +252,13 @@ struct FarmDetailView: View {
                     ProgressView()
                         .frame(maxWidth: .infinity)
                         .padding(.top, 100)
+                } else if let error = viewModel.errorMessage {
+                    VStack(spacing: 12) {
+                        Text(error).foregroundColor(.muted).multilineTextAlignment(.center)
+                        Button("Try Again") { Task { await viewModel.loadFarmData() } }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 60)
                 }
             }
             .padding(.horizontal, 16)
@@ -199,6 +275,32 @@ struct FarmDetailView: View {
                     Image(systemName: "chart.bar")
                 }
                 .accessibilityLabel("Farm analytics")
+            }
+        }
+        .onChange(of: isAddressesExpanded) { _, expanded in
+            if expanded { Task { await viewModel.loadAddresses() } }
+        }
+        .sheet(isPresented: $showAllAddresses) {
+            NavigationStack {
+                List {
+                    ForEach(viewModel.addresses) { address in Text(address.formatted) }
+                    if viewModel.isLoadingAddresses {
+                        ProgressView().frame(maxWidth: .infinity)
+                    } else if viewModel.addressesLoadFailed {
+                        Button("Retry loading addresses") { Task { await viewModel.loadAddresses() } }
+                    } else if viewModel.addressesHaveMore {
+                        Button("Load more addresses") { Task { await viewModel.loadAddresses() } }
+                    }
+                }
+                .navigationTitle("Addresses")
+                .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { showAllAddresses = false } } }
+            }
+        }
+        .sheet(isPresented: $showAllLeads) {
+            NavigationStack {
+                List(viewModel.leads.sorted { $0.createdAt > $1.createdAt }) { lead in RecentLeadRow(lead: lead) }
+                    .navigationTitle("Farm Leads")
+                    .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { showAllLeads = false } } }
             }
         }
         .sheet(isPresented: $showAnalytics) {
@@ -227,6 +329,7 @@ struct FarmDetailView: View {
         }
         .refreshable {
             await viewModel.loadFarmData()
+            if isAddressesExpanded { await viewModel.loadAddresses(reset: true) }
         }
         .overlay {
             if isStartingTouch {
@@ -251,46 +354,69 @@ struct FarmDetailView: View {
     }
 }
 
-private struct FarmOverviewHeroCard: View {
-    let farm: Farm
-    let plannedTouchCount: Int
-    let completedTouchCount: Int
+private struct FarmProgressCard: View {
+    let planned: Int
+    let completed: Int
+    let visits: Int
+    let visitsAreMinimum: Bool
+    let isLoading: Bool
+    let loadFailed: Bool
 
-    private var progress: Double {
-        guard plannedTouchCount > 0 else { return 0 }
-        return min(Double(completedTouchCount) / Double(plannedTouchCount), 1)
-    }
+    private var progress: Double { planned > 0 ? min(Double(completed) / Double(planned), 1) : 0 }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack(alignment: .top, spacing: 12) {
-                Text(farm.name)
-                    .font(.flyrTitle2Bold)
-                    .foregroundStyle(Color.text)
-                    .lineLimit(2)
-
-                Spacer(minLength: 12)
-
-                Badge(text: farm.isActive ? "Active" : "Completed")
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Progress").font(.subheading).foregroundColor(.text)
+                Spacer()
+                if !isLoading && !loadFailed {
+                    Text("\(Int((progress * 100).rounded()))% of homes visited")
+                        .font(.label).foregroundColor(.text)
+                }
             }
-
-            VStack(alignment: .leading, spacing: 8) {
-                Text("\(completedTouchCount) of \(plannedTouchCount) touches complete")
-                    .font(.flyrSubheadline.weight(.semibold))
-                    .foregroundStyle(Color.text)
-
-                ProgressBar(
-                    value: progress,
-                    height: 8,
-                    trackColor: Color.white.opacity(0.12),
-                    fillColor: Color.accent
-                )
+            if isLoading {
+                ProgressView()
+            } else if loadFailed {
+                Text("Home visit progress unavailable. Pull down to retry.").font(.flyrCaption).foregroundColor(.muted)
+            } else {
+                ProgressBar(value: progress)
+                Text("\(completed) of \(planned) homes visited")
+                    .font(.flyrCaption).foregroundColor(.muted)
             }
         }
-        .padding(18)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.bgSecondary)
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .padding(16).background(Color.bgSecondary).cornerRadius(12)
+    }
+}
+
+private struct FarmExpandableSection<Content: View>: View {
+    let title: String
+    let icon: String
+    let count: Int?
+    @Binding var expanded: Bool
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                HapticManager.light()
+                withAnimation(.easeInOut(duration: 0.2)) { expanded.toggle() }
+            } label: {
+                HStack {
+                    Image(systemName: icon).foregroundColor(.accent)
+                    Text(title).font(.subheading).foregroundColor(.text)
+                    Spacer()
+                    if let count { Text("\(count) total").font(.label).foregroundColor(.muted) }
+                    Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                        .font(.caption.weight(.medium)).foregroundColor(.muted)
+                }.padding(16).contentShape(Rectangle())
+            }.buttonStyle(.plain)
+            if expanded {
+                VStack(alignment: .leading, spacing: 8) { content }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12).background(Color.bgTertiary).cornerRadius(8)
+                    .padding(.horizontal, 16).padding(.bottom, 16)
+            }
+        }.background(Color.bgSecondary).cornerRadius(12)
     }
 }
 
@@ -462,6 +588,9 @@ private struct StartSessionCard: View {
 private struct FarmAreaCard: View {
     let campaignId: UUID?
     let mapCenter: CLLocationCoordinate2D?
+    let polygon: [CLLocationCoordinate2D]?
+    let isLoading: Bool
+    @Environment(\.colorScheme) private var colorScheme
     @Binding var selectedType: FarmTouchType
     let makeExecutionContext: (FarmTouchType) async -> FarmExecutionContext?
 
@@ -472,10 +601,12 @@ private struct FarmAreaCard: View {
         Group {
             if let campaignId {
                 ZStack(alignment: .bottomTrailing) {
-                    CampaignMapView(
-                        campaignId: campaignId.uuidString,
-                        initialCenter: mapCenter,
-                        showPreSessionStartButton: false
+                    TerritoryPreviewMapView(
+                        center: mapCenter,
+                        polygon: polygon,
+                        useDarkStyle: colorScheme == .dark,
+                        height: 260,
+                        showsCenterMarker: false
                     )
                     .frame(height: 260)
                     .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
@@ -483,6 +614,7 @@ private struct FarmAreaCard: View {
 
                     Button {
                         HapticManager.medium()
+                        MapOpenTrace.begin(campaign: campaignId.uuidString)
                         isMapFullscreen = true
                     } label: {
                         Color.clear
@@ -494,6 +626,7 @@ private struct FarmAreaCard: View {
 
                     Button {
                         HapticManager.medium()
+                        MapOpenTrace.begin(campaign: campaignId.uuidString)
                         isMapFullscreen = true
                     } label: {
                         Image(systemName: "arrow.up.left.and.arrow.down.right")
@@ -523,6 +656,9 @@ private struct FarmAreaCard: View {
                         onClose: { isMapFullscreen = false }
                     )
                 }
+            } else if isLoading {
+                ProgressView("Loading farm area...")
+                    .frame(maxWidth: .infinity, minHeight: 180)
             } else {
                 FarmAreaUnavailableCard()
             }
@@ -562,7 +698,7 @@ private struct FarmPlanCard: View {
     let touches: [FarmTouch]
 
     var body: some View {
-        VStack(spacing: 10) {
+        LazyVStack(spacing: 10) {
             if touches.isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("No saved plan yet")
@@ -796,6 +932,12 @@ private struct RecentLeadRow: View {
                     .font(.flyrCaption)
                     .foregroundStyle(Color.muted)
 
+                if let phone = lead.phone, !phone.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Text(phone).font(.flyrCaption).foregroundStyle(Color.muted)
+                }
+                if let email = lead.email, !email.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Text(email).font(.flyrCaption).foregroundStyle(Color.muted)
+                }
                 if let address = lead.address, !address.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     Text(address)
                         .font(.flyrCaption)

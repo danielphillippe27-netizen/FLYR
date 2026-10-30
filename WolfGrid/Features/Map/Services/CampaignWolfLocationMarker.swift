@@ -104,6 +104,9 @@ final class CampaignWolfLocationMarker {
     }
 
     func update(location: CLLocation?, heading: Double?, show: Bool) {
+        // Session timers and unrelated UI state can resend the same location.
+        // Style/foreground observers independently refresh the existing marker.
+        guard self.location !== location || self.heading != heading || self.show != show else { return }
         if show, let location { appendPawSteps(toward: location) }
         else {
             trailAnchor = nil
@@ -224,7 +227,7 @@ final class CampaignWolfLocationMarker {
         let features = trailLocations.enumerated().map { index, location -> Feature in
             var feature = Feature(geometry: .point(Point(location.coordinate)))
             let age = max(0, now.timeIntervalSince(location.timestamp))
-            let fade = max(0, 1 - age / Self.fadeDuration)
+            let fade: Double = Swift.max(0.0, 1.0 - age / Self.fadeDuration)
             let recency = Double(index + 1) / Double(max(1, trailLocations.count))
             feature.properties = [
                 "heading": .number(location.course),

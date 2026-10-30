@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import {
   BarChart3,
   CalendarDays,
@@ -23,7 +23,8 @@ import {
   Users,
   X,
 } from 'lucide-react';
-import { WorkspaceProvider } from '@/lib/workspace-context';
+import { WorkspaceProvider, useWorkspace } from '@/lib/workspace-context';
+import { formatPhoneDisplay } from '@/lib/dialer/phone';
 import { DialerRuntimeProvider } from '@/components/dialer/DialerRuntimeProvider';
 import { cn } from '@/lib/utils';
 
@@ -51,6 +52,31 @@ const moreNavigation = [
 function WorkspaceChrome({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const [mobileOpen, setMobileOpen] = useState(false);
+  const { currentWorkspaceId } = useWorkspace();
+  const [identity, setIdentity] = useState<{ firstName: string; phone: string | null } | null>(null);
+
+  useEffect(() => {
+    setIdentity(null);
+    if (!currentWorkspaceId) return;
+    const controller = new AbortController();
+    void fetch(`/api/dialer/settings?workspaceId=${encodeURIComponent(currentWorkspaceId)}`, {
+      credentials: 'include',
+      signal: controller.signal,
+    }).then(async (response) => {
+      if (!response.ok) return;
+      const data = await response.json() as {
+        salesperson?: { fullName?: string | null; assignedPhoneNumber?: string | null };
+        settings?: { defaultFromNumber?: string | null } | null;
+      };
+      if (controller.signal.aborted) return;
+      setIdentity({
+        firstName: data.salesperson?.fullName?.trim().split(/\s+/)[0] || '',
+        phone: data.salesperson?.assignedPhoneNumber || data.settings?.defaultFromNumber || null,
+      });
+    }).catch(() => undefined);
+    return () => controller.abort();
+  }, [currentWorkspaceId]);
+  const isInbox = pathname === '/inbox' || pathname.startsWith('/inbox/');
 
   const isActive = (href: string) => pathname === href || pathname.startsWith(`${href}/`);
   const sidebar = (compact: boolean) => (
@@ -105,7 +131,7 @@ function WorkspaceChrome({ children }: { children: ReactNode }) {
   );
 
   return (
-    <div className="min-h-screen bg-gray-50 text-foreground dark:bg-background">
+    <div className={cn('bg-gray-50 text-foreground dark:bg-background', isInbox ? 'h-dvh overflow-hidden' : 'min-h-screen')}>
       {mobileOpen ? (
         <>
           <button
@@ -119,8 +145,8 @@ function WorkspaceChrome({ children }: { children: ReactNode }) {
           </aside>
         </>
       ) : null}
-      <div className="min-h-screen">
-        <header className="sticky top-0 z-30 flex h-16 items-center border-b border-border bg-white/95 px-4 backdrop-blur md:px-6 dark:bg-card/95">
+      <div className={isInbox ? 'flex h-full min-h-0 flex-col' : 'min-h-screen'}>
+        <header className="sticky top-0 z-30 flex min-h-16 shrink-0 items-center gap-3 border-b border-border bg-white/95 px-4 backdrop-blur md:px-6 dark:bg-card/95">
           <button
             type="button"
             className="mr-3 rounded-md border border-border p-2 md:hidden"
@@ -129,11 +155,20 @@ function WorkspaceChrome({ children }: { children: ReactNode }) {
           >
             <Menu className="h-5 w-5" />
           </button>
-          <div>
-            <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">WolfGrid</p>
-            <p className="text-sm font-semibold">Salesperson workspace</p>
+          <div aria-label="Salesperson identity" className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1 py-3 text-sm leading-5 sm:gap-x-3">
+            <span className="font-bold text-foreground">WolfGrid</span>
+            <span aria-hidden="true" className="text-muted-foreground/50">/</span>
+            <span className="font-medium text-muted-foreground">Salesperson</span>
+            {identity?.firstName && <>
+              <span aria-hidden="true" className="text-muted-foreground/50">/</span>
+              <span className="font-semibold text-foreground">{identity.firstName}</span>
+            </>}
+            {identity?.phone && <span className="inline-flex items-center gap-2 sm:gap-3">
+              <span aria-hidden="true" className="text-muted-foreground/50">/</span>
+              <span className="whitespace-nowrap font-medium tabular-nums text-foreground">{formatPhoneDisplay(identity.phone)}</span>
+            </span>}
           </div>
-          <nav aria-label="Sales navigation" className="ml-auto hidden items-center gap-1 md:flex">
+          <nav aria-label="Sales navigation" className="ml-auto hidden shrink-0 items-center gap-1 md:flex">
             {navigation.map(({ href, label, icon: Icon }) => (
               <Link key={href} href={href} aria-label={label} aria-current={isActive(href) ? 'page' : undefined}
                 title={label} className={cn('flex h-10 items-center gap-2 rounded-lg px-3 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500', isActive(href) ? 'bg-red-50 text-red-600' : 'text-muted-foreground hover:bg-muted hover:text-foreground')}>
@@ -156,7 +191,7 @@ function WorkspaceChrome({ children }: { children: ReactNode }) {
             </details>
           </nav>
         </header>
-        <main data-sales-workspace-content className="min-w-0 min-h-[calc(100vh-4rem)]">{children}</main>
+        <main data-sales-workspace-content className={cn('min-w-0', isInbox ? 'min-h-0 flex-1 overflow-hidden' : 'min-h-[calc(100vh-4rem)]')}>{children}</main>
       </div>
     </div>
   );

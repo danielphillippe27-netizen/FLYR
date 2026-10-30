@@ -802,6 +802,28 @@ final class BuildingDataServiceTests: XCTestCase {
         XCTAssertTrue(coordinates.contains { abs($0.longitude - (-78.9982)) < 0.0000001 })
     }
 
+    func testParcelAddressAndExplicitMoveKeepTheirSavedPositionsOnSharedRoof() throws {
+        let building = try makeBuildingFeature(gersId: "row-home", unitsCount: 2, addressCount: 2)
+        let firstId = UUID(), secondId = UUID()
+        let base = try makeAddressFeature(id: firstId, buildingGersId: "row-home", houseNumber: "10",
+            formatted: "10 Main Street", coordinate: [-78.9998, 43.0002])
+        let manual = AddressFeature(type: base.type, id: base.id, geometry: base.geometry,
+            properties: CampaignMapEdits.patch(base.properties, ["source": "manual", "has_parcel_link": true, "parcel_id": "lot-a"]))
+        let movedBase = try makeAddressFeature(id: secondId, buildingGersId: "row-home", houseNumber: "12",
+            formatted: "12 Main Street", coordinate: [-78.9982, 43.0002])
+        let change = CampaignMapEditPlanner.addressParcelLink(addressId: secondId.uuidString, parcelId: "lot-b",
+            coordinate: .init(latitude: 43.0002, longitude: -78.9982), state: .init(), sourceRevision: "v1")
+        let moved = try XCTUnwrap(CampaignMapEdits.snapshot(buildings: [building], addresses: [movedBase],
+            parcels: [], state: CampaignMapEditState().applying([change])).addresses.first)
+        let data = try MapLayerManager.buildAddressNumberLabelPointGeoJSON(addresses: [manual, moved],
+            buildings: [building], orderedAddressIdsByBuilding: ["row-home": [firstId, secondId]])
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let features = try XCTUnwrap(object["features"] as? [[String: Any]])
+        let coordinates = try features.map { try pointCoordinates(from: $0) }
+        XCTAssertTrue(coordinates.contains { abs($0.longitude - (-78.9998)) < 0.0000001 })
+        XCTAssertTrue(coordinates.contains { abs($0.longitude - (-78.9982)) < 0.0000001 })
+    }
+
     func testAddressNumberLabelUsesBuildingPlacementForSingleLinkedHome() throws {
         let building = try makeBuildingFeature(
             gersId: "single-home-1",

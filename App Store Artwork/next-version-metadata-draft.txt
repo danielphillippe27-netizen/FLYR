@@ -1,0 +1,24 @@
+Draft for the next iOS App Store version
+
+Description
+
+WolfGrid helps you organize your territory, track door-to-door activity, and keep your campaigns moving.
+
+Map your area, record your progress, and keep track of leads and conversations as you work.
+
+FEATURES
+• Map-based campaigns and territory planning
+• Door and flyer drop tracking
+• Campaign activity and progress
+• Leads and conversations
+• QR codes and landing pages
+
+SUBSCRIPTION INFORMATION
+
+WolfGrid offers optional auto-renewable subscriptions that unlock premium features within the app. Some features and functionality require a paid subscription.
+
+Payment will be charged to your Apple ID account at confirmation of purchase. Subscriptions automatically renew unless canceled at least 24 hours before the end of the current period.
+
+Terms of Use (EULA): https://www.apple.com/legal/internet-services/itunes/dev/stdeula/
+
+Before entering in App Store Connect: verify the current WolfGrid support, marketing, and privacy URLs and confirm the feature list against the release build. The currently submitted listing uses flyrpro.app links.

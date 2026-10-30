@@ -7,6 +7,7 @@ import {
   Mail,
   MessageCircle,
   Phone,
+  Plus,
   RefreshCw,
   Send,
 } from 'lucide-react';
@@ -407,10 +408,10 @@ export function ProInboxView() {
   }
 
   return (
-    <div className="grid min-h-[calc(100vh-4rem)] lg:grid-cols-[390px_1fr]">
+    <div className="grid h-full min-h-0 grid-rows-[minmax(0,1fr)_minmax(0,2fr)] overflow-hidden lg:grid-cols-[390px_minmax(0,1fr)] lg:grid-rows-1">
       {composingEmail && <EmailComposer open onOpenChange={setComposingEmail} onSent={() => void load()} />}
-      <aside className="min-h-0 border-r bg-background">
-        <div className="border-b px-4 pb-3 pt-4">
+      <aside className="flex min-h-0 min-w-0 flex-col overflow-hidden border-r bg-background">
+        <div className="shrink-0 border-b px-4 pb-3 pt-4">
           <div className="flex items-center justify-between">
             <div>
               <div className="flex items-center gap-2">
@@ -439,8 +440,8 @@ export function ProInboxView() {
           </div>
         </div>
 
-        {error ? <p className="border-b bg-destructive/5 px-4 py-2 text-sm text-destructive">{error}</p> : null}
-        <div className="h-[calc(100vh-13rem)] overflow-y-auto">
+        {error ? <p className="shrink-0 border-b bg-destructive/5 px-4 py-2 text-sm text-destructive">{error}</p> : null}
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
           {loading && !threads.length ? (
             <div className="grid min-h-52 place-items-center text-muted-foreground"><Loader2 className="h-5 w-5 animate-spin" /></div>
           ) : threads.length ? threads.map((thread) => (
@@ -451,7 +452,7 @@ export function ProInboxView() {
         </div>
       </aside>
 
-      <main className="flex min-h-0 flex-col bg-background">
+      <main className="flex min-h-0 min-w-0 flex-col overflow-hidden bg-background">
         {selected ? (
           <ConversationPane
             thread={selected}
@@ -495,6 +496,76 @@ function ThreadRow({ thread, selected, onClick }: { thread: InboxThread; selecte
   );
 }
 
+const messageTemplates = [
+  { title: STORMS_DEMO_TITLE, subject: STORMS_DEMO_SUBJECT, body: stormsDemoBody },
+  {
+    title: 'Introduction',
+    subject: 'A quick introduction to WolfGrid',
+    body: (name?: string | null) => `Hey ${name?.trim() || 'there'}, Daniel here with WolfGrid. How are you currently managing your team's door-to-door sales and follow-ups? Happy to show you how WolfGrid could help.`,
+  },
+  {
+    title: 'Quick follow-up',
+    subject: 'Checking in',
+    body: (name?: string | null) => `Hey ${name?.trim() || 'there'}, just checking in on my last message. Any questions I can help with?`,
+  },
+  {
+    title: 'Book a walkthrough',
+    subject: 'Your WolfGrid walkthrough',
+    body: (name?: string | null) => `Hey ${name?.trim() || 'there'}, would you be open to a quick WolfGrid walkthrough? Let me know a day and time that works for you.`,
+  },
+];
+
+function MessageTemplatePicker({ disabled, onSelect }: {
+  disabled: boolean;
+  onSelect: (template: typeof messageTemplates[number]) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const pickerRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const closeOutside = (event: PointerEvent) => {
+      if (!pickerRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setOpen(false);
+        triggerRef.current?.focus();
+      }
+    };
+    document.addEventListener('pointerdown', closeOutside);
+    document.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.removeEventListener('pointerdown', closeOutside);
+      document.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [open]);
+
+  return (
+    <div ref={pickerRef} className="relative shrink-0" onBlur={(event) => {
+      if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false);
+    }}>
+      <Button ref={triggerRef} type="button" variant="ghost" size="icon"
+        className="h-10 w-10 rounded-full" aria-label="Choose message template"
+        aria-expanded={open && !disabled} disabled={disabled} onClick={() => setOpen((value) => !value)}>
+        <Plus className="h-5 w-5" />
+      </Button>
+      {open && !disabled ? (
+        <div role="group" aria-label="Message templates" className="absolute bottom-full left-0 z-40 mb-2 max-h-[min(20rem,50dvh)] w-64 max-w-[calc(100vw-2rem)] overflow-y-auto rounded-xl border border-border bg-popover p-1.5 text-popover-foreground shadow-lg">
+          <p className="px-3 py-2 text-xs font-semibold text-muted-foreground">Message templates</p>
+          {messageTemplates.map((template) => (
+            <button key={template.title} type="button" className="block w-full rounded-lg px-3 py-2.5 text-left text-sm hover:bg-muted focus-visible:bg-muted focus-visible:outline-none"
+              onClick={() => { onSelect(template); setOpen(false); triggerRef.current?.focus(); }}>
+              {template.title}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function ConversationPane({
   thread,
   source,
@@ -521,7 +592,7 @@ function ConversationPane({
 
   return (
     <>
-      <header className="flex h-16 items-center gap-3 border-b px-5">
+      <header className="flex h-16 shrink-0 items-center gap-3 border-b px-5">
         <div className="min-w-0">
           <h2 className="truncate font-semibold">{threadTitle(thread)}</h2>
           <p className="truncate text-xs text-muted-foreground">{isEmail ? email : phone}</p>
@@ -533,7 +604,7 @@ function ConversationPane({
         ) : null}
       </header>
 
-      <div className="flex-1 overflow-y-auto px-5 py-4">
+      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 py-4">
         <div className="mx-auto max-w-3xl space-y-1">
           {thread.events.map((event, index) => (
             <div key={event.id}>
@@ -544,7 +615,7 @@ function ConversationPane({
         </div>
       </div>
 
-      <div className="border-t bg-background/95 px-4 py-3 backdrop-blur">
+      <div className="shrink-0 border-t bg-background/95 px-4 py-3 backdrop-blur">
         <div className="mx-auto max-w-3xl">
           {isEmail ? (
             <div className="mb-2 flex items-center gap-2 border-b pb-2">
@@ -552,8 +623,11 @@ function ConversationPane({
               <Input className="h-7 border-0 px-1 shadow-none focus-visible:ring-0" value={emailSubject} onChange={(event) => setEmailSubject(event.target.value)} />
             </div>
           ) : null}
-          <Button type="button" variant="outline" size="sm" className="mb-2" disabled={!canReply || sending} onClick={() => { setReply(stormsDemoBody(thread.contact?.fullName)); if (isEmail) setEmailSubject(STORMS_DEMO_SUBJECT); }}>{STORMS_DEMO_TITLE}</Button>
           <div className="flex items-end gap-2">
+            <MessageTemplatePicker key={thread.id} disabled={!canReply || sending} onSelect={(template) => {
+              setReply(template.body(thread.contact?.fullName));
+              if (isEmail) setEmailSubject(template.subject);
+            }} />
             <Textarea
               value={reply}
               onChange={(event) => setReply(event.target.value)}

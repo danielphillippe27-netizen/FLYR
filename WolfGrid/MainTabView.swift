@@ -11,6 +11,18 @@ struct MainTabView: View {
     @State private var resumedCreatingCampaignId: UUID?
     /// Item-driven so cover only shows when we have data; no empty state.
     @State private var endSessionSummaryItem: EndSessionSummaryItem?
+    private struct MainReplayRequest {
+        let campaign: CampaignV2
+        let sessionID: UUID
+    }
+    @State private var pendingMainReplay: MainReplayRequest?
+    @State private var pendingMainReplayLaunch: DemoSessionLaunchConfiguration?
+    @State private var activeMainReplay: DemoSessionLaunchConfiguration?
+    @State private var pendingMainReplaySummary: EndSessionSummaryItem?
+    @State private var showMainReplaySettings = false
+    @State private var preparingMainReplay = false
+    @State private var mainReplayError: String?
+
 
     private enum Tab: Int {
         case home = 0, record = 1, leads = 2, more = 3, settings = 4
@@ -196,6 +208,15 @@ struct MainTabView: View {
         }
         .onChange(of: sessionManager.pendingSessionSummary) { _, newValue in
             guard let data = newValue else { return }
+            if activeMainReplay != nil || pendingMainReplaySummary != nil {
+                if pendingMainReplaySummary == nil {
+                    pendingMainReplaySummary = EndSessionSummaryItem(data: data, sessionID: sessionManager.pendingSessionSummarySessionId, campaignMapSnapshot: SessionManager.lastEndedSummaryMapSnapshot)
+                }
+                activeMainReplay = nil
+                sessionManager.pendingSessionSummary = nil
+                sessionManager.pendingSessionSummarySessionId = nil
+                return
+            }
             endSessionSummaryItem = EndSessionSummaryItem(
                 data: data,
                 sessionID: sessionManager.pendingSessionSummarySessionId,
@@ -205,6 +226,7 @@ struct MainTabView: View {
                 Task {
                     if let persisted = try? await ActivityFeedService.shared.fetchSessionRecord(sessionId: sessionId) {
                         await MainActor.run {
+                            guard endSessionSummaryItem?.sessionID == sessionId else { return }
                             let preservedSegments = endSessionSummaryItem?.data.renderedPathSegments
                             let preservedHomeCoordinates = endSessionSummaryItem?.data.completedHomeCoordinates ?? []
                             let preservedNetworking = endSessionSummaryItem?.data.isNetworkingSession ?? false
@@ -227,6 +249,13 @@ struct MainTabView: View {
             sessionManager.pendingSessionSummary = nil
         }
         .onReceive(NotificationCenter.default.publisher(for: .sessionEnded)) { _ in
+            if activeMainReplay != nil || pendingMainReplaySummary != nil {
+                if pendingMainReplaySummary == nil, let data = SessionManager.lastEndedSummary {
+                    pendingMainReplaySummary = EndSessionSummaryItem(data: data, sessionID: SessionManager.lastEndedSessionId, campaignMapSnapshot: SessionManager.lastEndedSummaryMapSnapshot)
+                    activeMainReplay = nil
+                }
+                return
+            }
             // Fallback if @Published wasn't observed (e.g. tab not in hierarchy when session ended)
             if endSessionSummaryItem == nil, let data = SessionManager.lastEndedSummary {
                 endSessionSummaryItem = EndSessionSummaryItem(
@@ -238,6 +267,7 @@ struct MainTabView: View {
                     Task {
                         if let persisted = try? await ActivityFeedService.shared.fetchSessionRecord(sessionId: sessionId) {
                             await MainActor.run {
+                                guard endSessionSummaryItem?.sessionID == sessionId else { return }
                                 let preservedSegments = endSessionSummaryItem?.data.renderedPathSegments
                                 let preservedHomeCoordinates = endSessionSummaryItem?.data.completedHomeCoordinates ?? []
                                 let preservedNetworking = endSessionSummaryItem?.data.isNetworkingSession ?? false
@@ -259,17 +289,81 @@ struct MainTabView: View {
                 }
             }
         }
-        .fullScreenCover(item: $endSessionSummaryItem) { item in
+        .fullScreenCover(item: $endSessionSummaryItem, onDismiss: {
+            if pendingMainReplay != nil { showMainReplaySettings = true }
+        }) { item in
             ShareActivityGateView(
                 data: item.data,
                 sessionID: item.sessionID,
-                campaignMapSnapshot: item.campaignMapSnapshot
-            ) {
-                endSessionSummaryItem = nil
-                sessionManager.pendingSessionSummary = nil
-                sessionManager.pendingSessionSummarySessionId = nil
-                uiState.clearMapSelection()
+                campaignMapSnapshot: item.campaignMapSnapshot,
+                onCreateReplay: item.sessionID == nil || item.data.isDemoSession || item.data.isNetworkingSession || preparingMainReplay || sessionManager.isEndingSession ? nil : {
+                    guard let sessionID = item.sessionID else { return }
+                    Task { await prepareMainReplay(sessionID: sessionID) }
+                },
+                onDismiss: {
+                    endSessionSummaryItem = nil
+                    sessionManager.pendingSessionSummary = nil
+                    sessionManager.pendingSessionSummarySessionId = nil
+                    uiState.clearMapSelection()
+                }
+            )
+            .alert("Replay unavailable", isPresented: Binding(
+                get: { mainReplayError != nil }, set: { if !$0 { mainReplayError = nil } }
+            )) {
+                Button("OK", role: .cancel) { mainReplayError = nil }
+            } message: {
+                Text(mainReplayError ?? "")
             }
+        }
+        .sheet(isPresented: $showMainReplaySettings, onDismiss: {
+            guard let configuration = pendingMainReplayLaunch else {
+                pendingMainReplay = nil
+                return
+            }
+            pendingMainReplayLaunch = nil
+            pendingMainReplay = nil
+            activeMainReplay = configuration
+        }) {
+            if let request = pendingMainReplay {
+                DemoSessionConfigSheet(campaigns: [request.campaign], defaultCampaignID: request.campaign.id,
+                    saveVideo: true, recordedSessionID: request.sessionID) { configuration in
+                    pendingMainReplayLaunch = configuration
+                    showMainReplaySettings = false
+                }
+            }
+        }
+        .fullScreenCover(item: $activeMainReplay, onDismiss: {
+            guard let summary = pendingMainReplaySummary else { return }
+            pendingMainReplaySummary = nil
+            endSessionSummaryItem = summary
+        }) { configuration in
+            CampaignMapView(campaignId: configuration.campaign.id.uuidString,
+                showPreSessionStartButton: false, demoLaunchConfiguration: configuration,
+                onDismissFromMap: { activeMainReplay = nil })
+        }
+    }
+
+    @MainActor
+    private func prepareMainReplay(sessionID: UUID) async {
+        guard !preparingMainReplay, sessionManager.sessionId == nil, !sessionManager.isEndingSession else { return }
+        preparingMainReplay = true
+        defer { preparingMainReplay = false }
+        do {
+            guard let session = try await ActivityFeedService.shared.fetchSessionRecord(sessionId: sessionID),
+                  let campaignID = session.campaign_id else {
+                throw NSError(domain: "RecordedReplay", code: 1, userInfo: [NSLocalizedDescriptionKey: "This activity is not linked to a campaign."])
+            }
+            let campaign: CampaignV2
+            if let cached = storeV2.campaign(id: campaignID) {
+                campaign = cached
+            } else {
+                campaign = try await sharedV2API.fetchCampaign(id: campaignID)
+            }
+            guard endSessionSummaryItem?.sessionID == sessionID else { return }
+            pendingMainReplay = MainReplayRequest(campaign: campaign, sessionID: sessionID)
+            endSessionSummaryItem = nil
+        } catch {
+            mainReplayError = error.localizedDescription
         }
     }
 

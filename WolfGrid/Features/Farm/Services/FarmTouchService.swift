@@ -129,6 +129,20 @@ actor FarmTouchService {
     
     // MARK: - Create Touch
     
+    func createSessionTouchLocally(_ touch: FarmTouch) async throws -> FarmTouch {
+        try await offlineRepository.createSessionTouchLocally(touch)
+        await OfflineSyncCoordinator.shared.scheduleProcessOutbox()
+        return touch
+    }
+
+    /// Sessions and the outbox can race; create the prerequisite before a remote
+    /// session refers to it. This is background work after local activation.
+    func syncPendingSessionTouch(id: UUID) async throws {
+        if let touch = try await outboxRepository.pendingFarmTouchCreation(id: id) {
+            _ = try await performRemoteCreateTouch(touch)
+        }
+    }
+
     func createTouch(_ touch: FarmTouch) async throws -> FarmTouch {
         let touchToCreate = try await touchWithResolvedCycleNumber(touch)
         if !NetworkMonitor.shared.isOnline {
@@ -157,7 +171,7 @@ actor FarmTouchService {
             ]
 
             if includeMode {
-                data["mode"] = AnyCodable(touch.effectiveModeRawValue)
+                data["mode"] = AnyCodable(touch.persistedModeRawValue)
             }
 
             if let notes = touch.notes {
@@ -204,6 +218,10 @@ actor FarmTouchService {
             touchModeColumnAvailable = includeMode
             return inserted
         } catch {
+            if let databaseError = error as? PostgrestError, databaseError.code == "23505",
+               let existing = try await fetchTouch(id: touch.id) {
+                return existing
+            }
             guard includeMode, isMissingModeColumnError(error) else {
                 throw error
             }
@@ -231,7 +249,7 @@ actor FarmTouchService {
                 ]
 
                 if includeMode {
-                    data["mode"] = AnyCodable(touch.effectiveModeRawValue)
+                    data["mode"] = AnyCodable(touch.persistedModeRawValue)
                 }
 
                 if let notes = touch.notes {
@@ -349,7 +367,7 @@ actor FarmTouchService {
         func update(includeMode: Bool) async throws -> FarmTouch {
             var payload = updateData
             if includeMode {
-                payload["mode"] = AnyCodable(touch.effectiveModeRawValue)
+                payload["mode"] = AnyCodable(touch.persistedModeRawValue)
             }
 
             let response: [FarmTouch] = try await client

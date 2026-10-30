@@ -267,7 +267,9 @@ struct FullScreenMapView: View {
     
     @ViewBuilder
     private var mainContentView: some View {
-        if sessionManager.isActive, sessionManager.campaignId == nil {
+        if uiState.hasFullscreenMap {
+            Color.bg
+        } else if sessionManager.isActive, sessionManager.campaignId == nil {
             legacySessionFallbackView
         } else if let campaignId = mapTabEmbeddedCampaignId {
             CampaignMapView(

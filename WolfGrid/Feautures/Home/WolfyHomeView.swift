@@ -26,6 +26,7 @@ private struct WolfyHomeContent: View {
     @AppStorage private var salesHome: Bool
     @State private var editingGoals = false
     @AppStorage("wolfy.haptics") private var haptics = true
+    @AppStorage("farmsEnabled") private var farmsEnabled = false
 
     private var isFounderDemo: Bool {
         AuthManager.shared.user?.email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "daniel.phillippe27@gmail.com"
@@ -276,6 +277,7 @@ private struct WolfyHomeContent: View {
                     Button("Retry") { Task { await model.loadAssignments(userID: userID, workspaceID: workspaceID) } }
                 }.font(.caption)
             }
+            HStack(spacing: 12) {
             NavigationLink {
                 CampaignsView(usesOwnNavigationStack: false)
                     .toolbar(.visible, for: .navigationBar)
@@ -287,8 +289,25 @@ private struct WolfyHomeContent: View {
                     Image(systemName: "arrow.right")
                 }
                 .foregroundStyle(.white).padding(.horizontal, 20).padding(.vertical, 16)
+                .frame(maxWidth: .infinity)
                 .background(Color.red, in: RoundedRectangle(cornerRadius: 18))
             }.buttonStyle(.plain)
+            if farmsEnabled {
+                NavigationLink {
+                    FarmsView()
+                } label: {
+                    HStack {
+                        Spacer()
+                        Text("Farm").font(.headline)
+                        Spacer()
+                        Image(systemName: "arrow.right")
+                    }
+                    .foregroundStyle(.white).padding(.horizontal, 20).padding(.vertical, 16)
+                    .frame(maxWidth: .infinity)
+                    .background(Color.green, in: RoundedRectangle(cornerRadius: 18))
+                }.buttonStyle(.plain)
+            }
+            }
         }
     }
     private func assignmentLabel(_ assignment: CampaignAssignmentSummary) -> String {

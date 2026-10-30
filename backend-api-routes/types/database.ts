@@ -1072,6 +1072,10 @@ export interface DiallerLead {
   phone_area_label?: string | null;
   company?: string | null;
   email?: string | null;
+  address?: string | null;
+  website?: string | null;
+  google_rating?: number | null;
+  google_rating_count?: number | null;
   list_id?: string | null;
   list_name?: string | null;
   follow_up_name?: string | null;

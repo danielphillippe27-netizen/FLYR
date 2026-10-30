@@ -79,11 +79,18 @@ export async function GET(request: NextRequest) {
   if (context instanceof NextResponse) return context;
 
   try {
-    const focusedIds = (request.nextUrl.searchParams.get('leadIds') ?? '')
-      .split(',')
-      .map((value) => value.trim())
-      .filter(Boolean)
-      .slice(0, 500);
+    const requestedListId = clean(request.nextUrl.searchParams.get('listId'));
+    let focusedIds = Array.from(new Set((request.nextUrl.searchParams.get('leadIds') ?? '').split(',').map((id) => id.trim()).filter(Boolean))).slice(0, 2000);
+    if (requestedListId) {
+      const { data: list, error: listError } = await context.admin.from('smart_lists')
+        .select('criteria').eq('id', requestedListId).eq('workspace_id', context.workspaceId)
+        .eq('created_by_user_id', context.requestUser.id).maybeSingle();
+      if (listError) throw listError;
+      if (!list) return NextResponse.json({ error: 'Saved lead list not found.' }, { status: 404 });
+      const members = list.criteria?.masterLeadIds ?? list.criteria?.master_lead_ids;
+      const savedIds = Array.isArray(members) ? members.filter((id): id is string => typeof id === 'string') : [];
+      focusedIds = [...new Set([...focusedIds, ...savedIds.map((id) => id.trim()).filter(Boolean)])].slice(0, 2000);
+    }
 
     let query = context.admin
       .from('sales_leads')
@@ -93,7 +100,7 @@ export async function GET(request: NextRequest) {
       .order('id', { ascending: true })
       .limit(2000);
     query = scopeQuery(query, context);
-    query = focusedIds.length > 0
+    query = focusedIds.length > 0 || requestedListId
       ? query.in('id', focusedIds).neq('lead_state', 'archived')
       : request.nextUrl.searchParams.get('includeCompleted') === '1'
         ? query.neq('lead_state', 'archived')
@@ -162,6 +169,7 @@ export async function POST(request: NextRequest) {
         createdByUserId: context.requestUser.id,
         name: clean(lead.name) ?? 'Lead',
         company: clean(lead.company),
+        address: clean(lead.address),
         phone,
         email: clean(lead.email),
         source: 'dialler_import',
@@ -169,6 +177,25 @@ export async function POST(request: NextRequest) {
         metadata: { listId, listName },
       });
       if (result.row) imported.push(shapeLead(result.row));
+    }
+
+    // A removed list's leads still exist as archived sales leads. Reactivate them
+    // before returning the list, so the next refresh cannot discard the rows.
+    const archivedIds = [...new Set(imported.filter((lead) => lead.lead_state === 'archived').map((lead) => lead.id))];
+    if (archivedIds.length) {
+      const { data, error } = await scopeQuery(context.admin.from('sales_leads')
+        .update({ lead_state: 'queued', updated_at: new Date().toISOString() })
+        .eq('workspace_id', context.workspaceId).eq('lead_state', 'archived').in('id', archivedIds), context)
+        .select('*');
+      if (error) throw error;
+      const restored = new Map(((data ?? []) as SalesLead[]).map((row) => [row.id, shapeLead(row)]));
+      for (let index = 0; index < imported.length; index++) {
+        if (imported[index].lead_state === 'archived') {
+          const row = restored.get(imported[index].id);
+          if (!row) throw new Error('Could not restore an archived dialler lead.');
+          imported[index] = row;
+        }
+      }
     }
 
     return NextResponse.json({

@@ -112,12 +112,14 @@ final class CampaignDownloadService: ObservableObject {
     private static let pageSize = 1_000
 
     @Published private(set) var states: [String: CampaignDownloadState] = [:]
+    @Published private(set) var mapTileBytes: [String: UInt64] = [:]
     @Published private(set) var readiness: [String: CampaignOfflineReadiness] = [:]
     @Published private(set) var mapAssetReadiness: [String: CampaignMapAssetReadiness] = [:]
 
     private let campaignRepository = CampaignRepository.shared
     private var activeDownloads = Set<String>()
     private var activeMapAssetDownloads = Set<String>()
+    private var refreshVersions: [String: UInt64] = [:]
 
     private init() {}
 
@@ -134,9 +136,42 @@ final class CampaignDownloadService: ObservableObject {
     }
 
     func refreshState(campaignId: String) async {
-        states[campaignId] = await campaignRepository.getDownloadState(campaignId: campaignId)
-        readiness[campaignId] = await computeReadiness(campaignId: campaignId)
-        mapAssetReadiness[campaignId] = await computeMapAssetReadiness(campaignId: campaignId)
+        let version = (refreshVersions[campaignId] ?? 0) &+ 1
+        refreshVersions[campaignId] = version
+        var state = await campaignRepository.getDownloadState(campaignId: campaignId)
+        let interrupted = state?.status == "downloading" && !activeDownloads.contains(campaignId)
+        let existingTilesReady = interrupted
+            ? await MapboxOfflineService.shared.hasCompleteCampaignRegion(campaignId: campaignId)
+            : nil
+        let currentReadiness = await computeReadiness(campaignId: campaignId, mapTilesReady: existingTilesReady)
+        if state?.status == "downloading", !activeDownloads.contains(campaignId) {
+            state = await campaignRepository.getDownloadState(campaignId: campaignId)
+        }
+        // A process termination can leave a persisted downloading state behind.
+        // Restore the verified package or offer a retry when no task owns it.
+        if state?.status == "downloading", !activeDownloads.contains(campaignId) {
+            let ready = currentReadiness.isVerified
+            await campaignRepository.updateDownloadState(
+                campaignId: campaignId,
+                status: ready ? "ready" : "failed",
+                progress: ready ? 1 : 0,
+                startedAt: state?.startedAt,
+                completedAt: ready ? (state?.completedAt ?? Date()) : nil,
+                errorMessage: ready ? nil : "Download was interrupted. Tap Retry to continue.",
+                lastSyncedAt: state?.lastSyncedAt
+            )
+            state = await campaignRepository.getDownloadState(campaignId: campaignId)
+        }
+        let tileBytes = await MapboxOfflineService.shared.campaignRegionStorageBytes(campaignId: campaignId)
+        let assetReadiness = await computeMapAssetReadiness(campaignId: campaignId)
+        // Async checks can overlap a later refresh or the download finishing.
+        // Publish the latest persisted status only, never an older snapshot.
+        state = await campaignRepository.getDownloadState(campaignId: campaignId)
+        guard refreshVersions[campaignId] == version else { return }
+        states[campaignId] = state
+        readiness[campaignId] = currentReadiness
+        mapTileBytes[campaignId] = tileBytes
+        mapAssetReadiness[campaignId] = assetReadiness
     }
 
     func refreshMapAssetReadiness(campaignId: String) async {
@@ -146,6 +181,53 @@ final class CampaignDownloadService: ObservableObject {
     func recordSuccessfulSync(campaignId: String, at date: Date = Date()) async {
         await campaignRepository.markCampaignLastSynced(campaignId: campaignId, at: date)
         await refreshState(campaignId: campaignId)
+    }
+
+    /// Warm only the map shown in the campaign picker. Contacts, activity history,
+    /// and offline tile packs are left to the existing full-download coordinator.
+    func prefetchMapBundleIfNeeded(campaignId: String) async {
+        guard OfflineFirstConfig.isEnabled,
+              !Task.isCancelled,
+              NetworkMonitor.shared.isOnline,
+              !NetworkMonitor.shared.isCellular || OfflineFirstConfig.cellularPreloadAllowed,
+              let userId = AuthManager.shared.user?.id else { return }
+        let workspaceId = WorkspaceContext.shared.workspaceId
+        guard !(await campaignRepository.hasCampaignMapBundle(campaignId: campaignId)),
+              !Task.isCancelled else { return }
+
+        let trace = PerfTrace.begin("campaign_open", "visible_map_prefetch", fields: ["campaign": campaignId])
+        do {
+            // Uses the same request deduper as foreground map opening.
+            let result = try await BuildingLinkService.shared.fetchCanonicalCampaignMapBundle(
+                campaignId: campaignId,
+                localSignature: nil
+            )
+            guard !Task.isCancelled,
+                  AuthManager.shared.user?.id == userId,
+                  WorkspaceContext.shared.workspaceId == workspaceId else {
+                trace.end(status: "cancelled_or_scope_changed")
+                return
+            }
+            guard case .bundle(let bundle) = result else {
+                trace.end(status: "not_modified")
+                return
+            }
+            // Another downloader may have saved the same coalesced response already.
+            guard !(await campaignRepository.hasCampaignMapBundle(campaignId: campaignId)),
+                  !Task.isCancelled,
+                  AuthManager.shared.user?.id == userId,
+                  WorkspaceContext.shared.workspaceId == workspaceId else {
+                trace.end(status: "already_cached_or_cancelled")
+                return
+            }
+            let persisted = await campaignRepository.replaceCampaignMapBundle(campaignId: campaignId, bundle: bundle)
+            trace.end(status: persisted ? "ready" : "persist_failed", fields: [
+                "addresses": bundle.addresses.features.count,
+                "buildings": bundle.buildings.features.count
+            ])
+        } catch {
+            trace.end(status: "error", fields: ["error": error.localizedDescription])
+        }
     }
 
     func prefetchIfNeeded(campaignId: String) async {
@@ -160,7 +242,7 @@ final class CampaignDownloadService: ObservableObject {
         }
 
         if let existingState,
-           existingState.isAvailableOffline || existingState.status == "downloading" {
+           existingState.isAvailableOffline, readiness[campaignId]?.isVerified == true {
             states[campaignId] = existingState
             return
         }
@@ -442,6 +524,7 @@ final class CampaignDownloadService: ObservableObject {
             ])
             try Task.checkCancellation()
             await campaignRepository.updateDownloadState(campaignId: campaignId, status: "downloading", progress: 0.50, startedAt: startedAt)
+            setTransientState(campaignId: campaignId, status: "downloading", progress: 0.50, startedAt: startedAt, errorMessage: nil)
 
             let orphansTrace = PerfTrace.begin("campaign_open", "offline_fetch_address_orphans", fields: ["campaign": campaignId])
             let addressOrphans = try await fetchAddressOrphans(campaignId: campaignUUID)
@@ -449,6 +532,7 @@ final class CampaignDownloadService: ObservableObject {
             try Task.checkCancellation()
             await campaignRepository.upsertAddressOrphans(campaignId: campaignId, orphans: addressOrphans)
             await campaignRepository.updateDownloadState(campaignId: campaignId, status: "downloading", progress: 0.55, startedAt: startedAt)
+            setTransientState(campaignId: campaignId, status: "downloading", progress: 0.55, startedAt: startedAt, errorMessage: nil)
 
             let addressMetadataTrace = PerfTrace.begin("campaign_open", "offline_fetch_address_metadata", fields: ["campaign": campaignId])
             let addressMetadata = try await fetchCampaignAddressMetadata(campaignId: campaignUUID)
@@ -466,6 +550,7 @@ final class CampaignDownloadService: ObservableObject {
             try Task.checkCancellation()
             await campaignRepository.upsertStatuses(rows: Array(statuses.values))
             await campaignRepository.updateDownloadState(campaignId: campaignId, status: "downloading", progress: 0.80, startedAt: startedAt)
+            setTransientState(campaignId: campaignId, status: "downloading", progress: 0.80, startedAt: startedAt, errorMessage: nil)
 
             let contactsTrace = PerfTrace.begin("campaign_open", "offline_fetch_contacts", fields: ["campaign": campaignId])
             let contacts = try await fetchCampaignContacts(campaignId: campaignUUID)
@@ -500,7 +585,10 @@ final class CampaignDownloadService: ObservableObject {
                 addresses: mapBundle.addresses.features,
                 onProgress: { [weak self] progress in
                     Task { @MainActor [weak self] in
-                        self?.setTransientState(
+                        guard let self, self.activeDownloads.contains(campaignId),
+                              self.states[campaignId]?.status == "downloading",
+                              self.states[campaignId]?.startedAt == startedAt else { return }
+                        self.setTransientState(
                             campaignId: campaignId,
                             status: "downloading",
                             progress: min(max(0.82 + (progress * 0.18), 0.82), 0.99),
@@ -525,7 +613,7 @@ final class CampaignDownloadService: ObservableObject {
                     contacts: contacts.count,
                     activities: contactActivities.count
                 ),
-                mapTilesReady: true
+                mapTilesReady: await MapboxOfflineService.shared.hasCompleteCampaignRegion(campaignId: campaignId)
             )
             self.readiness[campaignId] = readiness
             guard readiness.isVerified else {
@@ -621,6 +709,8 @@ final class CampaignDownloadService: ObservableObject {
     }
 
     private func fetchAndPersistCampaignMapBundle(campaignId: String) async throws -> CanonicalCampaignMapBundle {
+        let compactUserId = AuthManager.shared.user?.id
+        let compactWorkspaceId = WorkspaceContext.shared.workspaceId
         let result = try await BuildingLinkService.shared.fetchCanonicalCampaignMapBundle(
             campaignId: campaignId,
             localSignature: nil
@@ -630,10 +720,57 @@ final class CampaignDownloadService: ObservableObject {
             throw CampaignOfflineVerificationError.mapBundleUnavailable
         }
 
+        // A package is not advertised as offline-ready until all tile bytes have
+        // passed checksum verification. Keep the previous canonical cache on failure.
+        if let tiles = bundle.tiles {
+            let archiveTrace = PerfTrace.begin("campaign_open", "offline_archive", fields: ["campaign": campaignId])
+            _ = try await CanonicalTilePackageStore.shared.download(tiles)
+            archiveTrace.end(status: "ready")
+            if tiles.geometryPack != nil { _ = try await CanonicalTilePackageStore.shared.downloadExactGeometry(tiles) }
+
+            // V3 is already prepared by the primary loader. Only older tile
+            // responses need this compatibility preparation.
+            if bundle.storageFormat != "tiles-v3", let compactUserId {
+                do {
+                    if let (data, compact) = try await BuildingLinkService.shared.fetchCompactCampaignMapBundle(campaignId: campaignId) {
+                        guard compact.canonicalSignature == bundle.canonicalSignature,
+                              compact.tiles.geometryRevision == tiles.geometryRevision,
+                              compact.tiles.sha256 == tiles.sha256,
+                              compact.tiles.geometryPack?.sha256 == tiles.geometryPack?.sha256,
+                              AuthManager.shared.user?.id == compactUserId,
+                              WorkspaceContext.shared.workspaceId == compactWorkspaceId,
+                              !Task.isCancelled else { throw CampaignOfflineVerificationError.mapBundleUnavailable }
+                        let geometryURL = try await CanonicalTilePackageStore.shared.downloadExactGeometry(compact.tiles)
+                        guard AuthManager.shared.user?.id == compactUserId,
+                              WorkspaceContext.shared.workspaceId == compactWorkspaceId,
+                              !Task.isCancelled else { throw CancellationError() }
+                        _ = try await CanonicalCompactCampaignStore.shared.save(data: data, campaignId: campaignId,
+                            userId: compactUserId.uuidString, workspaceId: compactWorkspaceId?.uuidString,
+                            geometryURL: geometryURL)
+                    }
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    if Task.isCancelled || Self.isCancellation(error) { throw error }
+                    // The existing offline bundle remains usable until compact
+                    // field data is connected to all campaign operations.
+                    print("⚠️ [MAP_DEBUG] compact_offline_prepare_failed campaign=\(campaignId) error=\(error.localizedDescription)")
+                }
+            }
+        }
+
+        if let compactUserId {
+            guard AuthManager.shared.user?.id == compactUserId,
+                  WorkspaceContext.shared.workspaceId == compactWorkspaceId,
+                  !Task.isCancelled else { throw CancellationError() }
+        }
+
+        let persistTrace = PerfTrace.begin("campaign_open", "offline_persist_records", fields: ["campaign": campaignId])
         let persisted = await campaignRepository.replaceCampaignMapBundle(
             campaignId: campaignId,
             bundle: bundle
         )
+        persistTrace.end(status: persisted ? "ready" : "error")
         guard persisted else {
             throw CampaignOfflineVerificationError.mapBundlePersistFailed
         }
@@ -647,11 +784,43 @@ final class CampaignDownloadService: ObservableObject {
     }
 
     private func fetchCampaignAddressMetadata(campaignId: UUID) async throws -> [CampaignAddressResponse] {
+        do {
+            return try await fetchCampaignAddressMetadataPages(campaignId: campaignId, pagesPerBatch: 2)
+        } catch {
+            if Task.isCancelled || Self.isCancellation(error) { throw error }
+            // Some database plans time out under parallel load. Retry the
+            // complete, ordered read serially instead of failing the download.
+            print("⚠️ [CampaignDownload] Parallel address fetch failed; retrying serially: \(error.localizedDescription)")
+            return try await fetchCampaignAddressMetadataPages(campaignId: campaignId, pagesPerBatch: 1)
+        }
+    }
+
+    private func fetchCampaignAddressMetadataPages(campaignId: UUID, pagesPerBatch: Int) async throws -> [CampaignAddressResponse] {
         var rows: [CampaignAddressResponse] = []
-        var from = 0
+        var nextPage = 0
 
         while true {
-            let to = from + Self.pageSize - 1
+            let pages = try await withThrowingTaskGroup(of: (Int, [CampaignAddressResponse]).self) { group in
+                for pageIndex in nextPage..<(nextPage + pagesPerBatch) {
+                    group.addTask {
+                        (pageIndex, try await Self.fetchCampaignAddressMetadataPage(campaignId: campaignId, pageIndex: pageIndex))
+                    }
+                }
+                var collected: [(Int, [CampaignAddressResponse])] = []
+                for try await page in group { collected.append(page) }
+                return collected.sorted { $0.0 < $1.0 }
+            }
+            for (_, page) in pages {
+                rows.append(contentsOf: page)
+                if page.count < Self.pageSize { return rows }
+            }
+            nextPage += pagesPerBatch
+        }
+    }
+
+    private static func fetchCampaignAddressMetadataPage(campaignId: UUID, pageIndex: Int) async throws -> [CampaignAddressResponse] {
+            let from = pageIndex * pageSize
+            let to = from + pageSize - 1
             let response = try await SupabaseManager.shared.client
                 .from("campaign_addresses")
                 .select("""
@@ -676,18 +845,10 @@ final class CampaignDownloadService: ObservableObject {
                 """)
                 .eq("campaign_id", value: campaignId.uuidString)
                 .order("created_at", ascending: true)
+                .order("id", ascending: true)
                 .range(from: from, to: to)
                 .execute()
-
-            let page = try JSONDecoder.supabaseDates.decode([CampaignAddressResponse].self, from: response.data)
-            rows.append(contentsOf: page)
-            if page.count < Self.pageSize {
-                break
-            }
-            from += Self.pageSize
-        }
-
-        return rows
+            return try JSONDecoder.supabaseDates.decode([CampaignAddressResponse].self, from: response.data)
     }
 
     private func fetchAddressOrphans(campaignId: UUID) async throws -> [CampaignAddressOrphanSnapshot] {
@@ -774,14 +935,25 @@ final class CampaignDownloadService: ObservableObject {
         mapTilesReady: Bool? = nil
     ) async -> CampaignOfflineReadiness {
         let assetCounts = await campaignRepository.getOfflineAssetCounts(campaignId: campaignId)
-        let mapBundle = await campaignRepository.getCampaignMapBundle(campaignId: campaignId)
+        let mapMetadata = await campaignRepository.getCampaignMapBundleMetadata(campaignId: campaignId)
         let contactCounts = await ContactRepository.shared.getOfflineCounts(campaignId: UUID(uuidString: campaignId) ?? UUID())
-        let currentState = if let cachedState = states[campaignId] {
-            cachedState
+        let baseMapTilesReady: Bool
+        if let mapTilesReady {
+            baseMapTilesReady = mapTilesReady
         } else {
-            await campaignRepository.getDownloadState(campaignId: campaignId)
+            // The published status can lag behind a finished download. Verify
+            // the actual region instead of inferring its presence from status.
+            baseMapTilesReady = await MapboxOfflineService.shared.hasCompleteCampaignRegion(campaignId: campaignId)
         }
-        let resolvedMapTilesReady = mapTilesReady ?? currentState?.isAvailableOffline == true
+
+        let canonicalPackageReady: Bool
+        if let tiles = mapMetadata?.canonicalTiles {
+            canonicalPackageReady = await CanonicalTilePackageStore.shared.hasVerifiedPackage(tiles)
+        } else {
+            // V3 bundles must not be treated as legacy if their manifest is missing.
+            canonicalPackageReady = mapMetadata?.usesCompactTiles != true
+        }
+        let resolvedMapTilesReady = baseMapTilesReady && canonicalPackageReady
 
         let requiredAddresses = expected?.addresses ?? max(assetCounts.addresses, 0)
         let requiredBuildings = expected?.buildings ?? max(assetCounts.buildings, 0)
@@ -794,7 +966,7 @@ final class CampaignDownloadService: ObservableObject {
 
         var missing: [String] = []
         if !resolvedMapTilesReady { missing.append("map tiles") }
-        if mapBundle?.metadata == nil { missing.append("map bundle") }
+        if mapMetadata == nil { missing.append("map bundle") }
         if assetCounts.buildings < requiredBuildings || assetCounts.buildings == 0 { missing.append("buildings") }
         if assetCounts.addresses < requiredAddresses || assetCounts.addresses == 0 { missing.append("addresses") }
         if assetCounts.buildingLinks < requiredLinks { missing.append("building links") }
@@ -866,10 +1038,98 @@ final class OfflinePreloadCoordinator: ObservableObject {
     private let networkMonitor = NetworkMonitor.shared
     private var preloadTask: Task<Void, Never>?
     private var pausedUntil: Date?
+    private var foregroundMapTokens = Set<UUID>()
+    private var requiredDownloadTask: Task<Void, Never>?
+    private var connectivitySubscription: AnyCancellable?
 
-    private init() {}
+    // Scope durable download requests to the signed-in user and workspace.
+    private var requiredDownloadKey: String? {
+        guard let userId = AuthManager.shared.user?.id else { return nil }
+        return "required_campaign_downloads.\(userId.uuidString).\(WorkspaceContext.shared.workspaceId?.uuidString ?? "personal")"
+    }
+
+    private var requiredCampaignIds: Set<String> {
+        guard let key = requiredDownloadKey else { return [] }
+        return Set(UserDefaults.standard.stringArray(forKey: key) ?? [])
+    }
+
+    private func storeRequiredCampaignIds(_ ids: Set<String>, key: String) {
+        UserDefaults.standard.set(ids.sorted(), forKey: key)
+    }
+
+    private init() {
+        connectivitySubscription = networkMonitor.$isOnline
+            .combineLatest(AuthManager.shared.$user, WorkspaceContext.shared.$workspaceId)
+            .sink { [weak self] online, user, _ in
+                guard online, user != nil else { return }
+                Task { @MainActor [weak self] in
+                    self?.scheduleRequiredDownloads()
+                }
+            }
+    }
+
+    /// Event-driven downloads are independent of the optional recent-campaign limit.
+    func requireLocalCampaigns(_ campaignIds: [UUID], refreshExisting: Bool = false) {
+        guard let key = requiredDownloadKey, !campaignIds.isEmpty else { return }
+        let ids = Set(campaignIds.map(\.uuidString))
+        let retained = Set(UserDefaults.standard.stringArray(forKey: key + ".retained") ?? [])
+        storeRequiredCampaignIds(retained.union(ids), key: key + ".retained")
+        if refreshExisting {
+            let refresh = Set(UserDefaults.standard.stringArray(forKey: key + ".refresh") ?? [])
+            storeRequiredCampaignIds(refresh.union(ids), key: key + ".refresh")
+        }
+        storeRequiredCampaignIds(requiredCampaignIds.union(ids), key: key)
+        scheduleRequiredDownloads()
+    }
+
+    private func scheduleRequiredDownloads() {
+        guard OfflineFirstConfig.isEnabled, networkMonitor.isOnline,
+              requiredDownloadTask == nil, !requiredCampaignIds.isEmpty else { return }
+        requiredDownloadTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.requiredDownloadTask = nil }
+            while !Task.isCancelled, self.networkMonitor.isOnline,
+                  let key = self.requiredDownloadKey, !self.requiredCampaignIds.isEmpty {
+                if !self.isPausedForForegroundWork {
+                    for id in self.requiredCampaignIds.sorted() {
+                        guard !Task.isCancelled, self.networkMonitor.isOnline,
+                              self.requiredDownloadKey == key else { break }
+                        guard let campaignId = UUID(uuidString: id) else { continue }
+                        do {
+                            // Creation returns a shell; do not cache it as a finished campaign.
+                            let state = try await CampaignsAPI.shared.fetchProvisionState(campaignId: campaignId)
+                            guard self.requiredDownloadKey == key else { break }
+                            let legacyReady = state.provisionStatus == nil && state.provisionPhase == nil
+                            guard state.provisionStatus == .ready || legacyReady else { continue }
+                            let refresh = Set(UserDefaults.standard.stringArray(forKey: key + ".refresh") ?? [])
+                            if refresh.contains(id) {
+                                await self.campaignDownloadService.makeAvailableOffline(campaignId: id)
+                            } else {
+                                await self.campaignDownloadService.prefetchIfNeeded(campaignId: id)
+                            }
+                            guard self.requiredDownloadKey == key else { break }
+                            if self.campaignDownloadService.states[id]?.isAvailableOffline == true,
+                               self.campaignDownloadService.readiness(for: id)?.isVerified == true {
+                                var pending = self.requiredCampaignIds
+                                pending.remove(id)
+                                self.storeRequiredCampaignIds(pending, key: key)
+                                let remainingRefresh = Set(UserDefaults.standard.stringArray(forKey: key + ".refresh") ?? [])
+                                self.storeRequiredCampaignIds(remainingRefresh.subtracting([id]), key: key + ".refresh")
+                            }
+                        } catch {
+                            // Preserve the request for reconnect/relaunch and transient failures.
+                            print("⚠️ [OfflinePreload] Required campaign download deferred: \(error.localizedDescription)")
+                        }
+                    }
+                }
+                guard !self.requiredCampaignIds.isEmpty else { break }
+                try? await Task.sleep(nanoseconds: 30_000_000_000)
+            }
+        }
+    }
 
     func schedule(reason: String) {
+        scheduleRequiredDownloads()
         guard OfflineFirstConfig.isEnabled else { return }
         guard networkMonitor.isOnline else { return }
         if networkMonitor.isCellular && !OfflineFirstConfig.cellularPreloadAllowed { return }
@@ -884,6 +1144,17 @@ final class OfflinePreloadCoordinator: ObservableObject {
             await self.run(reason: reason)
             self.preloadTask = nil
         }
+    }
+
+    func beginForegroundMap(_ token: UUID) {
+        guard foregroundMapTokens.insert(token).inserted else { return }
+        preloadTask?.cancel()
+        preloadTask = nil
+    }
+
+    func endForegroundMap(_ token: UUID) {
+        foregroundMapTokens.remove(token)
+        if foregroundMapTokens.isEmpty { schedule(reason: "map_closed") }
     }
 
     func pauseForForegroundWork(
@@ -936,7 +1207,12 @@ final class OfflinePreloadCoordinator: ObservableObject {
             await campaignDownloadService.prefetchIfNeeded(campaignId: candidate.campaignId.uuidString)
         }
 
-        await enforceStorageCap(protectedCampaignIds: Set(preloadCandidates.map(\.campaignId)))
+        let retainedIds = requiredDownloadKey.map {
+            UserDefaults.standard.stringArray(forKey: $0 + ".retained") ?? []
+        } ?? []
+        let protectedIds = Set(preloadCandidates.map(\.campaignId))
+            .union(retainedIds.compactMap { UUID(uuidString: $0) })
+        await enforceStorageCap(protectedCampaignIds: protectedIds)
         lastPreloadAt = Date()
         trace.end(status: "done", fields: [
             "selected": candidates.count,
@@ -946,6 +1222,7 @@ final class OfflinePreloadCoordinator: ObservableObject {
     }
 
     private var isPausedForForegroundWork: Bool {
+        if !foregroundMapTokens.isEmpty { return true }
         guard let pausedUntil else { return false }
         if pausedUntil <= Date() {
             self.pausedUntil = nil
@@ -955,7 +1232,7 @@ final class OfflinePreloadCoordinator: ObservableObject {
     }
 
     private func scheduleAfterPause(reason: String) {
-        guard preloadTask == nil else { return }
+        guard foregroundMapTokens.isEmpty, preloadTask == nil else { return }
         let delaySeconds = max(1, pausedUntil?.timeIntervalSinceNow ?? 1)
         preloadTask = Task { @MainActor [weak self] in
             let delayNanoseconds = UInt64(delaySeconds * 1_000_000_000)
