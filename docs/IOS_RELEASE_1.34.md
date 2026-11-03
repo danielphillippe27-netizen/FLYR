@@ -32,7 +32,10 @@ This update improves your farm maps and door-knocking sessions:
 - Local build recovery: all temporarily relocated directories were restored to original Xcode paths; rebuildable device Debug outputs were cleared for space.
 - Physical iPhone smoke test: pending.
 - App Store Connect: sign-in required; latest version/build and review state have not been verified in this session.
-- App Store Connect upload: started November 3, 2026 through the saved Xcode account; check `build/app-store-1.34-21/upload.log` for the final receipt.
+- App Store Connect upload: succeeded November 3, 2026 at 11:32 a.m. Toronto time through the saved Xcode account. Apple reported “Uploaded package is processing” and “Upload succeeded.” Receipt: `build/app-store-1.34-21/upload-retry.log`.
+- First upload failed with a corrupt-package error under low disk space. After clearing completed compiler intermediates, the retry succeeded. The signed archive and IPA remain intact.
+- Non-blocking upload warnings: missing third-party dSYMs for MapboxCommon, MapboxCoreMaps, and WebRTC; crash reports inside those frameworks may lack full symbol names.
+- Release source commit: `304ab3439`, pushed to `origin/main`.
 - Review submission and public release: not performed.
 
 ## Physical iPhone checks before submission
