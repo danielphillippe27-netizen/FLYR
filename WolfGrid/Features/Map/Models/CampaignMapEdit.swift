@@ -258,12 +258,21 @@ enum CampaignMapEdits {
                 if (value?.buildingLinkSet == true && value?.buildingId != nil) ||
                     (value?.parcelLinkSet == true && value?.parcelId != nil) {
                     changes["label_visibility_mode"] = "all_modes"
+                    if ManualPinPropertyMatcher.isUnlinkedFieldRecord(feature) {
+                        // A verified field pin now represents this property's
+                        // regular address. Keep its ID/history, replace its glyph.
+                        changes["feature_type"] = "address"
+                        changes["source"] = "manual"
+                    }
                 }
             }
             return AddressFeature(type: feature.type, id: feature.id, geometry: value?.geometry ?? feature.geometry,
                 properties: changes.isEmpty ? feature.properties : patch(feature.properties, changes))
         }
         let addressByID = Dictionary(effectiveAddresses.map { (addressItem($0).featureID, $0) }, uniquingKeysWith: { first, _ in first })
+        let supersededGeometryIDs = Set(addresses.filter {
+            state.features[addressItem($0).id]?.hidden == true && FarmLiveMatchIndex.isPendingGeometryStop($0)
+        }.map { addressItem($0).featureID })
         var addedBuildingLinks: [String: [String]] = [:]
         var addedParcelLinks: [String: [String]] = [:]
         for address in effectiveAddresses {
@@ -305,6 +314,15 @@ enum CampaignMapEdits {
             if changed {
                 var changes: [String: Any] = ["address_ids": ids, "address_id": ids.first as Any? ?? NSNull(),
                     "address_count": ids.count, "is_linked": !ids.isEmpty]
+                if ids.count == 1, !supersededGeometryIDs.isDisjoint(with: old.map { $0.lowercased() }) {
+                    // A generated empty stop is not a second unit. Clear the
+                    // false townhouse metadata once its real home is retained.
+                    changes["unit_count"] = 1; changes["units_count"] = 1
+                    changes["is_townhome"] = false; changes["is_multi_unit"] = false
+                    changes["linked_address_count"] = 1
+                    changes["primary_address_id"] = ids[0]
+                    changes["linked_address_ids"] = ids
+                }
                 if let first = ids.first.flatMap({ addressByID[$0] }) {
                     changes["address_text"] = first.properties.formatted as Any? ?? NSNull()
                     changes["house_number"] = first.properties.houseNumber as Any? ?? NSNull()

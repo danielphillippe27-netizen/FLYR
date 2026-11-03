@@ -61,6 +61,89 @@ class BuildingDataService: ObservableObject {
         }
     }
 
+    /// Generated geometry stops are locations awaiting a civic address, not
+    /// additional addresses to list in a home card.
+    static func isUnresolvedAddress(gersId: String?, houseNumber: String?, streetName: String?, formatted: String?) -> Bool {
+        let house = (houseNumber ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let street = (streetName ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard house.isEmpty && street.isEmpty else { return false }
+        return gersId?.lowercased().hasPrefix("synthetic:geometry-target:") == true || isPendingAddressText(formatted)
+    }
+
+    static func isPendingAddressText(_ text: String?) -> Bool {
+        text?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "address pending"
+    }
+
+    /// Reuse an existing saved home before offering geocoding. Parcel ownership
+    /// bounds a shared roof; multiple genuine homes require an explicit choice.
+    static func existingHomeForPendingStop(_ stop: AddressFeature, in features: [AddressFeature],
+                                          state: CampaignMapEditState) -> AddressFeature? {
+        let p = stop.properties
+        let roofs = Set([p.buildingGersId, p.linkedBuildingId].compactMap { $0?.lowercased() })
+        let lots = Set([p.parcelId, p.campaignParcelId].compactMap { $0?.lowercased() })
+        let candidates = features.filter { feature in
+            let f = feature.properties
+            guard !isUnresolvedAddress(gersId: f.gersId, houseNumber: f.houseNumber ?? f.houseNumberLabel,
+                streetName: f.streetName, formatted: f.formatted) else { return false }
+            let edit = state.features[CampaignMapEdits.addressItem(feature).id]
+            guard edit?.hidden != true else { return false }
+            let linkedLots = Set((edit?.parcelLinkSet == true ? [edit?.parcelId] : [f.parcelId, f.campaignParcelId])
+                .compactMap { $0?.lowercased() })
+            if !lots.isEmpty && !linkedLots.isEmpty { return !lots.isDisjoint(with: linkedLots) }
+            let linkedRoofs = Set((edit?.buildingLinkSet == true ? [edit?.buildingId] : [f.buildingGersId, f.linkedBuildingId])
+                .compactMap { $0?.lowercased() })
+            return !roofs.isDisjoint(with: linkedRoofs)
+        }
+        guard candidates.count == 1 else { return nil }
+        return CampaignMapEdits.snapshot(buildings: [], addresses: candidates, parcels: [], state: state).addresses.first
+    }
+
+    /// Resolve only this card's rows using the same saved overlays as the map.
+    /// Raw bundle membership can still contain a superseded pending placeholder.
+    static func editedCardFeatures(_ features: [AddressFeature], building: BuildingFeature?,
+                                   identifiers: Set<String>, explicitIDs: Set<UUID>,
+                                   state: CampaignMapEditState) -> [AddressFeature] {
+        let placeholders = Set(features.filter {
+            isUnresolvedAddress(gersId: $0.properties.gersId, houseNumber: $0.properties.houseNumber ?? $0.properties.houseNumberLabel,
+                streetName: $0.properties.streetName, formatted: $0.properties.formatted)
+        }.compactMap { UUID(uuidString: $0.properties.id ?? $0.id ?? "") })
+        let requested = explicitIDs.subtracting(placeholders).filter { state.features[CampaignMapItem(.address, $0.uuidString).id]?.hidden != true }
+        let embedded = Set(building?.properties.addressUUIDs ?? [])
+        let relevant = features.filter { feature in
+            guard let id = UUID(uuidString: feature.properties.id ?? feature.id ?? "") else { return false }
+            let edit = state.features[CampaignMapItem(.address, id.uuidString).id]
+            guard edit?.hidden != true, !placeholders.contains(id) else { return false }
+            if !requested.isEmpty { return requested.contains(id) }
+            // An explicit unlink/move must override old embedded roof membership.
+            if edit?.buildingLinkSet == true {
+                return edit?.buildingId.map { identifiers.contains($0.lowercased()) } == true
+            }
+            return embedded.contains(id) || CampaignMapEditPlanner.linkedBuilding(feature)
+                .map { identifiers.contains($0.lowercased()) } == true
+        }
+        return CampaignMapEdits.snapshot(buildings: [], addresses: relevant, parcels: [], state: state).addresses
+    }
+
+    /// A card opened from a superseded parcel stop follows its replacement on
+    /// that parcel only; another address sharing the roof stays outside the card.
+    static func scopedCardFeatures(_ features: [AddressFeature], ids: Set<UUID>, state: CampaignMapEditState) -> [AddressFeature] {
+        let replacedLots = Set(features.filter { feature in
+            guard let id = UUID(uuidString: feature.properties.id ?? feature.id ?? ""), ids.contains(id) else { return false }
+            return state.features[CampaignMapItem(.address, id.uuidString).id]?.hidden == true &&
+                isUnresolvedAddress(gersId: feature.properties.gersId, houseNumber: feature.properties.houseNumber,
+                    streetName: feature.properties.streetName, formatted: feature.properties.formatted)
+        }.flatMap { [$0.properties.parcelId, $0.properties.campaignParcelId].compactMap { $0?.lowercased() } })
+        let relevant = features.filter { feature in
+            if UUID(uuidString: feature.properties.id ?? feature.id ?? "").map({ ids.contains($0) }) == true { return true }
+            guard !replacedLots.isEmpty else { return false }
+            let edit = state.features[CampaignMapEdits.addressItem(feature).id]
+            let lots = edit?.parcelLinkSet == true ? [edit?.parcelId].compactMap { $0?.lowercased() } :
+                [feature.properties.parcelId, feature.properties.campaignParcelId].compactMap { $0?.lowercased() }
+            return !replacedLots.isDisjoint(with: lots)
+        }
+        return CampaignMapEdits.snapshot(buildings: [], addresses: relevant, parcels: [], state: state).addresses
+    }
+
     static func sortAddressesForDisplay(_ addresses: [CampaignAddressResponse]) -> [CampaignAddressResponse] {
         addresses.sorted { lhs, rhs in
             let lhsStreet = normalizedStreetName(for: lhs)
@@ -579,11 +662,13 @@ class BuildingDataService: ObservableObject {
                 }
             }
         }
+        var effectiveSelectionAddressIds = selectionAddressIds
         if CampaignMapEditStore.shared.hasEdits(campaignId.uuidString),
            let corrected = await resolveLocalAddressResolution(gersId: gersId, campaignId: campaignId,
                 addressId: addressId, preferredAddressId: preferredAddressId,
                 buildingIdentifiers: buildingIdentifiers, linkedAddressIds: linkedAddressIds) {
             let allowed = corrected.matchedAddressIDs
+            if selectionAddressIds != nil { effectiveSelectionAddressIds = allowed }
             let missing = allowed.subtracting(allAddressResponses.map(\.id))
             if !missing.isEmpty {
                 let response = try await supabase.from("campaign_addresses").select(Self.addressSelect)
@@ -592,8 +677,12 @@ class BuildingDataService: ObservableObject {
             }
             allAddressResponses = allAddressResponses.filter { allowed.contains($0.id) }
         }
-        if let selectionAddressIds {
-            allAddressResponses = allAddressResponses.filter { selectionAddressIds.contains($0.id) }
+        if let effectiveSelectionAddressIds {
+            allAddressResponses = allAddressResponses.filter { effectiveSelectionAddressIds.contains($0.id) }
+        }
+        allAddressResponses.removeAll {
+            Self.isUnresolvedAddress(gersId: $0.gersId, houseNumber: $0.houseNumber,
+                streetName: $0.streetName, formatted: $0.formatted)
         }
         allAddressResponses = Self.deduplicatedAddressesForDisplay(
             allAddressResponses,
@@ -1138,7 +1227,8 @@ class BuildingDataService: ObservableObject {
             } else {
                 features = await CampaignRepository.shared.getCampaignMapBundle(campaignId: campaignId.uuidString)?.addresses.features ?? []
             }
-            let scoped = Self.addressFeatures(features, restrictedTo: selectionAddressIds)
+            let scoped = Self.scopedCardFeatures(features, ids: selectionAddressIds,
+                state: CampaignMapEditStore.shared.state(for: campaignId.uuidString))
             let resolved = scoped.compactMap { resolvedAddress(from: $0, fallbackGersId: gersId) }
             return LocalAddressResolution(buildingFeature: nil, resolvedAddresses: resolved,
                 matchedAddressIDs: Set(resolved.map(\.id)))
@@ -1149,14 +1239,10 @@ class BuildingDataService: ObservableObject {
             let building = service.buildings(for: campaignId.uuidString)?.features.first {
                 !identifiers.isDisjoint(with: $0.properties.buildingIdentifierCandidates.map { $0.lowercased() })
             }
-            let explicit = Set([addressId, preferredAddressId].compactMap { $0 })
-            let linked = Set(building?.properties.addressUUIDs ?? [])
-            let features = (service.addresses(for: campaignId.uuidString)?.features ?? []).filter { feature in
-                guard let id = UUID(uuidString: feature.properties.id ?? feature.id ?? "") else { return false }
-                if !explicit.isEmpty { return explicit.contains(id) }
-                if linked.contains(id) { return true }
-                return CampaignMapEditPlanner.linkedBuilding(feature).map { identifiers.contains($0.lowercased()) } == true
-            }
+            let features = Self.editedCardFeatures(service.addresses(for: campaignId.uuidString)?.features ?? [],
+                building: building, identifiers: identifiers,
+                explicitIDs: Set([addressId, preferredAddressId].compactMap { $0 }),
+                state: CampaignMapEditStore.shared.state(for: campaignId.uuidString))
             let resolved = features.compactMap { resolvedAddress(from: $0, fallbackGersId: gersId) }
             return LocalAddressResolution(buildingFeature: building, resolvedAddresses: resolved,
                 matchedAddressIDs: Set(resolved.map(\.id)))
@@ -1297,11 +1383,13 @@ class BuildingDataService: ObservableObject {
 
         let residents: [Contact]
         let metadata: AddressCaptureMetadata?
-        if let primaryAddress {
-            residents = await ContactRepository.shared.fetchContactsForAddress(addressId: primaryAddress.id)
+        // An unresolved location may already have notes or contacts. Keep them
+        // accessible through its record while omitting the fake address row.
+        if let captureAddressID = primaryAddress?.id ?? addressId {
+            residents = await ContactRepository.shared.fetchContactsForAddress(addressId: captureAddressID)
             metadata = await CampaignRepository.shared.getAddressCaptureMetadata(
                 campaignId: campaignId,
-                addressId: primaryAddress.id
+                addressId: captureAddressID
             )
         } else {
             residents = []
@@ -1338,6 +1426,9 @@ class BuildingDataService: ObservableObject {
     }
 
     private func resolvedAddress(from feature: AddressFeature, fallbackGersId: String) -> ResolvedAddress? {
+        guard !Self.isUnresolvedAddress(gersId: feature.properties.gersId,
+            houseNumber: feature.properties.houseNumber ?? feature.properties.houseNumberLabel,
+            streetName: feature.properties.streetName, formatted: feature.properties.formatted) else { return nil }
         let rawId = feature.properties.id ?? feature.id
         guard let rawId, let addressId = UUID(uuidString: rawId) else {
             return nil

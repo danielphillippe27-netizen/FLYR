@@ -222,8 +222,10 @@ struct AddressProperties: Codable {
     let gersId: String?
     let buildingGersId: String?
     let linkedBuildingId: String?
+    let pinPlacement: String?
     let houseNumber: String?
     let houseNumberLabel: String?
+    let unit: String?
     let streetName: String?
     let postalCode: String?
     let locality: String?
@@ -247,8 +249,10 @@ struct AddressProperties: Codable {
         gersId: String? = nil,
         buildingGersId: String? = nil,
         linkedBuildingId: String? = nil,
+        pinPlacement: String? = nil,
         houseNumber: String? = nil,
         houseNumberLabel: String? = nil,
+        unit: String? = nil,
         streetName: String? = nil,
         postalCode: String? = nil,
         locality: String? = nil,
@@ -271,8 +275,10 @@ struct AddressProperties: Codable {
         self.gersId = gersId
         self.buildingGersId = buildingGersId
         self.linkedBuildingId = linkedBuildingId
+        self.pinPlacement = pinPlacement
         self.houseNumber = houseNumber
         self.houseNumberLabel = houseNumberLabel
+        self.unit = unit
         self.streetName = streetName
         self.postalCode = postalCode
         self.locality = locality
@@ -297,8 +303,10 @@ struct AddressProperties: Codable {
         case gersId = "gers_id"
         case buildingGersId = "building_gers_id"
         case linkedBuildingId = "linked_building_id"
+        case pinPlacement = "pin_placement"
         case houseNumber = "house_number"
         case houseNumberLabel = "house_number_label"
+        case unit
         case streetName = "street_name"
         case postalCode = "postal_code"
         case locality
@@ -586,27 +594,45 @@ enum CampaignTargetResolver {
     static func deduplicatedAddressFeaturesForClientDisplay(_ features: [AddressFeature]) -> [AddressFeature] {
         guard features.count > 1 else { return features }
 
-        var orderedKeys: [String] = []
-        var featuresByKey: [String: AddressFeature] = [:]
-
+        var result: [AddressFeature] = []
+        var indicesByKey: [String: [Int]] = [:]
         for feature in features {
             let key = normalizedAddressFeatureIdentity(feature)
                 ?? normalizedUUIDString(feature.properties.id ?? feature.id)
                 ?? feature.id?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
                 ?? UUID().uuidString
-
-            guard let existing = featuresByKey[key] else {
-                orderedKeys.append(key)
-                featuresByKey[key] = feature
-                continue
-            }
-
-            if addressFeatureDisplayPriority(feature) > addressFeatureDisplayPriority(existing) {
-                featuresByKey[key] = feature
+            if let index = indicesByKey[key]?.first(where: { addressFeaturesShareLocation(result[$0], feature) }) {
+                if addressFeatureDisplayPriority(feature) > addressFeatureDisplayPriority(result[index]) {
+                    result[index] = feature
+                }
+            } else {
+                indicesByKey[key, default: []].append(result.count)
+                result.append(feature)
             }
         }
+        return result
+    }
 
-        return orderedKeys.compactMap { featuresByKey[$0] }
+    private static func addressFeaturesShareLocation(_ lhs: AddressFeature, _ rhs: AddressFeature) -> Bool {
+        if let leftID = normalizedUUIDString(lhs.properties.id ?? lhs.id),
+           leftID == normalizedUUIDString(rhs.properties.id ?? rhs.id) { return true }
+        func locality(_ value: String?) -> String {
+            (value ?? "").lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        func postal(_ value: String?) -> String {
+            (value ?? "").lowercased().filter { $0.isLetter || $0.isNumber }
+        }
+        let leftCity = locality(lhs.properties.locality), rightCity = locality(rhs.properties.locality)
+        let leftPostal = postal(lhs.properties.postalCode), rightPostal = postal(rhs.properties.postalCode)
+        if !leftCity.isEmpty && !rightCity.isEmpty && leftCity != rightCity { return false }
+        if !leftPostal.isEmpty && !rightPostal.isEmpty && leftPostal != rightPostal { return false }
+        if let a = coordinate(for: lhs.geometry), let b = coordinate(for: rhs.geometry) {
+            return CLLocation(latitude: a.latitude, longitude: a.longitude)
+                .distance(from: CLLocation(latitude: b.latitude, longitude: b.longitude)) <= 30
+        }
+        // Missing metadata may be ignored only when nearby coordinates verify
+        // the location. Otherwise require both locality and postal code.
+        return !leftCity.isEmpty && leftCity == rightCity && !leftPostal.isEmpty && leftPostal == rightPostal
     }
 
     private static func centroidCoordinate(fromPolygonCoordinates polygon: [[[Double]]]) -> CLLocationCoordinate2D? {
@@ -643,55 +669,12 @@ enum CampaignTargetResolver {
     }
 
     private static func normalizedAddressFeatureIdentity(_ feature: AddressFeature) -> String? {
-        let house = normalizedAddressPart(feature.properties.houseNumber)
-        let street = normalizedStreetIdentityPart(feature.properties.streetName)
-        let locality = normalizedAddressPart(feature.properties.locality)
-        let postalCode = normalizedAddressPart(feature.properties.postalCode)
-
-        if !house.isEmpty || !street.isEmpty {
-            let identity = [house, street, locality, postalCode]
-                .filter { !$0.isEmpty }
-                .joined(separator: "|")
-            return identity.isEmpty ? nil : identity
-        }
-
-        let formatted = normalizedAddressPart(feature.properties.formatted)
-        guard !formatted.isEmpty else { return nil }
-
-        let identity = [formatted, locality, postalCode]
-            .filter { !$0.isEmpty }
-            .joined(separator: "|")
-        return identity.isEmpty ? nil : identity
-    }
-
-    private static func normalizedAddressPart(_ value: String?) -> String {
-        (value ?? "")
-            .lowercased()
-            .replacingOccurrences(of: #"[^a-z0-9]+"#, with: " ", options: .regularExpression)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private static func normalizedStreetIdentityPart(_ value: String?) -> String {
-        normalizedAddressPart(value)
-            .split(separator: " ")
-            .map { word -> String in
-                switch word {
-                case "st", "str": return "street"
-                case "rd": return "road"
-                case "ave", "av": return "avenue"
-                case "blvd": return "boulevard"
-                case "dr": return "drive"
-                case "ct", "crt": return "court"
-                case "cres": return "crescent"
-                case "ln": return "lane"
-                case "pl": return "place"
-                case "trl": return "trail"
-                case "pkwy": return "parkway"
-                case "hwy": return "highway"
-                default: return String(word)
-                }
-            }
-            .joined(separator: " ")
+        guard let identity = AddressMatcher.identity(
+            houseNumber: feature.properties.houseNumber,
+            streetName: feature.properties.streetName,
+            formatted: feature.properties.formatted, unit: feature.properties.unit
+        ) else { return nil }
+        return identity
     }
 
     private static func addressFeatureDisplayPriority(_ feature: AddressFeature) -> Int {

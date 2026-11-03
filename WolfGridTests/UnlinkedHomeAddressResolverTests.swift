@@ -5,7 +5,7 @@ final class UnlinkedHomeAddressResolverTests: XCTestCase {
     func testLinkingBuildingPreservesParcelAndLabelMetadata() throws {
         let original = AddressProperties(
             id: UUID().uuidString, gersId: "address-point", buildingGersId: "old-building",
-            linkedBuildingId: "old-building", houseNumber: "296", houseNumberLabel: "296",
+            linkedBuildingId: "old-building", houseNumber: "296", houseNumberLabel: "296", unit: "2",
             streetName: "Northglen Boulevard", postalCode: "L1C", locality: "Bowmanville",
             formatted: "296 Northglen Boulevard", source: "campaign", featureType: "address",
             parcelId: "266930338", campaignParcelId: "campaign-parcel",

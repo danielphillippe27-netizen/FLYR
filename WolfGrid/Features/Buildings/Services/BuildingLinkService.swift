@@ -1013,6 +1013,135 @@ final class BuildingLinkService {
 
     // MARK: - Fetch Links (from Supabase)
 
+    /// Only untouched geometry placeholders may be superseded by a real campaign
+    /// address. Restrict this read to the owner, whose contact visibility is complete.
+    /// Any unavailable protection data fails closed at the caller.
+    func fetchUnusedGeometryStopIDs(campaignId: String) async throws -> Set<UUID> {
+        struct Owner: Decodable { let owner_id: UUID }
+        struct Stop: Decodable { let id: UUID; let house_number: String?; let street_name: String?; let match_source: String? }
+        struct Reference: Decodable { let campaign_address_id: UUID }
+        struct Contact: Decodable { let address_id: UUID? }
+        let user = try await supabaseClient.auth.session.user.id
+        let owner: Owner = try await supabaseClient.from("campaigns").select("owner_id")
+            .eq("id", value: campaignId).single().execute().value
+        guard owner.owner_id == user else { return [] }
+        var stops: [Stop] = []
+        while true {
+            let page: [Stop] = try await supabaseClient.from("campaign_addresses")
+                .select("id,house_number,street_name,match_source").eq("campaign_id", value: campaignId)
+                .like("gers_id", pattern: "synthetic:geometry-target:%").eq("revision", value: 0)
+                .is("assignment_id", value: nil).is("deleted_at", value: nil)
+                .order("id").range(from: stops.count, to: stops.count + 999).execute().value
+            stops.append(contentsOf: page)
+            if page.count < 1000 { break }
+        }
+        var ids = Set(stops.filter {
+            ($0.house_number ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+            ($0.street_name ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+            !($0.match_source ?? "").lowercased().contains("manual")
+        }.map(\.id))
+        guard !ids.isEmpty else { return [] }
+        let links = try await fetchFarmLiveLinkEvidence(campaignId: campaignId)
+        ids.subtract(links.filter { !$0.canRepair }.compactMap { UUID(uuidString: $0.addressID) })
+        // Bound every query below the PostgREST row limit. One reference is
+        // enough to protect a stop, so paging checks all rows before accepting it.
+        for table in ["campaign_home_events", "address_statuses"] {
+            var offset = 0
+            while true {
+                let page: [Reference] = try await supabaseClient.from(table).select("campaign_address_id")
+                    .eq("campaign_id", value: campaignId).order("campaign_address_id")
+                    .range(from: offset, to: offset + 999).execute().value
+                ids.subtract(page.map(\.campaign_address_id))
+                if page.count < 1000 { break }
+                offset += page.count
+            }
+        }
+        // Include legacy contacts too; they can predate campaign_contacts.
+        for table in ["campaign_contacts", "contacts"] {
+            let candidates = Array(ids)
+            for offset in stride(from: 0, to: candidates.count, by: 100) {
+                let chunk = candidates[offset..<min(offset + 100, candidates.count)].map { $0.uuidString }
+                var start = 0
+                while true {
+                    let page: [Contact] = try await supabaseClient.from(table).select("address_id")
+                        .in("address_id", values: chunk).order("id")
+                        .range(from: start, to: start + 999).execute().value
+                    ids.subtract(page.compactMap(\.address_id))
+                    if page.count < 1000 { break }
+                    start += page.count
+                }
+            }
+        }
+        guard try await supabaseClient.auth.session.user.id == user else { throw CancellationError() }
+        return ids
+    }
+
+    /// A pin may adopt an unused imported row's geometry while retaining the
+    /// pin's own history. Check the owner-visible sources before hiding that row.
+    func fetchUnusedAddressIDs(campaignId: String, candidates: Set<UUID>) async throws -> Set<UUID> {
+        guard !candidates.isEmpty else { return [] }
+        struct Owner: Decodable { let owner_id: UUID }
+        struct Address: Decodable {
+            let id: UUID
+            let visited: Bool?
+            let contact_name: String?
+            let product_interest: String?
+            let follow_up_date: String?
+            let raw_transcript: String?
+            let ai_summary: String?
+            let lead_status: String?
+            var hasActivity: Bool {
+                visited == true || [contact_name, product_interest, follow_up_date, raw_transcript, ai_summary]
+                    .contains { $0?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false } ||
+                !["", "new"].contains(lead_status?.lowercased() ?? "")
+            }
+        }
+        struct Reference: Decodable { let campaign_address_id: UUID }
+        struct Contact: Decodable { let address_id: UUID? }
+        let user = try await supabaseClient.auth.session.user.id
+        let owner: Owner = try await supabaseClient.from("campaigns").select("owner_id")
+            .eq("id", value: campaignId).single().execute().value
+        guard owner.owner_id == user else { return [] }
+        var unused = Set<UUID>()
+        let sorted = candidates.sorted { $0.uuidString < $1.uuidString }
+        for offset in stride(from: 0, to: sorted.count, by: 100) {
+            try Task.checkCancellation()
+            let chunk = sorted[offset..<min(offset + 100, sorted.count)].map { $0.uuidString }
+            let rows: [Address] = try await supabaseClient.from("campaign_addresses")
+                .select("id,visited,contact_name,product_interest,follow_up_date,raw_transcript,ai_summary,lead_status")
+                .eq("campaign_id", value: campaignId).in("id", values: chunk)
+                .eq("revision", value: 0).is("assignment_id", value: nil).is("deleted_at", value: nil)
+                .execute().value
+            unused.formUnion(rows.filter { !$0.hasActivity }.map(\.id))
+            for table in ["campaign_home_events", "address_statuses"] {
+                var start = 0
+                while true {
+                    let page: [Reference] = try await supabaseClient.from(table).select("campaign_address_id")
+                        .eq("campaign_id", value: campaignId).in("campaign_address_id", values: chunk)
+                        .order("campaign_address_id").range(from: start, to: start + 999).execute().value
+                    unused.subtract(page.map(\.campaign_address_id))
+                    if page.count < 1000 { break }
+                    start += page.count
+                }
+            }
+            for table in ["campaign_contacts", "contacts", "qr_codes"] {
+                var start = 0
+                while true {
+                    let page: [Contact] = try await supabaseClient.from(table).select("address_id")
+                        .in("address_id", values: chunk).order("id")
+                        .range(from: start, to: start + 999).execute().value
+                    unused.subtract(page.compactMap(\.address_id))
+                    if page.count < 1000 { break }
+                    start += page.count
+                }
+            }
+        }
+        let links = try await fetchFarmLiveLinkEvidence(campaignId: campaignId)
+        unused.subtract(links.filter { !$0.canRepair }.compactMap { UUID(uuidString: $0.addressID) })
+        guard try await supabaseClient.auth.session.user.id == user else { throw CancellationError() }
+        return unused
+    }
+
     /// Fetch protection metadata without relying on stripped or stale bundle caches.
     func fetchFarmLiveLinkEvidence(campaignId: String) async throws -> [FarmLiveLinkEvidence] {
         var rows: [FarmLiveLinkEvidence] = []

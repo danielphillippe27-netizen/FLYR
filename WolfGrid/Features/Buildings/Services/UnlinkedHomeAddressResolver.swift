@@ -191,13 +191,14 @@ final class UnlinkedHomeAddressResolver {
         houseNumber: String?,
         streetName: String?,
         postalCode: String?,
-        formatted: String?
+        formatted: String?,
+        unit: String? = nil
     ) -> String? {
         normalizedAddressIdentityParts(
             houseNumber: houseNumber,
             streetName: streetName,
             postalCode: postalCode,
-            formatted: formatted
+            formatted: formatted, unit: unit
         )?.primary
     }
 
@@ -205,16 +206,16 @@ final class UnlinkedHomeAddressResolver {
         houseNumber: String?,
         streetName: String?,
         postalCode: String?,
-        formatted: String?
+        formatted: String?,
+        unit: String? = nil
     ) -> NormalizedAddressIdentity? {
         let parsed = parsedAddressParts(from: formatted)
-        guard let house = normalizedHouseNumber(houseNumber) ?? parsed.houseNumber,
-              let street = normalizedStreetName(streetName) ?? parsed.streetName else {
-            return nil
-        }
+        guard let primary = AddressMatcher.identity(
+            houseNumber: houseNumber, streetName: streetName, formatted: formatted, unit: unit
+        ) else { return nil }
 
         return NormalizedAddressIdentity(
-            primary: "\(house)|\(street)",
+            primary: primary,
             postalCode: normalizedPostalCode(postalCode) ?? parsed.postalCode
         )
     }
@@ -267,43 +268,7 @@ final class UnlinkedHomeAddressResolver {
     }
 
     private static func normalizedStreetName(_ value: String?) -> String? {
-        let raw = value?
-            .lowercased()
-            .replacingOccurrences(of: ".", with: " ")
-            .replacingOccurrences(of: ",", with: " ") ?? ""
-        let words = raw
-            .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
-            .map(String.init)
-            .filter { !$0.isEmpty }
-
-        let normalizedWords = words.map { word -> String in
-            switch word {
-            case "n": return "north"
-            case "s": return "south"
-            case "e": return "east"
-            case "w": return "west"
-            case "ne": return "northeast"
-            case "nw": return "northwest"
-            case "se": return "southeast"
-            case "sw": return "southwest"
-            case "st", "str": return "street"
-            case "rd": return "road"
-            case "ave", "av": return "avenue"
-            case "blvd": return "boulevard"
-            case "dr": return "drive"
-            case "ct", "crt": return "court"
-            case "cres": return "crescent"
-            case "ln": return "lane"
-            case "pl": return "place"
-            case "trl": return "trail"
-            case "pkwy": return "parkway"
-            case "hwy": return "highway"
-            default: return word
-            }
-        }
-
-        let normalized = normalizedWords.joined(separator: " ")
-        return normalized.isEmpty ? nil : normalized
+        AddressMatcher.streetKey(value)
     }
 }
 
@@ -337,7 +302,7 @@ actor CampaignAddressMatchIndex {
         }
         guard let identity = UnlinkedHomeAddressResolver.normalizedAddressIdentity(
             houseNumber: feature.properties.houseNumber, streetName: feature.properties.streetName,
-            postalCode: feature.properties.postalCode, formatted: feature.properties.formatted
+            postalCode: feature.properties.postalCode, formatted: feature.properties.formatted, unit: feature.properties.unit
         ) else { return }
         byIdentity[identity, default: []].append(feature)
         identityByAddressId[id] = identity

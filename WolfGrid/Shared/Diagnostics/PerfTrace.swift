@@ -60,11 +60,11 @@ enum PerfTrace {
             .sorted { $0.key < $1.key }
             .map { "\(sanitize($0.key))=\(sanitize(String(describing: $0.value)))" })
         print("⏱️ [PERF] \(parts.joined(separator: " "))")
-        if ["farm_live", "farm_list", "address_picker", "home_tap_card"].contains(flow) {
+        if ["farm_live", "farm_list", "address_picker", "home_tap", "home_tap_card", "campaign_create", "map_open_user"].contains(flow) {
             // Persist timings, never addresses, provider payloads, coordinates or credentials.
-            let diagnosticKeys: Set<String> = ["count", "targets", "accepted", "pending", "shortlist", "visible", "matches", "zoom", "identityGroups", "ambiguousTargets", "ambiguousAddresses", "postalRejected", "geometryRejected", "max_ms"]
+            let diagnosticKeys: Set<String> = ["count", "targets", "accepted", "pending", "shortlist", "visible", "matches", "zoom", "identityGroups", "ambiguousTargets", "ambiguousAddresses", "postalRejected", "geometryRejected", "max_ms", "elapsedMs", "poll", "polls", "addresses", "buildings", "parcels", "roads", "points", "timeoutSeconds", "pollIntervalSeconds", "http"]
             let diagnostics = fields.keys.sorted().compactMap { key -> String? in
-                guard flow == "farm_live", diagnosticKeys.contains(key), let number = fields[key] as? NSNumber else { return nil }
+                guard diagnosticKeys.contains(key), let number = fields[key] as? NSNumber else { return nil }
                 return "\(key)=\(number)"
             }.joined(separator: " ")
             let line = "\(Date().timeIntervalSince1970) flow=\(sanitize(flow)) phase=\(sanitize(phase)) status=\(sanitize(status)) durationMs=\(durationMs ?? -1) \(diagnostics)\n"

@@ -52,6 +52,51 @@ final class FarmLiveAddressSuggestionsTests: XCTestCase {
         XCTAssertTrue(FarmLiveAddressNumberMatcher.uniquePairs(
             targets: [("roof", nil)], addresses: [(first, nil)]).isEmpty)
     }
+
+    func testLocalStreetSpellingNeedsIndependentVerificationBeforeMatching() throws {
+        let id = UUID()
+        let source = AddressFeature(id: id.uuidString,
+            geometry: .init(type: "Point", coordinates: .init(point: [-78.7994, 43.9004])),
+            properties: .init(id: id.uuidString, houseNumber: "214", streetName: "Mains St", postalCode: "33803"))
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: payload(number: "214")) as? [String: Any])
+        var features = try XCTUnwrap(json["features"] as? [[String: Any]])
+        var properties = try XCTUnwrap(features[0]["properties"] as? [String: Any])
+        var context = try XCTUnwrap(properties["context"] as? [String: Any])
+        context["postcode"] = ["name": "33803"]
+        properties["context"] = context; features[0]["properties"] = properties; json["features"] = features
+        let data = try JSONSerialization.data(withJSONObject: json)
+        let candidate = try XCTUnwrap(FarmLiveAddressGeometry.candidate(data: data, target: target()))
+        let candidates = [(target(), candidate)]
+        let index = FarmLiveMatchIndex(addresses: [source], buildings: [])
+        XCTAssertTrue(index.shortlist(candidates).isEmpty, "Plural street names must not match without geographic verification")
+        XCTAssertEqual(index.streetAliasChecks(candidates).map { $0.entry.id }, [id])
+        let verified = index.acceptingStreetAliases([id: "Main Street"])
+        let matches = verified.placements(candidates: candidates, visibleEntries: verified.shortlist(candidates))
+        XCTAssertEqual(matches.map(\.addressID), [id])
+        XCTAssertEqual(verified.renderFeatures(for: matches).first?.properties.streetName, "Mains St",
+            "Temporary street context must not rewrite native civic fields")
+        let roadData = Data("""
+            {"features":[{"properties":{"tilequery":{"distance":2}}},
+            {"properties":{"name":"E Park St","tilequery":{"distance":3.6}}},
+            {"properties":{"name":"S Tennessee Ave","tilequery":{"distance":13}}}]}
+            """.utf8)
+        XCTAssertEqual(try FarmLiveStreetAliasVerifier.verifiedRoadName(data: roadData, candidateStreet: "East Park Street"), "E Park St")
+        XCTAssertNil(try FarmLiveStreetAliasVerifier.verifiedRoadName(data: roadData, candidateStreet: "South Tennessee Avenue"))
+        let intersection = Data("""
+            {"features":[{"properties":{"name":"E Park St","tilequery":{"distance":3}}},
+            {"properties":{"name":"S Tennessee Ave","tilequery":{"distance":4}}}]}
+            """.utf8)
+        XCTAssertNil(try FarmLiveStreetAliasVerifier.verifiedRoadName(data: intersection, candidateStreet: "East Park Street"))
+        XCTAssertTrue(FarmLiveMatchIndex.needsLocalStreetVerification("east parks street", "east park street"))
+        XCTAssertFalse(FarmLiveMatchIndex.needsLocalStreetVerification("east parks street", "west park street"))
+        XCTAssertFalse(FarmLiveMatchIndex.needsLocalStreetVerification("east park road", "east park street"))
+        let duplicate = AddressFeature(id: UUID().uuidString, geometry: source.geometry, properties: .init(
+            id: UUID().uuidString, houseNumber: "214", streetName: "Mains St", postalCode: "33803"))
+        XCTAssertTrue(FarmLiveMatchIndex(addresses: [source, duplicate], buildings: []).streetAliasChecks(candidates).isEmpty)
+        let far = AddressFeature(id: id.uuidString,
+            geometry: .init(type: "Point", coordinates: .init(point: [-79.8, 44.9])), properties: source.properties)
+        XCTAssertTrue(FarmLiveMatchIndex(addresses: [far], buildings: []).streetAliasChecks(candidates).isEmpty)
+    }
     func testIndependentNearbyLookupDoesNotDelayCompletedProperty() {
         let ready = target()
         let near = FarmLiveAddressTarget(id: "near", parcelId: "near", buildingId: nil,
@@ -284,6 +329,20 @@ final class FarmLiveAddressSuggestionsTests: XCTestCase {
         XCTAssertEqual(saved.properties.parcelId, "old-parcel")
         XCTAssertEqual(saved.geometry.asPoint, [-78.7, 43.95])
         XCTAssertFalse(index.reviewableAddressIDs.contains(id.uuidString.lowercased()), "Rendering a manual choice must not loosen automatic eligibility")
+    }
+
+    func testParcelTapIndexUsesCorrectedOwnersAndNormalizesTileAliases() {
+        let moved = UUID(), neighbour = UUID()
+        let before = MapLayerManager.parcelTapAddressIndex([
+            moved.uuidString: ["old-lot"], neighbour.uuidString: ["other-lot"]])
+        let after = MapLayerManager.parcelTapAddressIndex([
+            moved.uuidString: ["PARCEL:new-lot", "campaign-lot"], neighbour.uuidString: ["other-lot"]])
+        XCTAssertEqual(before["old-lot"], [moved])
+        XCTAssertNil(after["old-lot"])
+        XCTAssertEqual(after["new-lot"], [moved])
+        XCTAssertEqual(after["campaign-lot"], [moved])
+        XCTAssertEqual(after["other-lot"], [neighbour])
+        XCTAssertTrue(MapLayerManager.parcelTapAddressIndex([:]).isEmpty)
     }
 
     func testParcelStateReplayIncludesOnlyChangedLotsAndRemainingSharedOwners() {
@@ -564,13 +623,13 @@ final class FarmLiveAddressSuggestionsTests: XCTestCase {
         XCTAssertEqual(targets.first?.parcelId, "parcel-a")
         XCTAssertEqual(try XCTUnwrap(targets.first).coordinate.longitude, -78.7995, accuracy: 0.0000001)
     }
-    func testParcelCenterWinsOverOffCenterRoofAndRepeatedGeometry() throws {
+    func testOffCenterRoofAnchorsSuggestionWithoutDuplicatingParcel() throws {
         let lot = parcel()
         let targets = FarmLiveAddressGeometry.targets(parcels: [lot, lot], buildings: [try building()], addresses: [])
         XCTAssertEqual(targets.count, 1)
         let point = try XCTUnwrap(targets.first?.coordinate)
-        XCTAssertEqual(point.longitude, -78.7995, accuracy: 0.0000001)
-        XCTAssertEqual(point.latitude, 43.9005, accuracy: 0.0000001)
+        XCTAssertEqual(point.longitude, -78.7997, accuracy: 0.0000001)
+        XCTAssertEqual(point.latitude, 43.9003, accuracy: 0.0000001)
     }
     func testBuildingOnlyUsesBuildingInteriorCenter() throws {
         let roof = try building()
@@ -593,6 +652,133 @@ final class FarmLiveAddressSuggestionsTests: XCTestCase {
         XCTAssertTrue(FarmLiveAddressGeometry.targets(parcels:[parcel(linked:true)],buildings:[try building()],addresses:[]).isEmpty)
         XCTAssertTrue(FarmLiveAddressGeometry.targets(parcels:[parcel()],buildings:[try building(linked:true)],addresses:[]).isEmpty)
     }
+    func testPendingGeometryStopStillReceivesSuggestionsWithoutInventingCivicIdentity() throws {
+        let id = UUID()
+        let stop = AddressFeature(id: id.uuidString, geometry: .init(type: "Point", coordinates: .init(point: [-78.7997, 43.9003])),
+            properties: .init(id: id.uuidString, gersId: "synthetic:geometry-target:parcel:parcel-a",
+                buildingGersId: "roof-a", formatted: "Address pending", parcelId: "parcel-a",
+                hasBuildingLink: true, hasParcelLink: true))
+        let index = FarmLiveMatchIndex(addresses: [stop], buildings: [try building()], parcels: [parcel()])
+        XCTAssertTrue(FarmLiveMatchIndex.isPendingGeometryStop(stop))
+        XCTAssertTrue(index.lookupAddressIDs.contains(id.uuidString.lowercased()))
+        let targets = FarmLiveAddressGeometry.targets(parcels: [parcel()], buildings: [try building()],
+            addresses: [stop], reviewableAddressIDs: index.lookupAddressIDs)
+        XCTAssertEqual(targets.count, 1, "Placeholder ownership must not suppress live Mapbox lookups")
+        XCTAssertEqual(targets.first?.showsTemporaryPin, false, "Use the existing stop's marker; add only the temporary number")
+        let emptyLot = FarmLiveAddressGeometry.targets(parcels: [parcel()], buildings: [try building()], addresses: [])
+        XCTAssertEqual(emptyLot.first?.showsTemporaryPin, true, "An unowned lot still needs its temporary marker")
+        let candidate = try XCTUnwrap(FarmLiveAddressGeometry.candidate(data: payload(), target: target()))
+        XCTAssertTrue(index.shortlist([(target(), candidate)]).isEmpty, "A pending stop is not a known civic address")
+    }
+
+    func testPendingGeometryStopOnlyYieldsAfterUnusedStopCheck() throws {
+        let pendingID = UUID(), nativeID = UUID()
+        let pending = AddressFeature(id: pendingID.uuidString,
+            geometry: .init(type: "Point", coordinates: .init(point: [-78.7997, 43.9003])),
+            properties: .init(id: pendingID.uuidString, gersId: "synthetic:geometry-target:parcel:parcel-a",
+                buildingGersId: "roof-a", formatted: "Address pending", parcelId: "parcel-a",
+                hasBuildingLink: true, hasParcelLink: true))
+        let native = AddressFeature(id: nativeID.uuidString,
+            geometry: .init(type: "Point", coordinates: .init(point: [-78.7, 43.95])),
+            properties: .init(id: nativeID.uuidString, houseNumber: "12", streetName: "Main Street"))
+        let index = FarmLiveMatchIndex(addresses: [pending, native], buildings: [try building()], parcels: [parcel()])
+        let candidate = try XCTUnwrap(FarmLiveAddressGeometry.candidate(data: payload(), target: target()))
+        let house = FarmLiveAddressTarget(id: "parcel:parcel-a", parcelId: "parcel-a", buildingId: "roof-a",
+            geometry: geometry(), coordinate: target().coordinate)
+        let candidates = [(house, candidate)]
+        XCTAssertEqual(index.shortlist(candidates).map(\.id), [nativeID])
+        XCTAssertTrue(index.placements(candidates: candidates, visibleEntries: index.shortlist(candidates)).isEmpty,
+            "A temporary result must not displace another stop's identity or history")
+
+        let unused = FarmLiveMatchIndex(addresses: [pending, native], buildings: [try building()],
+            parcels: [parcel()], unusedGeometryStopIDs: [pendingID])
+        let placements = unused.placements(candidates: candidates, visibleEntries: unused.shortlist(candidates))
+        let placement = try XCTUnwrap(placements.first)
+        XCTAssertEqual(placement.addressID, nativeID)
+        XCTAssertEqual(placement.supersededAddressIDs, [pendingID])
+        XCTAssertTrue(unused.applying(placements).lookupAddressIDs.isDisjoint(with: [pendingID.uuidString.lowercased()]))
+        let replacements = unused.renderFeatures(for: placements)
+        let snapshot = FarmLiveMatchIndex.advancingSnapshot(buildings: [try building()], addresses: [native],
+            parcels: [parcel()], replacements: replacements)
+        XCTAssertEqual(snapshot.addresses.count, 1)
+        XCTAssertEqual(Set(snapshot.buildings[0].properties.addressIds.map { $0.lowercased() }), [nativeID.uuidString.lowercased()])
+
+        var edits = CampaignMapEditState()
+        edits.features[CampaignMapItem(.address, pendingID.uuidString).id] = .init(geometry: pending.geometry)
+        let manuallyEdited = FarmLiveMatchIndex(addresses: [pending, native], buildings: [try building()],
+            edits: edits, parcels: [parcel()], unusedGeometryStopIDs: [pendingID])
+        XCTAssertTrue(manuallyEdited.placements(candidates: candidates, visibleEntries: manuallyEdited.shortlist(candidates)).isEmpty)
+        let evidence = try JSONDecoder().decode([FarmLiveLinkEvidence].self, from: Data("""
+            [{"address_id":"\(pendingID.uuidString)","link_source":"auto","user_confirmed":false,"locked":true}]
+            """.utf8))
+        let locked = FarmLiveMatchIndex(addresses: [pending, native], buildings: [try building()],
+            evidence: evidence, parcels: [parcel()], unusedGeometryStopIDs: [pendingID])
+        XCTAssertTrue(locked.placements(candidates: candidates, visibleEntries: locked.shortlist(candidates)).isEmpty)
+    }
+
+    func testConfirmedGeometryStopKeepsItsExistingAddressProtection() throws {
+        let id = UUID()
+        let stop = AddressFeature(id: id.uuidString, geometry: .init(type: "Point", coordinates: .init(point: [-78.7997, 43.9003])),
+            properties: .init(id: id.uuidString, gersId: "synthetic:geometry-target:building:roof-a",
+                buildingGersId: "roof-a", houseNumber: "12", streetName: "Main Street",
+                formatted: "12 Main Street", parcelId: "parcel-a", hasBuildingLink: true, hasParcelLink: true))
+        XCTAssertFalse(FarmLiveMatchIndex.isPendingGeometryStop(stop))
+        let index = FarmLiveMatchIndex(addresses: [stop], buildings: [try building()], parcels: [parcel()])
+        XCTAssertTrue(index.lookupAddressIDs.isEmpty)
+        XCTAssertTrue(FarmLiveAddressGeometry.targets(parcels: [parcel()], buildings: [try building()],
+            addresses: [stop], reviewableAddressIDs: index.lookupAddressIDs).isEmpty)
+    }
+
+    func testUnusedPlaceholderOnAlreadyLinkedHomeDoesNotBecomeSecondUnit() throws {
+        let pendingID = UUID(), nativeID = UUID()
+        let pending = AddressFeature(id: pendingID.uuidString,
+            geometry: .init(type: "Point", coordinates: .init(point: [-78.7997, 43.9003])),
+            properties: .init(id: pendingID.uuidString, gersId: "synthetic:geometry-target:parcel:parcel-a",
+                buildingGersId: "roof-a", formatted: "Address pending", parcelId: "parcel-a",
+                hasBuildingLink: true, hasParcelLink: true))
+        let native = AddressFeature(id: nativeID.uuidString, geometry: pending.geometry,
+            properties: .init(id: nativeID.uuidString, buildingGersId: "roof-a", houseNumber: "318",
+                streetName: "Miramar Road", hasBuildingLink: true))
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(building())) as? [String: Any])
+        var properties = try XCTUnwrap(json["properties"] as? [String: Any])
+        properties["address_ids"] = [pendingID.uuidString, nativeID.uuidString]
+        properties["address_count"] = 2; properties["unit_count"] = 2
+        properties["is_townhome"] = true; properties["is_multi_unit"] = true
+        json["properties"] = properties
+        let roof = try JSONDecoder().decode(BuildingFeature.self, from: JSONSerialization.data(withJSONObject: json))
+        let index = FarmLiveMatchIndex(addresses: [pending, native], buildings: [roof],
+            evidence: [autoEvidence(pendingID), autoEvidence(nativeID)], parcels: [parcel()], unusedGeometryStopIDs: [pendingID])
+        XCTAssertEqual(index.existingLinkCandidates.count, 1, "The existing civic link needs no Mapbox lookup")
+        let placements = index.placements(candidates: index.existingLinkCandidates,
+            visibleEntries: index.shortlist(index.existingLinkCandidates))
+        XCTAssertEqual(placements.map(\.addressID), [nativeID])
+        XCTAssertEqual(placements.first?.supersededAddressIDs, [pendingID])
+        let snapshot = FarmLiveMatchIndex.advancingSnapshot(buildings: [roof], addresses: [pending, native],
+            parcels: [parcel()], replacements: index.renderFeatures(for: placements), hiddenAddressIDs: [pendingID])
+        XCTAssertEqual(snapshot.addresses.count, 1)
+        XCTAssertEqual(snapshot.buildings.first?.properties.addressCount, 1)
+        XCTAssertEqual(snapshot.buildings.first?.properties.isTownhome, false)
+        let protected = FarmLiveMatchIndex(addresses: [pending, native], buildings: [roof],
+            evidence: [autoEvidence(pendingID), autoEvidence(nativeID)], parcels: [parcel()])
+        XCTAssertTrue(protected.existingLinkCandidates.isEmpty, "Do not merge a stop without a fresh activity check")
+    }
+
+    func testParcelLookupUsesRoofInteriorInsteadOfEmptyLotCenter() throws {
+        let lot = parcel()
+        let roof = try building()
+        let targets = FarmLiveAddressGeometry.targets(parcels: [lot], buildings: [roof], addresses: [])
+        let selected = try XCTUnwrap(targets.first)
+        XCTAssertEqual(targets.count, 1)
+        XCTAssertEqual(selected.buildingId, roof.properties.canonicalBuildingIdentifier)
+        let lookup = try XCTUnwrap(selected.lookupCoordinate)
+        XCTAssertTrue(CampaignMapEditPlanner.contains(lot.geometry, lookup))
+        XCTAssertTrue(CampaignMapEditPlanner.contains(roof.geometry, lookup))
+        let lotCenter = try XCTUnwrap(FarmLiveAddressGeometry.interiorPoint(lot.geometry))
+        XCTAssertFalse(CampaignMapEditPlanner.contains(roof.geometry, lotCenter), "Fixture yard centre must be outside the roof")
+        XCTAssertEqual(selected.coordinate.latitude, lookup.latitude)
+        XCTAssertEqual(selected.coordinate.longitude, lookup.longitude)
+    }
+
     func testParcelOnlyFarmProducesTarget() {
         XCTAssertEqual(FarmLiveAddressGeometry.targets(parcels:[parcel()],buildings:[],addresses:[]).count,1)
     }
@@ -635,6 +821,31 @@ final class FarmLiveAddressSuggestionsTests: XCTestCase {
         let elapsed = Date().timeIntervalSince(start)
         print("Live farm target preparation: 2000 parcels in \(elapsed) seconds")
         XCTAssertLessThan(elapsed, 5)
+    }
+
+    func testLookupQueriesRoofPointWhileSuggestionKeepsParcelAnchor() async throws {
+        let query = CLLocationCoordinate2D(latitude: 43.9003, longitude: -78.7997)
+        let base = target()
+        let property = FarmLiveAddressTarget(id: base.id, parcelId: base.parcelId, buildingId: base.buildingId,
+            geometry: base.geometry, coordinate: base.coordinate, lookupCoordinate: query)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [FarmSuggestionURLProtocol.self]
+        var requestedPoint: CLLocationCoordinate2D?
+        FarmSuggestionURLProtocol.handler = { request in
+            let items = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            requestedPoint = CLLocationCoordinate2D(
+                latitude: Double(items.first { $0.name == "latitude" }?.value ?? "")!,
+                longitude: Double(items.first { $0.name == "longitude" }?.value ?? "")!)
+            return try! self.payload()
+        }
+        let service = FarmLiveAddressSuggestions(session: URLSession(configuration: configuration))
+        defer { service.close() }
+        let resolved = await service.resolve(property)
+        let result = try XCTUnwrap(resolved)
+        XCTAssertEqual(try XCTUnwrap(requestedPoint).latitude, query.latitude)
+        XCTAssertEqual(try XCTUnwrap(requestedPoint).longitude, query.longitude)
+        XCTAssertEqual(result.coordinate.latitude, base.coordinate.latitude)
+        XCTAssertEqual(result.coordinate.longitude, base.coordinate.longitude)
     }
 
     func testSessionCoalescesLookupsAndClearRemovesResults() async throws {

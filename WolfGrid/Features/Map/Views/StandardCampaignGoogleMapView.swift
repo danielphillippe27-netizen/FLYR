@@ -10,6 +10,7 @@ enum CampaignMapRendererDecision: Equatable {
     static func resolve(
         dataResolved: Bool,
         hasRenderableBuildings: Bool,
+        hasRenderableParcels: Bool = false,
         activeSession: Bool,
         sessionUses2D: Bool,
         mapboxAvailable: Bool,
@@ -28,7 +29,8 @@ enum CampaignMapRendererDecision: Equatable {
             if (sessionUses2D || !mapboxAvailable) && googleAvailable { return .google2D }
             return mapboxAvailable ? .mapbox3D : nil
         }
-        if !hasRenderableBuildings { return googleAvailable ? .google2D : nil }
+        // Parcel-only campaigns use the same property suggestions and matching as farms.
+        if !hasRenderableBuildings && !hasRenderableParcels { return googleAvailable ? .google2D : nil }
         return mapboxAvailable ? .mapbox3D : nil
     }
 }
@@ -90,7 +92,7 @@ private enum StandardCampaignClustering {
         let text = String(count)
         let size: CGFloat = count >= 1000 ? 56 : 48
         let image = UIGraphicsImageRenderer(size: CGSize(width: size, height: size)).image { _ in
-            UIColor.white.setFill()
+            UIColor.black.setFill()
             UIBezierPath(ovalIn: CGRect(x: 1, y: 1, width: size - 2, height: size - 2)).fill()
             UIColor(red: 225 / 255, green: 0, blue: 25 / 255, alpha: 1).setFill()
             UIBezierPath(ovalIn: CGRect(x: 4, y: 4, width: size - 8, height: size - 8)).fill()
@@ -171,7 +173,7 @@ private enum StandardCampaignMarkerIcon {
             let cgContext = context.cgContext
             cgContext.setShadow(offset: CGSize(width: 0, height: 1), blur: 3, color: UIColor.black.withAlphaComponent(0.28).cgColor)
 
-            UIColor.white.setFill()
+            UIColor.black.setFill()
             UIBezierPath(ovalIn: CGRect(x: 2, y: 2, width: 28, height: 28)).fill()
             cgContext.setShadow(offset: .zero, blur: 0, color: nil)
             fillColor.setFill()

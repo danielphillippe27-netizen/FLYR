@@ -38,6 +38,11 @@ const STREET_SUFFIX_REPLACEMENTS: Array<[RegExp, string]> = [
   [/\btrail\b/g, 'trl'],
   [/\btrl\.?\b/g, 'trl'],
   [/\bway\b/g, 'wy'],
+  [/\b(?:crescent|cres)\b/g, 'cres'],
+  [/\b(?:str)\b/g, 'st'],
+  [/\b(?:av)\b/g, 'ave'],
+  [/\b(?:crt)\b/g, 'ct'],
+  [/\b(?:terr)\b/g, 'ter'],
 ];
 
 function stringValue(value: unknown): string | null {
@@ -64,7 +69,7 @@ export function isUsableHouseNumberAddressLabel(value: unknown): boolean {
 export function normalizedAddressPart(value: unknown): string | null {
   const raw = stringValue(value);
   if (!raw) return null;
-  let output = raw.toLowerCase();
+  let output = raw.toLowerCase().replace(/['’]/g, '');
   for (const [pattern, replacement] of STREET_SUFFIX_REPLACEMENTS) {
     output = output.replace(pattern, replacement);
   }
@@ -74,6 +79,35 @@ export function normalizedAddressPart(value: unknown): string | null {
     .replace(/\s+/g, ' ')
     .trim();
   return output.length > 0 ? output : null;
+}
+
+// Comparison keys only; scope matching to a campaign or nearby geography.
+export function normalizedStreetIdentity(value: unknown): string | null {
+  const normalized = normalizedAddressPart(value);
+  if (!normalized) return null;
+  const words = normalized.split(' ');
+  const directions: Record<string, string> = {
+    n: 'north', s: 'south', e: 'east', w: 'west',
+    ne: 'northeast', nw: 'northwest', se: 'southeast', sw: 'southwest',
+    north: 'north', south: 'south', east: 'east', west: 'west',
+    northeast: 'northeast', northwest: 'northwest', southeast: 'southeast', southwest: 'southwest',
+  };
+  const suffixes = new Set(['st', 'ave', 'dr', 'blvd', 'rd', 'ln', 'ct', 'pl', 'cir', 'pkwy', 'hwy', 'ter', 'trl', 'wy', 'cres']);
+  const pairs: Record<string, string> = { 'north east': 'northeast', 'north west': 'northwest', 'south east': 'southeast', 'south west': 'southwest' };
+  if (words.length >= 4 && pairs[words.slice(0, 2).join(' ')]) {
+    words.splice(0, 2, pairs[words.slice(0, 2).join(' ')]);
+  }
+  if (words.length >= 4 && pairs[words.slice(-2).join(' ')]) {
+    words.splice(words.length - 2, 2, pairs[words.slice(-2).join(' ')]);
+  }
+  if (words.length >= 3 && directions[words[words.length - 1]] && suffixes.has(words[words.length - 2])) {
+    words[words.length - 1] = directions[words[words.length - 1]];
+  } else if (words.length >= 3 && directions[words[0]] && suffixes.has(words[words.length - 1])) {
+    words.push(directions[words.shift()!]);
+  } else if (words.length >= 3 && directions[words[words.length - 2]] && suffixes.has(words[words.length - 1])) {
+    words.push(directions[words.splice(words.length - 2, 1)[0]]);
+  }
+  return words.join(' ');
 }
 
 function addressLineFromFormatted(formatted: string | null): string | null {
@@ -115,7 +149,7 @@ function streetFromAddressLine(addressLine: string | null, houseNumber: string |
       street = street.replace(/^\s*[0-9]+[a-z0-9-]*\b/i, '');
     }
   }
-  return normalizedAddressPart(street);
+  return normalizedStreetIdentity(street);
 }
 
 export function normalizedAddressDisplayIdentity(input: AddressIdentityInput): string | null {
@@ -124,11 +158,11 @@ export function normalizedAddressDisplayIdentity(input: AddressIdentityInput): s
   const explicitHouseNumber = isUsableHouseNumberAddressLabel(input.house_number)
     ? normalizedAddressPart(input.house_number)
     : null;
-  const houseNumber = explicitHouseNumber ?? houseNumberFromAddressLine(addressLine);
-  const unit = normalizedAddressPart(input.unit) ?? unitFromAddressText(addressLine) ?? unitFromAddressText(formatted);
+  const houseNumber = explicitHouseNumber ?? houseNumberFromAddressLine(withoutUnitText(addressLine));
+  const unit = unitFromAddressText(stringValue(input.unit)) ?? normalizedAddressPart(input.unit) ?? unitFromAddressText(addressLine) ?? unitFromAddressText(formatted) ?? unitFromAddressText(stringValue(input.street_name));
   const explicitStreet = isNumericOnlyAddressLabel(input.street_name)
     ? null
-    : normalizedAddressPart(input.street_name);
+    : normalizedStreetIdentity(withoutUnitText(stringValue(input.street_name)));
   const street = explicitStreet ?? streetFromAddressLine(addressLine, houseNumber);
 
   if (houseNumber && street) {

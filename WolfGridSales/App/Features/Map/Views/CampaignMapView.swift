@@ -3312,9 +3312,6 @@ struct CampaignMapView: View {
             loadingOverlay
                 .animation(.easeInOut(duration: 0.28), value: featuresService.isLoading)
                 .animation(.easeInOut(duration: 0.22), value: isInitialMapPreparing)
-            mapOptimizingOverlay
-                .animation(.easeInOut(duration: 0.24), value: featuresService.clientLinkingProgress.percent)
-                .animation(.easeInOut(duration: 0.24), value: featuresService.isMapDataOptimizing)
             buildingRenderPendingOverlay
                 .animation(.easeInOut(duration: 0.24), value: showBuildingRenderPendingOverlay)
         }
@@ -6208,43 +6205,6 @@ struct CampaignMapView: View {
             !isCampaignStandardPinsMode &&
             isInitialMapPreparing &&
             !hasFirstCampaignDrawData
-    }
-
-    @ViewBuilder
-    private var mapOptimizingOverlay: some View {
-        let progress = featuresService.clientLinkingProgress
-        let backendOptimizing = featuresService.isMapDataOptimizing
-        if (progress.isOptimizing || backendOptimizing) && !quickStartEnabled {
-            HStack {
-                Spacer()
-                HStack(spacing: 10) {
-                    ProgressView()
-                        .tint(.white)
-                        .scaleEffect(0.82)
-
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(backendOptimizing ? "Optimizing map data..." : "Map is optimizing")
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundStyle(.white)
-                        if !backendOptimizing {
-                            Text("\(progress.percent)% linked")
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundStyle(.white.opacity(0.72))
-                        }
-                    }
-                }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .background(
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(isLightMode ? Color.black.opacity(0.72) : Color.darkSurfaceElevated.opacity(0.96))
-                )
-                .padding(.trailing, 16)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
-            .allowsHitTesting(false)
-            .transition(.move(edge: .trailing).combined(with: .opacity))
-        }
     }
 
     @ViewBuilder

@@ -440,7 +440,7 @@ final class MapLayerManager {
         return formatted == "pinned home" || formatted?.hasPrefix("pinned home ") == true
     }
 
-    static func isManualPinAddressFeature(_ feature: AddressFeature) -> Bool {
+    nonisolated static func isManualPinAddressFeature(_ feature: AddressFeature) -> Bool {
         if [
             feature.properties.featureType,
             feature.properties.source
@@ -1419,9 +1419,11 @@ final class MapLayerManager {
     private var addressFeatureStateCache: [String: [String: Any]] = [:]
     private var parcelIdsByAddressId: [String: [String]] = [:]
     private var parcelSelectionCache: Set<String> = []
+    private var currentAddressIDsByParcel: [String: Set<UUID>]?
 
     func updateParcelAddressLinks(_ links: [String: [String]]) {
-        guard parcelIdsByAddressId != links else { return }
+        guard currentAddressIDsByParcel == nil || parcelIdsByAddressId != links else { return }
+        currentAddressIDsByParcel = Self.parcelTapAddressIndex(links)
         let affected = Self.changedParcelLinkIDs(previous: parcelIdsByAddressId, next: links)
         parcelIdsByAddressId = links
         guard let mapView else { return }
@@ -1443,6 +1445,24 @@ final class MapLayerManager {
                 applyParcelFeatureState(featureId: "parcel:" + parcelId, state: state, mapView: mapView)
             }
         }
+    }
+
+    /// Tile properties stay immutable after a correction. Taps must use the
+    /// same effective relationship index as parcel selection and colouring.
+    static func parcelTapAddressIndex(_ links: [String: [String]]) -> [String: Set<UUID>] {
+        var result: [String: Set<UUID>] = [:]
+        for (address, parcels) in links {
+            guard let id = UUID(uuidString: address) else { continue }
+            for parcel in parcels {
+                result[normalizedParcelTapID(parcel), default: []].insert(id)
+            }
+        }
+        return result
+    }
+
+    private static func normalizedParcelTapID(_ id: String) -> String {
+        let key = id.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return key.hasPrefix("parcel:") ? String(key.dropFirst(7)) : key
     }
 
     static func changedParcelLinkIDs(previous: [String: [String]], next: [String: [String]]) -> Set<String> {
@@ -2331,6 +2351,9 @@ final class MapLayerManager {
             labels.id = labelID; labels.source = labelSource; labels.sourceLayer = nil
             labels.visibility = .constant(.visible)
             labels.minZoom = FarmLiveAddressSuggestions.minimumZoom
+            // The regular label fade starts at zero at zoom 16. Suggestions
+            // must be legible as soon as their street-level lookup is enabled.
+            labels.textOpacity = .constant(1)
             labels.filter = addressNumberLabelFilter(isAddressMode: true)
             try map.addLayer(labels)
         }
@@ -3675,6 +3698,19 @@ final class MapLayerManager {
     /// Update addresses source: convert Point features to circle-polygon features (fill extrusions) then update source
     private var addressOverlayFeatureIDs = Set<String>()
     private var numberOverlayFeatureIDs = Set<String>()
+
+    /// Remove superseded editable markers as well as excluding their PMTiles
+    /// features. Partial upserts otherwise leave a stale second pin on the lot.
+    func removePlacedAddressFeatures(_ ids: Set<String>) {
+        guard let map = mapView?.mapboxMap, !ids.isEmpty else { return }
+        let normalized = Set(ids.map { $0.lowercased() })
+        let markerIDs = addressOverlayFeatureIDs.intersection(normalized)
+        let labelIDs = numberOverlayFeatureIDs.intersection(normalized)
+        if !markerIDs.isEmpty { map.removeGeoJSONSourceFeatures(forSourceId: Self.addressesSourceId, featureIds: Array(markerIDs)) }
+        if !labelIDs.isEmpty { map.removeGeoJSONSourceFeatures(forSourceId: Self.addressNumbersSourceId, featureIds: Array(labelIDs)) }
+        addressOverlayFeatureIDs.subtract(normalized)
+        numberOverlayFeatureIDs.subtract(normalized)
+    }
 
     /// Partial source updates are queued by Mapbox. Only changed homes are
     /// serialized; existing corrections and feature states stay in their source.
@@ -6153,6 +6189,7 @@ final class MapLayerManager {
         let id: UUID
         let buildingGersId: String
         let houseNumber: String?
+        let unit: String?
         let streetName: String?
         let formatted: String?
         let coordinate: CLLocationCoordinate2D?
@@ -6313,6 +6350,7 @@ final class MapLayerManager {
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                     .lowercased(),
                 houseNumber: feature.properties.houseNumber,
+                unit: feature.properties.unit,
                 streetName: feature.properties.streetName,
                 formatted: feature.properties.formatted,
                 coordinate: coordinate(for: feature.geometry)
@@ -6443,71 +6481,17 @@ final class MapLayerManager {
     }
 
     private static func normalizedAddressIdentity(for address: OverlayAddressContext) -> String {
-        let house = normalizedHouseNumberIdentity(
+        AddressMatcher.identity(
             houseNumber: address.houseNumber,
-            formatted: address.formatted
-        )
-        let street = normalizedStreetIdentityPart(normalizedStreetName(for: address))
-        let primary = [house, street].filter { !$0.isEmpty }.joined(separator: " ")
-        if !primary.isEmpty {
-            return primary
-        }
-
-        let formatted = (address.formatted ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        let streetOnly = formatted.split(separator: ",", maxSplits: 1, omittingEmptySubsequences: true).first.map(String.init) ?? formatted
-        let fallback = normalizedStreetIdentityPart(streetOnly)
-        return fallback.isEmpty ? address.id.uuidString.lowercased() : fallback
-    }
-
-    private static func normalizedHouseNumberIdentity(houseNumber: String?, formatted: String?) -> String {
-        let rawHouseNumber = (houseNumber ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        if !rawHouseNumber.isEmpty, !isStreetOnlyOrdinalAddressLabel(rawHouseNumber) {
-            return normalizedAddressIdentityPart(rawHouseNumber)
-        }
-
-        let formatted = (formatted ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        let streetOnly = formatted.split(separator: ",", maxSplits: 1, omittingEmptySubsequences: true).first.map(String.init) ?? formatted
-        let house = streetOnly.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true).first.map(String.init) ?? ""
-        if isStreetOnlyOrdinalAddressLabel(house) {
-            return ""
-        }
-        return normalizedAddressIdentityPart(house)
+            streetName: address.streetName,
+            formatted: address.formatted, unit: address.unit
+        ) ?? address.id.uuidString.lowercased()
     }
 
     private static func isStreetOnlyOrdinalAddressLabel(_ value: String?) -> Bool {
         let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !trimmed.isEmpty else { return false }
         return trimmed.range(of: #"^\d+(?:st|nd|rd|th)$"#, options: [.regularExpression, .caseInsensitive]) != nil
-    }
-
-    private static func normalizedStreetIdentityPart(_ value: String?) -> String {
-        normalizedAddressIdentityPart(value)
-            .split(separator: " ")
-            .map { word -> String in
-                switch word {
-                case "st", "str": return "street"
-                case "rd": return "road"
-                case "ave", "av": return "avenue"
-                case "blvd": return "boulevard"
-                case "dr": return "drive"
-                case "ct", "crt": return "court"
-                case "cres": return "crescent"
-                case "ln": return "lane"
-                case "pl": return "place"
-                case "trl": return "trail"
-                case "pkwy": return "parkway"
-                case "hwy": return "highway"
-                default: return String(word)
-                }
-            }
-            .joined(separator: " ")
-    }
-
-    private static func normalizedAddressIdentityPart(_ value: String?) -> String {
-        (value ?? "")
-            .lowercased()
-            .replacingOccurrences(of: #"[^a-z0-9]+"#, with: " ", options: .regularExpression)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private static func houseNumberSortParts(houseNumber: String?, formatted: String?) -> (number: Int?, suffix: String) {
@@ -8458,11 +8442,19 @@ final class MapLayerManager {
             + uuidStrings(from: converted["linked_address_ids"])
             + uuidStrings(from: converted["address_ids"])
         var seen = Set<UUID>()
-        let addressIds = rawAddressIds.compactMap { UUID(uuidString: $0) }.filter { seen.insert($0).inserted }
+        let parcelIDs = parcelSelectionFeatureIds(from: converted, feature: feature, rawAddressIds: rawAddressIds)
+        let addressIds: [UUID]
+        if let currentAddressIDsByParcel {
+            addressIds = Set(parcelIDs.flatMap {
+                currentAddressIDsByParcel[Self.normalizedParcelTapID($0)] ?? []
+            }).sorted { $0.uuidString < $1.uuidString }
+        } else {
+            addressIds = rawAddressIds.compactMap { UUID(uuidString: $0) }.filter { seen.insert($0).inserted }
+        }
         guard !addressIds.isEmpty else { return nil }
 
         let preferredId: UUID?
-        if let primaryAddressId, let primaryUUID = UUID(uuidString: primaryAddressId) {
+        if let primaryAddressId, let primaryUUID = UUID(uuidString: primaryAddressId), addressIds.contains(primaryUUID) {
             preferredId = primaryUUID
         } else if addressIds.count == 1 {
             preferredId = addressIds[0]

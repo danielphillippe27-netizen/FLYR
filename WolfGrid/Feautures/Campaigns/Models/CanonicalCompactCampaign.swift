@@ -127,6 +127,24 @@ struct CanonicalTileRenderPlan {
         addressEdits.append(feature)
     }
 
+    /// Unchanged roofs stay in PMTiles, but overlay numbers still need their
+    /// geometry and height after a source refresh. Keep these separate from
+    /// buildingEdits so resolving labels never duplicates a tiled building.
+    func addressLabelBuildings(resolving resolve: (String) -> BuildingFeature?) -> [BuildingFeature] {
+        var result = buildingEdits
+        var covered = Set(result.flatMap { $0.properties.buildingIdentifierCandidates + [$0.id].compactMap { $0 } }
+            .map { $0.lowercased() })
+        for address in addressEdits {
+            for identifier in [address.properties.buildingGersId, address.properties.linkedBuildingId].compactMap({ $0 }) {
+                guard !covered.contains(identifier.lowercased()), let building = resolve(identifier) else { continue }
+                result.append(building)
+                covered.formUnion((building.properties.buildingIdentifierCandidates + [building.id].compactMap { $0 })
+                    .map { $0.lowercased() })
+            }
+        }
+        return result
+    }
+
 }
 
 /// Stable record lookup plus on-demand exact WKB decoding for field actions.

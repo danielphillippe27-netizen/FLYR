@@ -1275,6 +1275,21 @@ final class CampaignRepository {
         }
     }
 
+    /// Local/offline activity must protect a source address even before it has
+    /// reached the server. Failures propagate rather than authorizing a hide.
+    func addressesWithoutLocalActivity(campaignId: String, candidates: Set<UUID>) async throws -> Set<UUID> {
+        try await dbQueue.read { db in
+            let statuses = try CachedAddressStatusRecord.filter(Column("campaign_id") == campaignId).fetchAll(db)
+            let contacts = try String.fetchAll(db, sql: "SELECT address_id FROM cached_contacts WHERE address_id IS NOT NULL")
+            let pending = try String.fetchAll(db, sql: "SELECT payload_json FROM sync_outbox WHERE synced_at IS NULL")
+            let protected = Set(statuses.compactMap { $0.addressId.flatMap(UUID.init(uuidString:)) } +
+                                contacts.compactMap(UUID.init(uuidString:)))
+            return candidates.subtracting(protected).filter { id in
+                !pending.contains { $0.localizedCaseInsensitiveContains(id.uuidString) }
+            }
+        }
+    }
+
     func updateManualAddressGeocodeLocally(
         campaignId: String,
         addressId: UUID,

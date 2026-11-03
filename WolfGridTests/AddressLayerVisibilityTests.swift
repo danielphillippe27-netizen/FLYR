@@ -69,6 +69,7 @@ final class AddressLayerVisibilityTests: XCTestCase {
             var label = SymbolLayer(id: MapLayerManager.addressNumbersLayerId, source: "test-labels")
             label.textSize = .constant(14)
             label.textColor = .constant(StyleColor(.white))
+            label.textOpacity = .constant(0) // Regular numbers can be faded at zoom 16.
             try map.mapboxMap.addLayer(label)
         }
         try map.mapboxMap.addSource(GeoJSONSource(id: "temporary-pins"))
@@ -85,6 +86,7 @@ final class AddressLayerVisibilityTests: XCTestCase {
                 String(describing: map.mapboxMap.layerProperty(for: "farm-live-address-numbers", property: property).value))
         }
         MapTheme.hideBaseMapAddressNumberLayers(on: map.mapboxMap)
+        XCTAssertEqual(map.mapboxMap.layerProperty(for: "farm-live-address-numbers", property: "text-opacity").value as? Double, 1)
         XCTAssertEqual(map.mapboxMap.layerProperty(for: "farm-live-address-numbers", property: "visibility").value as? String, "visible")
         manager.setAddressExtrusionVisibility(isVisible: false)
         XCTAssertEqual(map.mapboxMap.layerProperty(for: "farm-live-address-pins", property: "visibility").value as? String, "none")

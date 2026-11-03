@@ -979,6 +979,19 @@ struct NewCampaignScreen: View {
         campaignId: UUID,
         campaignName: String
     ) {
+        // Publish the persisted readiness metadata before the badge can open the map.
+        // Live address matching checks this store before it allows placement writes.
+        if var campaign = createdCampaign, campaign.id == campaignId {
+            campaign.provisionStatus = state.provisionStatus
+            campaign.provisionSource = state.provisionSource
+            campaign.provisionPhase = state.provisionPhase
+            campaign.addressesReadyAt = state.addressesReadyAt
+            campaign.mapReadyAt = state.mapReadyAt
+            campaign.optimizedAt = state.optimizedAt
+            preserveCurrentDetails(in: &campaign)
+            store.update(campaign)
+            createdCampaign = campaign
+        }
         let badgeState = CampaignProvisionMonitor.badgeState(
             status: state.provisionStatus,
             phase: state.provisionPhase
@@ -1011,6 +1024,7 @@ struct NewCampaignScreen: View {
             let state = try await CampaignsAPI.shared.waitForProvisionReady(
                 campaignId: campaignId,
                 requireOptimized: false,
+                returnWhenMapUsable: true,
                 timeoutSeconds: 300,
                 pollIntervalSeconds: 2,
                 onProgress: { state in
@@ -1026,24 +1040,12 @@ struct NewCampaignScreen: View {
                 campaignId: campaignId,
                 campaignName: campaignName
             )
-            guard isProvisionMapUsable(status: state.provisionStatus, phase: state.provisionPhase) else {
+            guard Self.isProvisionMapUsable(status: state.provisionStatus, phase: state.provisionPhase) else {
                 trace.end(status: "not_usable", fields: [
                     "status": state.provisionStatus?.rawValue ?? "nil",
                     "phase": state.provisionPhase?.rawValue ?? "nil"
                 ])
                 return
-            }
-
-            if var workingCampaign = createdCampaign, workingCampaign.id == campaignId {
-                workingCampaign.provisionStatus = state.provisionStatus
-                workingCampaign.provisionSource = state.provisionSource
-                workingCampaign.provisionPhase = state.provisionPhase
-                workingCampaign.addressesReadyAt = state.addressesReadyAt
-                workingCampaign.mapReadyAt = state.mapReadyAt
-                workingCampaign.optimizedAt = state.optimizedAt
-                preserveCurrentDetails(in: &workingCampaign)
-                store.update(workingCampaign)
-                createdCampaign = workingCampaign
             }
 
             await markCampaignReadyToOpen(
@@ -1097,8 +1099,8 @@ struct NewCampaignScreen: View {
             ])
             let provisionResponse = try await CampaignsAPI.shared.provisionCampaign(
                 campaignId: campaign.id,
-                waitForLinker: true,
-                waitUntilReady: true
+                waitForLinker: false,
+                waitUntilReady: false
             )
             provisionTrace.end(status: "accepted_or_complete", fields: [
                 "accepted": provisionResponse?.accepted ?? false,
@@ -1153,7 +1155,7 @@ struct NewCampaignScreen: View {
                 return
             }
 
-            let needsProvisionWait = !isProvisionMapUsable(
+            let needsProvisionWait = !Self.isProvisionMapUsable(
                 status: provisionResponse?.provisionStatus,
                 phase: provisionResponse?.provisionPhase
             )
@@ -1166,6 +1168,7 @@ struct NewCampaignScreen: View {
                 let provisionState = try await CampaignsAPI.shared.waitForProvisionReady(
                     campaignId: campaign.id,
                     requireOptimized: false,
+                    returnWhenMapUsable: true,
                     onProgress: { state in
                         updateProvisionProgress(
                             for: state,
@@ -1191,7 +1194,7 @@ struct NewCampaignScreen: View {
                 finalProvisionStatus = provisionState.provisionStatus
             }
 
-            if finalProvisionStatus == .ready {
+            if Self.isProvisionMapUsable(status: finalProvisionStatus, phase: workingCampaign.provisionPhase) {
                 // The accepted background response and draft counts predate geometry stops.
                 // Read the persisted stop count after map-ready before showing an empty alert.
                 let persistedStopCount = try? await CampaignsAPI.shared.fetchCampaignAddressCount(campaignId: campaign.id)
@@ -1305,13 +1308,13 @@ struct NewCampaignScreen: View {
         }
     }
 
-    private func isProvisionMapUsable(
+    static func isProvisionMapUsable(
         status: CampaignProvisionStatus?,
         phase: CampaignProvisionPhase?
     ) -> Bool {
-        guard status == .ready else { return false }
-        guard let phase else { return true }
-        return phase.isMapUsable
+        guard status != .failed, phase != .failed else { return false }
+        if let phase { return phase.isMapUsable }
+        return status == .ready
     }
 
     @MainActor
@@ -1622,6 +1625,7 @@ struct NewCampaignScreen: View {
         boundaryCoordinates: [CLLocationCoordinate2D] = []
     ) async {
         provisionStatusText = "Opening campaign map..."
+        MapOpenTrace.begin(campaign: campaign.id.uuidString)
         uiState.selectCampaign(
             id: campaign.id,
             name: campaign.name,

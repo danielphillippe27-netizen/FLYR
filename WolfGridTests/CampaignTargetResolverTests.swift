@@ -341,6 +341,44 @@ final class CampaignTargetResolverTests: XCTestCase {
         try JSONDecoder().decode([BuildingFeature].self, from: Data(json.utf8))
     }
 
+    func testDirectionVariantsDeduplicateWhileKeepingOtherHomesAndUnits() throws {
+        let rows: [[String: Any]] = [
+            ["house_number": "403", "street_name": "Belmar St E", "formatted": "403 Belmar St E"],
+            ["house_number": "405", "street_name": "Belmar St E", "formatted": "405 Belmar St E"],
+            ["house_number": "405", "street_name": "E Belmar St", "formatted": "405 E Belmar St"],
+            ["house_number": "405", "street_name": "Belmar St W", "formatted": "405 Belmar St W"],
+            ["house_number": "405", "street_name": "E Belmar St", "formatted": "405 E Belmar St Unit 2"],
+            ["house_number": "405", "street_name": "Belmar St E", "formatted": "405 Belmar St E", "unit": "3"]
+        ]
+        let features: [[String: Any]] = rows.map { properties in
+            var properties = properties
+            let id = UUID().uuidString
+            properties["id"] = id
+            if properties["street_name"] as? String != "E Belmar St" { properties["locality"] = "Windsor" }
+            return ["type": "Feature", "id": id, "properties": properties,
+                    "geometry": ["type": "Point", "coordinates": [-83.0, 42.3]]]
+        }
+        let json = String(decoding: try JSONSerialization.data(withJSONObject: features), as: UTF8.self)
+        let addresses = try decodeAddresses(json)
+        let deduped = CampaignTargetResolver.deduplicatedAddressFeaturesForClientDisplay(addresses)
+        XCTAssertEqual(deduped.count, 5)
+        XCTAssertEqual(deduped.filter { $0.properties.houseNumber == "403" }.count, 1)
+    }
+
+    func testMatchingAddressNamesAtDifferentLocationsStaySeparate() throws {
+        let features: [[String: Any]] = [
+            (-83.0, "Windsor"), (-83.00001, ""), (-82.9, "Windsor"), (-83.0, "Other City")
+        ].map { longitude, city in
+            let id = UUID().uuidString
+            return ["type": "Feature", "id": id,
+                    "properties": ["id": id, "house_number": "405", "street_name": "E Belmar St", "locality": city],
+                    "geometry": ["type": "Point", "coordinates": [longitude, 42.3]]]
+        }
+        let json = String(decoding: try JSONSerialization.data(withJSONObject: features), as: UTF8.self)
+        let addresses = try decodeAddresses(json)
+        XCTAssertEqual(CampaignTargetResolver.deduplicatedAddressFeaturesForClientDisplay(addresses).count, 3)
+    }
+
     private func decodeAddresses(_ json: String) throws -> [AddressFeature] {
         try JSONDecoder().decode([AddressFeature].self, from: Data(json.utf8))
     }

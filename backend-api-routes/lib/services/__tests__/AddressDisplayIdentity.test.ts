@@ -115,3 +115,31 @@ test('canonicalizes Bedrock US master address aliases', () => {
     '4915144231067573182'
   );
 });
+
+
+test('matches direction placement and expansion without losing address distinctions', () => {
+  const identity = (street: string, house = '405', unit?: string) => normalizedAddressDisplayIdentity({ house_number: house, street_name: street, unit });
+  const expected = identity('Belmar St E');
+  for (const street of ['E Belmar St', 'East Belmar Street', 'Belmar East Street', 'BELMAR E. ST.']) {
+    assert.equal(identity(street), expected, street);
+    assert.equal(normalizedAddressDisplayIdentity({ formatted: `405 ${street}, Windsor ON` }), expected);
+  }
+  for (const street of ['Belmar St W', 'Belmar St']) assert.notEqual(identity(street), expected);
+  for (const house of ['403', '405A', '405-407']) assert.notEqual(identity('Belmar St E', house), expected);
+  assert.notEqual(identity('East Street'), identity('Street East'));
+  assert.notEqual(identity('North Road'), identity('Road North'));
+  assert.notEqual(identity('Belmar St E', '405', '2'), expected);
+  assert.notEqual(identity('Belmar St E', '405', '2'), identity('Belmar St E', '405', '3'));
+  assert.equal(identity('NE Main Ave'), identity('Main Avenue Northeast'));
+  assert.equal(identity('North East Main Ave'), identity('Main Avenue North East'));
+});
+
+
+test('matches unit labels in both formatted and structured data', () => {
+  const expected = normalizedAddressDisplayIdentity({ house_number: '405', street_name: 'Belmar St E', unit: '2' });
+  for (const formatted of ['405 E Belmar St Unit 2', 'Unit 2 405 Belmar St E', '405 East Belmar Street #2', '405 Belmar St E, Suite 2, Windsor']) {
+    assert.equal(normalizedAddressDisplayIdentity({ formatted }), expected, formatted);
+  }
+  assert.equal(normalizedAddressDisplayIdentity({ house_number: '405', street_name: 'E Belmar Street', unit: 'Unit 2' }), expected);
+  assert.equal(normalizedAddressDisplayIdentity({ house_number: '405', street_name: 'E Belmar Street Unit 2' }), expected);
+});

@@ -11,6 +11,20 @@ struct FarmLiveAddressTarget {
     let buildingId: String?
     let geometry: MapFeatureGeoJSONGeometry
     let coordinate: CLLocationCoordinate2D
+    let lookupCoordinate: CLLocationCoordinate2D?
+    let showsTemporaryPin: Bool
+
+    init(id: String, parcelId: String?, buildingId: String?, geometry: MapFeatureGeoJSONGeometry,
+         coordinate: CLLocationCoordinate2D, lookupCoordinate: CLLocationCoordinate2D? = nil,
+         showsTemporaryPin: Bool = true) {
+        self.id = id
+        self.parcelId = parcelId
+        self.buildingId = buildingId
+        self.geometry = geometry
+        self.coordinate = coordinate
+        self.lookupCoordinate = lookupCoordinate
+        self.showsTemporaryPin = showsTemporaryPin
+    }
 }
 
 /// Camera positions are presentation state, not new matching evidence.
@@ -231,6 +245,7 @@ enum FarmLiveAddressGeometry {
             enum CodingKeys: String, CodingKey { case name, regionCode = "region_code", countryCode = "country_code" }
         }
     }
+
 }
 
 enum FarmLiveSuggestionDisplay {
@@ -256,15 +271,64 @@ enum FarmLiveSuggestionDisplay {
     }
 }
 
+enum FarmLiveStreetAliasVerifier {
+    static func verifiedRoadName(data: Data, candidateStreet: String?) throws -> String? {
+        struct Response: Decodable {
+            struct Feature: Decodable {
+                struct Properties: Decodable {
+                    struct Query: Decodable { let distance: Double }
+                    let name: String?
+                    let tilequery: Query
+                }
+                let properties: Properties
+            }
+            let features: [Feature]
+        }
+        var roads: [String: (name: String, distance: Double)] = [:]
+        for feature in try JSONDecoder().decode(Response.self, from: data).features {
+            let p = feature.properties
+            guard p.tilequery.distance.isFinite, p.tilequery.distance >= 0,
+                  let name = p.name, let identity = UnlinkedHomeAddressResolver.normalizedAddressIdentity(
+                    houseNumber: "1", streetName: name) else { continue }
+            if p.tilequery.distance < (roads[identity]?.distance ?? .infinity) { roads[identity] = (name, p.tilequery.distance) }
+        }
+        let ranked = roads.sorted { $0.value.distance < $1.value.distance }
+        guard let nearest = ranked.first, nearest.value.distance <= 12,
+              ranked.count == 1 || ranked[1].value.distance - nearest.value.distance >= 5,
+              nearest.key == UnlinkedHomeAddressResolver.normalizedAddressIdentity(houseNumber: "1", streetName: candidateStreet)
+        else { return nil }
+        return nearest.value.name
+    }
+
+    /// Temporary road context is held only in the open map's memory. We retain
+    /// the native source's civic fields when saving a geometry correction.
+    static func verify(_ check: FarmLiveMatchIndex.StreetAliasCheck) async throws -> String? {
+        let point = check.entry.coordinate
+        var components = URLComponents(string: "https://api.mapbox.com/v4/mapbox.mapbox-streets-v8/tilequery/\(point.longitude),\(point.latitude).json")!
+        components.queryItems = [
+            .init(name: "radius", value: "25"), .init(name: "limit", value: "10"),
+            .init(name: "dedupe", value: "true"), .init(name: "geometry", value: "linestring"),
+            .init(name: "layers", value: "road"), .init(name: "access_token", value: Config.mapboxAccessToken)
+        ]
+        var request = URLRequest(url: components.url!, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 5)
+        request.setValue("no-store", forHTTPHeaderField: "Cache-Control")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+        return try verifiedRoadName(data: data, candidateStreet: check.candidate.resolvedStreetName)
+    }
+}
+
 /// Owned by a single open map. No database, outbox, disk cache or permanent requests.
 @MainActor
 final class FarmLiveAddressSuggestions: ObservableObject {
     private(set) var status = "Zoom in for address suggestions"
+    private var lastReportedStatus: String?
     private(set) var completionRevision = 0
     var onCompletion: (() -> Void)?
     func showStatus(_ message: String) {
-        if status != message {
+        if lastReportedStatus != message {
             status = message
+            lastReportedStatus = message
             let reason: String
             switch message {
             case "Zoom in for address suggestions": reason = "suggestions_blocked_zoom"
@@ -278,7 +342,9 @@ final class FarmLiveAddressSuggestions: ObservableObject {
             print("[FarmLiveSuggestions] \(message) requests=\(requestCount)")
         }
     }
-    static let minimumZoom: Double = 17
+    // The default campaign property view is zoom 16. Lookups and their labels
+    // must activate together there, rather than silently waiting for another zoom.
+    static let minimumZoom: Double = 16
     private static let sourceID = "farm-live-address-suggestions"
     private static let layerID = "farm-live-address-numbers"
     private static let pinSourceID = "farm-live-address-pins-source"
@@ -318,7 +384,9 @@ final class FarmLiveAddressSuggestions: ObservableObject {
         for target in input {
             if let previous = targets[target.id],
                abs(previous.coordinate.latitude - target.coordinate.latitude) > 0.000001 ||
-               abs(previous.coordinate.longitude - target.coordinate.longitude) > 0.000001 {
+               abs(previous.coordinate.longitude - target.coordinate.longitude) > 0.000001 ||
+               abs((previous.lookupCoordinate ?? previous.coordinate).latitude - (target.lookupCoordinate ?? target.coordinate).latitude) > 0.000001 ||
+               abs((previous.lookupCoordinate ?? previous.coordinate).longitude - (target.lookupCoordinate ?? target.coordinate).longitude) > 0.000001 {
                 attempted.remove(target.id); results.removeValue(forKey: target.id)
                 running.removeValue(forKey: target.id)?.cancel(); requestIDs.removeValue(forKey: target.id)
             }
@@ -409,12 +477,16 @@ final class FarmLiveAddressSuggestions: ObservableObject {
         }
         queue.removeAll { removed.contains($0) }
         pump()
-        scheduleRender()
+        // Clear the estimate before the real marker is queued, so the handoff
+        // cannot leave both markers visible until the next debounce tick.
+        renderTask?.cancel(); renderTask = nil
+        render()
     }
 
     func close() {
         onCompletion = nil
         closed = true
+        lastReportedStatus = nil
         association = nil
         renderTask?.cancel(); renderTask = nil
         running.values.forEach { $0.cancel() }
@@ -434,9 +506,10 @@ final class FarmLiveAddressSuggestions: ObservableObject {
                 guard let self else { return }
                 do {
                     var url = URLComponents(string: "https://api.mapbox.com/search/geocode/v6/reverse")!
+                    let lookupPoint = target.lookupCoordinate ?? target.coordinate
                     url.queryItems = [
-                        .init(name: "longitude", value: String(target.coordinate.longitude)),
-                        .init(name: "latitude", value: String(target.coordinate.latitude)),
+                        .init(name: "longitude", value: String(lookupPoint.longitude)),
+                        .init(name: "latitude", value: String(lookupPoint.latitude)),
                         .init(name: "types", value: "address"), .init(name: "limit", value: "1"),
                         .init(name: "permanent", value: "false"),
                         .init(name: "access_token", value: Config.mapboxAccessToken)
@@ -508,7 +581,7 @@ final class FarmLiveAddressSuggestions: ObservableObject {
         guard let map, map.mapboxMap.isStyleLoaded else { return }
         let signature = displayedIDs.compactMap { id -> String? in
             guard let target = targets[id], let number = results[id]?.houseNumber else { return nil }
-            return "\(id):\(number):\(target.coordinate.latitude):\(target.coordinate.longitude)"
+            return "\(id):\(number):\(target.coordinate.latitude):\(target.coordinate.longitude):\(target.showsTemporaryPin)"
         }.joined(separator: "|")
         guard signature != renderedSignature || !map.mapboxMap.sourceExists(withId: Self.sourceID) ||
                 !map.mapboxMap.layerExists(withId: Self.layerID) else { return }
@@ -527,7 +600,11 @@ final class FarmLiveAddressSuggestions: ObservableObject {
                 source.data = .featureCollection(collection)
                 try map.mapboxMap.addSource(source)
             } else { map.mapboxMap.updateGeoJSONSource(withId: Self.sourceID, geoJSON: .featureCollection(collection)) }
-            let pinData = try MapLayerManager.temporaryAddressPinGeometry(JSONEncoder().encode(collection))
+            let pinFeatures = features.filter { feature in
+                guard case .string(let id)? = feature.identifier else { return false }
+                return targets[id]?.showsTemporaryPin == true
+            }
+            let pinData = try MapLayerManager.temporaryAddressPinGeometry(JSONEncoder().encode(FeatureCollection(features: pinFeatures)))
             let pinGeometry = try JSONDecoder().decode(GeoJSONObject.self, from: pinData)
             if !map.mapboxMap.sourceExists(withId: Self.pinSourceID) {
                 var source = GeoJSONSource(id: Self.pinSourceID)
@@ -538,7 +615,7 @@ final class FarmLiveAddressSuggestions: ObservableObject {
                 pinSource: Self.pinSourceID, labelSource: Self.sourceID,
                 pinID: Self.pinLayerID, labelID: Self.layerID)
             renderedSignature = signature
-            PerfTrace.event("farm_live", "labels_published", fields: ["count": features.count])
+            PerfTrace.event("farm_live", "labels_published", fields: ["count": features.count, "temporaryPins": pinFeatures.count])
         } catch { /* A style transition will install the overlay on the next idle event. */ }
     }
 }
@@ -600,6 +677,8 @@ extension FarmLiveAddressGeometry {
         }
         let normalParcels = parcelLinks(normalAddresses), repairParcels = parcelLinks(repairAddresses)
         let normalBuildings = buildingLinks(normalAddresses), repairBuildings = buildingLinks(repairAddresses)
+        let pendingStops = addresses.filter(FarmLiveMatchIndex.isPendingGeometryStop)
+        let pendingParcels = parcelLinks(pendingStops), pendingBuildings = buildingLinks(pendingStops)
         func linked(_ building: BuildingFeature, repairing: Bool = false) -> Bool {
             let p = building.properties
             let owners = p.addressIds + [p.addressId].compactMap { $0 }
@@ -638,9 +717,15 @@ extension FarmLiveAddressGeometry {
                   !occupied(parcelShape, repairing: repairing) else { continue }
             let eligible = children.filter { eligibleBuilding($0.0) }
             let roof = eligible.max { ($0.0.properties.areaSqm ?? 0) < ($1.0.properties.areaSqm ?? 0) }
+            // Reverse geocoding an empty yard can return the neighbouring home.
+            // Prefer the roof interior when it is inside this lot; a shared roof
+            // whose interior is on a sibling lot retains this parcel's own point.
+            // Anchor the temporary number there too so it stays on its building.
+            let lookupPoint = roof.flatMap { parcelShape.contains($0.1) ? $0.1 : nil } ?? point
             output.append(.init(id: "parcel:\(id.lowercased())", parcelId: id,
                 buildingId: roof?.0.properties.canonicalBuildingIdentifier,
-                geometry: parcel.geometry, coordinate: point))
+                geometry: parcel.geometry, coordinate: lookupPoint, lookupCoordinate: lookupPoint,
+                showsTemporaryPin: !aliases.contains { pendingParcels.contains($0.lowercased()) }))
         }
         // A roof outside parcel coverage is still eligible. A roof on a covered parcel never adds a second target.
         for (building, point, shape) in roofs {
@@ -650,7 +735,8 @@ extension FarmLiveAddressGeometry {
                   !p.buildingIdentifierCandidates.contains(where: { ownedBuildings.contains($0.lowercased()) }),
                   let id = p.canonicalBuildingIdentifier else { continue }
             output.append(.init(id: "building:\(id.lowercased())", parcelId: nil, buildingId: id,
-                                geometry: building.geometry, coordinate: point))
+                                geometry: building.geometry, coordinate: point,
+                                showsTemporaryPin: !p.buildingIdentifierCandidates.contains { pendingBuildings.contains($0.lowercased()) }))
         }
         var seenIDs = Set<String>()
         var seenCenters = Set<String>()
@@ -673,11 +759,18 @@ struct FarmLiveMatchIndex {
         let addressID: UUID
         let target: FarmLiveAddressTarget
         let coordinate: CLLocationCoordinate2D
+        var supersededAddressIDs: Set<UUID> = []
     }
     private var byIdentity: [String: [Entry]] = [:]
+    private var byHouse: [String: [Entry]] = [:]
+    private(set) var verifiedStreetAliases: [UUID: String] = [:]
     private var buildings: [BuildingFeature]
     private var parcelOwners: [String: Set<UUID>] = [:]
     private var buildingOwners: [String: Set<UUID>] = [:]
+    private var unusedPendingIDs = Set<UUID>()
+    private var pendingGeometryStops: [UUID: AddressFeature] = [:]
+    private var parcelFeatures: [String: ParcelFeature] = [:]
+    private(set) var existingLinkCandidates: [(FarmLiveAddressTarget, BuildingAddressCandidate)] = []
     private var fixedParcels: [UUID: String] = [:]
     private var parcelAliases: [String: String] = [:]
     private var parcelShapes: [String: FarmLiveAddressGeometry.PreparedShape] = [:]
@@ -688,14 +781,17 @@ struct FarmLiveMatchIndex {
 
     init(addresses: [AddressFeature], buildings: [BuildingFeature], edits: CampaignMapEditState? = nil,
          evidence: [FarmLiveLinkEvidence] = [], parcels: [ParcelFeature] = [],
-         normalizedIdentities: [UUID: String] = [:]) {
+         normalizedIdentities: [UUID: String] = [:], unusedGeometryStopIDs: Set<UUID> = [],
+         verifiedStreetAliases: [UUID: String] = [:]) {
         self.normalizedIdentities = normalizedIdentities
+        self.verifiedStreetAliases = verifiedStreetAliases
         self.buildings = buildings
         for parcel in parcels {
             let aliases = [parcel.id, parcel.properties.id, parcel.properties.parcelId, parcel.properties.externalId].compactMap { $0?.lowercased() }
             if let canonical = aliases.first {
                 for alias in aliases { parcelAliases[alias] = canonical }
                 parcelShapes[canonical] = FarmLiveAddressGeometry.PreparedShape(parcel.geometry)
+                parcelFeatures[canonical] = parcel
             }
         }
         let evidenceByID = Dictionary(grouping: evidence, by: { $0.addressID.lowercased() })
@@ -711,6 +807,17 @@ struct FarmLiveMatchIndex {
             let parcelLinked = edit?.parcelLinkSet == true ? parcel != nil : (parcel != nil || p.hasParcelLink == true)
             if let building { buildingOwners[building.lowercased(), default: []].insert(id) }
             if let parcel { parcelOwners[parcelAliases[parcel.lowercased()] ?? parcel.lowercased(), default: []].insert(id) }
+            // A pending stop is not a civic match. Only freshly checked, untouched
+            // placeholders may yield to an existing, fully matching civic address.
+            if Self.isPendingGeometryStop(feature) {
+                lookupAddressIDs.insert(key)
+                let protectedLink = (evidenceByID[key] ?? []).contains { !$0.canRepair }
+                if unusedGeometryStopIDs.contains(id), edit == nil, !protectedLink {
+                    unusedPendingIDs.insert(id)
+                    pendingGeometryStops[id] = feature
+                }
+                continue
+            }
             let rows = evidenceByID[key] ?? []
             let protectedEdit = edit?.geometry != nil || edit?.buildingLinkSet == true || edit?.parcelLinkSet == true
             // Old parcel-only corrections may still inherit an unrelated base building.
@@ -719,14 +826,17 @@ struct FarmLiveMatchIndex {
             let automatic = !rows.isEmpty && rows.allSatisfy(\.canRepair)
             guard incompleteParcel || (!protectedEdit && (!buildingLinked && !parcelLinked || automatic)),
                   let coordinate = CampaignTargetResolver.coordinate(for: feature.geometry),
-                  let identity = normalizedIdentities[id] ?? UnlinkedHomeAddressResolver.normalizedAddressIdentity(
+                  let identity = verifiedStreetAliases[id].flatMap({ UnlinkedHomeAddressResolver.normalizedAddressIdentity(
+                    houseNumber: p.houseNumber ?? p.houseNumberLabel, streetName: $0, postalCode: p.postalCode, formatted: p.formatted, unit: p.unit) }) ?? normalizedIdentities[id] ?? UnlinkedHomeAddressResolver.normalizedAddressIdentity(
                     houseNumber: p.houseNumber ?? p.houseNumberLabel, streetName: p.streetName,
-                    postalCode: p.postalCode, formatted: p.formatted) else { continue }
+                    postalCode: p.postalCode, formatted: p.formatted, unit: p.unit) else { continue }
             self.normalizedIdentities[id] = identity
             if incompleteParcel, let parcel { fixedParcels[id] = parcelAliases[parcel.lowercased()] ?? parcel.lowercased() }
             reviewableAddressIDs.insert(key)
             if incompleteParcel || (!buildingLinked && !parcelLinked) { lookupAddressIDs.insert(key) }
-            byIdentity[identity, default: []].append(Entry(id: id, identity: identity, feature: feature, coordinate: coordinate))
+            let entry = Entry(id: id, identity: identity, feature: feature, coordinate: coordinate)
+            byIdentity[identity, default: []].append(entry)
+            if let house = identity.split(separator: "|").first { byHouse[String(house), default: []].append(entry) }
         }
         // Geometry ownership can carry addresses missing from the address payload.
         for building in buildings {
@@ -746,6 +856,42 @@ struct FarmLiveMatchIndex {
                 if edit?.hidden == true || edit?.parcelLinkSet == true { continue }
                 parcelOwners[alias.lowercased(), default: []].insert(owner)
             }
+        }
+        existingLinkCandidates = makeExistingLinkCandidates()
+    }
+
+    /// A native civic row and an empty generated stop on the same single-home
+    /// roof are one home, not a townhouse. Existing native links supply proof;
+    /// no reverse geocode or new address row is needed.
+    private func makeExistingLinkCandidates() -> [(FarmLiveAddressTarget, BuildingAddressCandidate)] {
+        var roofs: [String: BuildingFeature] = [:]
+        for building in buildings {
+            for alias in building.properties.buildingIdentifierCandidates { roofs[alias.lowercased()] = building }
+        }
+        return pendingGeometryStops.compactMap { pendingID, stop in
+            let p = stop.properties
+            guard let roofID = (p.buildingGersId ?? p.linkedBuildingId)?.lowercased(),
+                  let roof = roofs[roofID], let owners = buildingOwners[roofID], owners.count == 2,
+                  owners.contains(pendingID),
+                  let nativeID = owners.subtracting(unusedPendingIDs).first,
+                  let identity = normalizedIdentities[nativeID],
+                  let entry = byIdentity[identity]?.first(where: { $0.id == nativeID }),
+                  let lot = (p.parcelId ?? p.campaignParcelId).map({ parcelAliases[$0.lowercased()] ?? $0.lowercased() }),
+                  let parcel = parcelFeatures[lot], let shape = parcelShapes[lot],
+                  let point = FarmLiveAddressGeometry.PreparedShape(roof.geometry)?.interiorPoint, shape.contains(point),
+                  (parcelOwners[lot] ?? []).subtracting([pendingID, nativeID]).isEmpty else { return nil }
+            let native = entry.feature.properties
+            if let linkedLot = native.parcelId ?? native.campaignParcelId,
+               (parcelAliases[linkedLot.lowercased()] ?? linkedLot.lowercased()) != lot { return nil }
+            let target = FarmLiveAddressTarget(id: "parcel:\(lot)", parcelId: lot, buildingId: roofID,
+                geometry: parcel.geometry, coordinate: point, showsTemporaryPin: false)
+            let candidate = BuildingAddressCandidate(id: nativeID, candidateType: "existing_campaign_address", isSynthetic: false,
+                formatted: native.formatted, houseNumber: native.houseNumber ?? native.houseNumberLabel,
+                streetName: native.streetName, locality: native.locality, region: nil,
+                postalCode: native.postalCode, country: nil, source: "existing_campaign_address",
+                coordinate: CandidateCoordinate(longitude: point.longitude, latitude: point.latitude), distanceMeters: 0,
+                score: 1, reason: "Existing home link", confidenceLabel: "confirmed", requiresConfirmation: false)
+            return (target, candidate)
         }
     }
 
@@ -769,7 +915,8 @@ struct FarmLiveMatchIndex {
     /// Recompute relationships only for the old and new properties. Retain the
     /// complete address list so other occupants of a shared roof are preserved.
     static func advancingSnapshot(buildings: [BuildingFeature], addresses: [AddressFeature],
-                                  parcels: [ParcelFeature], replacements: [AddressFeature]) -> CampaignMapEditSnapshot {
+                                  parcels: [ParcelFeature], replacements: [AddressFeature],
+                                  hiddenAddressIDs: Set<UUID> = []) -> CampaignMapEditSnapshot {
         let moved = Set(replacements.map { CampaignMapEdits.addressItem($0).featureID })
         let previous = addresses.filter { moved.contains(CampaignMapEdits.addressItem($0).featureID) }
         let affected = previous + replacements
@@ -790,12 +937,13 @@ struct FarmLiveMatchIndex {
         let updatedAddresses = addresses.map { byID[CampaignMapEdits.addressItem($0).featureID] ?? $0 } +
             replacements.filter { !existing.contains(CampaignMapEdits.addressItem($0).featureID) }
         // Link flags in this state also clear old ownership during relocations.
-        let changes = replacements.compactMap { feature -> CampaignMapEditChange? in
+        var changes = replacements.compactMap { feature -> CampaignMapEditChange? in
             guard let coordinate = CampaignTargetResolver.coordinate(for: feature.geometry) else { return nil }
             return CampaignMapEditPlanner.addressPlacement(addressId: CampaignMapEdits.addressItem(feature).featureID,
                 coordinate: coordinate, buildingId: feature.properties.buildingGersId ?? feature.properties.linkedBuildingId,
                 parcelId: feature.properties.parcelId ?? feature.properties.campaignParcelId, state: .init(), sourceRevision: nil)
         }
+        changes += hiddenAddressIDs.map { CampaignMapEditChange(CampaignMapItem(.address, $0.uuidString), value: .init(hidden: true)) }
         let corrected = CampaignMapEdits.snapshot(buildings: buildingIndices.map { buildings[$0] },
             addresses: updatedAddresses, parcels: parcelIndices.map { parcels[$0] },
             state: CampaignMapEditState().applying(changes))
@@ -822,8 +970,17 @@ struct FarmLiveMatchIndex {
     /// remove resolved identities without rebuilding the farm's geometry or index.
     func applying(_ placements: [Placement]) -> Self {
         var updated = self
-        let moved = Set(placements.map(\.addressID))
+        let superseded = Set(placements.flatMap(\.supersededAddressIDs))
+        let moved = Set(placements.map(\.addressID)).union(superseded)
+        updated.unusedPendingIDs.subtract(superseded)
+        for id in superseded { updated.pendingGeometryStops.removeValue(forKey: id) }
+        updated.existingLinkCandidates.removeAll { movedIDs in placements.contains { $0.addressID == movedIDs.1.id } }
+        updated.lookupAddressIDs.subtract(superseded.map { $0.uuidString.lowercased() })
         updated.byIdentity = byIdentity.compactMapValues { entries in
+            let remaining = entries.filter { !moved.contains($0.id) }
+            return remaining.isEmpty ? nil : remaining
+        }
+        updated.byHouse = byHouse.compactMapValues { entries in
             let remaining = entries.filter { !moved.contains($0.id) }
             return remaining.isEmpty ? nil : remaining
         }
@@ -849,6 +1006,16 @@ struct FarmLiveMatchIndex {
         return updated
     }
 
+    static func isPendingGeometryStop(_ feature: AddressFeature) -> Bool {
+        let p = feature.properties
+        guard p.gersId?.lowercased().hasPrefix("synthetic:geometry-target:") == true else { return false }
+        // Placeholder text must never be parsed as if "Address" were a house
+        // number and "pending" a street. Confirmed geometry stops carry civic fields.
+        return UnlinkedHomeAddressResolver.normalizedAddressIdentity(
+            houseNumber: p.houseNumber ?? p.houseNumberLabel, streetName: p.streetName,
+            postalCode: p.postalCode, formatted: nil) == nil
+    }
+
     func updatingBuildings(_ buildings: [BuildingFeature]) -> Self {
         var updated = self
         updated.buildings = buildings
@@ -866,6 +1033,61 @@ struct FarmLiveMatchIndex {
             }
         }
         return Array(selected.values)
+    }
+
+    struct StreetAliasCheck {
+        let entry: Entry
+        let candidate: BuildingAddressCandidate
+        var key: String { entry.id.uuidString + ":" + (candidate.resolvedStreetName ?? "") }
+    }
+
+    /// A plural spelling difference is only a request for independent geographic
+    /// verification, never an address match by itself. Directions/types stay exact.
+    static func needsLocalStreetVerification(_ first: String, _ second: String) -> Bool {
+        let a = first.split(separator: " ").map(String.init), b = second.split(separator: " ").map(String.init)
+        guard a.count == b.count else { return false }
+        let different = a.indices.filter { a[$0] != b[$0] }
+        guard different.count == 1, let i = different.first else { return false }
+        let reserved: Set<String> = ["north", "south", "east", "west", "northeast", "northwest", "southeast", "southwest",
+            "street", "road", "avenue", "boulevard", "drive", "court", "crescent", "lane", "place", "trail", "parkway", "highway"]
+        guard !reserved.contains(a[i]), !reserved.contains(b[i]), min(a[i].count, b[i].count) >= 4 else { return false }
+        return a[i] == b[i] + "s" || b[i] == a[i] + "s"
+    }
+
+    func streetAliasChecks(_ candidates: [(FarmLiveAddressTarget, BuildingAddressCandidate)]) -> [StreetAliasCheck] {
+        var checks: [UUID: StreetAliasCheck] = [:]
+        for (target, candidate) in candidates {
+            guard let identity = UnlinkedHomeAddressResolver.normalizedAddressIdentity(houseNumber: candidate.houseNumber,
+                streetName: candidate.resolvedStreetName), byIdentity[identity] == nil else { continue }
+            let parts = identity.split(separator: "|", maxSplits: 1).map(String.init)
+            guard parts.count == 2, let postal = candidate.postalCode, !postal.isEmpty else { continue }
+            let nearby = (byHouse[parts[0]] ?? []).filter { entry in
+                guard verifiedStreetAliases[entry.id] == nil,
+                      entry.feature.properties.postalCode?.caseInsensitiveCompare(postal) == .orderedSame,
+                      let street = entry.identity.split(separator: "|", maxSplits: 1).last,
+                      Self.needsLocalStreetVerification(String(street), parts[1]) else { return false }
+                return CLLocation(latitude: entry.coordinate.latitude, longitude: entry.coordinate.longitude)
+                    .distance(from: CLLocation(latitude: target.coordinate.latitude, longitude: target.coordinate.longitude)) <= 100
+            }
+            if nearby.count == 1, let entry = nearby.first { checks[entry.id] = .init(entry: entry, candidate: candidate) }
+        }
+        return checks.values.sorted { $0.key < $1.key }
+    }
+
+    func acceptingStreetAliases(_ aliases: [UUID: String]) -> Self {
+        var updated = self
+        for (id, street) in aliases {
+            guard let old = byHouse.values.lazy.flatMap({ $0 }).first(where: { $0.id == id }),
+                  let identity = UnlinkedHomeAddressResolver.normalizedAddressIdentity(
+                    houseNumber: old.feature.properties.houseNumber ?? old.feature.properties.houseNumberLabel, streetName: street,
+                    postalCode: old.feature.properties.postalCode, formatted: old.feature.properties.formatted, unit: old.feature.properties.unit) else { continue }
+            updated.byIdentity[old.identity]?.removeAll { $0.id == id }
+            if updated.byIdentity[old.identity]?.isEmpty == true { updated.byIdentity.removeValue(forKey: old.identity) }
+            updated.byIdentity[identity, default: []].append(.init(id: id, identity: identity, feature: old.feature, coordinate: old.coordinate))
+            updated.normalizedIdentities[id] = identity
+            updated.verifiedStreetAliases[id] = street
+        }
+        return updated
     }
 
     func placements(candidates: [(FarmLiveAddressTarget, BuildingAddressCandidate)], visibleEntries: [Entry], readyTargetIDs: Set<String>? = nil) -> [Placement] {
@@ -895,7 +1117,7 @@ struct FarmLiveMatchIndex {
                   let feature = featureByID[addressID],
                   UnlinkedHomeAddressResolver.campaignAddressMatches(
                     reverseCandidate: suggestion, houseNumber: feature.properties.houseNumber ?? feature.properties.houseNumberLabel,
-                    streetName: feature.properties.streetName, postalCode: feature.properties.postalCode,
+                    streetName: verifiedStreetAliases[addressID] ?? feature.properties.streetName, postalCode: feature.properties.postalCode,
                     formatted: feature.properties.formatted) else {
                 PerfTrace.event("farm_live", "match_rejected_civic_validation")
                 continue
@@ -920,7 +1142,11 @@ struct FarmLiveMatchIndex {
                 guard target.parcelId != nil, CampaignMapEditPlanner.contains(target.geometry, target.coordinate) else { continue }
                 point = target.coordinate
             }
-            placements.append(Placement(addressID: addressID, target: target, coordinate: point))
+            let parcelKey = target.parcelId.map { parcelAliases[$0.lowercased()] ?? $0.lowercased() }
+            let occupants = parcelKey.map { parcelOwners[$0] ?? [] }
+                ?? (target.buildingId.flatMap { buildingOwners[$0.lowercased()] } ?? [])
+            placements.append(Placement(addressID: addressID, target: target, coordinate: point,
+                supersededAddressIDs: occupants.intersection(unusedPendingIDs)))
         }
         // Resolve relocation chains as one journal transaction. If an occupant has no
         // verified destination, remove the dependent move; repeat to a fixed point.
@@ -934,10 +1160,12 @@ struct FarmLiveMatchIndex {
                 let parcelConflicts = parcel.map { parcelOwners[$0] ?? [] } ?? []
                 let roofConflicts = roof.map { buildingOwners[$0] ?? [] } ?? []
                 let blockedParcel = parcelConflicts.subtracting([placement.addressID]).contains { owner in
+                    if placement.supersededAddressIDs.contains(owner) { return false }
                     guard let move = accepted[owner] else { return true }
                     return move.target.parcelId.map { parcelAliases[$0.lowercased()] ?? $0.lowercased() } == parcel
                 }
                 let blockedRoof = roofConflicts.subtracting([placement.addressID]).contains { owner in
+                    if placement.supersededAddressIDs.contains(owner) { return false }
                     // A known distinct parcel can legitimately share a townhouse roof.
                     if let parcel, let roof, let footprint = footprints[roof],
                        parcelOwners.contains(where: { other in

@@ -31,6 +31,36 @@ final class CampaignMapModeResolutionTests: XCTestCase {
         }
     }
 
+    func testParcelOnlyCampaignUsesPropertyMapAndHonors2DChoice() {
+        for activeSession in [false, true] {
+            XCTAssertEqual(CampaignMapRendererDecision.resolve(
+                dataResolved: true, hasRenderableBuildings: false, hasRenderableParcels: true,
+                activeSession: activeSession, sessionUses2D: false,
+                mapboxAvailable: true, googleAvailable: true
+            ), .mapbox3D)
+            XCTAssertEqual(CampaignMapRendererDecision.resolve(
+                dataResolved: true, hasRenderableBuildings: false, hasRenderableParcels: true,
+                activeSession: activeSession, sessionUses2D: false,
+                mapboxAvailable: true, googleAvailable: true, preferred2D: true
+            ), .google2D)
+        }
+        XCTAssertEqual(CampaignMapRendererDecision.resolve(
+            dataResolved: true, hasRenderableBuildings: false, hasRenderableParcels: true,
+            activeSession: false, sessionUses2D: false,
+            mapboxAvailable: true, googleAvailable: true, standardMode: true
+        ), .google2D)
+    }
+
+    @MainActor
+    func testCampaignCanOpenBeforeLinkerCompletesButNeverAfterFailure() {
+        XCTAssertTrue(NewCampaignScreen.isProvisionMapUsable(status: .pending, phase: .mapReady))
+        XCTAssertTrue(NewCampaignScreen.isProvisionMapUsable(status: .pending, phase: .optimizing))
+        XCTAssertTrue(NewCampaignScreen.isProvisionMapUsable(status: .ready, phase: nil))
+        XCTAssertFalse(NewCampaignScreen.isProvisionMapUsable(status: .pending, phase: .addressesReady))
+        XCTAssertFalse(NewCampaignScreen.isProvisionMapUsable(status: .failed, phase: .mapReady))
+        XCTAssertFalse(NewCampaignScreen.isProvisionMapUsable(status: .ready, phase: .failed))
+    }
+
     func testStandardAlwaysUsesGoogleBeforeAndDuringSessions() {
         for dataResolved in [false, true] {
             for hasBuildings in [false, true] {

@@ -82,14 +82,6 @@ struct BottomActionBar: View {
         )
     }
 
-    private var gpsStatus: PauseTrayGPSStatus {
-        PauseTrayGPSStatus(
-            location: sessionManager.currentLocation,
-            errorMessage: sessionManager.locationError,
-            hasBackgroundAccess: sessionManager.hasPersistentBackgroundLocationAccess
-        )
-    }
-
     var body: some View {
         VStack(spacing: 0) {
             Capsule()
@@ -142,27 +134,6 @@ struct BottomActionBar: View {
                         .overlay(dividerColor)
 
                     if showsCampaignSessionTools {
-                        if let use2DMap {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text("Map view")
-                                    .font(.subheadline.weight(.semibold))
-                                    .foregroundStyle(primaryText)
-                                Picker("Map view", selection: use2DMap) {
-                                    Text("2D").tag(true)
-                                    Text("3D").tag(false)
-                                }
-                                .pickerStyle(.segmented)
-                                .accessibilityIdentifier("session-map-dimension")
-                                Text(use2DMap.wrappedValue ? "Satellite map with flat pins" : "WolfGrid buildings and 3D pins")
-                                    .font(.caption)
-                                    .foregroundStyle(secondaryText)
-                            }
-                            .padding(.vertical, 8)
-
-                            Divider()
-                                .overlay(dividerColor)
-                        }
-
                         if let coverageMode {
                             toggleRow(
                                 title: "Coverage Mode",
@@ -226,13 +197,8 @@ struct BottomActionBar: View {
                                 tint: defaultIconTint,
                                 isOn: hideParcels
                             )
-
-                            Divider()
-                                .overlay(dividerColor)
                         }
                     }
-
-                    if sessionManager.gpsEnabled { gpsRow }
                 }
                 .background(expandedBackground)
                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
@@ -327,33 +293,6 @@ struct BottomActionBar: View {
         }, message: {
             Text(localErrorMessage ?? "")
         })
-    }
-
-    private var gpsRow: some View {
-        HStack(spacing: 12) {
-            Image(systemName: gpsStatus.systemImage)
-                .font(.system(size: 18, weight: .semibold))
-                .foregroundStyle(gpsStatus.tint)
-                .frame(width: 26)
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text("GPS Signal")
-                    .font(.flyrSubheadline)
-                    .foregroundStyle(primaryText)
-                Text(gpsStatus.detail)
-                    .font(.flyrCaption)
-                    .foregroundStyle(secondaryText)
-                    .lineLimit(2)
-            }
-
-            Spacer()
-
-            Text(gpsStatus.label)
-                .font(.flyrCaption)
-                .foregroundStyle(gpsStatus.tint)
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 15)
     }
 
     private func actionRow(

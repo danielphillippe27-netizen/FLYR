@@ -206,7 +206,72 @@ final class ClientMapLinkerServiceTests: XCTestCase {
         XCTAssertEqual(progressValues.last?.percent, 100)
     }
 
-    private func building(id: String, ring: [[Double]], street: String, house: String) -> BuildingFeature {
+    func testManualUnlinkedPinIsNotAutomaticallyAttached() async throws {
+        let payload = """
+        {"type":"Feature","geometry":{"type":"Point","coordinates":[-79,43]},
+         "properties":{"id":"manual","source":"field_manual_pin"}}
+        """
+        let pin = try JSONDecoder().decode(AddressFeature.self, from: Data(payload.utf8))
+        let result = await ClientMapLinkerService.shared.link(
+            buildings: BuildingFeatureCollection(type: "FeatureCollection", features: [
+                building(id: "home", ring: square(lon: -79, lat: 43, size: 0.001), street: "Main St", house: "10")
+            ]), addresses: AddressFeatureCollection(type: "FeatureCollection", features: [pin]), parcels: nil)
+        XCTAssertTrue(result.links.isEmpty)
+    }
+
+    func testEightAddressesOnTwoStreetsCannotClaimOneHome() async throws {
+        let homes = BuildingFeatureCollection(type: "FeatureCollection", features: [
+            building(id: "home", ring: square(lon: -79, lat: 43, size: 0.001), street: "E Parks St", house: "210", unitsCount: 8)
+        ])
+        let points = ["210", "211", "212", "214", "1109", "1112", "1116", "1119"].enumerated().map { index, number in
+            address(id: number, lon: -79, lat: 43, street: index < 4 ? "E Parks St" : "S Tennessee Ave", house: number)
+        }
+        for ordered in [points, Array(points.reversed())] {
+            let result = await ClientMapLinkerService.shared.link(buildings: homes,
+                addresses: AddressFeatureCollection(type: "FeatureCollection", features: ordered), parcels: nil)
+            XCTAssertTrue(result.links.isEmpty)
+        }
+    }
+
+    func testOccupiedMultiUnitFlagDoesNotAcceptAnotherAutomaticAddress() async throws {
+        let homes = BuildingFeatureCollection(type: "FeatureCollection", features: [
+            building(id: "home", ring: square(lon: -79, lat: 43, size: 0.001), street: "Main St", house: "10", unitsCount: 2)
+        ])
+        let result = await ClientMapLinkerService.shared.link(buildings: homes,
+            addresses: AddressFeatureCollection(type: "FeatureCollection", features: [
+                address(id: "10", lon: -79, lat: 43, street: "Main St", house: "10", linkedBuildingId: "home"),
+                address(id: "12", lon: -79, lat: 43, street: "Main St", house: "12")
+            ]), parcels: nil)
+        XCTAssertTrue(result.links.isEmpty)
+    }
+
+    func testSharedParcelCannotBridgeMultipleAddressesToOneHome() async throws {
+        let homes = BuildingFeatureCollection(type: "FeatureCollection", features: [
+            building(id: "home", ring: square(lon: -79.0004, lat: 43.0004, size: 0.00012), street: "Main St", house: "10")
+        ])
+        let result = await ClientMapLinkerService.shared.link(buildings: homes,
+            addresses: AddressFeatureCollection(type: "FeatureCollection", features: [
+                address(id: "10", lon: -79.0001, lat: 43.0001, street: "Main St", house: "10"),
+                address(id: "12", lon: -79.00015, lat: 43.0001, street: "Main St", house: "12")
+            ]), parcels: ParcelFeatureCollection(type: "FeatureCollection", features: [
+                parcel(id: "shared", ring: square(lon: -79.00025, lat: 43.00025, size: 0.001))
+            ]))
+        XCTAssertTrue(result.links.isEmpty)
+    }
+
+    func testDifferentStreetCannotUseUniqueParcelBridge() async throws {
+        let result = await ClientMapLinkerService.shared.link(
+            buildings: BuildingFeatureCollection(type: "FeatureCollection", features: [
+                building(id: "home", ring: square(lon: -79.0004, lat: 43.0004, size: 0.00012), street: "Parks St", house: "210")
+            ]), addresses: AddressFeatureCollection(type: "FeatureCollection", features: [
+                address(id: "1109", lon: -79.0001, lat: 43.0001, street: "Tennessee Ave", house: "1109")
+            ]), parcels: ParcelFeatureCollection(type: "FeatureCollection", features: [
+                parcel(id: "shared", ring: square(lon: -79.00025, lat: 43.00025, size: 0.001))
+            ]))
+        XCTAssertTrue(result.links.isEmpty)
+    }
+
+    private func building(id: String, ring: [[Double]], street: String, house: String, unitsCount: Int = 1) -> BuildingFeature {
         BuildingFeature(
             type: "Feature",
             id: id,
@@ -221,7 +286,7 @@ final class ClientMapLinkerServiceTests: XCTestCase {
                 heightM: 10,
                 minHeight: 0,
                 isTownhome: false,
-                unitsCount: 1,
+                unitsCount: unitsCount,
                 addressText: "\(house) \(street)",
                 matchMethod: nil,
                 featureStatus: nil,
@@ -242,7 +307,7 @@ final class ClientMapLinkerServiceTests: XCTestCase {
         )
     }
 
-    private func address(id: String, lon: Double, lat: Double, street: String, house: String) -> AddressFeature {
+    private func address(id: String, lon: Double, lat: Double, street: String, house: String, linkedBuildingId: String? = nil) -> AddressFeature {
         AddressFeature(
             type: "Feature",
             id: id,
@@ -250,7 +315,7 @@ final class ClientMapLinkerServiceTests: XCTestCase {
             properties: AddressProperties(
                 id: id,
                 gersId: id,
-                buildingGersId: nil,
+                buildingGersId: linkedBuildingId,
                 houseNumber: house,
                 streetName: street,
                 postalCode: nil,

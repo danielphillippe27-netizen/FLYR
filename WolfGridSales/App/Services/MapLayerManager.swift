@@ -5281,6 +5281,7 @@ final class MapLayerManager {
         let id: UUID
         let buildingGersId: String
         let houseNumber: String?
+        let unit: String?
         let streetName: String?
         let formatted: String?
         let coordinate: CLLocationCoordinate2D?
@@ -5439,6 +5440,7 @@ final class MapLayerManager {
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                     .lowercased(),
                 houseNumber: feature.properties.houseNumber,
+                unit: feature.properties.unit,
                 streetName: feature.properties.streetName,
                 formatted: feature.properties.formatted,
                 coordinate: coordinate(for: feature.geometry)
@@ -5566,71 +5568,17 @@ final class MapLayerManager {
     }
 
     private static func normalizedAddressIdentity(for address: OverlayAddressContext) -> String {
-        let house = normalizedHouseNumberIdentity(
+        AddressMatcher.identity(
             houseNumber: address.houseNumber,
-            formatted: address.formatted
-        )
-        let street = normalizedStreetIdentityPart(normalizedStreetName(for: address))
-        let primary = [house, street].filter { !$0.isEmpty }.joined(separator: " ")
-        if !primary.isEmpty {
-            return primary
-        }
-
-        let formatted = (address.formatted ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        let streetOnly = formatted.split(separator: ",", maxSplits: 1, omittingEmptySubsequences: true).first.map(String.init) ?? formatted
-        let fallback = normalizedStreetIdentityPart(streetOnly)
-        return fallback.isEmpty ? address.id.uuidString.lowercased() : fallback
-    }
-
-    private static func normalizedHouseNumberIdentity(houseNumber: String?, formatted: String?) -> String {
-        let rawHouseNumber = (houseNumber ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        if !rawHouseNumber.isEmpty, !isStreetOnlyOrdinalAddressLabel(rawHouseNumber) {
-            return normalizedAddressIdentityPart(rawHouseNumber)
-        }
-
-        let formatted = (formatted ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        let streetOnly = formatted.split(separator: ",", maxSplits: 1, omittingEmptySubsequences: true).first.map(String.init) ?? formatted
-        let house = streetOnly.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true).first.map(String.init) ?? ""
-        if isStreetOnlyOrdinalAddressLabel(house) {
-            return ""
-        }
-        return normalizedAddressIdentityPart(house)
+            streetName: address.streetName,
+            formatted: address.formatted, unit: address.unit
+        ) ?? address.id.uuidString.lowercased()
     }
 
     private static func isStreetOnlyOrdinalAddressLabel(_ value: String?) -> Bool {
         let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !trimmed.isEmpty else { return false }
         return trimmed.range(of: #"^\d+(?:st|nd|rd|th)$"#, options: [.regularExpression, .caseInsensitive]) != nil
-    }
-
-    private static func normalizedStreetIdentityPart(_ value: String?) -> String {
-        normalizedAddressIdentityPart(value)
-            .split(separator: " ")
-            .map { word -> String in
-                switch word {
-                case "st", "str": return "street"
-                case "rd": return "road"
-                case "ave", "av": return "avenue"
-                case "blvd": return "boulevard"
-                case "dr": return "drive"
-                case "ct", "crt": return "court"
-                case "cres": return "crescent"
-                case "ln": return "lane"
-                case "pl": return "place"
-                case "trl": return "trail"
-                case "pkwy": return "parkway"
-                case "hwy": return "highway"
-                default: return String(word)
-                }
-            }
-            .joined(separator: " ")
-    }
-
-    private static func normalizedAddressIdentityPart(_ value: String?) -> String {
-        (value ?? "")
-            .lowercased()
-            .replacingOccurrences(of: #"[^a-z0-9]+"#, with: " ", options: .regularExpression)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private static func houseNumberSortParts(houseNumber: String?, formatted: String?) -> (number: Int?, suffix: String) {

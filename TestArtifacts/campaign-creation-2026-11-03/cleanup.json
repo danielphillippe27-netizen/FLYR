@@ -1,0 +1,23 @@
+{
+  "error": "Database statement timeout during QA cleanup",
+  "rows": [
+    {
+      "campaignId": "8dec4fb4-ab7d-4d38-8ef0-f5dbbc8fbc44",
+      "workspaceId": "cf4725d6-5a6a-40b0-9683-d88f4959973d",
+      "userId": "36717840-f51b-41f4-875a-05561b89f6cf",
+      "campaignStillPresent": true
+    },
+    {
+      "campaignId": "4067a52a-07e2-40ef-9c24-ea167889bc66",
+      "workspaceId": "21de9d09-8226-453e-94cf-241012d30f38",
+      "userId": "ba36bedc-a2a4-4e05-9958-62cff70419f7",
+      "campaignStillPresent": true
+    },
+    {
+      "campaignId": "d9a1cbad-cd76-403c-972b-8e71c38264e3",
+      "workspaceId": "8a0125c1-61c8-46b8-863f-58df05581beb",
+      "userId": "474a0c8f-eb09-4d39-8c32-e18ae61b9137",
+      "campaignStillPresent": true
+    }
+  ]
+}

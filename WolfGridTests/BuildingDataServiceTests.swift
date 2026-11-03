@@ -5,6 +5,91 @@ import UIKit
 
 @MainActor
 final class BuildingDataServiceTests: XCTestCase {
+    func testPendingTapReusesSavedHomeAndRespectsOtherParcelsOnSharedRoof() {
+        let pending = UUID(), home = UUID(), neighbor = UUID()
+        func row(_ id: UUID, lot: String?, pending: Bool = false) -> AddressFeature {
+            AddressFeature(id: id.uuidString, geometry: .init(type: "Point", coordinates: .init(point: [0, 0])),
+                properties: .init(id: id.uuidString, gersId: pending ? "synthetic:geometry-target:parcel:a" : nil,
+                    buildingGersId: "shared-roof", formatted: pending ? "Address pending" : "404 Hibriten Way", parcelId: lot))
+        }
+        let stop = row(pending, lot: "lot-a", pending: true)
+        let saved = row(home, lot: "lot-a"), other = row(neighbor, lot: "lot-b")
+        XCTAssertEqual(BuildingDataService.existingHomeForPendingStop(stop, in: [stop, saved, other], state: .init())?.properties.id, home.uuidString)
+        XCTAssertEqual(BuildingDataService.existingHomeForPendingStop(stop, in: [stop, row(home, lot: nil), other], state: .init())?.properties.id, home.uuidString)
+        XCTAssertNil(BuildingDataService.existingHomeForPendingStop(stop, in: [stop, other], state: .init()))
+        XCTAssertNil(BuildingDataService.existingHomeForPendingStop(stop, in: [stop, saved, row(neighbor, lot: "lot-a")], state: .init()), "Ambiguous genuine homes need a picker")
+        let edits = CampaignMapEditState().applying([.init(CampaignMapItem(.address, home.uuidString), value: .init(hidden: true))])
+        XCTAssertNil(BuildingDataService.existingHomeForPendingStop(stop, in: [stop, saved], state: edits))
+    }
+
+    func testOpenParcelCardFollowsHiddenStopReplacementWithoutLeakingSharedRoofAddresses() {
+        let pending = UUID(), replacement = UUID(), neighbor = UUID()
+        func row(_ id: UUID, lot: String, pending: Bool = false) -> AddressFeature {
+            AddressFeature(id: id.uuidString, geometry: .init(type: "Point", coordinates: .init(point: [0, 0])),
+                properties: .init(id: id.uuidString, gersId: pending ? "synthetic:geometry-target:parcel:a" : nil,
+                    buildingGersId: "shared-roof", formatted: pending ? "Address pending" : "318 Miramar Rd", parcelId: lot))
+        }
+        let rows = [row(pending, lot: "lot-a", pending: true), row(replacement, lot: "lot-a"), row(neighbor, lot: "lot-b")]
+        let state = CampaignMapEditState().applying([
+            .init(CampaignMapItem(.address, pending.uuidString), value: .init(hidden: true))
+        ])
+        XCTAssertEqual(BuildingDataService.scopedCardFeatures(rows, ids: [pending], state: state)
+            .compactMap { $0.properties.id }, [replacement.uuidString])
+        XCTAssertEqual(BuildingDataService.scopedCardFeatures(rows, ids: [neighbor], state: state)
+            .compactMap { $0.properties.id }, [neighbor.uuidString])
+    }
+
+    func testPendingStopCannotOverrideRealAddressOnSameRoofBeforeCleanupSyncs() {
+        let pending = UUID(), native = UUID()
+        let rows = [
+            AddressFeature(id: pending.uuidString, geometry: .init(type: "Point", coordinates: .init(point: [0, 0])),
+                properties: .init(id: pending.uuidString, gersId: "synthetic:geometry-target:parcel:a",
+                    buildingGersId: "roof-a", formatted: "Address pending")),
+            AddressFeature(id: native.uuidString, geometry: .init(type: "Point", coordinates: .init(point: [0, 0])),
+                properties: .init(id: native.uuidString, buildingGersId: "roof-a", formatted: "318 Miramar Rd"))
+        ]
+        let current = BuildingDataService.editedCardFeatures(rows, building: nil,
+            identifiers: ["roof-a"], explicitIDs: [pending], state: .init())
+        XCTAssertEqual(current.compactMap { $0.properties.id }, [native.uuidString])
+        XCTAssertTrue(BuildingDataService.editedCardFeatures([rows[0]], building: nil,
+            identifiers: ["roof-a"], explicitIDs: [pending], state: .init()).isEmpty)
+        XCTAssertEqual(rows.count, 2, "Presentation must retain the original record identities")
+    }
+
+    func testPendingDisplayDetectionRetainsResolvedGeometryStopsAndRealCivicFields() {
+        XCTAssertTrue(BuildingDataService.isUnresolvedAddress(gersId: "synthetic:geometry-target:parcel:a",
+            houseNumber: nil, streetName: nil, formatted: "Address pending"))
+        XCTAssertTrue(BuildingDataService.isUnresolvedAddress(gersId: nil,
+            houseNumber: nil, streetName: nil, formatted: " ADDRESS PENDING "))
+        XCTAssertFalse(BuildingDataService.isUnresolvedAddress(gersId: "synthetic:geometry-target:parcel:a",
+            houseNumber: "318", streetName: "Miramar Rd", formatted: "318 Miramar Rd"))
+        XCTAssertFalse(BuildingDataService.isUnresolvedAddress(gersId: nil,
+            houseNumber: nil, streetName: nil, formatted: "318 Miramar Rd"))
+    }
+
+    func testCardUsesReplacementAddressAndDoesNotResurrectHiddenPendingStop() throws {
+        let pending = UUID(), native = UUID(), movedAway = UUID()
+        func feature(_ id: UUID, roof: String?, formatted: String) -> AddressFeature {
+            AddressFeature(id: id.uuidString, geometry: .init(type: "Point", coordinates: .init(point: [-81.955, 28.025])),
+                properties: .init(id: id.uuidString, buildingGersId: roof, formatted: formatted))
+        }
+        let rows = [feature(pending, roof: "roof-a", formatted: "Address pending"),
+                    feature(native, roof: nil, formatted: "220 Hibriten Way"),
+                    feature(movedAway, roof: "roof-a", formatted: "221 Other Street")]
+        var state = CampaignMapEditState()
+        state.features[CampaignMapItem(.address, pending.uuidString).id] = .init(hidden: true)
+        state.features[CampaignMapItem(.address, native.uuidString).id] = .init(buildingLinkSet: true, buildingId: "roof-a")
+        state.features[CampaignMapItem(.address, movedAway.uuidString).id] = .init(buildingLinkSet: true, buildingId: "roof-b")
+        for explicit: Set<UUID> in [[], [pending], [native]] {
+            let current = BuildingDataService.editedCardFeatures(rows, building: nil,
+                identifiers: ["roof-a"], explicitIDs: explicit, state: state)
+            XCTAssertEqual(current.compactMap { $0.properties.id }, [native.uuidString])
+            XCTAssertEqual(current.first?.properties.buildingGersId, "roof-a")
+            XCTAssertEqual(current.first?.properties.formatted, "220 Hibriten Way")
+        }
+        XCTAssertEqual(rows.count, 3, "Corrections must retain the original source and history identities")
+    }
+
     func testParcelScopeExcludesOtherAddressesOnSharedBuildingWithoutChangingFeatures() throws {
         let dan = UUID(), fifty = UUID(), fiftyTwo = UUID()
         let features = try [dan, fifty, fiftyTwo].map { id in
@@ -867,6 +952,38 @@ final class BuildingDataServiceTests: XCTestCase {
         XCTAssertLessThanOrEqual(coordinates.longitude, -78.998)
         XCTAssertGreaterThanOrEqual(coordinates.latitude, 43.0)
         XCTAssertLessThanOrEqual(coordinates.latitude, 43.0006)
+    }
+
+    func testReverseGeocodedOverlayKeepsRoofNumberAfterTilePlanRefresh() throws {
+        let building = try makeBuildingFeature(gersId: "new-home", isTownhome: false, unitsCount: 1, addressCount: 1)
+        let addressId = UUID()
+        let address = try makeAddressFeature(id: addressId, buildingGersId: "new-home", houseNumber: "1800",
+                                             formatted: "1800 Lincoln Avenue")
+        var plan = CanonicalTileRenderPlan()
+        plan.buildingIds = ["new-home"]
+        plan.upsertAddressOverlay(address)
+        // A status-triggered source refresh uses the cached tile plan. The roof
+        // remains tiled, so it is intentionally absent from buildingEdits.
+        let roofs = plan.addressLabelBuildings { $0 == "new-home" ? building : nil }
+        XCTAssertTrue(plan.buildingEdits.isEmpty)
+        XCTAssertEqual(plan.buildingIds, ["new-home"])
+        XCTAssertEqual(roofs.count, 1)
+        let data = try MapLayerManager.buildAddressNumberLabelPointGeoJSON(
+            addresses: plan.addressEdits, buildings: roofs,
+            orderedAddressIdsByBuilding: ["new-home": [addressId]])
+        let features = try geoJSONFeatures(from: data)
+        let properties = try XCTUnwrap(features.first?["properties"] as? [String: Any])
+        XCTAssertEqual(features.count, 1)
+        XCTAssertEqual(properties["house_number_label"] as? String, "1800")
+        XCTAssertEqual(properties["has_building_geometry"] as? Bool, true)
+        XCTAssertEqual(properties["label_visibility_mode"] as? String, "all_modes")
+        XCTAssertGreaterThan(try XCTUnwrap(properties["label_z_offset"] as? Double), 0)
+
+        plan.upsertAddressOverlay(try makeAddressFeature(id: UUID(), buildingGersId: "new-home", houseNumber: "1802",
+                                                       formatted: "1802 Lincoln Avenue"))
+        XCTAssertEqual(plan.addressLabelBuildings { _ in building }.count, 1)
+        plan.buildingEdits = [building]
+        XCTAssertEqual(plan.addressLabelBuildings { _ in XCTFail("Edited roof must take precedence"); return nil }.count, 1)
     }
 
     func testSavedAddressNumberUsesBuildingLinkWhileReverseIndexIsMissing() throws {

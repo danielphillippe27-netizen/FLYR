@@ -126,24 +126,39 @@ final class ClientMapLinkerService: Sendable {
                 .compactMap(\.existingBuildingId)
                 .map { $0.lowercased() }
         )
-        var claimedSingleUnitBuildingIds = Set(
+        let claimedSingleUnitBuildingIds = Set(
             preparedBuildings
-                .filter { !$0.canAcceptMultipleAddresses && $0.identifierCandidates.contains(where: prelinkedBuildingIds.contains) }
+                .filter { $0.hasExistingAssignments || !$0.identifierCandidates.isDisjoint(with: prelinkedBuildingIds) }
                 .flatMap(\.identifierCandidates)
         )
         let prelinkedCount = preparedAddresses.filter { $0.existingBuildingId != nil }.count
-        var processed = 0
         await progress?(ClientLinkingProgress(processed: 0, total: total, linked: prelinkedCount))
+        // Propose before claiming: iteration order must not choose a winner or
+        // redirect a losing address onto a neighboring home.
+        let proposals: [(PreparedAddress, MatchCandidate)] = preparedAddresses.compactMap { address in
+            guard !Task.isCancelled, address.existingBuildingId == nil, !address.hasCanonicalPlacement,
+                let match = bestMatch(for: address, buildings: preparedBuildings,
+                    parcels: preparedParcels,
+                    allAddresses: preparedAddresses) else { return nil }
+            return (address, match)
+        }
+        let claims = Dictionary(grouping: proposals, by: { $0.1.building.id.lowercased() })
+        var accepted: [String: MatchCandidate] = [:]
+        for group in claims.values {
+            guard let first = group.first,
+                first.1.building.identifierCandidates.isDisjoint(with: claimedSingleUnitBuildingIds) else { continue }
+            func tier(_ match: MatchCandidate) -> Int {
+                match.matchType.hasPrefix("containment") ? 0 : match.matchType == "parcel_verified" ? 1 : 2
+            }
+            let bestTier = group.map { tier($0.1) }.min() ?? 2
+            let strongest = group.filter { tier($0.1) == bestTier }
+            if strongest.count == 1 { accepted[strongest[0].0.id] = strongest[0].1 }
+        }
+        var processed = 0
 
         for address in preparedAddresses {
             if Task.isCancelled { break }
-            if address.existingBuildingId == nil, !address.hasCanonicalPlacement,
-               let match = bestMatch(
-                    for: address,
-                    buildings: preparedBuildings,
-                    parcels: preparedParcels,
-                    claimedSingleUnitBuildingIds: claimedSingleUnitBuildingIds
-               ) {
+            if let match = accepted[address.id] {
                 links.append(ClientBuildingAddressLink(
                     id: "\(match.building.id.lowercased()):\(address.id.lowercased())",
                     buildingId: match.building.id,
@@ -152,9 +167,6 @@ final class ClientMapLinkerService: Sendable {
                     confidence: match.confidence,
                     distanceMeters: match.distance
                 ))
-                if !match.building.canAcceptMultipleAddresses {
-                    claimedSingleUnitBuildingIds.formUnion(match.building.identifierCandidates)
-                }
             }
             processed += 1
             if processed == total || processed % 25 == 0 {
@@ -171,12 +183,9 @@ final class ClientMapLinkerService: Sendable {
         for address: PreparedAddress,
         buildings: [PreparedBuilding],
         parcels: [PreparedParcel],
-        claimedSingleUnitBuildingIds: Set<String>
+        allAddresses: [PreparedAddress]
     ) -> MatchCandidate? {
         let nearby = buildings
-            .filter { building in
-                building.canAcceptMultipleAddresses || building.identifierCandidates.isDisjoint(with: claimedSingleUnitBuildingIds)
-            }
             .filter { $0.expandedBbox(meters: fallbackRadiusMeters).contains(address.coordinate) }
             .map { building in
                 MatchCandidate(
@@ -191,7 +200,7 @@ final class ClientMapLinkerService: Sendable {
 
         guard !nearby.isEmpty else { return nil }
 
-        if let contained = nearby
+        let contained = nearby
             .filter({ $0.building.contains(address.coordinate) })
             .map({ candidate in
                 candidate.with(
@@ -200,21 +209,24 @@ final class ClientMapLinkerService: Sendable {
                 )
             })
             .sorted(by: rankedBefore)
-            .first {
-            return contained
-        }
+        if !contained.isEmpty { return contained.count == 1 ? contained[0] : nil }
 
-        if let parcelMatch = parcelBridgeMatch(for: address, nearby: nearby, parcels: parcels) {
+        if let parcelMatch = parcelBridgeMatch(for: address, nearby: nearby, parcels: parcels, buildings: buildings, allAddresses: allAddresses) {
             return parcelMatch
         }
 
-        if let semantic = nearby
-            .filter({ $0.distance <= proximityRadiusMeters && $0.streetScore >= minimumSemanticProximityScore })
+        // A shared/ambiguous parcel cannot be retried as a distance-only match.
+        let owners = parcels.filter { $0.contains(address.coordinate) }
+        if owners.count > 1 { return nil }
+        if let owner = owners.first {
+            if allAddresses.filter({ owner.contains($0.coordinate) }).count != 1 ||
+                buildings.filter({ $0.intersects(owner.bbox) }).count != 1 { return nil }
+        }
+        let semantic = nearby
+            .filter({ $0.distance <= proximityRadiusMeters && $0.streetScore >= minimumSemanticProximityScore && !hasStreetConflict(address, $0.building) })
             .map({ $0.with(matchType: "proximity_verified", confidence: proximityConfidence) })
             .sorted(by: rankedBefore)
-            .first {
-            return semantic
-        }
+        if semantic.count == 1 { return semantic[0] }
 
         return nil
     }
@@ -222,12 +234,23 @@ final class ClientMapLinkerService: Sendable {
     private func parcelBridgeMatch(
         for address: PreparedAddress,
         nearby: [MatchCandidate],
-        parcels: [PreparedParcel]
+        parcels: [PreparedParcel],
+        buildings: [PreparedBuilding],
+        allAddresses: [PreparedAddress]
     ) -> MatchCandidate? {
-        guard let parcel = parcels.first(where: { $0.contains(address.coordinate) }) else { return nil }
+        let owners = parcels.filter { $0.contains(address.coordinate) }
+        guard owners.count == 1, let parcel = owners.first,
+            allAddresses.filter({ parcel.contains($0.coordinate) }).count == 1,
+            buildings.filter({ $0.intersects(parcel.bbox) }).count == 1 else { return nil }
         let candidates = nearby.filter { parcel.contains($0.building.centroid) }
-        guard candidates.count == 1 else { return nil }
+        guard candidates.count == 1, !hasStreetConflict(address, candidates[0].building) else { return nil }
         return candidates[0].with(matchType: "parcel_verified", confidence: parcelConfidence)
+    }
+
+    private func hasStreetConflict(_ address: PreparedAddress, _ building: PreparedBuilding) -> Bool {
+        let a = normalizeStreet(address.streetName ?? "")
+        let b = normalizeStreet(building.streetName ?? "")
+        return !a.isEmpty && !b.isEmpty && a != b
     }
 
     private func rankedBefore(_ lhs: MatchCandidate, _ rhs: MatchCandidate) -> Bool {
@@ -257,24 +280,11 @@ final class ClientMapLinkerService: Sendable {
     }
 
     private func normalizeStreet(_ value: String?) -> String {
-        let raw = (value ?? "").lowercased()
-        let replacements = [
-            " street": " st",
-            " avenue": " ave",
-            " road": " rd",
-            " drive": " dr",
-            " crescent": " cres",
-            " boulevard": " blvd",
-            ".": "",
-            ",": ""
-        ]
-        return replacements.reduce(raw) { partial, entry in
-            partial.replacingOccurrences(of: entry.key, with: entry.value)
+        if let identity = AddressMatcher.identity(houseNumber: nil, streetName: nil, formatted: value),
+           let street = identity.split(separator: "|").dropFirst().first {
+            return String(street)
         }
-        .components(separatedBy: CharacterSet.alphanumerics.inverted)
-        .filter { !$0.isEmpty && Int($0) == nil }
-        .joined(separator: " ")
-        .trimmingCharacters(in: .whitespacesAndNewlines)
+        return AddressMatcher.streetKey(value) ?? ""
     }
 
     private func normalizeHouseNumber(_ value: String) -> String {
@@ -323,7 +333,8 @@ private struct PreparedAddress {
               let point = feature.geometry.asPoint,
               point.count >= 2 else { return nil }
         self.id = id
-        hasCanonicalPlacement = feature.properties.pinPlacement != nil
+        let source = (feature.properties.source ?? "").lowercased()
+        hasCanonicalPlacement = feature.properties.pinPlacement != nil || source.contains("manual") || source.hasPrefix("field_")
         coordinate = CLLocationCoordinate2D(latitude: point[1], longitude: point[0])
         formatted = feature.properties.formatted
         houseNumber = feature.properties.houseNumber
@@ -337,13 +348,13 @@ private struct PreparedAddress {
 private struct PreparedBuilding {
     let id: String
     let identifierCandidates: Set<String>
+    let hasExistingAssignments: Bool
     let rings: [[CLLocationCoordinate2D]]
     let bbox: CoordinateBbox
     let centroid: CLLocationCoordinate2D
     let streetName: String?
     let houseNumber: String?
     let addressText: String?
-    let canAcceptMultipleAddresses: Bool
 
     init?(feature: BuildingFeature) {
         let buildingType = (feature.properties.buildingType ?? "").lowercased()
@@ -353,6 +364,7 @@ private struct PreparedBuilding {
         let rings = Self.rings(from: feature.geometry)
         guard !rings.isEmpty else { return nil }
         self.id = id
+        hasExistingAssignments = feature.properties.addressId != nil || !feature.properties.addressIds.isEmpty
         identifierCandidates = Set(([id] + feature.properties.buildingIdentifierCandidates).map { $0.lowercased() })
         self.rings = rings
         bbox = CoordinateBbox(coordinates: rings.flatMap { $0 })
@@ -360,10 +372,7 @@ private struct PreparedBuilding {
         streetName = feature.properties.streetName
         houseNumber = feature.properties.houseNumber
         addressText = feature.properties.addressText
-        let addressCount = feature.properties.addressCount ?? feature.properties.addressIds.count
-        canAcceptMultipleAddresses = feature.properties.isTownhome ||
-            feature.properties.unitsCount > 1 ||
-            addressCount > 1
+
     }
 
     func contains(_ coordinate: CLLocationCoordinate2D) -> Bool {
