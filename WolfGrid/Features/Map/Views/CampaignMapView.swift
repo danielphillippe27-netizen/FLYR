@@ -15416,7 +15416,7 @@ struct CampaignMapView: View {
             campaignParcelId: metadata?.campaignParcelId,
             hasBuildingLink: (address.buildingGersId ?? buildingId) != nil,
             hasParcelLink: metadata?.hasParcelLink,
-            labelVisibilityMode: (address.buildingGersId ?? buildingId) == nil ? "address_mode_only" : "all_modes",
+            labelVisibilityMode: (address.buildingGersId ?? buildingId) != nil || metadata?.hasParcelLink == true ? "all_modes" : "address_mode_only",
             pinPlacement: metadata?.hasParcelLink == true ? "building_parcel_centroid" : nil,
             labelAnchorLon: coordinate.longitude,
             labelAnchorLat: coordinate.latitude,

@@ -1,15 +1,15 @@
 import SwiftUI
 
-/// Persistent top HUD for active building session: target/completed/remaining, elapsed time, distance, pace, controls
+/// Persistent top HUD for active building session: session goal/completed/remaining, elapsed time, distance, pace, controls
 struct SessionHUDCard: View {
     @ObservedObject var sessionManager: SessionManager
 
     var body: some View {
         VStack(spacing: 12) {
             HStack(spacing: 16) {
-                StatColumn(title: "Target", value: "\(sessionManager.targetCount)")
-                StatColumn(title: "Done", value: "\(sessionManager.completedCount)", color: .green)
-                StatColumn(title: "Left", value: "\(sessionManager.remainingCount)", color: .flyrPrimary)
+                StatColumn(title: "Target", value: "\(sessionManager.goalAmount)")
+                StatColumn(title: "Done", value: "\(sessionManager.goalCurrentValue)", color: .green)
+                StatColumn(title: "Left", value: "\(sessionManager.goalRemainingAmount)", color: .flyrPrimary)
             }
 
             GeometryReader { geometry in

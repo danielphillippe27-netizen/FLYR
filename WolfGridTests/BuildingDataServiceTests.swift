@@ -1075,6 +1075,46 @@ final class BuildingDataServiceTests: XCTestCase {
         XCTAssertEqual(properties["house_number_label"] as? String, "71")
     }
 
+    func testSavedReverseGeocodedParcelNumberSurvivesReloadWithoutRoof() throws {
+        for source in ["manual", "mapbox_reverse_geocode"] {
+            for placement in ["address", "parcel_center", "building_parcel_centroid"] {
+                let id = UUID().uuidString
+                let address = AddressFeature(id: id,
+                    geometry: .init(type: "Point", coordinates: .init(point: [-79.0, 43.0])),
+                    properties: .init(id: id, houseNumber: "1801", formatted: "1801 Cleveland Avenue",
+                        source: source, parcelId: "cleveland-lot", hasBuildingLink: false,
+                        hasParcelLink: true, labelVisibilityMode: "address_mode_only", pinPlacement: placement,
+                        labelAnchorLon: -79.0, labelAnchorLat: 43.0))
+                // Exercise the older persisted format, not just the corrected new-save format.
+                let reloaded = try JSONDecoder().decode(AddressFeature.self, from: JSONEncoder().encode(address))
+                let data = try MapLayerManager.buildAddressNumberLabelPointGeoJSON(
+                    addresses: [reloaded], buildings: [], orderedAddressIdsByBuilding: [:])
+                let features = try geoJSONFeatures(from: data)
+                XCTAssertEqual(features.count, 1, "\(source), \(placement)")
+                let feature = try XCTUnwrap(features.first)
+                let properties = try XCTUnwrap(feature["properties"] as? [String: Any])
+                XCTAssertEqual(properties["house_number_label"] as? String, "1801")
+                // Building mode's installed label filter requires all_modes.
+                XCTAssertEqual(properties["label_visibility_mode"] as? String, "all_modes")
+                XCTAssertEqual(properties["has_building_geometry"] as? Bool, false)
+                let coordinate = try pointCoordinates(from: feature)
+                XCTAssertEqual(coordinate.longitude, -79.0, accuracy: 0.0000001)
+                XCTAssertEqual(coordinate.latitude, 43.0, accuracy: 0.0000001)
+            }
+        }
+    }
+
+    func testSavedParcelNumberStillHonorsExplicitHiddenLabelMode() throws {
+        let id = UUID().uuidString
+        let address = AddressFeature(id: id,
+            geometry: .init(type: "Point", coordinates: .init(point: [-79.0, 43.0])),
+            properties: .init(id: id, houseNumber: "1801", source: "manual", parcelId: "lot",
+                hasParcelLink: true, labelVisibilityMode: "hidden", pinPlacement: "building_parcel_centroid"))
+        let features = try geoJSONFeatures(from: MapLayerManager.buildAddressNumberLabelPointGeoJSON(
+            addresses: [address], buildings: [], orderedAddressIdsByBuilding: [:]))
+        XCTAssertTrue(features.isEmpty)
+    }
+
     func testAddressNumberLabelsIncludeLinkedBuildingFallbackWithoutAddressPoint() throws {
         let addressId = UUID()
         let building = try makeBuildingFeature(
@@ -1259,7 +1299,7 @@ final class BuildingDataServiceTests: XCTestCase {
 
         MapStatusColor.useLightMapBuildingDefault = true
         XCTAssertEqual(hexString(from: MapStatusColor.townhomeBase), hexString(from: MapStatusColor.untouched))
-        XCTAssertEqual(hexString(from: MapStatusColor.townhomeBase), "#cfd8e3")
+        XCTAssertEqual(hexString(from: MapStatusColor.townhomeBase), "#b6d1e6")
     }
 
     func testTownhomeOverlayBuildingIdentifiersIncludeBaseFeatureAliases() throws {

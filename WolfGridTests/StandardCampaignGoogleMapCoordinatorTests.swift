@@ -50,8 +50,19 @@ final class StandardCampaignGoogleMapCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.clusterMarkerCreationCount, creations)
     }
 
-    func testZoomDoesNotRebuildUntilIdleAndStatusChangesStaySelectable() throws {
+    func testZoomDoesNotRebuildUntilIdleAndStatusChangesStaySelectable() async throws {
         let map = try map()
+        // Camera updates require a laid-out map attached to a visible window.
+        let host = UIViewController()
+        host.view = map
+        let window = UIWindow(frame: UIScreen.main.bounds)
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        host.view.layoutIfNeeded()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+        }
         var homes = markers(1_000)
         let tappedID = homes[0].addressId
         var selectedID: UUID?
@@ -64,6 +75,12 @@ final class StandardCampaignGoogleMapCoordinatorTests: XCTestCase {
         coordinator.syncMarkers(on: map)
         XCTAssertEqual(coordinator.clusterSyncCount, 1)
         map.moveCamera(GMSCameraUpdate.zoom(to: 18))
+        // Google Maps applies camera updates on the next run-loop turn.
+        let deadline = Date().addingTimeInterval(2)
+        while map.camera.zoom < 18 && Date() < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertEqual(map.camera.zoom, 18, accuracy: 0.01)
         coordinator.mapView(map, idleAt: map.camera)
         XCTAssertEqual(coordinator.clusterSyncCount, 2)
         let marker = GMSMarker(position: homes[0].coordinate)

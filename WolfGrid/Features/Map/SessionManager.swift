@@ -302,7 +302,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
     var completedCount: Int { serverCompletedCount ?? confirmedVisitedTargets.count }
     var remainingCount: Int { max(0, targetCount - completedCount) }
     var progressPercentage: Double {
-        targetCount > 0 ? Double(completedCount) / Double(targetCount) : 0
+        goalProgressPercentage
     }
     /// Keep the leaderboard's session metric in sync with door-knocking progress even when
     /// the flow only updates completed/visited counts during the active session.
@@ -896,16 +896,9 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         guard !manualPinTargetAddressIds.contains(key) else { return }
 
         manualPinTargetAddressIds.insert(key)
-        if sessionMode == .doorKnocking, goalType == .knocks {
-            goalAmount += 1
-        }
-
-        let updatedGoalAmount = goalAmount
+        // Map edits add available homes without changing the chosen session goal.
         Task { [weak self] in
             guard let self else { return }
-            if let sessionId = self.sessionId {
-                await self.sessionRepository.updateSessionGoalAmount(id: sessionId, goalAmount: updatedGoalAmount)
-            }
             await self.persistLocalActiveSessionSnapshot()
             await self.syncLiveActivity(forceStart: false)
         }
@@ -4046,6 +4039,10 @@ extension SessionManager {
         }
     }
 
+    var goalRemainingAmount: Int {
+        max(0, goalAmount - goalCurrentValue)
+    }
+
     var goalProgressPercentage: Double {
         guard goalAmount > 0 else { return 0 }
         switch goalType {
@@ -4071,7 +4068,7 @@ extension SessionManager {
     }
 
     var doorCoverageProgressText: String {
-        "\(completedCount)/\(targetCount) doors"
+        "\(completedCount) doors covered"
     }
 
     var showsDoorCoverageBesideGoal: Bool {

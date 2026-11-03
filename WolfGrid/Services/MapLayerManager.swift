@@ -4622,11 +4622,19 @@ final class MapLayerManager {
                     return requireHouseNumberLabel ? "address_mode_only" : rawBackendLabelMode
                 }
             }()
-            let effectiveLabelMode = backendLabelMode
+            let isPlacedParcelAddress = feature.properties.hasParcelLink == true &&
+                ["address", "parcel_center", "building_centroid", "building_parcel_centroid"]
+                    .contains(feature.properties.pinPlacement ?? "")
+            // Earlier local saves marked parcel-only homes as address-mode-only.
+            // A confirmed field address owns its parcel anchor even without a roof.
+            let isSavedFieldParcelAddress = isPlacedParcelAddress &&
+                ["manual", "mapbox_reverse_geocode"].contains(feature.properties.source?.lowercased() ?? "") &&
+                (rawBackendLabelMode == nil || rawBackendLabelMode == "address_mode_only")
+            let effectiveLabelMode = (isSavedFieldParcelAddress ? "all_modes" : backendLabelMode)
                 ?? (linkedBuilding != nil ? "all_modes" : (requireHouseNumberLabel ? "address_mode_only" : "hidden"))
-            let backendAllowsLabel = isManualPin || effectiveLabelMode == "all_modes" || effectiveLabelMode == "address_mode_only"
+            let backendAllowsLabel = rawBackendLabelMode != "hidden" &&
+                (isManualPin || effectiveLabelMode == "all_modes" || effectiveLabelMode == "address_mode_only")
             guard !requireHouseNumberLabel || backendAllowsLabel else { return nil }
-            let isPlacedParcelAddress = feature.properties.hasParcelLink == true && feature.properties.pinPlacement == "address"
             let isVisibleStandaloneAddress = feature.properties.pinPlacement == "address" && effectiveLabelMode == "all_modes"
             guard !requireCurrentBuildingLink || linkedBuilding != nil || isManualPin || isPlacedParcelAddress || isVisibleStandaloneAddress else { return nil }
 

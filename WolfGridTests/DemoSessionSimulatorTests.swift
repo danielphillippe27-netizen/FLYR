@@ -16,6 +16,32 @@ final class DemoSessionSimulatorTests: XCTestCase {
         }
     }
 
+    func testSessionGoalProgressDoesNotUseFarmSizeOrGrowWithMapEdits() async {
+        let manager = SessionManager.shared
+        let route = steps(100)
+        manager.startDemoBuildingSession(campaignId: UUID(), targetBuildings: route.map { $0.target.id },
+            centroids: [:], initialLocation: nil)
+        manager.goalType = .knocks
+        manager.goalAmount = 10
+        XCTAssertEqual(manager.countProgress, 0)
+        for step in route.prefix(5) {
+            manager.markDemoCompletionFast(targetId: step.target.id, addressIds: [], buildingId: step.target.id,
+                coordinate: step.target.coordinate, status: .delivered)
+        }
+        XCTAssertEqual(manager.goalCurrentValue, 5)
+        XCTAssertEqual(manager.progressPercentage, 0.5)
+        XCTAssertEqual(manager.countProgress, 0.5)
+        XCTAssertEqual(manager.goalRemainingAmount, 5)
+        manager.recordManualPinTarget(addressId: UUID())
+        XCTAssertEqual(manager.targetCount, 101)
+        XCTAssertEqual(manager.goalAmount, 10)
+        XCTAssertEqual(manager.countProgress, 0.5)
+        manager.goalAmount = 4
+        XCTAssertEqual(manager.countProgress, 1)
+        XCTAssertEqual(manager.goalRemainingAmount, 0)
+        await manager.stopBuildingSession(presentSummary: false)
+    }
+
     func testDemoSessionSurvivesTimerAndProducesSummary() async throws {
         let manager = SessionManager.shared
         XCTAssertNil(manager.sessionId)
@@ -131,7 +157,12 @@ final class DemoSessionSimulatorTests: XCTestCase {
         XCTAssertTrue(manager.isDemoSession, "A warm map must start the demo without waiting for another feature-load event")
         if manager.isDemoSession {
             let playbackCheckStarted = Date()
-            try await Task.sleep(for: .milliseconds(5000))
+            // Session creation precedes map rendering and the first simulator tick.
+            // Wait for observable progress while retaining the starvation deadline.
+            let playbackDeadline = playbackCheckStarted.addingTimeInterval(8)
+            while manager.completedCount < 2 && Date() < playbackDeadline {
+                try await Task.sleep(for: .milliseconds(100))
+            }
             XCTAssertLessThan(Date().timeIntervalSince(playbackCheckStarted), 9, "Map rendering must not starve the playback task")
             XCTAssertGreaterThanOrEqual(manager.completedCount, 2, "Playback must continue past its first home")
             XCTAssertGreaterThanOrEqual(manager.elapsedTime, 3)

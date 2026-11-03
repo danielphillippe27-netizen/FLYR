@@ -1230,7 +1230,7 @@ final class CampaignRepository {
                 campaignParcelId: input.campaignParcelId,
                 hasBuildingLink: input.buildingId != nil,
                 hasParcelLink: input.hasParcelLink,
-                labelVisibilityMode: input.buildingId == nil ? "address_mode_only" : "all_modes",
+                labelVisibilityMode: input.buildingId != nil || input.hasParcelLink == true ? "all_modes" : "address_mode_only",
                 pinPlacement: input.hasParcelLink == true ? "building_parcel_centroid" : nil,
                 labelAnchorLon: input.coordinate.longitude,
                 labelAnchorLat: input.coordinate.latitude,

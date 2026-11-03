@@ -45,10 +45,10 @@ struct CampaignHeroCard: View {
             }
 
             HStack(alignment: .firstTextBaseline, spacing: 4) {
-                Text("\(sessionManager.completedCount)")
+                Text("\(sessionManager.goalCurrentValue)")
                     .font(.system(size: 48, weight: .bold))
                     .foregroundColor(.text)
-                Text("/ \(sessionManager.targetCount) doors")
+                Text("/ \(sessionManager.goalAmount) \(sessionManager.goalType.progressMetricLabel)")
                     .font(.system(size: 15, weight: .regular))
                     .foregroundColor(.muted)
             }
