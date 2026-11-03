@@ -168,6 +168,12 @@ final class FarmOfflineRepository {
         await upsertFarms([farm], userId: farm.userId, workspaceId: farm.workspaceId)
     }
 
+    func removeCachedFarm(id: UUID) async {
+        try? await dbQueue.write { db in
+            _ = try CachedFarmRecord.deleteOne(db, key: id.uuidString)
+        }
+    }
+
     func getCachedFarms(userId: UUID, workspaceId: UUID?) async -> [Farm] {
         (try? await dbQueue.read { db in
             var request = CachedFarmRecord.filter(Column("user_id") == userId.uuidString)

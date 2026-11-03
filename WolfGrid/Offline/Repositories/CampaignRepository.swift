@@ -58,6 +58,14 @@ struct CachedCampaignMapBundleMetadata: Sendable {
         return object["render_version"] as? String
     }
 
+    var canonicalAddressCount: Int? {
+        guard let countsJSON,
+              let data = countsJSON.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let count = object["addresses"] as? Int, count >= 0 else { return nil }
+        return count
+    }
+
     var hasCurrentRenderVersion: Bool {
         renderVersion == CanonicalCampaignMapBundleCounts.currentRenderVersion
     }
@@ -901,7 +909,12 @@ final class CampaignRepository {
     func offlineCampaignEvictionCandidates(excluding excludedCampaignIds: Set<UUID>) async -> [UUID] {
         let excludedIds = Set(excludedCampaignIds.map(\.uuidString))
         return (try? await dbQueue.read { db in
-            try CachedCampaignRecord
+            // Pending mutations may reference campaign data indirectly. Until every
+            // mutation has a reliable campaign key, retain all assets while any
+            // unsynced work exists rather than risk deleting its local context.
+            let pending = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sync_outbox WHERE synced_at IS NULL") ?? 0
+            guard pending == 0 else { return [] }
+            return try CachedCampaignRecord
                 .order(Column("updated_at").asc)
                 .fetchAll(db)
                 .compactMap { record in
@@ -935,6 +948,10 @@ final class CampaignRepository {
     func evictOfflineAssets(campaignId: UUID) async {
         let campaignIdString = campaignId.uuidString
         try? await dbQueue.write { db in
+            // Recheck in the same database transaction as deletion: a user may
+            // have made a change since the eviction candidates were selected.
+            let pending = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sync_outbox WHERE synced_at IS NULL") ?? 0
+            guard pending == 0 else { return }
             let campaignScopedTables = [
                 "cached_buildings",
                 "cached_addresses",

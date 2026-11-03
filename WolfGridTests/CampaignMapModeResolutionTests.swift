@@ -204,6 +204,23 @@ final class CampaignMapModeResolutionTests: XCTestCase {
     }
 
     @MainActor
+    func testParcelLinkedManualAddressKeepsRoundMarker() throws {
+        for parcel in [["has_parcel_link": true], ["parcel_id": "parcel-1"], ["campaign_parcel_id": "parcel-1"]] as [[String: Any]] {
+            var properties: [String: Any] = ["id": UUID().uuidString, "source": "manual", "house_number": "44", "label_visibility_mode": "address_mode_only"]
+            properties.merge(parcel) { _, new in new }
+            let feature: [String: Any] = ["type": "Feature", "properties": properties,
+                "geometry": ["type": "Point", "coordinates": [-79.38, 43.65]]]
+            let decoded = try JSONDecoder().decode(AddressFeature.self, from: JSONSerialization.data(withJSONObject: feature))
+            XCTAssertFalse(MapLayerManager.isManualPinAddressFeature(decoded))
+            let input = try JSONSerialization.data(withJSONObject: ["type": "FeatureCollection", "features": [feature]])
+            let output = try MapLayerManager.convertAddressPointsToCirclePolygons(input)
+            let collection = try XCTUnwrap(JSONSerialization.jsonObject(with: output) as? [String: Any])
+            let result = try XCTUnwrap((collection["features"] as? [[String: Any]])?.first)
+            XCTAssertEqual((result["geometry"] as? [String: Any])?["type"] as? String, "Polygon")
+        }
+    }
+
+    @MainActor
     func testSatellitePinFilterExcludesPreloadedAddressesAndKeepsManualPins() throws {
         func feature(source: String, type: String? = nil, label: String = "128 Main Street") throws -> AddressFeature {
             let id = UUID().uuidString

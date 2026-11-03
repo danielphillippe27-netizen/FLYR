@@ -5,7 +5,7 @@ struct FarmRowView: View {
     let farm: Farm
 
     private var subtitleText: String {
-        if let addressCount = farm.addressCount, addressCount > 0 {
+        if let addressCount = farm.addressCount {
             return "\(addressCount) homes"
         }
         if let homeLimit = farm.homeLimit, homeLimit > 0 {

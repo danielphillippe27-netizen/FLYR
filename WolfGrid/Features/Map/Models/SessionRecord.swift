@@ -2,6 +2,12 @@ import Foundation
 import CoreLocation
 import UIKit
 
+enum TerritoryActivityMetrics {
+    static func conversations(in sessions: [SessionRecord]) -> Int {
+        sessions.reduce(0) { $0 + max(0, $1.conversations ?? 0) }
+    }
+}
+
 /// Session record model for Supabase storage
 struct SessionRecord: Codable {
     let id: UUID?

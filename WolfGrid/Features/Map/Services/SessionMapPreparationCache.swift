@@ -5,6 +5,22 @@ final class SessionMapGeometryCache {
     private var key: String?
     private var values: [String: Any] = [:]
 
+    func cachedValue<T>(for name: String, key: String) -> T? {
+        guard self.key == key else { return nil }
+        return values[name] as? T
+    }
+
+    /// A worker can prepare the next corrected arrays before an address edit is
+    /// published. Discard other derived values; only these explicit replacements
+    /// are known to reflect the new relationships.
+    @discardableResult
+    func advance(from oldKey: String, to newKey: String, replacements: [String: Any]) -> Bool {
+        guard key == oldKey else { return false }
+        key = newKey
+        values = replacements
+        return true
+    }
+
     func value<T>(for name: String, key: String, compute: () -> T) -> T {
         if self.key != key {
             self.key = key

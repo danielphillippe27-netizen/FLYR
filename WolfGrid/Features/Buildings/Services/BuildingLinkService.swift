@@ -1013,6 +1013,20 @@ final class BuildingLinkService {
 
     // MARK: - Fetch Links (from Supabase)
 
+    /// Fetch protection metadata without relying on stripped or stale bundle caches.
+    func fetchFarmLiveLinkEvidence(campaignId: String) async throws -> [FarmLiveLinkEvidence] {
+        var rows: [FarmLiveLinkEvidence] = []
+        while true {
+            try Task.checkCancellation()
+            let page: [FarmLiveLinkEvidence] = try await supabaseClient.from("building_address_links")
+                .select("address_id,link_source,user_confirmed,locked")
+                .eq("campaign_id", value: campaignId).order("address_id")
+                .range(from: rows.count, to: rows.count + 999).execute().value
+            rows.append(contentsOf: page)
+            if page.count < 1000 { return rows }
+        }
+    }
+
     /// Get all building-address links for a campaign
     func fetchLinks(campaignId: String) async throws -> [BuildingAddressLink] {
         if let cachedLinks = await freshCachedLinksFromBundle(
@@ -1250,6 +1264,13 @@ final class BuildingLinkService {
             }
         }
         return false
+    }
+
+    func localAddressCandidates(campaignId: String, buildingId: String, seedCoordinate: CLLocationCoordinate2D,
+                                radiusMeters: Double, limit: Int) async throws -> BuildingAddressCandidateResponse {
+        try await fallbackAddressCandidates(campaignId: campaignId, buildingId: buildingId,
+            buildingIdentifiers: [], seedCoordinate: seedCoordinate, radiusMeters: radiusMeters, limit: limit,
+            allowRemoteFetch: false, includeLinkedCandidates: true)
     }
 
     func fetchAddressCandidates(
@@ -1845,7 +1866,8 @@ final class BuildingLinkService {
         campaignId: String,
         input: ManualAddressCreateInput,
         addressId: UUID = UUID(),
-        syncBehavior: ManualAddressCreateSyncBehavior = .waitForRemoteWhenOnline
+        syncBehavior: ManualAddressCreateSyncBehavior = .waitForRemoteWhenOnline,
+        scheduleImmediateSync: Bool = true
     ) async throws -> ManualAddressCreateResponse {
         let clientMutationId = UUID().uuidString
         let localResponse = makeManualAddressCreateResponse(
@@ -1859,7 +1881,7 @@ final class BuildingLinkService {
                 addressId: addressId,
                 input: input,
                 clientMutationId: clientMutationId,
-                scheduleImmediateSync: true,
+                scheduleImmediateSync: scheduleImmediateSync,
                 persistLocation: true
             )
             return localResponse
@@ -2479,12 +2501,12 @@ final class BuildingLinkService {
         }
         // Location and sync intent are durable. Badge counting and starting
         // network work must not delay the caller's placement UI.
-        Task { @MainActor in
+        if scheduleImmediateSync { Task { @MainActor in
             await OfflineSyncCoordinator.shared.refreshPendingCount()
-            if scheduleImmediateSync && NetworkMonitor.shared.isOnline {
+            if NetworkMonitor.shared.isOnline {
                 OfflineSyncCoordinator.shared.scheduleProcessOutbox()
             }
-        }
+        } }
     }
 
     private func makeManualAddressCreateResponse(

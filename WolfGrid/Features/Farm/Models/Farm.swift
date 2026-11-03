@@ -24,7 +24,7 @@ struct Farm: Identifiable, Codable, Equatable, Hashable {
     let touchTypes: [String]?
     let annualBudgetCents: Int?
     let homeLimit: Int?
-    let addressCount: Int?
+    var addressCount: Int?
     let lastGeneratedAt: Date?
     
     enum CodingKeys: String, CodingKey {

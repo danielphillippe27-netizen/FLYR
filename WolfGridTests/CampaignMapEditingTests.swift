@@ -30,6 +30,56 @@ final class CampaignMapEditingTests: XCTestCase {
     private func effective(_ snapshot: CampaignMapEditSnapshot, _ state: CampaignMapEditState) -> CampaignMapEditSnapshot {
         CampaignMapEdits.snapshot(buildings: snapshot.buildings, addresses: snapshot.addresses, parcels: snapshot.parcels, state: state)
     }
+    func testParcelCorrectionSeparatesWrongSharedRoofAndUndoRestoresOriginalGroup() throws {
+        let original = try fixture()
+        var value = CampaignMapEditValue()
+        value.buildingLinkSet = true; value.buildingId = "roof-b"
+        value.parcelLinkSet = true; value.parcelId = "lot-b"
+        let change = CampaignMapEditChange(.init(.address, home), value: value)
+        let state = CampaignMapEditState().applying([change])
+        let corrected = effective(original, state)
+        XCTAssertEqual(corrected.buildings[0].properties.addressUUIDs, [UUID(uuidString: unit)!])
+        XCTAssertEqual(corrected.buildings[1].properties.addressUUIDs, [UUID(uuidString: home)!])
+        let correctedParcels = CampaignMapEdits.parcelsWithAddressLinks(
+            corrected.parcels, addresses: corrected.addresses, state: state)
+        XCTAssertFalse((correctedParcels[0].properties.addressIds ?? []).contains(home))
+        XCTAssertTrue((correctedParcels[1].properties.addressIds ?? []).contains(home))
+        let undone = effective(original, state.applying([.init(.init(.address, home), value: nil)]))
+        XCTAssertEqual(Set(undone.buildings[0].properties.addressUUIDs), [UUID(uuidString: home)!, UUID(uuidString: unit)!])
+        XCTAssertEqual(original.buildings[0].properties.addressUUIDs.count, 2)
+    }
+
+    func testParcelLookupIncludesAddressSideLinkAndHonoursUnlink() {
+        let lot = ParcelFeature(id: "feature-id", geometry: shape(0, 0),
+            properties: .init(id: "campaign-lot", parcelId: "external-lot", externalId: "external-lot", source: "map", areaSqm: 100))
+        let homeAddress = address(home, x: 1, building: nil, parcel: "external-lot")
+        let linked = CampaignMapEdits.parcelsWithAddressLinks([lot], addresses: [homeAddress], state: .init())
+        XCTAssertEqual(linked[0].properties.addressIds, [home])
+        XCTAssertTrue(lot.properties.addressIds?.isEmpty ?? true)
+        let state = CampaignMapEditState(features: [CampaignMapItem(.address, home).id: .init(parcelLinkSet: true)])
+        let unlinked = CampaignMapEdits.parcelsWithAddressLinks(linked, addresses: [homeAddress], state: state)
+        XCTAssertTrue(unlinked[0].properties.addressIds?.isEmpty ?? true)
+    }
+    func testCurrentParcelOwnerRemovesStaleReverseLink() {
+        let first = ParcelFeature(id: "lot-a", geometry: shape(0,0), properties: .init(id: "lot-a", parcelId: "lot-a", externalId: nil, source: "map", areaSqm: 100, addressIds: [home]))
+        let second = ParcelFeature(id: "lot-b", geometry: shape(10,0), properties: .init(id: "lot-b", parcelId: "lot-b", externalId: nil, source: "map", areaSqm: 100, addressIds: [home]))
+        let rows = CampaignMapEdits.parcelsWithAddressLinks([first, second], addresses: [address(home, x: 11, building: nil, parcel: "lot-b")], state: .init())
+        XCTAssertEqual(rows[0].properties.addressIds, [])
+        XCTAssertEqual(rows[1].properties.addressIds, [home])
+    }
+
+    func testParcelAssignmentRejectsOccupiedLotAndAllowsAtomicSwap() throws {
+        let lots = [ParcelFeature(id: "lot-a", geometry: shape(0,0), properties: .init(id: "lot-a", parcelId: "lot-a", externalId: nil, source: "map", areaSqm: 100, addressIds: [home])),
+                    ParcelFeature(id: "lot-b", geometry: shape(10,0), properties: .init(id: "lot-b", parcelId: "lot-b", externalId: nil, source: "map", areaSqm: 100, addressIds: [other]))]
+        let addresses = [address(home, x: 1, building: nil, parcel: "lot-a"), address(other, x: 11, building: nil, parcel: "lot-b")]
+        let move = CampaignMapEditChange(CampaignMapItem(.address, home), value: .init(parcelLinkSet: true, parcelId: "lot-b"))
+        XCTAssertThrowsError(try CampaignMapEdits.validateParcelAssignments([move], state: .init(), addresses: addresses, parcels: lots))
+        let swap = CampaignMapEditChange(CampaignMapItem(.address, other), value: .init(parcelLinkSet: true, parcelId: "lot-a"))
+        XCTAssertNoThrow(try CampaignMapEdits.validateParcelAssignments([move, swap], state: .init(), addresses: addresses, parcels: lots))
+        let state = CampaignMapEditState(features: [CampaignMapItem(.address, other).id: .init(parcelLinkSet: true, parcelId: "lot-b")])
+        XCTAssertThrowsError(try CampaignMapEdits.validateParcelAssignments([move], state: state, addresses: [], parcels: []))
+    }
+
     func testBuildingRemovalPreservesAddressesMetadataAndParcelLinks() throws {
         let original = try fixture()
         let command = try CampaignMapEditPlanner.deletion([.init(.building,"roof-a")], snapshot: original, state: .init())
@@ -59,6 +109,30 @@ final class CampaignMapEditingTests: XCTestCase {
         XCTAssertNil(result.addresses[0].properties.parcelId)
         XCTAssertEqual(result.addresses[0].properties.buildingGersId, "roof-a")
     }
+    func testParcelOnlyRemovalKeepsStandaloneAddressVisibleAndSelectable() throws {
+        let original = try fixture()
+        // lot-b has an address but no building link. It must survive in both
+        // the marker source (tap target) and the building-mode number source.
+        let proposal = try CampaignMapEditPlanner.deletion([.init(.parcel, "lot-b")], snapshot: original, state: .init())
+        let result = effective(original, CampaignMapEditState().applying(proposal.changes))
+        let retained = try XCTUnwrap(result.addresses.first { $0.id == other })
+        XCTAssertEqual(result.addresses.count, original.addresses.count)
+        XCTAssertNil(retained.properties.parcelId)
+        XCTAssertEqual(retained.geometry.nativeGeometry, original.addresses[2].geometry.nativeGeometry)
+        XCTAssertEqual(retained.properties.formatted, "12 Main St")
+        for data in [
+            try MapLayerManager.buildAddressNumberLabelPointGeoJSON(addresses: [retained], buildings: [], orderedAddressIdsByBuilding: [:]),
+            try MapLayerManager.smartAddressMarkerPointCollection(addresses: [retained], buildings: [], orderedAddressIdsByBuilding: [:])
+        ] {
+            let root = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+            let features = try XCTUnwrap(root["features"] as? [[String: Any]])
+            XCTAssertEqual(features.count, 1)
+            let properties = try XCTUnwrap(features.first?["properties"] as? [String: Any])
+            XCTAssertEqual(properties["address_id"] as? String, other)
+            XCTAssertEqual(properties["label_visibility_mode"] as? String, "all_modes")
+        }
+    }
+
     func testMixedRemovalUpdatesBothLinksInOneCommand() throws {
         let original = try fixture()
         let command = try CampaignMapEditPlanner.deletion([.init(.building,"roof-a"), .init(.parcel,"lot-a")], snapshot: original, state: .init())
@@ -84,13 +158,14 @@ final class CampaignMapEditingTests: XCTestCase {
         XCTAssertEqual(change.value?.parcelId, "parcel-1")
     }
 
-    func testParcelPlacementMovesAddressAndPreservesExistingBuildingLink() throws {
+    func testParcelPlacementMovesAddressAndClearsStaleBuildingLink() throws {
         let item = CampaignMapItem(.address, home)
         let state = CampaignMapEditState(features: [item.id: .init(buildingLinkSet: true, buildingId: "roof-a")])
         let change = CampaignMapEditPlanner.addressParcelLink(addressId: home, parcelId: "lot-b",
             coordinate: .init(latitude: 2, longitude: 22), state: state, sourceRevision: "v1")
         XCTAssertEqual(change.value?.geometry?.asPoint, [22, 2])
-        XCTAssertEqual(change.value?.buildingId, "roof-a")
+        XCTAssertNil(change.value?.buildingId)
+        XCTAssertEqual(change.value?.buildingLinkSet, true)
         XCTAssertEqual(change.value?.parcelId, "lot-b")
     }
 
@@ -126,6 +201,21 @@ final class CampaignMapEditingTests: XCTestCase {
         XCTAssertNil(unlinked.addresses[0].properties.parcelId)
         XCTAssertNil(unlinked.addresses[0].properties.buildingGersId)
         XCTAssertFalse(unlinked.parcels.contains { $0.properties.addressIds?.contains(home) == true })
+    }
+
+    func testPlacedParcelAddressOverridesHiddenLabelAndOldAnchor() throws {
+        let original = AddressFeature(id: home, geometry: .init(type: "Point", coordinates: .init(point: [1, 2])),
+            properties: .init(id: home, houseNumber: "71", labelVisibilityMode: "hidden", labelAnchorLon: 1, labelAnchorLat: 2))
+        let change = CampaignMapEditPlanner.addressPlacement(addressId: home,
+            coordinate: .init(latitude: 2, longitude: 22), buildingId: nil, parcelId: "lot-b", state: .init(), sourceRevision: nil)
+        let effective = CampaignMapEdits.snapshot(buildings: [], addresses: [original], parcels: [],
+            state: CampaignMapEditState().applying([change]))
+        let address = try XCTUnwrap(effective.addresses.first)
+        XCTAssertEqual(address.geometry.asPoint, [22, 2])
+        XCTAssertEqual(address.properties.labelVisibilityMode, "all_modes")
+        XCTAssertNil(address.properties.labelAnchorLon)
+        XCTAssertEqual(address.properties.parcelId, "lot-b")
+        XCTAssertEqual(address.properties.houseNumber, "71")
     }
 
     func testAddressDropLinksSingleBuildingAndParcelAtomically() throws {

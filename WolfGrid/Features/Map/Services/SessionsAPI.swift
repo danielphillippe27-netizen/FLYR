@@ -157,6 +157,25 @@ final class SessionsAPI {
         return try decoder.decode([SessionRecord].self, from: response.data)
     }
 
+    /// Farm sessions are explicitly linked at creation; do not infer membership from a shared campaign.
+    func fetchSessionsForFarm(farmId: UUID) async throws -> [SessionRecord] {
+        var sessions: [SessionRecord] = []
+        var offset = 0
+        let pageSize = 1000
+        while true {
+            let response = try await client.from("sessions").select()
+                .eq("farm_id", value: farmId.uuidString)
+                .order("start_time", ascending: false)
+                .order("id", ascending: false)
+                .range(from: offset, to: offset + pageSize - 1).execute()
+            let page = try JSONDecoder.supabaseDates.decode([SessionRecord].self, from: response.data)
+            sessions.append(contentsOf: page)
+            if page.count < pageSize { break }
+            offset += pageSize
+        }
+        return sessions
+    }
+
     /// Fetch sessions for a campaign.
     /// When a workspace is provided, fetch workspace-visible campaign activity.
     /// Otherwise fall back to the current user's activity.

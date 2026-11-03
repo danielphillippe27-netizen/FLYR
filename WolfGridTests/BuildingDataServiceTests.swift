@@ -5,6 +5,22 @@ import UIKit
 
 @MainActor
 final class BuildingDataServiceTests: XCTestCase {
+    func testParcelScopeExcludesOtherAddressesOnSharedBuildingWithoutChangingFeatures() throws {
+        let dan = UUID(), fifty = UUID(), fiftyTwo = UUID()
+        let features = try [dan, fifty, fiftyTwo].map { id in
+            let value: [String: Any] = ["type": "Feature", "id": id.uuidString,
+                "properties": ["id": id.uuidString, "building_gers_id": "shared-roof"],
+                "geometry": ["type": "Point", "coordinates": [-78.707, 43.931]]]
+            return try JSONDecoder().decode(AddressFeature.self, from: JSONSerialization.data(withJSONObject: value))
+        }
+        let singleParcel = BuildingDataService.addressFeatures(features, restrictedTo: [fifty])
+        XCTAssertEqual(singleParcel.compactMap { $0.properties.id }, [fifty.uuidString])
+        let sharedParcel = BuildingDataService.addressFeatures(features, restrictedTo: [fifty, fiftyTwo])
+        XCTAssertEqual(Set(sharedParcel.compactMap { $0.properties.id }), [fifty.uuidString, fiftyTwo.uuidString])
+        XCTAssertTrue(BuildingDataService.addressFeatures(features, restrictedTo: []).isEmpty)
+        XCTAssertEqual(features.count, 3, "Card scoping must not rewrite building membership")
+    }
+
     private func hexString(from color: UIColor) -> String {
         var red: CGFloat = 0
         var green: CGFloat = 0
@@ -853,6 +869,19 @@ final class BuildingDataServiceTests: XCTestCase {
         XCTAssertLessThanOrEqual(coordinates.latitude, 43.0006)
     }
 
+    func testSavedAddressNumberUsesBuildingLinkWhileReverseIndexIsMissing() throws {
+        let building = try makeBuildingFeature(gersId: "new-home", isTownhome: false, unitsCount: 1, addressCount: 1)
+        let address = try makeAddressFeature(id: UUID(), buildingGersId: "new-home", houseNumber: "300",
+                                             formatted: "300 Northglen Boulevard")
+        let data = try MapLayerManager.buildAddressNumberLabelPointGeoJSON(
+            addresses: [address], buildings: [building], orderedAddressIdsByBuilding: [:])
+        let features = try geoJSONFeatures(from: data)
+        XCTAssertEqual(features.count, 1)
+        let properties = try XCTUnwrap(features.first?["properties"] as? [String: Any])
+        XCTAssertEqual(properties["house_number_label"] as? String, "300")
+        XCTAssertEqual(properties["label_visibility_mode"] as? String, "all_modes")
+    }
+
     func testAddressNumberLabelsUseDistinctBuildingPlacementsForMultiUnitBuilding() throws {
         let building = try makeBuildingFeature(gersId: "multi-home-1", unitsCount: 2, addressCount: 2)
         let firstId = UUID()
@@ -913,6 +942,20 @@ final class BuildingDataServiceTests: XCTestCase {
         let features = try geoJSONFeatures(from: data)
 
         XCTAssertTrue(features.isEmpty)
+    }
+
+    func testPlacedParcelAddressShowsNumberWithoutBuilding() throws {
+        let id = UUID()
+        let address = AddressFeature(id: id.uuidString,
+            geometry: .init(type: "Point", coordinates: .init(point: [-73.9814, 40.7407])),
+            properties: .init(id: id.uuidString, houseNumber: "71", parcelId: "lot-71",
+                hasParcelLink: true, labelVisibilityMode: "all_modes", pinPlacement: "address"))
+        let data = try MapLayerManager.buildAddressNumberLabelPointGeoJSON(
+            addresses: [address], buildings: [], orderedAddressIdsByBuilding: [:])
+        let features = try geoJSONFeatures(from: data)
+        XCTAssertEqual(features.count, 1)
+        let properties = try XCTUnwrap(features.first?["properties"] as? [String: Any])
+        XCTAssertEqual(properties["house_number_label"] as? String, "71")
     }
 
     func testAddressNumberLabelsIncludeLinkedBuildingFallbackWithoutAddressPoint() throws {

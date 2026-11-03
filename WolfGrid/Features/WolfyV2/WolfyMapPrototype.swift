@@ -35,6 +35,7 @@ final class WolfyMapPrototypeRenderer: NSObject, CustomLayerHost {
     private var heading: Double = 180
     private var minimumMapScale: Double = 0
     private var animated = true
+    private var animationPausedAt: CFTimeInterval?
     private let drawAboveBuildings: Bool
     private var ready = false
     var isReady: Bool { lock.lock(); defer { lock.unlock() }; return ready }
@@ -76,7 +77,19 @@ final class WolfyMapPrototypeRenderer: NSObject, CustomLayerHost {
         origin = coordinate
         if let heading, heading.isFinite { self.heading = heading }
         let nextClip = speed >= 2.5 ? "run" : speed >= 0.5 ? "walk" : "idle"
-        if selectedClip != nextClip { selectedClip = nextClip; clipStartedAt = CACurrentMediaTime() }
+        let now = CACurrentMediaTime()
+        if selectedClip != nextClip {
+            selectedClip = nextClip
+            clipStartedAt = now
+            animationPausedAt = animated ? nil : now
+        } else if self.animated != animated {
+            if animated {
+                clipStartedAt += now - (animationPausedAt ?? now)
+                animationPausedAt = nil
+            } else {
+                animationPausedAt = now
+            }
+        }
         minimumMapScale = 28
         self.animated = animated
     }
@@ -138,12 +151,13 @@ final class WolfyMapPrototypeRenderer: NSObject, CustomLayerHost {
         let appearance = appearance
         let minimumMapScale = minimumMapScale, animated = animated
         let clipStartedAt = clipStartedAt
+        let animationTime = animated ? CACurrentMediaTime() : (animationPausedAt ?? clipStartedAt)
         lock.unlock()
         guard isVisible, let resource = stages[growthStage], let pipeline, let depth,
               let clip = resource.manifest.clips[clipName], let samples = resource.animation[clipName],
               let texture = mtlRenderPassDescriptor.colorAttachments[0].texture else { return }
         let m = resource.manifest, mesh = resource.mesh
-        let progress = animated ? (CACurrentMediaTime() - clipStartedAt).truncatingRemainder(dividingBy: clip.duration) / clip.duration * Double(clip.frames) : 0
+        let progress = max(0, animationTime - clipStartedAt).truncatingRemainder(dividingBy: clip.duration) / clip.duration * Double(clip.frames)
         let first = Int(progress) % clip.frames, second = (first + 1) % clip.frames
         frameCount += 1; lastFrameIndex = first
         let mix = Float(progress - Double(first)), stride = m.bones.count * 16
@@ -156,9 +170,8 @@ final class WolfyMapPrototypeRenderer: NSObject, CustomLayerHost {
         for c in 0..<4 { for r in 0..<4 { projection[c][r] = values[c*4+r] } }
         let projected = Projection.project(origin, zoomScale: CGFloat(pow(2, parameters.zoom)))
         let naturalScale = 1 / Projection.metersPerPoint(for: origin.latitude, zoom: CGFloat(parameters.zoom))
-        // Keep the existing map-zoom response and minimum-size floor, then
-        // apply the requested 1.5x avatar size uniformly at every zoom level.
-        let scale = max(naturalScale, minimumMapScale) * 1.5
+        // Keep Wolfy visible at lower zoom levels without enlarging the model.
+        let scale = max(naturalScale, minimumMapScale)
         // The source mesh faces negative Y; Mapbox's projected Y points south.
         let angle = (180 - heading) * Double.pi / 180
         var model = matrix_identity_double4x4
@@ -284,7 +297,7 @@ struct WolfyMapPrototypeView: UIViewRepresentable {
                         locationSource.data = .featureCollection(FeatureCollection(features: []))
                         try map.mapboxMap.addSource(locationSource)
                         self.campaignMarker = CampaignWolfLocationMarker(mapView: map, sourceID: locationSource.id)
-                        self.campaignMarker?.update(location: CLLocation(latitude: origin.latitude, longitude: origin.longitude), heading: 35, show: true)
+                        self.campaignMarker?.update(location: CLLocation(latitude: origin.latitude, longitude: origin.longitude), heading: 35, show: true, useWolf: true)
                         map.mapboxMap.setCamera(to: CameraOptions(zoom: 18.5, pitch: 45))
                     } else {
                         try map.mapboxMap.addCustomLayer(withId: "wolfy-prototype", layerHost: renderer, layerPosition: .above(wall.id))

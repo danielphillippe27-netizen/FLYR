@@ -342,6 +342,7 @@ struct MapTheme {
             "crushed-buildings",
             "townhome-",
             "manual-",
+            "farm-live-",
             "session-"
         ]
         return appLayerPrefixes.contains { lowercasedId.hasPrefix($0) }

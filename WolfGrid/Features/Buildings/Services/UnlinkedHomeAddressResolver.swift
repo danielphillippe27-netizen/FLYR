@@ -278,12 +278,20 @@ final class UnlinkedHomeAddressResolver {
 
         let normalizedWords = words.map { word -> String in
             switch word {
+            case "n": return "north"
+            case "s": return "south"
+            case "e": return "east"
+            case "w": return "west"
+            case "ne": return "northeast"
+            case "nw": return "northwest"
+            case "se": return "southeast"
+            case "sw": return "southwest"
             case "st", "str": return "street"
             case "rd": return "road"
             case "ave", "av": return "avenue"
             case "blvd": return "boulevard"
             case "dr": return "drive"
-            case "ct": return "court"
+            case "ct", "crt": return "court"
             case "cres": return "crescent"
             case "ln": return "lane"
             case "pl": return "place"
@@ -335,8 +343,19 @@ actor CampaignAddressMatchIndex {
         identityByAddressId[id] = identity
     }
 
-    func match(_ candidate: BuildingAddressCandidate, key: String, features: [AddressFeature]) -> AddressFeature? {
+    /// A prepared miss is authoritative too: callers must not load all geometry
+    /// merely to discover that this civic address is new.
+    func preparedMatch(_ candidate: BuildingAddressCandidate, key: String, excludingItems: Set<String> = []) -> (isPrepared: Bool, feature: AddressFeature?) {
+        guard sourceKey == key else { return (false, nil) }
+        return (true, lookup(candidate, excludingItems: excludingItems))
+    }
+
+    func match(_ candidate: BuildingAddressCandidate, key: String, features: [AddressFeature], excludingItems: Set<String> = []) -> AddressFeature? {
         prepare(key: key, features: features)
+        return lookup(candidate, excludingItems: excludingItems)
+    }
+
+    private func lookup(_ candidate: BuildingAddressCandidate, excludingItems: Set<String>) -> AddressFeature? {
         guard let identity = UnlinkedHomeAddressResolver.normalizedAddressIdentity(
             houseNumber: candidate.houseNumber, streetName: candidate.resolvedStreetName,
             postalCode: candidate.postalCode, formatted: candidate.displayAddress
@@ -345,7 +364,8 @@ actor CampaignAddressMatchIndex {
         var closest: (AddressFeature, CLLocationDistance)?
         let matches = byIdentity[identity] ?? []
         for feature in matches {
-            guard UnlinkedHomeAddressResolver.campaignAddressMatches(
+            guard !excludingItems.contains(CampaignMapEdits.addressItem(feature).id),
+                  UnlinkedHomeAddressResolver.campaignAddressMatches(
                 reverseCandidate: candidate, houseNumber: feature.properties.houseNumber,
                 streetName: feature.properties.streetName, postalCode: feature.properties.postalCode,
                 formatted: feature.properties.formatted

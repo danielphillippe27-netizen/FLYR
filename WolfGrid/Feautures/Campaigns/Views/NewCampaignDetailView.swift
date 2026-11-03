@@ -24,6 +24,8 @@ struct NewCampaignDetailView: View {
     @State private var territoryBoundary: [CLLocationCoordinate2D] = []
     @State private var isMapFullscreen = false
     @State private var addressStatuses: [String: AddressStatus] = [:]
+    @State private var campaignHomeCount: Int?
+    @State private var addressStatusesLoaded = false
     @State private var showShareCardView = false
     @State private var selectedAddressId: String? = nil
     @State private var selectedAddressLabel: String = ""
@@ -40,6 +42,7 @@ struct NewCampaignDetailView: View {
     @State private var campaignActivities: [SessionRecord] = []
     @State private var activityCount: Int = 0
     @State private var activitiesLoaded = false
+    @State private var activityDataVerified = false
     /// When set, share card is shown for this specific activity (tapped from Activity list).
     @State private var selectedSessionForShare: SessionRecord? = nil
     @State private var supportFeedbackRoute: CampaignSupportFeedbackRoute?
@@ -73,7 +76,8 @@ struct NewCampaignDetailView: View {
             campaign: campaign,
             sessions: campaignActivities,
             fieldLeads: campaignLeads,
-            addressStatuses: effectiveAddressStatuses
+            addressStatuses: effectiveAddressStatuses,
+            currentHomeCount: campaignHomeCount
         )
     }
 
@@ -85,12 +89,16 @@ struct NewCampaignDetailView: View {
         )
     }
 
-    private var effectiveProgressValue: Double {
-        presentation?.progressValue ?? hook.item?.progress ?? 0
-    }
-
-    private var effectiveProgressLabel: Int {
-        Int((effectiveProgressValue * 100).rounded())
+    private var effectiveProgressValue: Double? {
+        guard let campaign = hook.item else { return nil }
+        if CampaignCompletionShowcase.isJustSoldLivingCourt(campaign.name) ||
+            presentation?.isJustListedMearnsDemo == true {
+            return presentation?.progressValue
+        }
+        return CampaignDetailPresentation.verifiedProgress(
+            homeCount: campaignHomeCount, statuses: addressStatuses,
+            statusesLoaded: addressStatusesLoaded, activitiesLoaded: activityDataVerified,
+            hasRecordedDoors: campaignActivities.contains { $0.doorsCount > 0 })
     }
 
     private var effectiveCampaignLeads: [FieldLead] {
@@ -263,16 +271,20 @@ struct NewCampaignDetailView: View {
                         
                         Spacer()
                         
-                        if hook.item != nil {
-                            Text("\(effectiveProgressLabel)% completed")
+                        if let progress = effectiveProgressValue {
+                            Text("\(Int((progress * 100).rounded()))% completed")
                                 .font(.label)
                                 .fontWeight(.medium)
                                 .foregroundColor(.text)
                         }
                     }
                     
-                    if hook.item != nil {
-                        ProgressBar(value: effectiveProgressValue)
+                    if let progress = effectiveProgressValue {
+                        ProgressBar(value: progress)
+                    } else {
+                        Text("Progress unavailable")
+                            .font(.flyrCaption)
+                            .foregroundColor(.muted)
                     }
                 }
                 .padding(16)
@@ -1120,16 +1132,20 @@ struct NewCampaignDetailView: View {
     }
 
     private func refreshCampaignDetailData() async {
-        await refreshAddressStatuses()
+        async let statuses: Void = refreshAddressStatuses()
+        async let count: Void = refreshCampaignHomeCount()
         guard networkMonitor.isOnline else {
+            _ = await (statuses, count)
             await MainActor.run {
                 leadsLoaded = true
                 activitiesLoaded = true
+                activityDataVerified = false
             }
             return
         }
-        await refreshCampaignLeads()
-        await refreshCampaignActivities()
+        async let leads: Void = refreshCampaignLeads()
+        async let activity: Void = refreshCampaignActivities()
+        _ = await (statuses, count, leads, activity)
     }
 
     private func refreshAddressStatuses() async {
@@ -1138,9 +1154,22 @@ struct NewCampaignDetailView: View {
             let dict = Dictionary(uniqueKeysWithValues: statusRows.map { ($0.key.uuidString, $0.value.status) })
             await MainActor.run {
                 addressStatuses = dict
+                addressStatusesLoaded = true
             }
         } catch {
+            await MainActor.run { addressStatusesLoaded = false }
             print("⚠️ [DETAIL] Failed to fetch address statuses: \(error)")
+        }
+    }
+
+    private func refreshCampaignHomeCount() async {
+        guard networkMonitor.isOnline else { return }
+        do {
+            let count = try await FarmService.shared.campaignHomeCount(campaignId: campaignID)
+            await MainActor.run { campaignHomeCount = count }
+        } catch {
+            await MainActor.run { campaignHomeCount = nil }
+            print("⚠️ [DETAIL] Failed to fetch home count: \(error)")
         }
     }
 
@@ -1192,6 +1221,7 @@ struct NewCampaignDetailView: View {
                     activityCount = cachedSessions.count
                 }
                 activitiesLoaded = true
+                activityDataVerified = false
             }
             return
         }
@@ -1209,6 +1239,7 @@ struct NewCampaignDetailView: View {
                     activityCount = 0
                 }
                 activitiesLoaded = true
+                activityDataVerified = false
             }
             return
         }
@@ -1224,6 +1255,7 @@ struct NewCampaignDetailView: View {
                 campaignActivities = sessions
                 activityCount = sessions.count
                 activitiesLoaded = true
+                activityDataVerified = true
             }
         } catch {
             await MainActor.run {
@@ -1232,6 +1264,7 @@ struct NewCampaignDetailView: View {
                     activityCount = cachedSessions.count
                 }
                 activitiesLoaded = true
+                activityDataVerified = false
             }
         }
     }
@@ -1583,7 +1616,8 @@ struct CampaignDetailPresentation {
         campaign: CampaignV2,
         sessions: [SessionRecord],
         fieldLeads: [FieldLead],
-        addressStatuses: [String: AddressStatus]
+        addressStatuses: [String: AddressStatus],
+        currentHomeCount: Int? = nil
     ) {
         self.campaign = campaign
         self.sessions = sessions
@@ -1591,11 +1625,11 @@ struct CampaignDetailPresentation {
         let isMearnsDemoCampaign = Self.isMearnsDemoCampaign(campaign.name)
         isJustListedMearnsDemo = Self.isJustListedMearnsCampaign(campaign.name)
         let isJustSoldLivingCourtShowcase = CampaignCompletionShowcase.isJustSoldLivingCourt(campaign.name)
-        let totalAddresses = max(campaign.addresses.count, campaign.totalFlyers)
+        let totalAddresses = currentHomeCount ?? max(campaign.addresses.count, campaign.totalFlyers)
         let realDoors = sessions.reduce(0) { $0 + $1.doorsCount }
         let realSeconds = sessions.reduce(0.0) { $0 + $1.durationSeconds }
         let realDistanceMeters = sessions.reduce(0.0) { $0 + max(0, $1.distance_meters ?? 0) }
-        let realConversations = sessions.reduce(0) { $0 + max(0, $1.conversations ?? 0) }
+        let realConversations = TerritoryActivityMetrics.conversations(in: sessions)
         let realAppointments = sessions.reduce(0) { $0 + $1.appointmentsCount }
 
         let statusCounts = Dictionary(grouping: addressStatuses.values, by: { $0 }).mapValues(\.count)
@@ -1736,9 +1770,21 @@ struct CampaignDetailPresentation {
         return defaultShareCardData
     }
 
-    private static let visitedStatuses: Set<AddressStatus> = [
+    fileprivate static let visitedStatuses: Set<AddressStatus> = [
         .noAnswer, .delivered, .talked, .appointment, .doNotKnock, .futureSeller, .hotLead
     ]
+
+    static func verifiedProgress(homeCount: Int?, statuses: [String: AddressStatus],
+                                 statusesLoaded: Bool, activitiesLoaded: Bool,
+                                 hasRecordedDoors: Bool) -> Double? {
+        guard let total = homeCount, statusesLoaded, activitiesLoaded else { return nil }
+        // A do-not-knock flag can be set without visiting; Farm progress also
+        // excludes it from completed homes.
+        let visited = statuses.values.filter { $0 != .doNotKnock && visitedStatuses.contains($0) }.count
+        guard !(visited == 0 && hasRecordedDoors) else { return nil }
+        guard total > 0 else { return visited == 0 ? 0 : nil }
+        return min(1, Double(visited) / Double(total))
+    }
 
     private static let conversationStatuses: Set<AddressStatus> = [
         .talked, .appointment, .futureSeller, .hotLead

@@ -19,6 +19,8 @@ class BuildingDataService: ObservableObject {
     // MARK: - Private Properties
     
     private let supabase: SupabaseClient
+    /// Immutable per-card boundary. Nil keeps normal building-wide loading.
+    private let selectionAddressIds: Set<UUID>?
     private var cache: [String: CachedBuildingData] = [:]
     private let cacheTTL: TimeInterval = 300  // 5 minutes
     private let backgroundRefreshCooldown: TimeInterval = 120
@@ -48,8 +50,15 @@ class BuildingDataService: ObservableObject {
 
     // MARK: - Initialization
     
-    init(supabase: SupabaseClient) {
+    init(supabase: SupabaseClient, selectionAddressIds: Set<UUID>? = nil) {
         self.supabase = supabase
+        self.selectionAddressIds = selectionAddressIds
+    }
+
+    static func addressFeatures(_ features: [AddressFeature], restrictedTo ids: Set<UUID>) -> [AddressFeature] {
+        features.filter { feature in
+            UUID(uuidString: feature.properties.id ?? feature.id ?? "").map { ids.contains($0) } == true
+        }
     }
 
     static func sortAddressesForDisplay(_ addresses: [CampaignAddressResponse]) -> [CampaignAddressResponse] {
@@ -505,11 +514,20 @@ class BuildingDataService: ObservableObject {
             }
         }
 
-        let persistedLinkedAddresses = try await fetchPersistedLinkedAddresses(
-            campaignId: campaignId,
-            buildingIdentifiers: [gersId] + buildingIdentifiers,
-            decoder: decoder
-        )
+        let persistedLinkedAddresses: [CampaignAddressResponse]
+        if let selectionAddressIds {
+            if selectionAddressIds.isEmpty {
+                persistedLinkedAddresses = []
+            } else {
+                let response = try await supabase.from("campaign_addresses").select(Self.addressSelect)
+                    .eq("campaign_id", value: campaignId.uuidString)
+                    .in("id", values: selectionAddressIds.map(\.uuidString)).execute()
+                persistedLinkedAddresses = try decoder.decode([CampaignAddressResponse].self, from: response.data)
+            }
+        } else {
+            persistedLinkedAddresses = try await fetchPersistedLinkedAddresses(
+                campaignId: campaignId, buildingIdentifiers: [gersId] + buildingIdentifiers, decoder: decoder)
+        }
 
         // Step 2: Build the card from persisted building links first, then fall back
         // to direct/gold/local geometry paths for legacy or partially cached data.
@@ -573,6 +591,9 @@ class BuildingDataService: ObservableObject {
                 allAddressResponses.append(contentsOf: try decoder.decode([CampaignAddressResponse].self, from: response.data))
             }
             allAddressResponses = allAddressResponses.filter { allowed.contains($0.id) }
+        }
+        if let selectionAddressIds {
+            allAddressResponses = allAddressResponses.filter { selectionAddressIds.contains($0.id) }
         }
         allAddressResponses = Self.deduplicatedAddressesForDisplay(
             allAddressResponses,
@@ -1106,6 +1127,22 @@ class BuildingDataService: ObservableObject {
         buildingIdentifiers: [String] = [],
         linkedAddressIds: [UUID] = []
     ) async -> LocalAddressResolution? {
+        if let selectionAddressIds {
+            let service = MapFeaturesService.shared
+            let features: [AddressFeature]
+            if !CampaignMapEditStore.shared.hasEdits(campaignId.uuidString),
+               let index = service.compactFieldIndex(for: campaignId.uuidString) {
+                features = selectionAddressIds.compactMap { index.addressFeature(id: $0.uuidString) }
+            } else if let loaded = service.addresses(for: campaignId.uuidString)?.features {
+                features = loaded
+            } else {
+                features = await CampaignRepository.shared.getCampaignMapBundle(campaignId: campaignId.uuidString)?.addresses.features ?? []
+            }
+            let scoped = Self.addressFeatures(features, restrictedTo: selectionAddressIds)
+            let resolved = scoped.compactMap { resolvedAddress(from: $0, fallbackGersId: gersId) }
+            return LocalAddressResolution(buildingFeature: nil, resolvedAddresses: resolved,
+                matchedAddressIDs: Set(resolved.map(\.id)))
+        }
         if CampaignMapEditStore.shared.hasEdits(campaignId.uuidString) {
             let service = MapFeaturesService.shared
             let identifiers = Set(Self.normalizedIdentifierList([gersId] + buildingIdentifiers))

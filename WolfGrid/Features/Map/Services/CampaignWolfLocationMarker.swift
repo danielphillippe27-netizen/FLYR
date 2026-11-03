@@ -7,9 +7,6 @@ final class CampaignWolfLocationMarker {
     private weak var mapView: MapView?
     private let sourceID: String
     private let layerID = "campaign-local-wolf"
-    private let trailSourceID = "campaign-wolf-paw-trail-source"
-    private let trailLayerID = "campaign-wolf-paw-trail-layer"
-    private let pawImageID = "campaign-wolf-paw-print"
     private var renderer: WolfyMapPrototypeRenderer?
     private var economyStore: WolfyEconomyStore?
     private var equipment: [String:String] = [:]
@@ -23,13 +20,11 @@ final class CampaignWolfLocationMarker {
     private var location: CLLocation?
     private var heading: Double?
     private var show = false
+    private var useWolf = true
     private var foreground = UIApplication.shared.applicationState != .background
     private var fallbackVisible: Bool?
-    private var trailAnchor: CLLocation?
-    private var trailLocations: [CLLocation] = []
-    private var trailDistanceRemainder = 0.0
-    private var pawTrailNeedsUpdate = true
-    private var lastTrailFadeRender = Date.distantPast
+    private var motionPolicy = WolfMapMotionPolicy()
+    private var continuousUpdates = false
     var diagnostic: String {
         "ready=\(renderer?.isReady == true), fallback=\(fallbackVisible == true), visible=\(show && foreground), \(renderer?.diagnostic ?? "no renderer")"
     }
@@ -52,6 +47,13 @@ final class CampaignWolfLocationMarker {
         notifications.append(center.addObserver(forName:.wolfyWardrobeDidChange, object:nil, queue:.main) { [weak self] _ in
             Task { @MainActor [weak self] in self?.refreshEquipment() }
         })
+        for name in [Notification.Name.NSProcessInfoPowerStateDidChange,
+                     UIAccessibility.reduceMotionStatusDidChangeNotification,
+                     ProcessInfo.thermalStateDidChangeNotification] {
+            notifications.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                self?.refresh()
+            })
+        }
         Task { @MainActor [weak self] in
             self?.refreshEquipment()
             self?.refreshGrowthStage()
@@ -103,20 +105,14 @@ final class CampaignWolfLocationMarker {
         }
     }
 
-    func update(location: CLLocation?, heading: Double?, show: Bool) {
+    func update(location: CLLocation?, heading: Double?, show: Bool, useWolf: Bool = true) {
         // Session timers and unrelated UI state can resend the same location.
         // Style/foreground observers independently refresh the existing marker.
-        guard self.location !== location || self.heading != heading || self.show != show else { return }
-        if show, let location { appendPawSteps(toward: location) }
-        else {
-            trailAnchor = nil
-            trailDistanceRemainder = 0
-            if !trailLocations.isEmpty { trailLocations.removeAll(); pawTrailNeedsUpdate = true }
-            if let map = mapView?.mapboxMap { updatePawTrail(on: map) }
-        }
+        guard self.location !== location || self.heading != heading || self.show != show || self.useWolf != useWolf else { return }
         self.location = location
         self.heading = heading
         self.show = show
+        self.useWolf = useWolf
         if fallbackVisible == true { fallbackVisible = nil }
         refresh()
     }
@@ -124,15 +120,16 @@ final class CampaignWolfLocationMarker {
     private func refresh() {
         guard let mapView else { stop(); return }
         let active = show && foreground && location != nil
-        if active {
-            if timer == nil {
-                let timer = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] _ in self?.frame() }
-                RunLoop.main.add(timer, forMode: .common)
-                self.timer = timer
-            }
+        if active && !useWolf {
+            stopTimer()
+            renderer?.setVisible(false)
+            updateFallback(visible: true)
+            mapView.mapboxMap.triggerRepaint()
+        } else if active {
             frame()
         } else {
-            timer?.invalidate(); timer = nil
+            stopTimer()
+            motionPolicy.reset()
             renderer?.setVisible(false)
             updateFallback(visible: false)
             mapView.mapboxMap.triggerRepaint()
@@ -144,10 +141,13 @@ final class CampaignWolfLocationMarker {
         if Date().timeIntervalSince(lastGrowthRefresh) > 120 {
             Task { @MainActor [weak self] in self?.refreshGrowthStage() }
         }
+        let constrained = UIAccessibility.isReduceMotionEnabled || ProcessInfo.processInfo.isLowPowerModeEnabled
+            || ProcessInfo.processInfo.thermalState == .serious || ProcessInfo.processInfo.thermalState == .critical
+        let schedule = motionPolicy.schedule(now: ProcessInfo.processInfo.systemUptime,
+                                             speed: max(0, location.speed), constrained: constrained)
+        scheduleUpdate(schedule)
         // The campaign owns style setup. Wait until its location source exists.
         guard map.sourceExists(withId: sourceID) else { return }
-        installPawTrailIfNeeded(on: map)
-        updatePawTrail(on: map)
         if !map.layerExists(withId: layerID) {
             let next = WolfyMapPrototypeRenderer(origin: location.coordinate, drawAboveBuildings: true)
             do {
@@ -161,118 +161,29 @@ final class CampaignWolfLocationMarker {
                 return
             }
         }
-        let reduceMotion = UIAccessibility.isReduceMotionEnabled || ProcessInfo.processInfo.isLowPowerModeEnabled
-        renderer?.updateLocation(location.coordinate, heading: heading, speed: max(0, location.speed), animated: !reduceMotion)
+        renderer?.updateLocation(location.coordinate, heading: heading, speed: max(0, location.speed), animated: schedule.animated)
         renderer?.setVisible(true)
         updateFallback(visible: renderer?.isReady != true)
         map.triggerRepaint()
     }
 
-    private func appendPawSteps(toward location: CLLocation) {
-        guard let previous = trailAnchor else { trailAnchor = location; return }
-        let distance = previous.distance(from: location)
-        guard distance > 0 else { return }
-        let bearing = Self.bearing(from: previous.coordinate, to: location.coordinate)
-        var distanceToNextStep = Self.stepSpacingMeters - trailDistanceRemainder
-        var stepsAdded = 0
-        while distanceToNextStep <= distance, stepsAdded < Self.visibleStepCount * 4 {
-            let fraction = min(1, distanceToNextStep / distance)
-            let coordinate = CLLocationCoordinate2D(
-                latitude: previous.coordinate.latitude + (location.coordinate.latitude - previous.coordinate.latitude) * fraction,
-                longitude: previous.coordinate.longitude + (location.coordinate.longitude - previous.coordinate.longitude) * fraction
-            )
-            let alternatingOffset = trailLocations.count.isMultiple(of: 2) ? 16.0 : -16.0
-            let stamp = CLLocation(coordinate: coordinate, altitude: 0, horizontalAccuracy: 0, verticalAccuracy: 0, course: bearing + alternatingOffset, speed: 0, timestamp: Date())
-            trailLocations.append(stamp)
-            if trailLocations.count > Self.visibleStepCount { trailLocations.removeFirst() }
-            stepsAdded += 1
-            distanceToNextStep += Self.stepSpacingMeters
+    private func stopTimer() {
+        timer?.invalidate()
+        timer = nil
+        continuousUpdates = false
+    }
+
+    private func scheduleUpdate(_ schedule: WolfMapMotionPolicy.Schedule) {
+        guard let interval = schedule.nextUpdate else { stopTimer(); return }
+        if schedule.animated && continuousUpdates && timer != nil { return }
+        stopTimer()
+        continuousUpdates = schedule.animated
+        let timer = Timer(timeInterval: interval, repeats: schedule.animated) { [weak self] _ in
+            self?.frame()
         }
-        trailDistanceRemainder = (trailDistanceRemainder + distance).truncatingRemainder(dividingBy: Self.stepSpacingMeters)
-        trailAnchor = location
-        if stepsAdded > 0 { pawTrailNeedsUpdate = true }
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
     }
-
-    private func installPawTrailIfNeeded(on map: MapboxMap) {
-        do {
-            if !map.sourceExists(withId: trailSourceID) {
-                var source = GeoJSONSource(id: trailSourceID)
-                source.data = .featureCollection(FeatureCollection(features: []))
-                try map.addSource(source)
-                pawTrailNeedsUpdate = true
-            }
-            if !map.imageExists(withId: pawImageID) {
-                try map.addImage(Self.makePawImage(), id: pawImageID)
-            }
-            if !map.layerExists(withId: trailLayerID) {
-                var layer = SymbolLayer(id: trailLayerID, source: trailSourceID)
-                layer.iconImage = .constant(.name(pawImageID))
-                layer.iconSize = .expression(Exp(.get) { "scale" })
-                layer.iconRotate = .expression(Exp(.get) { "heading" })
-                layer.iconRotationAlignment = .constant(.map)
-                layer.iconAllowOverlap = .constant(true)
-                layer.iconIgnorePlacement = .constant(true)
-                layer.iconOpacity = .expression(Exp(.get) { "opacity" })
-                try map.addLayer(layer)
-            }
-        } catch {
-            print("⚠️ [CampaignWolf] Could not install paw trail: \(error)")
-        }
-    }
-
-    private func updatePawTrail(on map: MapboxMap) {
-        let now = Date()
-        guard map.sourceExists(withId: trailSourceID),
-              pawTrailNeedsUpdate || (!trailLocations.isEmpty && now.timeIntervalSince(lastTrailFadeRender) >= Self.fadeRefreshInterval) else { return }
-        let features = trailLocations.enumerated().map { index, location -> Feature in
-            var feature = Feature(geometry: .point(Point(location.coordinate)))
-            let age = max(0, now.timeIntervalSince(location.timestamp))
-            let fade: Double = Swift.max(0.0, 1.0 - age / Self.fadeDuration)
-            let recency = Double(index + 1) / Double(max(1, trailLocations.count))
-            feature.properties = [
-                "heading": .number(location.course),
-                "opacity": .number((0.58 + 0.32 * recency) * fade),
-                "scale": .number((0.30 + 0.12 * fade) * (1 - age / Self.fadeDuration * 0.18))
-            ]
-            return feature
-        }
-        map.updateGeoJSONSource(withId: trailSourceID, geoJSON: .featureCollection(FeatureCollection(features: features)))
-        pawTrailNeedsUpdate = false
-        lastTrailFadeRender = now
-    }
-
-    private static func bearing(from start: CLLocationCoordinate2D, to end: CLLocationCoordinate2D) -> Double {
-        let lat1 = start.latitude * .pi / 180
-        let lat2 = end.latitude * .pi / 180
-        let delta = (end.longitude - start.longitude) * .pi / 180
-        return atan2(sin(delta) * cos(lat2), cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(delta)) * 180 / .pi
-    }
-
-    private static func makePawImage() -> UIImage {
-        let size = CGSize(width: 48, height: 48)
-        return UIGraphicsImageRenderer(size: size).image { context in
-            let color = UIColor(red: 0.30, green: 0.20, blue: 0.15, alpha: 1)
-            color.setFill()
-            let pads: [(CGRect, CGFloat)] = [
-                (CGRect(x: 7, y: 8, width: 11, height: 14), -22),
-                (CGRect(x: 19, y: 3, width: 11, height: 14), -5),
-                (CGRect(x: 32, y: 8, width: 10, height: 14), 18),
-                (CGRect(x: 10, y: 23, width: 28, height: 21), 0)
-            ]
-            for (rect, angle) in pads {
-                context.cgContext.saveGState()
-                context.cgContext.translateBy(x: rect.midX, y: rect.midY)
-                context.cgContext.rotate(by: angle * .pi / 180)
-                UIBezierPath(ovalIn: CGRect(x: -rect.width / 2, y: -rect.height / 2, width: rect.width, height: rect.height)).fill()
-                context.cgContext.restoreGState()
-            }
-        }
-    }
-
-    private static let stepSpacingMeters = 0.72
-    private static let visibleStepCount = 8
-    private static let fadeDuration = 5.5
-    private static let fadeRefreshInterval = 0.15
 
     private func updateFallback(visible: Bool) {
         guard let map = mapView?.mapboxMap, map.sourceExists(withId: sourceID), fallbackVisible != visible else { return }
@@ -287,13 +198,9 @@ final class CampaignWolfLocationMarker {
     }
 
     func stop() {
-        timer?.invalidate(); timer = nil
+        stopTimer()
         renderer?.setVisible(false)
-        trailAnchor = nil
-        trailLocations.removeAll()
-        trailDistanceRemainder = 0
-        pawTrailNeedsUpdate = true
-        if let map = mapView?.mapboxMap { updatePawTrail(on: map) }
+        motionPolicy.reset()
         styleObservation?.cancel(); styleObservation = nil
         notifications.forEach { NotificationCenter.default.removeObserver($0) }
         notifications.removeAll()

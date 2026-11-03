@@ -153,6 +153,12 @@ final class OfflineSyncCoordinator: ObservableObject {
         await processOutbox()
     }
 
+    /// Wait for a scheduled pass and then process any changes queued during it.
+    func syncPendingChanges() async {
+        await processingTask?.value
+        await processOutbox()
+    }
+
     func processOutbox() async {
         guard networkMonitor.isOnline else {
             await refreshPendingCount()

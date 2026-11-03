@@ -7,7 +7,13 @@ final class FarmDetailViewModel: ObservableObject {
     @Published var touches: [FarmTouch] = []
     @Published var cycles: [FarmCycle] = []
     @Published var leads: [FarmLead] = []
+    @Published var sessions: [SessionRecord] = []
+    @Published var fieldLeads: [FieldLead] = []
+    @Published var activityLoadFailed = false
     @Published var leadsLoadFailed = false
+    var totalLeadCount: Int { Set(leads.map(\.id)).union(fieldLeads.map(\.id)).count }
+    var conversationCount: Int { TerritoryActivityMetrics.conversations(in: sessions) }
+
     @Published var touchesLoadFailed = false
     @Published var visitedHomeCount: Int?
     @Published var homeVisitCount: Int?
@@ -50,8 +56,9 @@ final class FarmDetailViewModel: ObservableObject {
         async let leadsTask: Void = loadLeads()
         async let linkedCampaignTask: Void = loadLinkedCampaign()
         async let visitsTask: Void = loadVisitedHomes()
+        async let activityTask: Void = loadActivity()
 
-        _ = await (farmTask, touchesTask, leadsTask, linkedCampaignTask, visitsTask)
+        _ = await (farmTask, touchesTask, leadsTask, linkedCampaignTask, visitsTask, activityTask)
 
         recalculateCycles()
         
@@ -95,6 +102,43 @@ final class FarmDetailViewModel: ObservableObject {
             leadsLoadFailed = true
             errorMessage = "Failed to load leads: \(error.localizedDescription)"
             print("❌ [FarmDetailViewModel] Error loading leads: \(error)")
+        }
+    }
+
+    private func loadActivity() async {
+        do {
+            let records = try await SessionsAPI.shared.fetchSessionsForFarm(farmId: farmId)
+            guard let userId = AuthManager.shared.user?.id else {
+                throw NSError(domain: "FarmDetailViewModel", code: 1, userInfo: [NSLocalizedDescriptionKey: "Not signed in"])
+            }
+            async let direct = FieldLeadsService.shared.fetchLeadsForFarm(userId: userId, farmId: farmId)
+            let sessionLeads = try await withThrowingTaskGroup(of: [FieldLead].self) { group in
+                var pending = records.filter { $0.id != nil }.makeIterator()
+                for _ in 0..<4 {
+                    if let session = pending.next(), let id = session.id {
+                        group.addTask {
+                            try await FieldLeadsService.shared.fetchLeads(userId: session.user_id, sessionId: id)
+                        }
+                    }
+                }
+                var result: [FieldLead] = []
+                while let batch = try await group.next() {
+                    result.append(contentsOf: batch)
+                    if let session = pending.next(), let id = session.id {
+                        group.addTask {
+                            try await FieldLeadsService.shared.fetchLeads(userId: session.user_id, sessionId: id)
+                        }
+                    }
+                }
+                return result
+            }
+            let captured = try await direct + sessionLeads
+            sessions = records
+            fieldLeads = Array(Dictionary(captured.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }).values)
+            activityLoadFailed = false
+        } catch {
+            activityLoadFailed = true
+            print("❌ [FarmDetailViewModel] Error loading farm activity: \(error)")
         }
     }
 

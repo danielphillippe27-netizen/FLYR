@@ -126,6 +126,9 @@ final class CampaignMapEditStore: ObservableObject {
         var (key, archive) = try load(campaign)
         guard !conflicts.contains(key) else { throw CampaignMapEditError.conflict }
         let effective = archive.effective
+        let snapshot = snapshotCache[key]?.1
+        try CampaignMapEdits.validateParcelAssignments(changes, state: effective,
+            addresses: snapshot?.addresses ?? [], parcels: snapshot?.parcels ?? [])
         let command = CampaignMapEditCommand(request: .init(clientMutationId: UUID().uuidString.lowercased(),
             baseRevision: archive.server.revision + archive.pending.count, changes: changes), title: title,
             previous: changes.map { .init($0.item, value: effective.features[$0.item.id]) })

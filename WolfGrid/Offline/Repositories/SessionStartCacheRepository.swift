@@ -131,6 +131,12 @@ final class SessionStartCacheRepository {
         }
     }
 
+    func removeCachedFarm(id: UUID) async {
+        try? await dbQueue.write { db in
+            _ = try CachedSessionFarmRecord.deleteOne(db, key: id.uuidString)
+        }
+    }
+
     func getCachedFarms(userId: UUID, workspaceId: UUID?) async -> [Farm] {
         (try? await dbQueue.read { db in
             var request = CachedSessionFarmRecord

@@ -10,22 +10,72 @@ final class FarmViewModel: ObservableObject {
     @Published var errorMessage: String?
     
     private let farmService = FarmService.shared
+    private let cachedLoader: (UUID, UUID?) async -> [Farm]
+    private let remoteLoader: (UUID) async throws -> [Farm]
+    private let countLoader: (Farm) async -> Farm
+    private let workspaceProvider: () -> UUID?
+
+    init(cachedLoader: ((UUID, UUID?) async -> [Farm])? = nil,
+         remoteLoader: ((UUID) async throws -> [Farm])? = nil,
+         countLoader: ((Farm) async -> Farm)? = nil,
+         workspaceProvider: (() -> UUID?)? = nil) {
+        self.cachedLoader = cachedLoader ?? { await FarmOfflineRepository.shared.getCachedFarms(userId: $0, workspaceId: $1) }
+        self.remoteLoader = remoteLoader ?? { try await FarmService.shared.fetchFarms(userID: $0, refreshCounts: false) }
+        self.countLoader = countLoader ?? { await FarmService.shared.farmWithCurrentHomeCount($0) }
+        self.workspaceProvider = workspaceProvider ?? { WorkspaceContext.shared.workspaceId }
+    }
     
     // MARK: - Load Farms
     
+    private var loadGeneration = UUID()
+    private var loadedScope: String?
+    private var countRefreshTask: Task<Void, Never>?
+
     func loadFarms(userId: UUID) async {
-        isLoading = true
+        let workspaceId = workspaceProvider()
+        let scope = "\(userId):\(workspaceId?.uuidString ?? "personal")"
+        let generation = UUID()
+        loadGeneration = generation
+        countRefreshTask?.cancel()
+        if loadedScope != scope { farms = []; loadedScope = scope }
+        isLoading = farms.isEmpty
         errorMessage = nil
-        defer { isLoading = false }
-        
+        let trace = PerfTrace.begin("farm_list", "load")
+        defer {
+            if loadGeneration == generation { isLoading = false }
+            trace.end()
+        }
+        let cached = await cachedLoader(userId, workspaceId)
+        guard loadGeneration == generation, !Task.isCancelled else { return }
+        if !cached.isEmpty {
+            farms = cached
+            isLoading = false
+            PerfTrace.event("farm_list", "cached_list_visible", fields: ["count": cached.count])
+        }
         do {
-            farms = try await farmService.fetchFarms(userID: userId)
+            let fetched = try await remoteLoader(userId)
+            guard loadGeneration == generation, !Task.isCancelled else { return }
+            farms = fetched
+            isLoading = false
+            PerfTrace.event("farm_list", "fresh_list_visible", fields: ["count": fetched.count])
+            // Counts are supplementary. Never put them on the navigation critical path.
+            countRefreshTask = Task { [weak self] in
+                for farm in fetched {
+                    guard !Task.isCancelled, let self, self.loadGeneration == generation else { return }
+                    let updated = await self.countLoader(farm)
+                    guard !Task.isCancelled, self.loadGeneration == generation else { return }
+                    if let index = self.farms.firstIndex(where: { $0.id == updated.id }),
+                       self.farms[index].addressCount != updated.addressCount {
+                        self.farms[index].addressCount = updated.addressCount
+                    }
+                }
+            }
         } catch {
-            errorMessage = "Failed to load farms: \(error.localizedDescription)"
-            print("❌ [FarmViewModel] Error loading farms: \(error)")
+            guard loadGeneration == generation, !Task.isCancelled else { return }
+            if farms.isEmpty { errorMessage = "Failed to load farms: \(error.localizedDescription)" }
         }
     }
-    
+
     // MARK: - Create Farm
     
     func createFarm(

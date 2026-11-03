@@ -1001,6 +1001,16 @@ final class MapFeaturesService: ObservableObject {
         loadedCampaignIds.insert(campaignId.lowercased())
     }
 
+    /// Availability checks must not materialize the corrected farm snapshot.
+    /// They are used while constructing the cache key for that same snapshot.
+    func hasRawCampaignGeometry(campaignId: String) -> Bool {
+        let cached = featureSnapshotsByCampaign[campaignId.lowercased()]
+        let b = isScopedToCampaign(campaignId) ? buildings : cached?.buildings
+        let a = isScopedToCampaign(campaignId) ? addresses : cached?.addresses
+        let p = isScopedToCampaign(campaignId) ? parcels : cached?.parcels
+        return b?.features.isEmpty == false || a?.features.isEmpty == false || p?.features.isEmpty == false
+    }
+
     func buildings(for campaignId: String) -> BuildingFeatureCollection? {
         guard let snapshot = correctedSnapshot(for: campaignId) else { return nil }
         return BuildingFeatureCollection(type: "FeatureCollection", features: snapshot.buildings)

@@ -4,6 +4,7 @@ import Combine
 enum LeadInboxFilter: String, CaseIterable, Identifiable {
     case all
     case campaigns
+    case farms
 
     var id: String { rawValue }
 
@@ -11,6 +12,7 @@ enum LeadInboxFilter: String, CaseIterable, Identifiable {
         switch self {
         case .all: return "All"
         case .campaigns: return "Campaigns"
+        case .farms: return "Farms"
         }
     }
 }
@@ -23,6 +25,7 @@ final class LeadsViewModel: ObservableObject {
     @Published var searchText = ""
     @Published var selectedFilter: LeadInboxFilter = .all
     @Published var selectedCampaignId: UUID?
+    @Published var selectedFarmId: UUID?
     @Published var selectedLead: FieldLead?
     
     private let fieldLeadsService = FieldLeadsService.shared
@@ -49,6 +52,9 @@ final class LeadsViewModel: ObservableObject {
                     return lead.campaignId == selectedCampaignId
                 }
                 return lead.campaignId != nil
+            case .farms:
+                if let selectedFarmId { return lead.farmId == selectedFarmId }
+                return lead.farmId != nil
             }
         }
 
@@ -66,9 +72,15 @@ final class LeadsViewModel: ObservableObject {
 
     func selectFilter(_ filter: LeadInboxFilter) {
         selectedFilter = filter
+        if filter != .farms { selectedFarmId = nil }
         if filter != .campaigns {
             selectedCampaignId = nil
         }
+    }
+
+    func selectFarm(_ farmId: UUID?) {
+        selectedFilter = .farms
+        selectedFarmId = farmId
     }
 
     func selectCampaign(_ campaignId: UUID?) {

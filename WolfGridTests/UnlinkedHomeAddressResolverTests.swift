@@ -190,6 +190,53 @@ final class UnlinkedHomeAddressResolverTests: XCTestCase {
         XCTAssertNil(removed, "A different source key must not keep a removed address")
     }
 
+    func testPreparedMatchDistinguishesColdIndexFromKnownMiss() async throws {
+        let index = CampaignAddressMatchIndex()
+        let candidate = makeCandidate(id: UUID(), formatted: "26 Stephens Gulch Drive", houseNumber: "26",
+            streetName: "Stephens Gulch Drive", postalCode: nil)
+        let cold = await index.preparedMatch(candidate, key: "addresses-1")
+        XCTAssertFalse(cold.isPrepared)
+        let id = UUID()
+        let pin = AddressFeature(id: id.uuidString,
+            geometry: .init(type: "Point", coordinates: .init(point: [-78.7, 43.95])),
+            properties: .init(id: id.uuidString, houseNumber: "26", streetName: "Stephens Gulch Dr"))
+        await index.prepare(key: "addresses-1", features: [pin])
+        let hit = await index.preparedMatch(candidate, key: "addresses-1")
+        XCTAssertTrue(hit.isPrepared)
+        XCTAssertEqual(hit.feature?.properties.id, id.uuidString)
+        let hidden = await index.preparedMatch(candidate, key: "addresses-1", excludingItems: [CampaignMapEdits.addressItem(pin).id])
+        XCTAssertTrue(hidden.isPrepared)
+        XCTAssertNil(hidden.feature, "Hidden records must not be returned by a warm identity lookup")
+        let otherStreet = makeCandidate(id: UUID(), formatted: "26 Main St", houseNumber: "26", streetName: "Main St", postalCode: nil)
+        let miss = await index.preparedMatch(otherStreet, key: "addresses-1")
+        XCTAssertTrue(miss.isPrepared, "A known miss must not trigger a full farm snapshot")
+        XCTAssertNil(miss.feature)
+        let changedSource = await index.preparedMatch(candidate, key: "addresses-2")
+        XCTAssertFalse(changedSource.isPrepared, "New address data must invalidate the cache")
+    }
+
+    func testWarmFarmMatchingDoesNotScanFourteenThousandAddressesPerTap() async {
+        let index = CampaignAddressMatchIndex()
+        let pins = (1...14_000).map { number in
+            let id = UUID().uuidString
+            return AddressFeature(id: id,
+                geometry: .init(type: "Point", coordinates: .init(point: [-78.7, 43.95])),
+                properties: .init(id: id, houseNumber: String(number), streetName: "Stephens Gulch Dr"))
+        }
+        await index.prepare(key: "large-farm", features: pins)
+        let candidate = makeCandidate(id: UUID(), formatted: "26 Stephens Gulch Drive", houseNumber: "26",
+            streetName: "Stephens Gulch Drive", postalCode: nil)
+        let start = ContinuousClock.now
+        for _ in 0..<100 {
+            let result = await index.preparedMatch(candidate, key: "large-farm")
+            XCTAssertTrue(result.isPrepared)
+            XCTAssertEqual(result.feature?.properties.id, pins[25].properties.id)
+        }
+        let elapsed = start.duration(to: .now)
+        print("Warm farm matching: 100 lookups across 14,000 addresses in \(elapsed)")
+        XCTAssertLessThan(elapsed, .seconds(1), "Warm taps must not normalize or scan the farm again")
+    }
+
     private func makeCandidate(
         id: UUID,
         candidateType: String = "official",

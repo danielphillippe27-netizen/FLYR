@@ -144,6 +144,78 @@ enum CampaignMapEdits {
               let result = try? JSONDecoder().decode(P.self, from: output) else { return properties }
         return result
     }
+    /// Some bundles store parcel relationships only on the address. Build the
+    /// reverse lookup without changing or guessing any persisted relationship.
+    static func parcelsWithAddressLinks(_ parcels: [ParcelFeature], addresses: [AddressFeature], state: CampaignMapEditState) -> [ParcelFeature] {
+        var byParcel: [String: Set<String>] = [:]
+        var overrides: [String: String?] = [:]
+        for address in addresses {
+            let item = addressItem(address)
+            let edit = state.features[item.id]
+            let addressID = item.featureID.lowercased()
+            if edit?.hidden == true { overrides[addressID] = .some(nil); continue }
+            let ids: [String]
+            if edit?.parcelLinkSet == true {
+                ids = [edit?.parcelId].compactMap { $0?.lowercased() }
+                overrides[addressID] = .some(ids.first)
+            } else if address.properties.hasParcelLink == false {
+                ids = []
+                overrides[addressID] = .some(nil)
+            } else if let canonical = address.properties.parcelId ?? address.properties.campaignParcelId {
+                // These are aliases for one owner, never two independent links.
+                ids = [canonical.lowercased()]
+                overrides[addressID] = .some(ids.first)
+            } else {
+                ids = []
+            }
+            for id in ids { byParcel[id, default: []].insert(addressID) }
+        }
+        return parcels.map { parcel in
+            let p = parcel.properties
+            let aliases = Set([parcel.id, p.id, p.parcelId, p.externalId].compactMap { $0?.lowercased() })
+            var ids = Set(((p.addressIds ?? []) + [p.addressId].compactMap { $0 }).map { $0.lowercased() })
+            ids = ids.filter { id in
+                guard let target = overrides[id] else { return true }
+                return target.map { aliases.contains($0) } ?? false
+            }
+            for alias in aliases { ids.formUnion(byParcel[alias] ?? []) }
+            let old = Set(((p.addressIds ?? []) + [p.addressId].compactMap { $0 }).map { $0.lowercased() })
+            guard ids != old else { return parcel }
+            let sorted = ids.sorted()
+            let properties = ParcelProperties(id: p.id, parcelId: p.parcelId, externalId: p.externalId,
+                source: p.source, areaSqm: p.areaSqm, addressId: sorted.first, addressIds: sorted)
+            return ParcelFeature(type: parcel.type, id: parcel.id, geometry: parcel.geometry, properties: properties)
+        }
+    }
+
+    /// Validate the whole proposed batch so moves/swaps release old ownership atomically.
+    static func validateParcelAssignments(_ changes: [CampaignMapEditChange], state: CampaignMapEditState,
+                                          addresses: [AddressFeature], parcels: [ParcelFeature]) throws {
+        let final = state.applying(changes)
+        var canonical: [String: String] = [:]
+        for parcel in parcels {
+            let id = parcelItem(parcel).featureID
+            for alias in [parcel.id, parcel.properties.id, parcel.properties.parcelId, parcel.properties.externalId].compactMap({ $0 }) {
+                canonical[alias.lowercased()] = id
+            }
+        }
+        func key(_ id: String) -> String { canonical[id.lowercased()] ?? id.lowercased() }
+        var owners: [String: Set<String>] = [:]
+        for parcel in parcelsWithAddressLinks(parcels, addresses: addresses, state: final) {
+            owners[key(parcelItem(parcel).featureID), default: []].formUnion(parcel.properties.addressIds ?? [])
+        }
+        for (id, value) in final.features where id.hasPrefix("address:") && value.hidden != true && value.parcelLinkSet == true {
+            if let parcel = value.parcelId { owners[key(parcel), default: []].insert(String(id.dropFirst(8))) }
+        }
+        for change in changes where change.kind == .address && change.value?.hidden != true && change.value?.parcelLinkSet == true {
+            guard let parcel = change.value?.parcelId else { continue }
+            if (owners[key(parcel)] ?? []).contains(where: { $0.lowercased() != change.id.lowercased() }) {
+                throw NSError(domain: "ParcelOwnership", code: 1, userInfo: [NSLocalizedDescriptionKey:
+                    "This parcel already has an address. Unlink that address before assigning another one."])
+            }
+        }
+    }
+
     static func snapshot(buildings: [BuildingFeature], addresses: [AddressFeature], parcels: [ParcelFeature], state: CampaignMapEditState) -> CampaignMapEditSnapshot {
         guard !state.features.isEmpty else { return .init(buildings: buildings, addresses: addresses, parcels: parcels) }
         let hiddenBuildingIDs = Set(buildings.filter { state.features[buildingItem($0).id]?.hidden == true }
@@ -169,10 +241,24 @@ enum CampaignMapEdits {
                 changes["parcel_id"] = id as Any? ?? NSNull()
                 changes["campaign_parcel_id"] = id as Any? ?? NSNull()
                 changes["has_parcel_link"] = id != nil
+                if id == nil {
+                    // Removing a parcel must leave its address visible in building
+                    // mode even when the parcel was the address's only link.
+                    changes["label_visibility_mode"] = "all_modes"
+                    if linked == nil || hiddenBuildingIDs.contains(linked?.lowercased() ?? "") {
+                        changes["pin_placement"] = "address"
+                        changes["label_anchor_lon"] = NSNull()
+                        changes["label_anchor_lat"] = NSNull()
+                    }
+                }
             }
             if value?.geometry != nil {
                 changes["label_anchor_lon"] = NSNull(); changes["label_anchor_lat"] = NSNull()
                 changes["pin_placement"] = "address"
+                if (value?.buildingLinkSet == true && value?.buildingId != nil) ||
+                    (value?.parcelLinkSet == true && value?.parcelId != nil) {
+                    changes["label_visibility_mode"] = "all_modes"
+                }
             }
             return AddressFeature(type: feature.type, id: feature.id, geometry: value?.geometry ?? feature.geometry,
                 properties: changes.isEmpty ? feature.properties : patch(feature.properties, changes))
@@ -196,8 +282,13 @@ enum CampaignMapEdits {
                 let v = state.features[CampaignMapItem(.address, id).id]
                 if kind == .building, v?.buildingLinkSet == true {
                     if let target = v?.buildingId, aliases.contains(target.lowercased()) { result.insert(id) }
-                } else if kind == .parcel, v?.parcelLinkSet == true {
-                    if let target = v?.parcelId, aliases.contains(target.lowercased()) { result.insert(id) }
+                } else if kind == .parcel {
+                    let address = addressByID[id]?.properties
+                    if address?.hasParcelLink != false {
+                        if let target = address?.parcelId ?? address?.campaignParcelId {
+                            if aliases.contains(target.lowercased()) { result.insert(id) }
+                        } else if v?.parcelLinkSet != true { result.insert(id) }
+                    }
                 } else { result.insert(id) }
             }
             return result.sorted()

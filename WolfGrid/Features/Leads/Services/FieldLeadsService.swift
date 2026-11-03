@@ -121,6 +121,22 @@ actor FieldLeadsService {
         return await enrichedWithAppointmentSignals(Self.deduplicated(mergedLeads))
     }
 
+    /// Contacts saved from a Farm map may have no session, so load the farm
+    /// association directly as well as any older session-linked leads.
+    func fetchLeadsForFarm(userId: UUID, farmId: UUID) async throws -> [FieldLead] {
+        if await isOffline() {
+            let contacts = await contactRepository.fetchContacts(
+                userId: userId, filter: ContactFilter(farmId: farmId)
+            )
+            return contacts.map { Self.makeFieldLead(from: $0, userId: userId) }
+        }
+        let rows = try await fetchContactLeadRows(
+            userId: userId, workspaceId: nil, campaignId: nil, sessionId: nil, farmId: farmId
+        )
+        await cacheLeadRows(rows, userId: userId, workspaceId: nil)
+        return rows.map(Self.makeFieldLead(from:))
+    }
+
     // MARK: - Create
 
     /// Writes to `contacts` so house notes/appointments and lead inbox share one source of truth.
@@ -304,12 +320,13 @@ actor FieldLeadsService {
         workspaceId: UUID?,
         campaignId: UUID?,
         sessionId: UUID?,
+        farmId: UUID? = nil,
         address: String? = nil,
         limit: Int? = nil
     ) async throws -> [ContactLeadRow] {
         var query = client
             .from("contacts")
-            .select("id,user_id,full_name,phone,email,address,status,notes,qr_code,campaign_id,session_id,external_crm_id,last_synced_at,reminder_date,sync_status,created_at,updated_at")
+            .select("id,user_id,full_name,phone,email,address,status,notes,qr_code,campaign_id,farm_id,session_id,external_crm_id,last_synced_at,reminder_date,sync_status,created_at,updated_at")
 
         query = query.eq("user_id", value: userId)
         if let workspaceId {
@@ -320,6 +337,9 @@ actor FieldLeadsService {
         }
         if let sessionId {
             query = query.eq("session_id", value: sessionId)
+        }
+        if let farmId {
+            query = query.eq("farm_id", value: farmId)
         }
         if let address {
             query = query.eq("address", value: address)
@@ -362,6 +382,7 @@ actor FieldLeadsService {
         if let notes = lead.notes { insertData["notes"] = AnyCodable(notes) }
         if let qrCode = lead.qrCode { insertData["qr_code"] = AnyCodable(qrCode) }
         if let campaignId = lead.campaignId { insertData["campaign_id"] = AnyCodable(campaignId) }
+        if let farmId = lead.farmId { insertData["farm_id"] = AnyCodable(farmId) }
         if let sessionId = lead.sessionId { insertData["session_id"] = AnyCodable(sessionId) }
         if let externalCrmId = lead.externalCrmId { insertData["external_crm_id"] = AnyCodable(externalCrmId) }
         if let lastSyncedAt = lead.lastSyncedAt { insertData["last_synced_at"] = AnyCodable(lastSyncedAt) }
@@ -371,7 +392,7 @@ actor FieldLeadsService {
         let response = try await client
             .from("contacts")
             .insert(insertData)
-            .select("id,user_id,full_name,phone,email,address,status,notes,qr_code,campaign_id,session_id,external_crm_id,last_synced_at,reminder_date,sync_status,created_at,updated_at")
+            .select("id,user_id,full_name,phone,email,address,status,notes,qr_code,campaign_id,farm_id,session_id,external_crm_id,last_synced_at,reminder_date,sync_status,created_at,updated_at")
             .execute()
 
         let rows = try JSONDecoder.supabaseDates.decode([ContactLeadRow].self, from: response.data)
@@ -393,6 +414,7 @@ actor FieldLeadsService {
         updateData["notes"] = AnyCodable(lead.notes as Any)
         updateData["qr_code"] = AnyCodable(lead.qrCode as Any)
         updateData["campaign_id"] = AnyCodable(lead.campaignId as Any)
+        updateData["farm_id"] = AnyCodable(lead.farmId as Any)
         updateData["session_id"] = AnyCodable(lead.sessionId as Any)
         updateData["external_crm_id"] = AnyCodable(lead.externalCrmId as Any)
         updateData["last_synced_at"] = AnyCodable(lead.lastSyncedAt as Any)
@@ -403,7 +425,7 @@ actor FieldLeadsService {
             .from("contacts")
             .update(updateData)
             .eq("id", value: lead.id)
-            .select("id,user_id,full_name,phone,email,address,status,notes,qr_code,campaign_id,session_id,external_crm_id,last_synced_at,reminder_date,sync_status,created_at,updated_at")
+            .select("id,user_id,full_name,phone,email,address,status,notes,qr_code,campaign_id,farm_id,session_id,external_crm_id,last_synced_at,reminder_date,sync_status,created_at,updated_at")
             .execute()
 
         let rows = try JSONDecoder.supabaseDates.decode([ContactLeadRow].self, from: response.data)
@@ -570,6 +592,7 @@ actor FieldLeadsService {
             notes: row.notes,
             qrCode: row.qrCode,
             campaignId: row.campaignId,
+            farmId: row.farmId,
             sessionId: row.sessionId,
             externalCrmId: row.externalCrmId,
             lastSyncedAt: row.lastSyncedAt,
@@ -592,6 +615,7 @@ actor FieldLeadsService {
             notes: contact.notes,
             qrCode: nil,
             campaignId: contact.campaignId,
+            farmId: contact.farmId,
             sessionId: nil,
             externalCrmId: nil,
             lastSyncedAt: nil,
@@ -610,7 +634,7 @@ actor FieldLeadsService {
             email: lead.email,
             address: lead.address,
             campaignId: lead.campaignId,
-            farmId: nil,
+            farmId: lead.farmId,
             gersId: nil,
             addressId: nil,
             tags: nil,
@@ -630,6 +654,7 @@ actor FieldLeadsService {
         merged.phone = contact.phone
         merged.email = contact.email
         merged.notes = contact.notes
+        merged.farmId = contact.farmId
         merged.campaignId = contact.campaignId
         merged.reminderDate = contact.reminderDate
         merged.status = fieldLeadStatus(from: contact.status.rawValue)
@@ -687,6 +712,7 @@ actor FieldLeadsService {
         merged.notes = preferredNonEmpty(incoming.notes, fallback: existing.notes)
         merged.status = incoming.status
         merged.qrCode = preferredNonEmpty(incoming.qrCode, fallback: existing.qrCode)
+        merged.farmId = incoming.farmId ?? existing.farmId
         merged.campaignId = incoming.campaignId ?? existing.campaignId
         merged.sessionId = incoming.sessionId ?? existing.sessionId
         merged.reminderDate = incoming.reminderDate ?? existing.reminderDate
@@ -736,7 +762,7 @@ actor FieldLeadsService {
                 email: row.email,
                 address: row.address,
                 campaignId: row.campaignId,
-                farmId: nil,
+                farmId: row.farmId,
                 gersId: nil,
                 addressId: nil,
                 tags: nil,
@@ -822,6 +848,7 @@ private struct ContactLeadRow: Decodable {
     let notes: String?
     let qrCode: String?
     let campaignId: UUID?
+    let farmId: UUID?
     let sessionId: UUID?
     let externalCrmId: String?
     let lastSyncedAt: Date?
@@ -841,6 +868,7 @@ private struct ContactLeadRow: Decodable {
         case notes
         case qrCode = "qr_code"
         case campaignId = "campaign_id"
+        case farmId = "farm_id"
         case sessionId = "session_id"
         case externalCrmId = "external_crm_id"
         case lastSyncedAt = "last_synced_at"

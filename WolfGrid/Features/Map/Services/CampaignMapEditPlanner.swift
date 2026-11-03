@@ -46,9 +46,10 @@ enum CampaignMapEditPlanner {
         if let coordinate {
             value.geometry = .init(type: "Point", coordinates: .init(point: [coordinate.longitude, coordinate.latitude]))
         }
-        if let buildingId {
+        // A new parcel must never inherit a stale building from the old location.
+        if coordinate != nil || buildingId != nil {
             value.buildingLinkSet = true
-            value.buildingId = buildingId.lowercased()
+            value.buildingId = buildingId?.lowercased()
         }
         value.sourceRevision = sourceRevision
         return .init(item, value: value)

@@ -31,6 +31,20 @@ private final class DemoMapDerivedDataCache {
     }
 }
 
+/// Worker caches contain thousands of records; replacing one must not ask
+/// SwiftUI to compare the entire index as view state.
+private final class FarmLiveMatchIndexStorage {
+    var farmLiveRefreshTask: Task<Void, Never>? = nil
+    var farmLiveTargets: [FarmLiveAddressTarget] = []
+    var farmLiveAllTargets: [FarmLiveAddressTarget] = []
+    var farmLiveGeometryKey: String? = nil
+    var farmLivePreparedBounds: [Double] = []
+    var farmLiveReconciliationKey: String? = nil
+    var farmLiveAssociation: FarmLiveAddressAssociation? = nil
+    var farmLiveIdentityRevision: UInt64? = nil
+    var value: FarmLiveMatchIndex?
+}
+
 private struct DemoFixedCameraSnapshot {
     let center: CLLocationCoordinate2D
     let zoom: CGFloat
@@ -1224,6 +1238,7 @@ fileprivate struct PendingManualAddressDraft: Identifiable {
     let campaignParcelId: String?
     let hasParcelLink: Bool?
     let isParcelPlacement: Bool
+    let isLiveFarmPlacement: Bool
 
     init(
         coordinate: CLLocationCoordinate2D,
@@ -1240,7 +1255,8 @@ fileprivate struct PendingManualAddressDraft: Identifiable {
         parcelId: String? = nil,
         campaignParcelId: String? = nil,
         hasParcelLink: Bool? = nil,
-        isParcelPlacement: Bool = false
+        isParcelPlacement: Bool = false,
+        isLiveFarmPlacement: Bool = false
     ) {
         self.coordinate = coordinate
         self.linkedBuildingId = linkedBuildingId
@@ -1257,6 +1273,7 @@ fileprivate struct PendingManualAddressDraft: Identifiable {
         self.campaignParcelId = campaignParcelId
         self.hasParcelLink = hasParcelLink
         self.isParcelPlacement = isParcelPlacement
+        self.isLiveFarmPlacement = isLiveFarmPlacement
     }
 }
 
@@ -1269,6 +1286,7 @@ fileprivate struct BuildingAddressPickerContext: Identifiable {
     let startsWithReverseGeocode: Bool
     let parcelId: String?
     let parcelBuildingId: String?
+    let liveTarget: FarmLiveAddressTarget?
 
     init(
         id: String,
@@ -1277,7 +1295,8 @@ fileprivate struct BuildingAddressPickerContext: Identifiable {
         seedCoordinate: CLLocationCoordinate2D?,
         startsWithReverseGeocode: Bool = false,
         parcelId: String? = nil,
-        parcelBuildingId: String? = nil
+        parcelBuildingId: String? = nil,
+        liveTarget: FarmLiveAddressTarget? = nil
     ) {
         self.id = id
         self.buildingTitle = buildingTitle
@@ -1286,6 +1305,7 @@ fileprivate struct BuildingAddressPickerContext: Identifiable {
         self.startsWithReverseGeocode = startsWithReverseGeocode
         self.parcelId = parcelId
         self.parcelBuildingId = parcelBuildingId
+        self.liveTarget = liveTarget
     }
 }
 
@@ -1641,8 +1661,56 @@ struct CampaignMapView: View {
     @State private var sessionOverlayLookupCache = SessionMapGeometryCache()
     @State private var sessionOverlayAddressLookupCache = SessionMapGeometryCache()
     @State private var mapView: MapView?
+    @StateObject private var farmLiveSuggestions = FarmLiveAddressSuggestions()
+    private var farmLiveRefreshTask: Task<Void, Never>? {
+        get { farmLiveMatchIndexStorage.farmLiveRefreshTask }
+        nonmutating set { farmLiveMatchIndexStorage.farmLiveRefreshTask = newValue }
+    }
+    private var farmLiveTargets: [FarmLiveAddressTarget] {
+        get { farmLiveMatchIndexStorage.farmLiveTargets }
+        nonmutating set { farmLiveMatchIndexStorage.farmLiveTargets = newValue }
+    }
+    private var farmLiveAllTargets: [FarmLiveAddressTarget] {
+        get { farmLiveMatchIndexStorage.farmLiveAllTargets }
+        nonmutating set { farmLiveMatchIndexStorage.farmLiveAllTargets = newValue }
+    }
+    @State private var farmTownhomeSaveTask: Task<Void, Never>?
+    @State private var farmTownhomeSavedTargets = Set<String>()
+    @State private var farmTownhomePendingTargets: [String: FarmLiveAddressTarget] = [:]
+    @State private var farmTownhomeAcceptedCandidates: [BuildingAddressCandidate] = []
+    private var farmLiveGeometryKey: String? {
+        get { farmLiveMatchIndexStorage.farmLiveGeometryKey }
+        nonmutating set { farmLiveMatchIndexStorage.farmLiveGeometryKey = newValue }
+    }
+    private var farmLivePreparedBounds: [Double] {
+        get { farmLiveMatchIndexStorage.farmLivePreparedBounds }
+        nonmutating set { farmLiveMatchIndexStorage.farmLivePreparedBounds = newValue }
+    }
+    private var farmLiveReconciliationKey: String? {
+        get { farmLiveMatchIndexStorage.farmLiveReconciliationKey }
+        nonmutating set { farmLiveMatchIndexStorage.farmLiveReconciliationKey = newValue }
+    }
+    @State private var farmLiveMatchIndexStorage = FarmLiveMatchIndexStorage()
+    private var farmLiveMatchIndex: FarmLiveMatchIndex? {
+        get { farmLiveMatchIndexStorage.value }
+        nonmutating set { farmLiveMatchIndexStorage.value = newValue }
+    }
+    @State private var farmLiveLinkEvidence: [FarmLiveLinkEvidence] = []
+    @State private var farmLiveEvidenceRevision = 0
+    private var farmLiveIdentityRevision: UInt64? {
+        get { farmLiveMatchIndexStorage.farmLiveIdentityRevision }
+        nonmutating set { farmLiveMatchIndexStorage.farmLiveIdentityRevision = newValue }
+    }
+    @State private var farmLiveAppliedGeometryGeneration: Int?
+    @State private var farmLiveRenderedGeometryGeneration: Int?
+    private var farmLiveAssociation: FarmLiveAddressAssociation? {
+        get { farmLiveMatchIndexStorage.farmLiveAssociation }
+        nonmutating set { farmLiveMatchIndexStorage.farmLiveAssociation = newValue }
+    }
     @State private var layerManager: MapLayerManager?
     @State private var selectedBuilding: BuildingProperties?
+    @State private var selectedParcelAddressIds: [UUID]?
+    @State private var selectedParcelFeatureIds: [String] = []
     @State private var selectedBuildingTapCoordinate: CLLocationCoordinate2D?
     @State private var selectedAddress: MapLayerManager.AddressTapResult?
     @State private var selectedAddressHasBuildingGeometry = true
@@ -1655,6 +1723,9 @@ struct CampaignMapView: View {
     /// When the location card shows multiple addresses, the user can pick one; this tracks the selected unit (nil = show list)
     @State private var selectedAddressIdForCard: UUID?
     @State private var showLocationCard = false
+    @State private var pendingAddressLink: (candidate: BuildingAddressCandidate, context: BuildingAddressPickerContext)?
+    @State private var pendingAddressLinkError: String?
+    @State private var farmLiveSelection: (target: FarmLiveAddressTarget, context: BuildingAddressPickerContext, candidate: BuildingAddressCandidate?, isResolving: Bool)?
     @State private var showLeadCaptureSheet = false
     @State private var hasFlownToCampaign = false
     @State private var lastCampaignOverviewCameraSignature: String?
@@ -1738,6 +1809,7 @@ struct CampaignMapView: View {
     @State private var hasCanonicalParcelEdits = false
     @StateObject private var flyerModeManager = FlyerModeManager()
     @StateObject private var walkMode = WalkModeManager()
+    @AppStorage("session_wolf_marker_enabled") private var wolfMarkerEnabled = true
     @StateObject private var beaconService = SessionSafetyBeaconService.shared
     @StateObject private var sharedLiveCanvassingService = SharedLiveCanvassingService.shared
     @StateObject private var sessionChatStore = SessionChatStore.shared
@@ -2122,6 +2194,9 @@ struct CampaignMapView: View {
     }
 
     private var campaignMapRendererDecision: CampaignMapRendererDecision? {
+        // Parcel-only farms still need the editable property map and live suggestions.
+        if isFarmMap, renderer2DOverride != true, !Config.mapboxAccessToken.isEmpty,
+           featuresService.parcels(for: campaignId)?.features.isEmpty == false { return .mapbox3D }
         if isMapEditMode, !Config.mapboxAccessToken.isEmpty { return .mapbox3D }
         // Google 2D has no managed offline region. Use our downloaded basemap without service.
         if !networkMonitor.isOnline, !Config.mapboxAccessToken.isEmpty {
@@ -2208,7 +2283,7 @@ struct CampaignMapView: View {
     }
 
     private var effectiveGPSProximityEnabled: Bool {
-        gpsProximityAvailableForCampaign && preSessionGPSProximityEnabled
+        gpsProximityAvailableForCampaign && sessionManager.gpsEnabled && preSessionGPSProximityEnabled
     }
 
     private var gpsProximityToggleBinding: Binding<Bool> {
@@ -2259,10 +2334,7 @@ struct CampaignMapView: View {
               let campaign = CampaignV2Store.shared.campaign(id: campaignUUID) else {
             return false
         }
-        let hasCachedGeometry =
-            featuresService.buildings(for: campaignId)?.features.isEmpty == false ||
-            featuresService.addresses(for: campaignId)?.features.isEmpty == false ||
-            featuresService.parcels(for: campaignId)?.features.isEmpty == false
+        let hasCachedGeometry = featuresService.hasRawCampaignGeometry(campaignId: campaignId)
         if hasCachedGeometry {
             return false
         }
@@ -2403,12 +2475,25 @@ struct CampaignMapView: View {
                 String(featuresService.buildingsRevision),
                 String(featuresService.addressesRevision),
                 String(featuresService.parcelsRevision),
+                featuresService.compactFieldIndex(for: campaignId)?.campaign.assetSignature ?? "no-compact-index",
                 String(mapEditStore.geometryGeneration),
                 AuthManager.shared.user?.id.uuidString ?? "signed-out",
                 WorkspaceContext.shared.workspaceId?.uuidString ?? "personal",
                 campaignBoundaryCoordinatesSignature,
                 String(shouldHoldCampaignGeometryUntilTerritoryLoads),
                 String(isCampaignStandardPinsMode)].joined(separator: "|")
+    }
+
+    /// Civic identity does not change when a pin moves or a parcel/roof is linked.
+    /// Keep this independent of the geometry cache so consecutive taps stay warm.
+    private var addressMatchSourceKey: String? {
+        guard activeRouteWorkContext == nil,
+              featuresService.isScopedToCampaign(campaignId),
+              !sessionManager.isDemoSession else { return nil }
+        return [campaignId.lowercased(), String(featuresService.addressesRevision),
+                featuresService.compactFieldIndex(for: campaignId)?.campaign.assetSignature ?? "no-compact-index",
+                AuthManager.shared.user?.id.uuidString ?? "signed-out",
+                WorkspaceContext.shared.workspaceId?.uuidString ?? "personal"].joined(separator: "|")
     }
 
     private var buildingSessionTargets: [ResolvedCampaignTarget] {
@@ -2418,10 +2503,24 @@ struct CampaignMapView: View {
 
         if let key = stableGeometryCacheKey {
             return demoDerivedDataCache.geometry.value(for: "buildingTargets", key: key) {
-                CampaignTargetResolver.buildingTargets(from: visibleBuildingFeatures)
+                resolvedBuildingSessionTargets()
             }
         }
-        return CampaignTargetResolver.buildingTargets(from: visibleBuildingFeatures)
+        return resolvedBuildingSessionTargets()
+    }
+
+    private func resolvedBuildingSessionTargets() -> [ResolvedCampaignTarget] {
+        let loaded = CampaignTargetResolver.buildingTargets(from: visibleBuildingFeatures)
+        guard loaded.isEmpty, !mapEditStore.hasEdits(campaignId),
+              let index = featuresService.compactFieldIndex(for: campaignId) else { return loaded }
+        return (try? CampaignTargetResolver.buildingTargets(from: index.campaign.records.buildings, exactIndex: index)) ?? []
+    }
+
+    private func resolvedAddressSessionTargets() -> [ResolvedCampaignTarget] {
+        let loaded = CampaignTargetResolver.addressTargets(from: visibleAddressFeatures)
+        guard loaded.isEmpty, !mapEditStore.hasEdits(campaignId),
+              let index = featuresService.compactFieldIndex(for: campaignId) else { return loaded }
+        return CampaignTargetResolver.addressTargets(from: index.campaign.records.addresses)
     }
 
     private var preferredSessionTargets: [ResolvedCampaignTarget] {
@@ -2432,13 +2531,11 @@ struct CampaignMapView: View {
         if let key = stableGeometryCacheKey {
             return demoDerivedDataCache.geometry.value(for: "preferredTargets", key: key) {
                 let buildings = buildingSessionTargets
-                return buildings.isEmpty ? CampaignTargetResolver.addressTargets(from: visibleAddressFeatures) : buildings
+                return buildings.isEmpty ? resolvedAddressSessionTargets() : buildings
             }
         }
-        return CampaignTargetResolver.preferredSessionTargets(
-            buildings: visibleBuildingFeatures,
-            addresses: visibleAddressFeatures
-        )
+        let buildings = buildingSessionTargets
+        return buildings.isEmpty ? resolvedAddressSessionTargets() : buildings
     }
 
     private var flyerSessionTargets: [ResolvedCampaignTarget] {
@@ -2705,8 +2802,10 @@ struct CampaignMapView: View {
                 BuildingAddressPickerSheet(
                     campaignId: campaignId,
                     context: context,
+                    liveSuggestions: !usesStandardPinsRenderer ? farmLiveSuggestions : nil,
                     onLink: { candidate in
-                        try await linkAddressCandidate(candidate, to: context)
+                        guard requireManualLinkWriteReadiness() else { return }
+                        beginAddressLink(candidate, context: context)
                     },
                     onCreateNew: {
                         createManualAddressFromPicker(context)
@@ -2855,6 +2954,7 @@ struct CampaignMapView: View {
     }
 
     private var shouldShowBackgroundGPSPill: Bool {
+        guard sessionManager.gpsEnabled else { return false }
         if sessionManager.sessionId != nil { return true }
         return showPreSessionStartButton
             && sessionManager.sessionId == nil
@@ -3081,6 +3181,17 @@ struct CampaignMapView: View {
                 maybePresentPendingLiveInviteHandoff()
             }
             .onDisappear {
+                farmLiveRefreshTask?.cancel()
+                farmTownhomeSaveTask?.cancel()
+                farmLiveSuggestions.close()
+                farmLiveSelection = nil
+                farmLiveTargets = []
+                farmLiveAllTargets = []
+                farmLiveGeometryKey = nil
+                farmLivePreparedBounds = []
+                farmLiveReconciliationKey = nil
+                farmLiveMatchIndex = nil
+                farmLiveAssociation = nil
                 editorDrag = nil
                 if isMapEditMode { sessionManager.setMapEditing(false) }
                 editorTapToken = UUID()
@@ -3136,6 +3247,29 @@ struct CampaignMapView: View {
                 SessionChatAudioController.shared.pausePlayback()
             }
         return applyFeatureAndSessionObservers(to: baseView)
+            .task(id: "farm-link-evidence:\(campaignId):\(AuthManager.shared.user?.id.uuidString ?? ""):\(WorkspaceContext.shared.workspaceId?.uuidString ?? "")") {
+                farmLiveLinkEvidence = []
+                farmLiveEvidenceRevision &+= 1
+                guard isFarmMap else { return }
+                do {
+                    let evidence = try await BuildingLinkService.shared.fetchFarmLiveLinkEvidence(campaignId: campaignId)
+                    guard !Task.isCancelled else { return }
+                    farmLiveLinkEvidence = evidence
+                    farmLiveEvidenceRevision &+= 1
+                    scheduleFarmLiveSuggestions(immediate: true)
+                } catch {
+                    PerfTrace.event("farm_live", "repair_evidence_unavailable")
+                }
+            }
+            .task(id: campaignId) {
+                // Work completion must not publish the entire map view for each
+                // temporary label. Mapbox owns the label source independently.
+                farmLiveSuggestions.onCompletion = { scheduleFarmLiveSuggestions(immediate: true) }
+                while !Task.isCancelled {
+                    scheduleFarmLiveSuggestions()
+                    do { try await Task.sleep(for: .seconds(2)) } catch { return }
+                }
+            }
     }
 
     private func applyFeatureAndSessionObservers<V: View>(to view: V) -> some View {
@@ -3164,6 +3298,7 @@ struct CampaignMapView: View {
                 }
             }
             .onChange(of: featuresService.buildingsRevision) { _, _ in
+                scheduleFarmLiveSuggestions()
                 refreshVisibleBuildingRenderMonitoring(reset: true)
                 updateMapData()
                 scheduleInitialMapReadyCompletionIfPossible()
@@ -3172,16 +3307,22 @@ struct CampaignMapView: View {
                 maybePresentPendingLiveInviteHandoff()
             }
             .onChange(of: mapEditStore.generation) { _, _ in
+                scheduleFarmLiveSuggestions()
                 let geometryGeneration = mapEditStore.geometryGeneration
                 guard handledEditorGeometryGeneration != geometryGeneration else {
                     PerfTrace.event("map_edit", "sync_without_geometry_change")
                     return
                 }
                 handledEditorGeometryGeneration = geometryGeneration
-                lastLayerVisibilitySignature = nil
-                updateMapData()
+                if farmLiveRenderedGeometryGeneration != geometryGeneration {
+                    lastLayerVisibilitySignature = nil
+                    updateMapData()
+                } else {
+                    PerfTrace.event("farm_live", "full_map_refresh_avoided")
+                }
                 if editorDrag == nil {
-                    refreshEditorLinkMap()
+                    // Automatic placements already advanced this relationship map.
+                    if farmLiveAppliedGeometryGeneration != geometryGeneration { refreshEditorLinkMap() }
                     if featuresService.hasLoadedCampaignData(campaignId: campaignId), sessionManager.sessionId != nil,
                        sessionManager.campaignId == UUID(uuidString: campaignId) {
                         let targets = sessionTargets(for: sessionManager.sessionMode)
@@ -3193,6 +3334,7 @@ struct CampaignMapView: View {
             }
             .onChange(of: isMapEditMode) { _, editing in sessionManager.setMapEditing(editing) }
             .onChange(of: featuresService.addressesRevision) { _, revision in
+                scheduleFarmLiveSuggestions()
                 if locallyRenderedAddressRevision != revision { updateMapData() }
                 locallyRenderedAddressRevision = nil
                 scheduleInitialMapReadyCompletionIfPossible()
@@ -3201,12 +3343,16 @@ struct CampaignMapView: View {
                 maybePresentPendingLiveInviteHandoff()
             }
             .onChange(of: featuresService.parcelsRevision) { _, _ in
+                scheduleFarmLiveSuggestions()
                 updateMapData()
                 scheduleInitialMapReadyCompletionIfPossible()
                 refreshParcelAutoCompleteTargetsForCurrentSession()
             }
             .onChange(of: featuresService.compactFieldIndex(for: campaignId)?.campaign.assetSignature) { _, _ in
+                farmLiveGeometryKey = nil
+                scheduleFarmLiveSuggestions()
                 scheduleInitialMapReadyCompletionIfPossible()
+                rehydrateSessionVisitInferenceIfNeeded()
                 refreshParcelAutoCompleteTargetsForCurrentSession()
             }
             .onChange(of: currentDiamondManifest) { _, _ in
@@ -3276,6 +3422,9 @@ struct CampaignMapView: View {
 
     private func applySessionObservers<V: View>(to view: V) -> some View {
         view
+            .onChange(of: sessionManager.gpsEnabled) { _, enabled in
+                if !enabled { stopWalkMode() }
+            }
             .onChange(of: sessionManager.locationAuthorizationStatus) { _, newStatus in
                 handleLocationAuthorizationChange(newStatus)
             }
@@ -3659,8 +3808,10 @@ struct CampaignMapView: View {
                 sessionId: sessionManager.sessionId,
                 gersIdString: gersIdString,
                 onSave: { lead in
+                    var farmLinkedLead = lead
+                    farmLinkedLead.farmId = matchingActiveFarmExecution?.farmId ?? matchingPlannedFarmExecution?.farmId ?? lead.farmId
                     let leadOutcome = try await FieldLeadsService.shared.addLeadDetailed(
-                        lead,
+                        farmLinkedLead,
                         workspaceId: WorkspaceContext.shared.workspaceId
                     )
                     // Count every lead save as a conversation (any status = had contact at door)
@@ -3978,7 +4129,7 @@ struct CampaignMapView: View {
                     fallbackCenter: fallbackMapCenter,
                     initialCamera: googleRendererCamera,
                     selectedCircleCenter: standardMapTapCircleCoordinate,
-                    showUserLocation: sessionManager.sessionId != nil && !sessionManager.isDemoSession,
+                    showUserLocation: sessionManager.gpsEnabled && sessionManager.sessionId != nil && !sessionManager.isDemoSession,
                     userLocation: sessionManager.currentLocation,
                     userHeading: sessionManager.headingPresentationState.isRenderable ? sessionManager.headingPresentationState.heading : nil,
                     followUserLocation: sessionManager.sessionId != nil && campaignMapCameraMode != .idle,
@@ -4025,7 +4176,8 @@ struct CampaignMapView: View {
                     preferOfflineStylePacks: !networkMonitor.isOnline,
                     sessionLocation: sessionManager.sessionId != nil ? sessionManager.currentLocation : nil,
                     sessionHeadingState: sessionManager.sessionId != nil ? sessionManager.headingPresentationState : .unavailable,
-                    showSessionPuck: sessionManager.sessionId != nil && (!sessionManager.isDemoSession || demoLaunchConfiguration?.showWolfy == true),
+                    showSessionPuck: sessionManager.gpsEnabled && sessionManager.sessionId != nil && (!sessionManager.isDemoSession || demoLaunchConfiguration?.showWolfy == true),
+                    useWolfMarker: wolfMarkerEnabled,
                     isMovePanEnabled: activeMapEditTool == .move && !isMapEditMode,
                     allowsTripleTap: shouldHideDemoMapChrome,
                     onMapReady: { map in
@@ -4722,7 +4874,7 @@ struct CampaignMapView: View {
 
     private func startWalkMode(startingAt addressID: UUID?) {
         let route = walkModeRoute
-        guard !route.isEmpty else { return }
+        guard sessionManager.gpsEnabled, !route.isEmpty else { return }
         walkMode.updateStatuses(addressStatuses)
         walkMode.activate(route: route, startingAt: addressID)
         if let addressID {
@@ -5697,7 +5849,7 @@ struct CampaignMapView: View {
             gpsProximityEnabled: effectiveGPSProximityEnabled
         )
 
-        guard gpsProximityAvailableForCampaign && preSessionGPSProximityEnabled else {
+        guard gpsProximityAvailableForCampaign && sessionManager.gpsEnabled && preSessionGPSProximityEnabled else {
             continueSessionStart(request)
             return
         }
@@ -5872,7 +6024,7 @@ struct CampaignMapView: View {
         )
         prepareCampaignForFieldUse(campaignId: campaignId.uuidString)
 
-        if !skipGPSDisclaimer, gpsProximityAvailableForCampaign && preSessionGPSProximityEnabled {
+        if !skipGPSDisclaimer, gpsProximityAvailableForCampaign && sessionManager.gpsEnabled && preSessionGPSProximityEnabled {
             beginSessionStart(
                 campaignId: campaignId,
                 mode: mode,
@@ -6422,7 +6574,74 @@ struct CampaignMapView: View {
 
     @ViewBuilder
     private func locationCardOverlay(bottomInset: CGFloat) -> some View {
-        if showLocationCard,
+        if let preview = farmLiveSelection, let campId = UUID(uuidString: campaignId) {
+            VStack {
+                Spacer(minLength: 0)
+                LocationCardView(
+                    gersId: preview.target.buildingId ?? "", campaignId: campId,
+                    addressText: preview.candidate?.displayAddress ?? (preview.isResolving ? "Finding address…" : "Choose an address"),
+                    parcelId: preview.target.parcelId, hasBuildingGeometry: preview.target.buildingId != nil,
+                    isPreparingLocation: true, allowsManualLinkActions: false,
+                    onClose: {
+                        guard pendingAddressLink == nil || pendingAddressLinkError != nil else { return }
+                        pendingAddressLink = nil; pendingAddressLinkError = nil
+                        farmLiveSelection = nil; showLocationCard = false; clearHighlightedSelectionState()
+                    },
+                    suggestionConfirmation: {
+                        guard let candidate = farmLiveSelection?.candidate else { return }
+                        beginAddressLink(candidate, context: preview.context)
+                    },
+                    suggestionCanConfirm: preview.candidate != nil,
+                    suggestionIsSaving: pendingAddressLink != nil && pendingAddressLinkError == nil,
+                    suggestionError: pendingAddressLinkError,
+                    chooseSuggestionAddress: {
+                        guard pendingAddressLink == nil || pendingAddressLinkError != nil else { return }
+                        pendingAddressLink = nil; pendingAddressLinkError = nil
+                        farmLiveSelection = nil
+                        buildingAddressPickerContext = preview.context
+                    }
+                )
+                .padding(.horizontal, 16).padding(.bottom, bottomInset)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if let pending = pendingAddressLink, selectedAddress == nil {
+            VStack(spacing: 0) {
+                Spacer(minLength: 0)
+                VStack(alignment: .leading, spacing: 16) {
+                    HStack {
+                        Text(pending.candidate.displayAddress)
+                            .font(.headline)
+                        Spacer()
+                    }
+                    if let error = pendingAddressLinkError {
+                        Text("Couldn't save this address: \(error)")
+                            .font(.subheadline)
+                        HStack {
+                            Button("Retry") { beginAddressLink(pending.candidate, context: pending.context) }
+                                .buttonStyle(.borderedProminent)
+                            Button("Close") {
+                                pendingAddressLink = nil
+                                pendingAddressLinkError = nil
+                                showLocationCard = false
+                                clearHighlightedSelectionState()
+                            }
+                        }
+                    } else {
+                        HStack {
+                            ProgressView()
+                            Text("Saving location…").font(.subheadline)
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(20)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
+                .padding(.horizontal, 16)
+                .padding(.bottom, bottomInset)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .contentShape(Rectangle())
+        } else if showLocationCard,
            let building = selectedBuilding,
            let campId = UUID(uuidString: campaignId) {
             let gersIdString = building.canonicalBuildingIdentifier ?? building.id
@@ -6431,11 +6650,12 @@ struct CampaignMapView: View {
                 BuildingAddressResolution(ids: $0, source: .persisted)
             } ?? resolvedAddressResolutionForBuildingCard(building)
             let cardHasPersistedLinkResolution = addressResolutionForCard.source.isPersisted
-            let linkedAddressIdsForCard = cardHasPersistedLinkResolution ? addressResolutionForCard.ids : []
+            let linkedAddressIdsForCard = selectedParcelAddressIds ?? (cardHasPersistedLinkResolution ? addressResolutionForCard.ids : [])
             let isCreatingLocation = normalizedBuildingIdentifiers(for: building).contains(where: { creatingBuildingLocations.contains($0) })
             let cardAllowsManualLinkActions = !addressResolutionForCard.source.isProvisional && canPersistManualLinkWrites
                 && !isCreatingLocation
-            let shouldShowAddressList = selectedAddressIdForCard == nil && shouldOpenAddressListFirst(for: building)
+            let shouldShowAddressList = selectedAddressIdForCard == nil &&
+                (selectedParcelAddressIds.map { $0.count > 1 } ?? shouldOpenAddressListFirst(for: building))
             let buildingAddressHint = nonEmptyAddressText(
                 formatted: building.addressText,
                 houseNumber: building.houseNumber,
@@ -6469,6 +6689,7 @@ struct CampaignMapView: View {
                     addressText: resolvedAddrText,
                     buildingIdentifiers: building.buildingIdentifierCandidates,
                     linkedAddressIds: linkedAddressIdsForCard,
+                    selectionAddressIds: selectedParcelAddressIds,
                     preferredAddressId: selectedAddressIdForCard,
                     buildingSource: building.source,
                     addressSource: selectedAddress?.source,
@@ -6496,7 +6717,7 @@ struct CampaignMapView: View {
                         }
                     },
                     onAddressesResolved: { ids in
-                        guard cardHasPersistedLinkResolution else { return }
+                        guard selectedParcelAddressIds == nil, cardHasPersistedLinkResolution else { return }
                         buildingAddressMap[gersIdString.lowercased()] = deduplicatedAddressIds(ids)
                         refreshTownhomeStatusOverlay()
                     },
@@ -6507,6 +6728,8 @@ struct CampaignMapView: View {
                         selectedAddress = nil
                         selectedAddressHasBuildingGeometry = true
                         selectedAddressIdForCard = nil
+                        selectedParcelAddressIds = nil
+                        selectedParcelFeatureIds = []
                     },
                     onStatusUpdated: { addressId, status in
                         handleLocationCardStatusUpdated(addressId: addressId, status: status, gersId: gersIdString)
@@ -6587,7 +6810,7 @@ struct CampaignMapView: View {
                         }
                     }
                 )
-                .id("building-\(gersIdString)-\(resolvedAddrId?.uuidString ?? "")-\(selectedAddressIdForCard?.uuidString ?? "list")-\(locationCardReloadToken)")
+                .id("building-\(gersIdString)-\(resolvedAddrId?.uuidString ?? "")-\(selectedAddressIdForCard?.uuidString ?? "list")-\(selectedParcelFeatureIds.joined(separator: ","))-\(locationCardReloadToken)")
                 .padding(.horizontal, 16)
                 .padding(.bottom, bottomInset)
                 .transition(.move(edge: .bottom))
@@ -6604,14 +6827,15 @@ struct CampaignMapView: View {
                     campaignId: campId,
                     sessionId: sessionManager.sessionId,
                     farmExecutionContext: matchingActiveFarmExecution ?? matchingPlannedFarmExecution,
-                    addressId: address.addressId,
+                    addressId: selectedParcelAddressIds.map { $0.count > 1 && selectedAddressIdForCard == nil } == true ? nil : address.addressId,
                     addressText: nonEmptyAddressText(
                         formatted: address.formatted,
                         houseNumber: address.houseNumber,
                         streetName: address.streetName
                     ),
                     buildingIdentifiers: selectedBuilding?.buildingIdentifierCandidates ?? [address.buildingGersId, address.gersId].compactMap { $0 },
-                    linkedAddressIds: selectedBuilding?.addressUUIDs ?? [],
+                    linkedAddressIds: selectedParcelAddressIds ?? selectedBuilding?.addressUUIDs ?? [],
+                    selectionAddressIds: selectedParcelAddressIds,
                     preferredAddressId: selectedAddressIdForCard,
                     buildingSource: selectedBuilding?.source,
                     addressSource: address.source,
@@ -6632,7 +6856,7 @@ struct CampaignMapView: View {
                     quickStartContactBookMode: quickStartEnabled,
                     initialActionIntent: houseCardInitialActionIntents[address.addressId],
                     onSelectAddress: { addressId in
-                        if addressId == nil,
+                        if selectedParcelAddressIds == nil, addressId == nil,
                            selectedBuilding == nil,
                            let context = townhouseContext(for: address) {
                             cacheTownhouseContext(context)
@@ -6649,6 +6873,7 @@ struct CampaignMapView: View {
                         }
                     },
                     onAddressesResolved: { ids in
+                        guard selectedParcelAddressIds == nil else { return }
                         if !gersIdString.isEmpty {
                             buildingAddressMap[gersIdString.lowercased()] = deduplicatedAddressIds(ids)
                             refreshTownhomeStatusOverlay()
@@ -6661,6 +6886,8 @@ struct CampaignMapView: View {
                         selectedAddress = nil
                         selectedAddressHasBuildingGeometry = true
                         selectedAddressIdForCard = nil
+                        selectedParcelAddressIds = nil
+                        selectedParcelFeatureIds = []
                     },
                     onStatusUpdated: { addressId, status in
                         handleLocationCardStatusUpdated(addressId: addressId, status: status, gersId: gersIdString)
@@ -6723,7 +6950,7 @@ struct CampaignMapView: View {
                         }
                     }
                 )
-                .id("address-\(address.addressId.uuidString)-\(selectedAddressIdForCard?.uuidString ?? "detail")-\(locationCardReloadToken)")
+                .id("address-\(address.addressId.uuidString)-\(selectedAddressIdForCard?.uuidString ?? "detail")-\(selectedParcelFeatureIds.joined(separator: ","))-\(locationCardReloadToken)")
                 .padding(.horizontal, 16)
                 .padding(.bottom, bottomInset)
                 .transition(.move(edge: .bottom))
@@ -7162,12 +7389,17 @@ struct CampaignMapView: View {
             installCampaignLayersForCurrentStyle()
         }.store(in: &cancellables)
 
+        map.mapboxMap.onMapIdle.observe { _ in
+            scheduleFarmLiveSuggestions()
+        }.store(in: &cancellables)
+
         map.mapboxMap.onCameraChanged.observe { _ in
             handleCameraChanged(map)
         }.store(in: &cancellables)
     }
 
     private func handleCameraChanged(_ map: MapView) {
+        scheduleFarmLiveSuggestions()
         let pitch = map.mapboxMap.cameraState.pitch
 
 
@@ -7544,6 +7776,8 @@ struct CampaignMapView: View {
 
     private func performMapDataUpdate() async {
         guard demoMapIsVisible, !Task.isCancelled else { return }
+        let overlayTrace = PerfTrace.begin("farm_live", "map_overlay_update")
+        defer { overlayTrace.end() }
         guard let manager = layerManager else {
             if usesStandardPinsRenderer {
                 scheduleLoadedStatusesRefresh()
@@ -7629,14 +7863,22 @@ struct CampaignMapView: View {
                 parcelLinks[addressId.uuidString.lowercased(), default: []].append(contentsOf: ids)
             }
         }
-        // New manual pins keep their parcel identifiers on the address record,
-        // including before the server's parcel link is reflected in map tiles.
-        for pin in visibleManualPins where pin.properties.hasParcelLink == true {
-            guard let id = pin.properties.id ?? pin.id else { continue }
-            let ids = [pin.properties.parcelId, pin.properties.campaignParcelId]
+        // Newly linked homes carry parcel IDs before the parcel tiles are refreshed.
+        // Include building-linked addresses as well as standalone manual pins.
+        var parcelAliases: [String: Set<String>] = [:]
+        for parcel in visibleParcels {
+            let aliases = Set([parcel.properties.parcelId, parcel.properties.externalId, parcel.id, parcel.properties.id]
+                .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+                .filter { !$0.isEmpty })
+            for alias in aliases { parcelAliases[alias, default: []].formUnion(aliases) }
+        }
+        for address in visibleAddresses where address.properties.hasParcelLink == true {
+            guard let id = address.properties.id ?? address.id else { continue }
+            let ids = [address.properties.parcelId, address.properties.campaignParcelId]
                 .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
                 .filter { !$0.isEmpty }
-            parcelLinks[id.lowercased(), default: []].append(contentsOf: ids)
+            let aliases = Set(ids).union(ids.flatMap { parcelAliases[$0] ?? [] })
+            parcelLinks[id.lowercased(), default: []].append(contentsOf: aliases.sorted())
         }
         manager.updateParcelAddressLinks(parcelLinks)
         recordPhase("parcel_link_index")
@@ -8465,7 +8707,8 @@ struct CampaignMapView: View {
     }
 
     private func parcelsAnnotatingVisibleAddressLinks(from parcels: [ParcelFeature]) -> [ParcelFeature] {
-        parcels
+        CampaignMapEdits.parcelsWithAddressLinks(parcels, addresses: visibleAddressFeatures,
+                                                state: mapEditStore.state(for: campaignId))
     }
 
     private func geoJSONFeatureDictionaries(from data: Data?) -> [[String: Any]] {
@@ -9278,15 +9521,23 @@ struct CampaignMapView: View {
         return demoDerivedDataCache.preparation.withSnapshot {
             var addressMap: [String: [UUID]] = [:]
             var buildingMap: [String: String] = [:]
+            var aliasesByBuilding: [String: [String]] = [:]
+            var addressesByBuilding: [String: [UUID]] = [:]
+            func linkedAddresses(_ id: String) -> [UUID] {
+                if let cached = addressesByBuilding[id] { return cached }
+                let ids = addressIdsForBuilding(gersId: id)
+                addressesByBuilding[id] = ids
+                return ids
+            }
 
             for target in targets {
                 let addressIds: [UUID]
                 if let addressId = target.addressId.flatMap(UUID.init(uuidString:)) {
                     addressIds = [addressId]
                 } else if let buildingId = target.buildingId {
-                    addressIds = addressIdsForBuilding(gersId: buildingId)
+                    addressIds = linkedAddresses(buildingId)
                 } else {
-                    addressIds = addressIdsForBuilding(gersId: target.id)
+                    addressIds = linkedAddresses(target.id)
                 }
                 addressMap[target.id] = deduplicatedAddressIds(addressIds)
 
@@ -9302,7 +9553,13 @@ struct CampaignMapView: View {
                 var aliasValues = [target.id]
                 if let buildingId = target.buildingId {
                     aliasValues.append(buildingId)
-                    aliasValues.append(contentsOf: buildingFeatures(matchingAnyOf: [buildingId]).flatMap(identifiersForBuildingFeature))
+                    if let aliases = aliasesByBuilding[buildingId] {
+                        aliasValues.append(contentsOf: aliases)
+                    } else {
+                        let aliases = buildingFeatures(matchingAnyOf: [buildingId]).flatMap(identifiersForBuildingFeature)
+                        aliasesByBuilding[buildingId] = aliases
+                        aliasValues.append(contentsOf: aliases)
+                    }
                 }
                 let aliasIdentifiers = normalizedSelectionIdentifiers(aliasValues)
                 for alias in aliasIdentifiers where addressMap[alias] == nil {
@@ -10208,14 +10465,17 @@ struct CampaignMapView: View {
     }
 
     /// Compute a whole-building fallback from linked address statuses.
-    /// Multi-address buildings stay neutral until every linked address has the same
-    /// explicit status, so one unit's Attempted/lead/conversation state does not tint
-    /// sibling units through a shared parent feature.
+    /// Multi-address buildings stay neutral for mixed statuses, except that a
+    /// do-not-knock home makes the shared building black as a visible warning.
     private func computeBuildingLayerStatus(gersId: String, addressIds: [UUID]) -> String {
         guard addressIds.contains(where: { addressStatuses[$0] != nil }) else { return "not_visited" }
         let addressGroups = displayAddressGroups(for: addressIds)
         let statuses = addressGroups.compactMap(preferredDisplayStatus)
         guard !statuses.isEmpty else { return "not_visited" }
+
+        if statuses.contains(.doNotKnock) {
+            return "do_not_knock"
+        }
 
         if addressGroups.count > 1 {
             guard statuses.count == addressGroups.count else { return "not_visited" }
@@ -10243,10 +10503,6 @@ struct CampaignMapView: View {
 
         if statuses.contains(.talked) {
             return "hot"
-        }
-
-        if statuses.contains(.doNotKnock) {
-            return "do_not_knock"
         }
 
         if statuses.contains(.noAnswer) {
@@ -11343,6 +11599,8 @@ struct CampaignMapView: View {
     }
 
     private func handleTap(at point: CGPoint) {
+        guard pendingAddressLink == nil else { return }
+        farmLiveSelection = nil
         if isMapEditMode, activeMapEditTool != .addHouse {
             if activeMapEditTool == .move, editorSelection.count == 1 {
                 placeEditorSelection(at: point)
@@ -11384,6 +11642,10 @@ struct CampaignMapView: View {
             return
         }
 
+        if let target = farmLiveSuggestions.target(at: point) {
+            presentFarmLiveTarget(target)
+            return
+        }
         guard let manager = layerManager else { return }
         houseQuickStatusMenu = nil
         let effectiveMode: DisplayMode = usesStandardPinsRenderer ? .addresses : displayMode
@@ -11525,6 +11787,360 @@ struct CampaignMapView: View {
         }
     }
 
+    private var farmLiveSourceRevision: String {
+        (stableGeometryCacheKey ?? "\(featuresService.buildingsRevision):\(featuresService.addressesRevision):\(featuresService.parcelsRevision):\(mapEditStore.geometryGeneration)") + "|evidence:\(farmLiveEvidenceRevision)"
+    }
+
+    private func scheduleFarmLiveSuggestions(immediate: Bool = false) {
+        guard let map = mapView else { return }
+        guard map.mapboxMap.cameraState.zoom >= FarmLiveAddressSuggestions.minimumZoom,
+              !isMapEditMode, !usesStandardPinsRenderer else {
+            farmLiveRefreshTask?.cancel()
+            farmLiveRefreshTask = nil
+            farmLiveTargets = []
+            farmLiveSuggestions.update(targets: [], map: map, online: false)
+            farmLiveSuggestions.showStatus(isMapEditMode ? "Address suggestions paused while editing" :
+                usesStandardPinsRenderer ? "Address suggestions unavailable in pin mode" : "Zoom in for address suggestions")
+            return
+        }
+        // Gestures get the main thread. Idle/camera events and the retry tick resume work.
+        guard map.gestures.panGestureRecognizer.state != .began,
+              map.gestures.panGestureRecognizer.state != .changed else { return }
+        // Camera/idle events must not repeatedly cancel a large farm's preparation.
+        guard farmLiveRefreshTask == nil else { return }
+        farmLiveRefreshTask = Task { @MainActor in
+            let startingCompletion = farmLiveSuggestions.completionRevision
+            defer {
+                farmLiveRefreshTask = nil
+                // A result arriving during preparation must not wait for the retry tick.
+                if !Task.isCancelled && farmLiveSuggestions.completionRevision != startingCompletion {
+                    scheduleFarmLiveSuggestions(immediate: true)
+                }
+            }
+            // Coalesce responses arriving together into one durable edit and overlay update.
+            do { try await Task.sleep(for: .milliseconds(immediate ? 50 : 100)) } catch { return }
+            guard !Task.isCancelled else { return }
+            // Completed matches already have validated geometry. Save them before
+            // preparing a new viewport, which can be much larger than this batch.
+            if farmLiveGeometryKey == farmLiveSourceRevision, !farmLiveTargets.isEmpty {
+                await reconcileVisibleFarmAddresses(farmLiveTargets, map: map, revision: farmLiveSourceRevision)
+            }
+            guard !Task.isCancelled else { return }
+            let corners = [CGPoint(x: map.bounds.minX, y: map.bounds.minY),
+                           CGPoint(x: map.bounds.maxX, y: map.bounds.minY),
+                           CGPoint(x: map.bounds.minX, y: map.bounds.maxY),
+                           CGPoint(x: map.bounds.maxX, y: map.bounds.maxY)]
+                .map { map.mapboxMap.coordinate(for: $0) }
+            let viewport: [Double] = [corners.map(\.longitude).min() ?? 0, corners.map(\.latitude).min() ?? 0,
+                            corners.map(\.longitude).max() ?? 0, corners.map(\.latitude).max() ?? 0]
+            let bounds = FarmLiveMatchWork.preparationBounds(viewport: viewport)
+            let revision = farmLiveSourceRevision
+            // The padded area is useful only if we reuse it until the viewport leaves it.
+            // Small camera movements used to discard it at every grid boundary.
+            if farmLiveGeometryKey != revision || !FarmLiveAddressGeometry.covers(farmLivePreparedBounds, viewport: viewport) {
+                farmLiveSuggestions.showStatus("Checking unlinked properties…")
+                let inputTrace = PerfTrace.begin("farm_live", "preparation_inputs")
+                let parcels = visibleParcelFeatures
+                let buildings = visibleBuildingFeatures
+                let addresses = featuresService.addresses(for: campaignId)?.features ?? visibleAddressFeatures
+                let edits = mapEditStore.state(for: campaignId)
+                let evidence = farmLiveLinkEvidence
+                let addressRevision = featuresService.addressesRevision
+                let identities = farmLiveIdentityRevision == addressRevision ? farmLiveMatchIndex?.normalizedIdentities ?? [:] : [:]
+                inputTrace.end()
+                let rebuildReason = farmLiveGeometryKey == revision ? "viewport_changed" : "geometry_changed"
+                // Warm tap matching while suggestions are prepared, before a user taps a label.
+                if let key = addressMatchSourceKey {
+                    let matchAddresses = featuresService.addresses?.features ?? addresses
+                    Task { await addressMatchIndex.prepare(key: key, features: matchAddresses) }
+                }
+                let preparation = PerfTrace.begin("farm_live", "visible_targets_prepare")
+                let preparationTask = Task.detached(priority: .utility) {
+                    let nearbyParcels = parcels.filter { FarmLiveAddressGeometry.intersects($0.geometry, bounds: bounds) }
+                    let nearbyBuildings = buildings.filter { FarmLiveAddressGeometry.intersects($0.geometry, bounds: bounds) }
+                    let index = FarmLiveMatchIndex(addresses: addresses, buildings: nearbyBuildings, edits: edits,
+                        evidence: evidence, parcels: nearbyParcels, normalizedIdentities: identities)
+                    let targets = FarmLiveAddressGeometry.targets(parcels: nearbyParcels, buildings: nearbyBuildings,
+                        addresses: addresses, reviewableAddressIDs: index.lookupAddressIDs,
+                        repairableAddressIDs: index.reviewableAddressIDs, repairParcelIDs: index.repairParcelIDs)
+                    let association = FarmLiveAddressAssociation(parcels: nearbyParcels, buildings: nearbyBuildings)
+                    return (targets, index, association)
+                }
+                let (targets, index, association) = await withTaskCancellationHandler { await preparationTask.value } onCancel: { preparationTask.cancel() }
+                preparation.end(status: rebuildReason, fields: ["targets": targets.count])
+                let currentRevision = farmLiveSourceRevision
+                guard !Task.isCancelled, revision == currentRevision, demoMapIsVisible else { return }
+                farmLiveAllTargets = targets
+                farmLiveMatchIndex = index
+                farmLiveIdentityRevision = addressRevision
+                farmLiveAssociation = association
+                farmLiveGeometryKey = revision
+                farmLivePreparedBounds = bounds
+            }
+            guard map.gestures.panGestureRecognizer.state != .began,
+                  map.gestures.panGestureRecognizer.state != .changed else { return }
+            // The camera may have changed while background preparation was running.
+            let currentCorners = [CGPoint(x: map.bounds.minX, y: map.bounds.minY),
+                                  CGPoint(x: map.bounds.maxX, y: map.bounds.minY),
+                                  CGPoint(x: map.bounds.minX, y: map.bounds.maxY),
+                                  CGPoint(x: map.bounds.maxX, y: map.bounds.maxY)]
+                .map { map.mapboxMap.coordinate(for: $0) }
+            let currentViewport: [Double] = [currentCorners.map(\.longitude).min() ?? 0, currentCorners.map(\.latitude).min() ?? 0,
+                                   currentCorners.map(\.longitude).max() ?? 0, currentCorners.map(\.latitude).max() ?? 0]
+            guard FarmLiveAddressGeometry.covers(farmLivePreparedBounds, viewport: currentViewport) else { return }
+            let center = CGPoint(x: map.bounds.midX, y: map.bounds.midY)
+            let visible = farmLiveAllTargets.compactMap { target -> (FarmLiveAddressTarget, CGFloat)? in
+                let point = map.mapboxMap.point(for: target.coordinate)
+                guard map.bounds.contains(point) else { return nil }
+                return (target, hypot(point.x - center.x, point.y - center.y))
+            }.sorted { $0.1 < $1.1 }.map { $0.0 }
+            farmLiveTargets = visible
+            farmLiveSuggestions.update(targets: visible, map: map, online: networkMonitor.isOnline, association: farmLiveAssociation)
+            await reconcileVisibleFarmAddresses(visible, map: map, revision: revision)
+            if visible.isEmpty { farmLiveSuggestions.showStatus("No unlinked properties in view") }
+            else if !networkMonitor.isOnline { farmLiveSuggestions.showStatus("Connect to find address suggestions") }
+        }
+    }
+
+    /// Match the complete civic address before moving an existing record to geometry.
+    /// Independent results commit immediately; shared roofs and occupied destinations wait.
+    private func reconcileVisibleFarmAddresses(_ targets: [FarmLiveAddressTarget], map: MapView, revision: String) async {
+        guard canPersistManualLinkWrites, networkMonitor.isOnline,
+              !targets.isEmpty,
+              let candidates = farmLiveSuggestions.completedCandidates(for: targets) else { return }
+        let reservedIDs = Set(targets.filter(isReservedFarmLiveTarget).map(\.id))
+        let readyIDs = farmLiveSuggestions.readyTargetIDs(for: targets).subtracting(reservedIDs)
+        let workKey = FarmLiveMatchWork.key(sourceRevision: revision,
+            completionRevision: farmLiveSuggestions.completionRevision,
+            candidateIDs: candidates.map { $0.0.id }, readyIDs: readyIDs)
+        guard farmLiveReconciliationKey != workKey else { return }
+        farmLiveReconciliationKey = workKey
+        let scanTrace = PerfTrace.begin("farm_live", "auto_match_scan")
+        var scanStatus = "no_match"
+        var scanFields: [String: Any] = ["targets": targets.count, "accepted": candidates.count]
+        defer { scanTrace.end(status: scanStatus, fields: scanFields) }
+        guard let index = farmLiveMatchIndex else { farmLiveReconciliationKey = nil; return }
+        let geometryRevision = farmLiveGeometryKey
+        let editGeneration = mapEditStore.geometryGeneration
+        let existingLinks = buildingAddressMap
+        let oldCacheKey = stableGeometryCacheKey
+        let cachedBuildings: [BuildingFeature]? = oldCacheKey.flatMap { demoDerivedDataCache.geometry.cachedValue(for: "buildings", key: $0) }
+        let cachedAddresses: [AddressFeature]? = oldCacheKey.flatMap { demoDerivedDataCache.geometry.cachedValue(for: "addresses", key: $0) }
+        let cachedParcels: [ParcelFeature]? = oldCacheKey.flatMap { demoDerivedDataCache.geometry.cachedValue(for: "parcels", key: $0) }
+        let planning = Task.detached(priority: .userInitiated) {
+            let shortlist = index.shortlist(candidates)
+            let placements = index.placements(candidates: candidates, visibleEntries: shortlist, readyTargetIDs: readyIDs)
+            guard !placements.isEmpty else { return (shortlist.count, placements, index, existingLinks, [AddressFeature](), Optional<CampaignMapEditSnapshot>.none) }
+            let advanced = index.applying(placements)
+            let moved = Set(placements.map(\.addressID))
+            var links = existingLinks.mapValues { $0.filter { !moved.contains($0) } }
+            for placement in placements {
+                if let roof = placement.target.buildingId { links[roof.lowercased(), default: []].append(placement.addressID) }
+            }
+            let features = index.renderFeatures(for: placements)
+            var preparedSnapshot: CampaignMapEditSnapshot?
+            if let cachedBuildings, let cachedAddresses, let cachedParcels {
+                let cacheTrace = PerfTrace.begin("farm_live", "match_cache_advance_prepare")
+                preparedSnapshot = FarmLiveMatchIndex.advancingSnapshot(buildings: cachedBuildings,
+                    addresses: cachedAddresses, parcels: cachedParcels, replacements: features)
+                cacheTrace.end(fields: ["count": features.count])
+            }
+            return (shortlist.count, placements, advanced, links, features, preparedSnapshot)
+        }
+        let (shortlistCount, placements, advancedIndex, advancedLinks, renderFeatures, preparedSnapshot) = await withTaskCancellationHandler { await planning.value } onCancel: { planning.cancel() }
+        scanFields["shortlist"] = shortlistCount
+        scanFields["visible"] = shortlistCount
+        scanFields["matches"] = placements.count
+        scanStatus = "stale_result"
+        guard !Task.isCancelled, demoMapIsVisible, mapView === map,
+              farmLiveGeometryKey == geometryRevision, mapEditStore.geometryGeneration == editGeneration,
+              farmLiveSourceRevision == geometryRevision,
+              map.gestures.panGestureRecognizer.state != .began,
+              map.gestures.panGestureRecognizer.state != .changed,
+              placements.allSatisfy({ !isReservedFarmLiveTarget($0.target) }),
+              canPersistManualLinkWrites, networkMonitor.isOnline,
+              !isMapEditMode, !usesStandardPinsRenderer else {
+            farmLiveReconciliationKey = nil
+            return
+        }
+        let oldRenderKey = stableGeometryCacheKey
+        let state = mapEditStore.storedState(for: campaignId)
+        let changes = placements.map { placement in
+            CampaignMapEditPlanner.addressPlacement(addressId: placement.addressID.uuidString,
+                coordinate: placement.coordinate, buildingId: placement.target.buildingId,
+                parcelId: placement.target.parcelId, state: state,
+                sourceRevision: currentDiamondManifest?.geometryEtag)
+        }
+        let matchedTargets = placements.map(\.target)
+        scanStatus = "no_match"
+        guard !changes.isEmpty else { return }
+        do {
+            let persistTrace = PerfTrace.begin("farm_live", "automatic_link_persist")
+            do {
+                try mapEditStore.commit(campaignId, title: "Link existing addresses", changes: changes)
+                persistTrace.end(status: "saved", fields: ["count": changes.count])
+            } catch { persistTrace.end(status: "failed"); throw error }
+            scanStatus = "saved"
+            farmLiveSuggestions.recordAutomaticCommit(matchedTargets.map(\.id))
+            farmLiveSuggestions.remove(matchedTargets.map(\.id))
+            let removed = Set(matchedTargets.map(\.id))
+            farmLiveTargets.removeAll { removed.contains($0.id) }
+            farmLiveAllTargets.removeAll { removed.contains($0.id) }
+            farmLiveMatchIndex = advancedIndex
+            if let preparedSnapshot, let oldCacheKey, let newKey = stableGeometryCacheKey {
+                demoDerivedDataCache.geometry.advance(from: oldCacheKey, to: newKey, replacements: [
+                    "buildings": preparedSnapshot.buildings, "addresses": preparedSnapshot.addresses,
+                    "parcels": preparedSnapshot.parcels,
+                    "visibleAddressIds": Set(preparedSnapshot.addresses.compactMap { ($0.properties.id ?? $0.id)?.lowercased() })
+                ])
+            }
+            // Only relationships/points changed. Keep the already prepared shapes.
+            farmLiveGeometryKey = farmLiveSourceRevision
+            farmLiveAppliedGeometryGeneration = mapEditStore.geometryGeneration
+            buildingAddressMap = advancedLinks
+            if renderAutomaticFarmMatches(renderFeatures, placements: placements, index: index, oldKey: oldRenderKey, previousLinks: existingLinks) {
+                farmLiveRenderedGeometryGeneration = mapEditStore.geometryGeneration
+            }
+            PerfTrace.event("farm_live", "match_index_advanced", fields: ["count": placements.count])
+        } catch {
+            farmLiveReconciliationKey = nil
+            scanStatus = "save_failed"
+            manualShapeMessage = "Could not link existing addresses: \(error.localizedDescription)"
+        }
+    }
+
+    /// A pending manual/townhouse operation reserves its own property, not the farm.
+    private func isReservedFarmLiveTarget(_ target: FarmLiveAddressTarget) -> Bool {
+        if farmTownhomePendingTargets[target.id] != nil { return true }
+        guard let pending = pendingAddressLink else { return false }
+        if pending.context.liveTarget?.id == target.id { return true }
+        if let parcel = target.parcelId?.lowercased(), pending.context.parcelId?.lowercased() == parcel { return true }
+        if let roof = target.buildingId?.lowercased(), pending.context.buildingIdentifiers.contains(where: { $0.lowercased() == roof }) { return true }
+        if let candidate = farmLiveSuggestions.candidate(for: target.id) {
+            return UnlinkedHomeAddressResolver.addressesMatch(
+                reverseHouseNumber: candidate.houseNumber, reverseStreetName: candidate.resolvedStreetName,
+                reversePostalCode: candidate.postalCode, reverseFormatted: candidate.displayAddress,
+                candidateHouseNumber: pending.candidate.houseNumber, candidateStreetName: pending.candidate.resolvedStreetName,
+                candidatePostalCode: pending.candidate.postalCode, candidateFormatted: pending.candidate.displayAddress)
+        }
+        return false
+    }
+
+    /// A saved address placement changes a small overlay, not the farm's sources.
+    private func renderAutomaticFarmMatches(_ features: [AddressFeature], placements: [FarmLiveMatchIndex.Placement],
+                                           index: FarmLiveMatchIndex, oldKey: String?, previousLinks: [String: [UUID]],
+                                           previousBuildingIDs: Set<String> = []) -> Bool {
+        func fallback(_ reason: String) -> Bool {
+            PerfTrace.event("farm_live", "targeted_render_fallback", fields: ["reason": reason, "count": placements.count])
+            return false
+        }
+        guard features.count == placements.count else { return fallback("incomplete_features") }
+        guard let oldKey, let key = stableGeometryCacheKey else { return fallback("missing_geometry_key") }
+        guard let manager = layerManager, let compact = featuresService.compactFieldIndex(for: campaignId),
+              var plan = cachedTileRenderPlan else { return fallback("missing_tile_plan") }
+        guard activeRouteWorkContext == nil else { return fallback("active_route") }
+        guard cachedTileRenderPlanKey == oldKey + "|" + compact.campaign.assetSignature else { return fallback("tile_plan_changed") }
+        guard mapDataUpdateTask == nil, !mapDataUpdatePending else { return fallback("map_update_pending") }
+        // Shared-roof geometry still uses the complete row renderer.
+        let roofs = Set(features.compactMap { $0.properties.buildingGersId?.lowercased() })
+            .union(index.previousBuildingIDs(for: placements)).union(previousBuildingIDs)
+        guard roofs.allSatisfy({ (buildingAddressMap[$0] ?? []).count <= 1 && (previousLinks[$0] ?? []).count <= 1 }) else { return fallback("shared_roof") }
+        let trace = PerfTrace.begin("farm_live", "targeted_match_render")
+        defer { trace.end() }
+        let preparationTrace = PerfTrace.begin("farm_live", "targeted_render_prepare")
+        for feature in features { plan.upsertAddressOverlay(feature) }
+        let roofIDs = Set(features.compactMap { $0.properties.buildingGersId?.lowercased() })
+        var labelBuildings: [BuildingFeature] = []
+        for id in roofIDs {
+            if !labelBuildings.contains(where: { $0.properties.buildingIdentifierCandidates.contains(id) }),
+               let roof = try? compact.exactBuildingFeature(id: id) { labelBuildings.append(roof) }
+        }
+        preparationTrace.end(fields: ["count": features.count, "visible": labelBuildings.count])
+        let scopeTrace = PerfTrace.begin("farm_live", "targeted_render_scope")
+        let retainedAddresses = Set(plan.addressIds)
+        let excluded = Set(compact.campaign.records.addresses.compactMap { retainedAddresses.contains($0.id) ? nil : $0.id })
+        manager.updateCanonicalAddressExclusions(excluded)
+        scopeTrace.end(fields: ["count": excluded.count])
+        let labelLinks = Dictionary(labelBuildings.flatMap { $0.properties.buildingIdentifierCandidates }.map {
+            ($0.lowercased(), buildingAddressMap[$0.lowercased()] ?? [])
+        }, uniquingKeysWith: { first, _ in first })
+        let markersTrace = PerfTrace.begin("farm_live", "targeted_render_features")
+        do {
+            try manager.upsertPlacedAddressFeatures(addresses: features, buildings: labelBuildings, links: labelLinks)
+            markersTrace.end(fields: ["count": features.count])
+        } catch { markersTrace.end(status: "failed"); return fallback("source_update_failed") }
+        let statesTrace = PerfTrace.begin("farm_live", "targeted_render_states")
+        for feature in features {
+            guard let id = UUID(uuidString: feature.properties.id ?? feature.id ?? "") else { continue }
+            let parcelAliases = [feature.properties.parcelId, feature.properties.campaignParcelId].compactMap { $0 }
+                .flatMap { index.parcelRenderAliases($0) }
+            manager.linkManualPinToParcel(addressId: id, parcelIds: parcelAliases)
+            manager.restorePlacedAddressState(addressId: id,
+                defaultStatus: effectiveAddressLayerStatus(addressId: id, baseStatus: addressStatuses[id] ?? .none))
+        }
+        for roof in roofs {
+            manager.updatePlacedBuildingLink(identifier: roof, addressIDs: buildingAddressMap[roof] ?? [])
+        }
+        statesTrace.end()
+        manager.advanceTownhomeGeometryCache(from: oldKey, links: previousLinks,
+            to: key, links: buildingAddressMap)
+        cachedTileRenderPlan = plan
+        cachedTileRenderPlanKey = key + "|" + compact.campaign.assetSignature
+        return true
+    }
+
+    private func hasVisibleUnlinkedFarmAddress(_ candidate: BuildingAddressCandidate) -> Bool {
+        guard let map = mapView else { return false }
+        return visibleAddressFeatures.contains { feature in
+            let p = feature.properties
+            guard p.buildingGersId == nil, p.linkedBuildingId == nil, p.hasBuildingLink != true,
+                  p.parcelId == nil, p.campaignParcelId == nil, p.hasParcelLink != true,
+                  UnlinkedHomeAddressResolver.campaignAddressMatches(reverseCandidate: candidate,
+                      houseNumber: p.houseNumber ?? p.houseNumberLabel, streetName: p.streetName,
+                      postalCode: p.postalCode, formatted: p.formatted),
+                  let coordinate = CampaignTargetResolver.coordinate(for: feature.geometry) else { return false }
+            return map.bounds.contains(map.mapboxMap.point(for: coordinate))
+        }
+    }
+
+    private var existingFarmNumberError: NSError {
+        NSError(domain: "FarmAddressLink", code: 1, userInfo: [NSLocalizedDescriptionKey:
+            "This address is already unlinked on the map. Link the existing address instead."])
+    }
+
+    private func presentFarmLiveTarget(_ target: FarmLiveAddressTarget) {
+        guard pendingAddressLink == nil else { return }
+        let suggestion = farmLiveSuggestions.candidate(for: target.id)
+        let context = BuildingAddressPickerContext(
+            id: target.buildingId ?? target.id, buildingTitle: suggestion?.displayAddress ?? "Choose Address",
+            buildingIdentifiers: target.buildingId.map { [$0] } ?? [], seedCoordinate: target.coordinate,
+            parcelId: target.parcelId, parcelBuildingId: target.buildingId, liveTarget: target)
+        selectedBuilding = nil; selectedAddress = nil; selectedAddressIdForCard = nil
+        houseQuickStatusMenu = nil; pendingAddressLinkError = nil
+        farmLiveSelection = (target, context, suggestion, suggestion == nil)
+        showLocationCard = true
+        PerfTrace.event("farm_live", "preview_presented", fields: ["cachedSuggestion": suggestion != nil])
+        Task { @MainActor in
+            await Task.yield()
+            guard farmLiveSelection?.target.id == target.id else { return }
+            applyLinkedHighlight(addressIds: [], buildingIdentifiers: target.buildingId.map { [$0] } ?? [],
+                exactFeature: nil, parcelFeatureIds: target.parcelId.map { [$0] } ?? [], haptic: true)
+            if suggestion == nil {
+                let result = await farmLiveSuggestions.resolve(target)
+                guard farmLiveSelection?.target.id == target.id else { return }
+                farmLiveSelection?.candidate = result
+                farmLiveSelection?.isResolving = false
+            }
+            if let candidate = farmLiveSelection?.candidate {
+                beginAddressLink(candidate, context: context)
+            } else {
+                farmLiveSelection = nil
+                showLocationCard = false
+                buildingAddressPickerContext = context
+            }
+        }
+    }
+
     private var isFarmMap: Bool {
         farmSessionStartContextProvider != nil || matchingPlannedFarmExecution != nil || matchingActiveFarmExecution != nil
     }
@@ -11545,12 +12161,40 @@ struct CampaignMapView: View {
         }
         guard nonEmptyParcelValue(properties.addressId) == nil,
               (properties.addressIds ?? []).allSatisfy({ nonEmptyParcelValue($0) == nil }) else { return nil }
+        let aliases = Set([properties.id, featureId, properties.parcelId, properties.externalId]
+            .compactMap { normalizedMapFeatureIdentifier($0) })
+        let edits = mapEditStore.state(for: campaignId).features
+        let hasAddressSideLink = visibleAddressFeatures.contains { address in
+            let edit = edits[CampaignMapEdits.addressItem(address).id]
+            guard edit?.hidden != true else { return false }
+            if edit?.parcelLinkSet == true {
+                return normalizedMapFeatureIdentifier(edit?.parcelId).map { aliases.contains($0) } ?? false
+            }
+            guard address.properties.hasParcelLink != false else { return false }
+            return [address.properties.parcelId, address.properties.campaignParcelId]
+                .compactMap { normalizedMapFeatureIdentifier($0) }.contains { aliases.contains($0) }
+        }
+        guard !hasAddressSideLink else { return nil }
         return firstNonEmptyParcelValue([properties.id, featureId, properties.parcelId, properties.externalId])
     }
 
     @discardableResult
     private func presentFarmUnlinkedBuildingActions(_ feature: BuildingFeature, at point: CGPoint) -> Bool {
-        guard isFarmMap, !buildingHasAttachedAddress(feature.properties) else { return false }
+        guard !usesStandardPinsRenderer, !buildingHasAttachedAddress(feature.properties) else { return false }
+        let ids = Set(feature.properties.buildingIdentifierCandidates.map { $0.lowercased() })
+        if let target = farmLiveTargets.first(where: { target in
+            target.buildingId.map { ids.contains($0.lowercased()) } == true ||
+            FarmLiveAddressGeometry.interiorPoint(feature.geometry).map { CampaignMapEditPlanner.contains(target.geometry, $0) } == true
+        }) {
+            presentFarmLiveTarget(target)
+            return true
+        }
+        if let coordinate = FarmLiveAddressGeometry.interiorPoint(feature.geometry),
+           let id = feature.properties.canonicalBuildingIdentifier {
+            presentFarmLiveTarget(.init(id: "building:\(id.lowercased())", parcelId: nil,
+                buildingId: id, geometry: feature.geometry, coordinate: coordinate))
+            return true
+        }
         return presentLocationForUnlinkedBuilding(feature, tapPoint: point)
     }
 
@@ -11558,6 +12202,10 @@ struct CampaignMapView: View {
     private func presentFarmUnlinkedParcelActions(at point: CGPoint) -> Bool {
         let coordinate = currentMapCoordinate(for: point)
         guard let parcelId = unlinkedParcelId(at: coordinate) else { return false }
+        if let target = farmLiveTargets.first(where: { $0.parcelId?.lowercased() == parcelId.lowercased() }) {
+            presentFarmLiveTarget(target)
+            return true
+        }
         let snapshot = editorSnapshot
         let matches = snapshot.parcels.filter { parcel in
             [parcel.id, parcel.properties.id, parcel.properties.parcelId, parcel.properties.externalId]
@@ -11582,13 +12230,22 @@ struct CampaignMapView: View {
         let safeParcelCenter = parcelCenter.flatMap { center in
             CampaignMapEditPlanner.contains(matches[0].geometry, center) ? center : nil
         }
-        let placement = roof?.1 ?? safeParcelCenter ?? coordinate
+        let placement = matches.first.flatMap { FarmLiveAddressGeometry.interiorPoint($0.geometry) } ?? safeParcelCenter ?? coordinate
         let buildingId = roof.flatMap { publicBuildingIdentifier(for: $0.0.properties) }
+        if !usesStandardPinsRenderer, let parcel = matches.first, matches.count == 1 {
+            presentFarmLiveTarget(.init(id: "parcel:\(parcelId.lowercased())", parcelId: parcelId,
+                buildingId: buildingId, geometry: parcel.geometry, coordinate: placement))
+            return true
+        }
         farmUnlinkedSelection = FarmUnlinkedSelection(building: nil, parcelId: parcelId, coordinate: coordinate, point: point)
         selectedBuilding = nil
         selectedAddress = nil
         selectedAddressIdForCard = nil
         showLocationCard = false
+        if let key = addressMatchSourceKey {
+            let addresses = featuresService.addresses?.features ?? []
+            Task { await addressMatchIndex.prepare(key: key, features: addresses) }
+        }
         buildingAddressPickerContext = BuildingAddressPickerContext(
             id: "parcel:\(parcelId)", buildingTitle: "Choose Address",
             buildingIdentifiers: [], seedCoordinate: placement, parcelId: parcelId, parcelBuildingId: buildingId
@@ -11621,8 +12278,8 @@ struct CampaignMapView: View {
         selectedAddressIdForCard = nil
         houseQuickStatusMenu = nil
         showLocationCard = false
-        if let key = stableGeometryCacheKey {
-            let addresses = featuresService.addresses(for: campaignId)?.features ?? []
+        if let key = addressMatchSourceKey {
+            let addresses = featuresService.addresses?.features ?? []
             Task { await addressMatchIndex.prepare(key: key, features: addresses) }
         }
         buildingAddressPickerContext = context
@@ -11677,6 +12334,9 @@ struct CampaignMapView: View {
                 streetName: address.streetName, source: address.source,
                 parcelId: correction.parcelId, campaignParcelId: correction.parcelId,
                 hasParcelLink: correction.parcelId != nil)
+        }
+        if address.hasParcelLink != nil, address.parcelId != nil, address.campaignParcelId != nil {
+            return address
         }
         guard let metadata = parcelMetadata(for: address.addressId) else {
             return address
@@ -11808,26 +12468,21 @@ struct CampaignMapView: View {
 
         guard let resolvedAddress else { return }
         let enrichedAddress = enrichedAddressTapResult(resolvedAddress)
-        presentAddressSelection(enrichedAddress)
-        let parcelFeatureIds = parcelSelectionFeatureIds(
-            parcelResult.parcelFeatureIds
-                + parcelFeatureIdsForLinkedAddressIds([enrichedAddress.addressId])
+        presentAddressSelection(enrichedAddress, haptic: false)
+        // A parcel tap owns its own scope. Building membership must not expand it.
+        selectedParcelAddressIds = linkedAddressIds
+        selectedParcelFeatureIds = parcelSelectionFeatureIds(parcelResult.parcelFeatureIds)
+        selectedAddressIdForCard = linkedAddressIds.count == 1 ? enrichedAddress.addressId : nil
+        highlightParcelSelection(addressId: enrichedAddress.addressId)
+    }
+
+    private func highlightParcelSelection(addressId: UUID?, haptic: Bool = true) {
+        guard let scope = selectedParcelAddressIds else { return }
+        applyLinkedHighlight(
+            addressIds: addressId.map { scope.contains($0) ? [$0] : [] } ?? [],
+            buildingIdentifiers: [], exactFeature: nil,
+            parcelFeatureIds: selectedParcelFeatureIds, haptic: haptic
         )
-        if !parcelFeatureIds.isEmpty {
-            highlightedParcelFeatureIds = parcelFeatureIds
-            layerManager?.updateParcelSelection(featureIds: parcelFeatureIds, isSelected: true)
-        }
-        if let parcelBuilding = uniqueBuildingFeatureLinked(to: linkedAddressIds, preferredAddressId: enrichedAddress.addressId) {
-            selectedBuilding = parcelBuilding.properties
-            selectedAddressHasBuildingGeometry = buildingFeatureHasRenderableFootprint(parcelBuilding)
-            let buildingIdentifiers = identifiersForBuildingFeature(parcelBuilding)
-            let mergedIdentifiers = normalizedSelectionIdentifiers(highlightedBuildingIdentifiers + buildingIdentifiers)
-            if !mergedIdentifiers.isEmpty {
-                highlightedBuildingIdentifiers = mergedIdentifiers
-                highlightedBuildingId = mergedIdentifiers.first
-                layerManager?.updateBuildingSelection(identifiers: mergedIdentifiers, isSelected: true)
-            }
-        }
     }
 
     private func nearestVisibleLinkedAddress(
@@ -12348,6 +13003,15 @@ struct CampaignMapView: View {
     }
 
     private func highlightAddress(_ addressId: UUID, haptic: Bool = true) {
+        if let scope = selectedParcelAddressIds {
+            if scope.contains(addressId) {
+                highlightParcelSelection(addressId: addressId, haptic: haptic)
+                return
+            }
+            // Walk/navigation may focus another home while a parcel card was open.
+            selectedParcelAddressIds = nil
+            selectedParcelFeatureIds = []
+        }
         let linkedBuildingFeature = buildingFeature(matchingAddressId: addressId)
         applyLinkedHighlight(
             addressIds: [addressId],
@@ -12359,6 +13023,10 @@ struct CampaignMapView: View {
     }
 
     private func highlightBuilding(_ buildingId: String, haptic: Bool = true) {
+        if selectedParcelAddressIds != nil {
+            highlightParcelSelection(addressId: nil, haptic: haptic)
+            return
+        }
         let identifiers = Array(normalizedSelectionIdentifiers([buildingId]).prefix(1))
         let linkedAddressIds = addressIdsForBuilding(gersId: buildingId)
         applyLinkedHighlight(
@@ -12371,6 +13039,10 @@ struct CampaignMapView: View {
     }
 
     private func highlightBuilding(_ feature: BuildingFeature, preferredAddressId: UUID? = nil, haptic: Bool = true) {
+        if selectedParcelAddressIds != nil {
+            highlightParcelSelection(addressId: preferredAddressId, haptic: haptic)
+            return
+        }
         let building = feature.properties
         applyLinkedHighlight(
             addressIds: singleHighlightAddressIds(for: building, preferredAddressId: preferredAddressId),
@@ -12382,6 +13054,10 @@ struct CampaignMapView: View {
     }
 
     private func highlightBuilding(_ building: BuildingProperties, preferredAddressId: UUID? = nil, haptic: Bool = true) {
+        if selectedParcelAddressIds != nil {
+            highlightParcelSelection(addressId: preferredAddressId, haptic: haptic)
+            return
+        }
         let identifiers = buildingSelectionIdentifiers(for: building, preferredAddressId: preferredAddressId)
         if let preferredAddressId,
            let exactFeature = buildingFeature(matchingAddressId: preferredAddressId, buildingIdentifiers: identifiers) {
@@ -12445,7 +13121,8 @@ struct CampaignMapView: View {
         }
 
         if !normalizedBuildingIdentifiers.isEmpty {
-            layerManager?.updateBuildingSelection(identifiers: normalizedBuildingIdentifiers, isSelected: true)
+            layerManager?.updateBuildingSelection(identifiers: normalizedBuildingIdentifiers, isSelected: true,
+                                                  addressId: normalizedAddressIds.first)
         }
 
         if !normalizedParcelFeatureIds.isEmpty {
@@ -12482,6 +13159,9 @@ struct CampaignMapView: View {
         _ building: BuildingProperties,
         preferredAddressId: UUID? = nil
     ) -> [String] {
+        if let preferredAddressId {
+            return parcelFeatureIdsForLinkedAddressIds([preferredAddressId])
+        }
         let building = enrichedBuildingSelection(building)
         let identifiers = normalizedBuildingIdentifiers(for: building)
         let linkedAddressIds = deduplicatedAddressIds(
@@ -13338,6 +14018,8 @@ struct CampaignMapView: View {
         tapCoordinate: CLLocationCoordinate2D? = nil,
         exactFeature: BuildingFeature? = nil
     ) {
+        selectedParcelAddressIds = nil
+        selectedParcelFeatureIds = []
         demoDerivedDataCache.preparation.withSnapshot {
         let trace = PerfTrace.begin("home_tap", "present_building_selection", fields: [
             "campaign": campaignId,
@@ -13414,6 +14096,8 @@ struct CampaignMapView: View {
         userInitiated: Bool = true,
         haptic: Bool = true
     ) {
+        selectedParcelAddressIds = nil
+        selectedParcelFeatureIds = []
         let addressForSelection = addressTapResultWithParcelMetadata(address)
         selectedAddress = addressForSelection
         selectedBuildingTapCoordinate = nil
@@ -13651,16 +14335,17 @@ struct CampaignMapView: View {
         showLocationCard = false
     }
 
-    private func createManualAddressFromPicker(_ context: BuildingAddressPickerContext) {
+    private func createManualAddressFromPicker(_ context: BuildingAddressPickerContext, suggestion: BuildingAddressCandidate? = nil) {
         guard requireManualLinkWriteReadiness() else { return }
         buildingAddressPickerContext = nil
         if let parcelId = context.parcelId, let coordinate = context.seedCoordinate {
             let metadata = parcelMetadata(containing: coordinate)
             pendingManualAddressDraft = PendingManualAddressDraft(
-                coordinate: coordinate, linkedBuildingId: context.parcelBuildingId, prefilledAddressText: nil,
+                coordinate: coordinate, linkedBuildingId: context.parcelBuildingId, prefilledAddressText: suggestion?.displayAddress,
                 addressProvenance: context.parcelBuildingId == nil ? "field_manual_pin" : nil,
                 parcelId: metadata?.parcelId ?? parcelId,
-                campaignParcelId: metadata?.campaignParcelId, hasParcelLink: true, isParcelPlacement: true
+                campaignParcelId: metadata?.campaignParcelId, hasParcelLink: true, isParcelPlacement: true,
+                isLiveFarmPlacement: isFarmMap || context.liveTarget != nil
             )
             return
         }
@@ -13682,8 +14367,152 @@ struct CampaignMapView: View {
         pendingManualAddressDraft = PendingManualAddressDraft(
             coordinate: seedCoordinate,
             linkedBuildingId: context.id,
-            prefilledAddressText: prefilledAddress
+            prefilledAddressText: suggestion?.displayAddress ?? prefilledAddress,
+            isParcelPlacement: context.liveTarget != nil,
+            isLiveFarmPlacement: isFarmMap || context.liveTarget != nil
         )
+    }
+
+    @MainActor
+    private func beginAddressLink(_ candidate: BuildingAddressCandidate, context: BuildingAddressPickerContext) {
+        guard pendingAddressLink == nil || pendingAddressLinkError != nil else { return }
+        let siblings = context.liveTarget.map { FarmLiveAddressGeometry.townhouseSiblings(of: $0, targets: farmLiveAllTargets) } ?? []
+        let precedingBatch = farmTownhomeSaveTask
+        precedingBatch?.cancel()
+        pendingAddressLink = (candidate, context)
+        pendingAddressLinkError = nil
+        showLocationCard = true
+        buildingAddressPickerContext = nil
+        Task { @MainActor in
+            let saveTrace = PerfTrace.begin("farm_live", "confirm_to_card")
+            defer { saveTrace.end(status: pendingAddressLinkError == nil ? "saved" : "failed") }
+            // Give the picker dismissal and the saving card a frame before map work starts.
+            await Task.yield()
+            // Finish any in-flight local write before matching this user's next tap.
+            await precedingBatch?.value
+            do {
+                try await linkAddressCandidate(candidate, to: context)
+                pendingAddressLink = nil
+                farmLiveSelection = nil
+                if let id = context.liveTarget?.id {
+                    farmLiveSuggestions.remove(id)
+                    farmTownhomeSavedTargets.insert(id)
+                    farmTownhomePendingTargets.removeValue(forKey: id)
+                }
+                scheduleFarmLiveSuggestions()
+                saveTownhouseSuggestionsInBackground(siblings, confirmed: candidate)
+            } catch {
+                pendingAddressLinkError = error.localizedDescription
+            }
+        }
+    }
+
+    /// A row save never changes selection or opens another card. Foreground taps take priority.
+    @MainActor
+    private func saveTownhouseSuggestionsInBackground(_ targets: [FarmLiveAddressTarget], confirmed: BuildingAddressCandidate) {
+        guard requireManualLinkWriteReadiness() else { return }
+        for target in targets where !farmTownhomeSavedTargets.contains(target.id) {
+            farmTownhomePendingTargets[target.id] = target
+        }
+        farmTownhomeAcceptedCandidates.append(confirmed)
+        let queuedTargets = Array(farmTownhomePendingTargets.values).sorted { $0.id < $1.id }
+        guard !queuedTargets.isEmpty else { return }
+        farmTownhomeSaveTask = Task { @MainActor in
+            var accepted = farmTownhomeAcceptedCandidates
+            var usedAddressIDs = Set<UUID>()
+            var changed = false
+            var additions: [AddressFeature] = []
+            var savedLinks: [String: [UUID]] = [:]
+            let batchIndex = CampaignAddressMatchIndex()
+            let batchKey = UUID().uuidString
+            let loaded = featuresService.addresses(for: campaignId)?.features ?? []
+            let batchAddresses = loaded.isEmpty ? visibleAddressFeatures : loaded
+            let trace = PerfTrace.begin("farm_live", "townhouse_background_save")
+            defer {
+                trace.end(status: Task.isCancelled ? "interrupted" : "complete")
+                if changed {
+                    // Local features and map-edit observers already publish this batch.
+                    // Reloading the whole campaign repeats geometry/session preparation
+                    // and can race the still-pending outbox writes.
+                    publishTownhouseFeatures(additions)
+                    // The foreground placement initially records only the first
+                    // address. Include the siblings before rebuilding the roof:
+                    // an explicit one-address map otherwise suppresses slices.
+                    for (buildingID, addressIDs) in savedLinks {
+                        var linked = buildingAddressMap[buildingID] ?? []
+                        for addressID in addressIDs where !linked.contains(addressID) {
+                            linked.append(addressID)
+                        }
+                        buildingAddressMap[buildingID] = linked
+                    }
+                    refreshTownhomeStatusOverlay()
+                    Task { @MainActor in
+                        await OfflineSyncCoordinator.shared.refreshPendingCount()
+                        if NetworkMonitor.shared.isOnline { OfflineSyncCoordinator.shared.scheduleProcessOutbox() }
+                    }
+                }
+            }
+            farmLiveSuggestions.prefetch(queuedTargets)
+            for target in queuedTargets {
+                guard !Task.isCancelled else { return }
+                guard !farmTownhomeSavedTargets.contains(target.id),
+                      let parcelID = target.parcelId, let buildingID = target.buildingId else { continue }
+                var suggestion = farmLiveSuggestions.candidate(for: target.id)
+                if suggestion == nil { suggestion = await farmLiveSuggestions.resolve(target) }
+                guard !Task.isCancelled else { return }
+                guard let suggestion, !accepted.contains(where: {
+                    UnlinkedHomeAddressResolver.addressesMatch(
+                        reverseHouseNumber: suggestion.houseNumber, reverseStreetName: suggestion.resolvedStreetName,
+                        reversePostalCode: suggestion.postalCode, reverseFormatted: suggestion.displayAddress,
+                        candidateHouseNumber: $0.houseNumber, candidateStreetName: $0.resolvedStreetName,
+                        candidatePostalCode: $0.postalCode, candidateFormatted: $0.displayAddress)
+                }) else { continue }
+                do {
+                    let matchedFeature = await batchIndex.match(suggestion, key: batchKey, features: batchAddresses)
+                    let existing = matchedFeature.flatMap { addressTapResult(from: $0) }
+                    let savedAddressID: UUID
+                    guard !Task.isCancelled else { return }
+                    if let existing {
+                        guard usedAddressIDs.insert(existing.addressId).inserted else { continue }
+                        let change = CampaignMapEditPlanner.addressParcelLink(
+                            addressId: existing.addressId.uuidString, parcelId: parcelID,
+                            coordinate: target.coordinate, buildingId: buildingID,
+                            state: mapEditStore.storedState(for: campaignId), sourceRevision: currentDiamondManifest?.geometryEtag)
+                        try mapEditStore.commit(campaignId, title: "Link townhouse address", changes: [change])
+                        savedAddressID = existing.addressId
+                    } else {
+                        // A number-only match may be ambiguous; never create a second record for it.
+                        guard !hasVisibleUnlinkedFarmAddress(suggestion) else { continue }
+                        let response = try await BuildingLinkService.shared.createManualAddress(
+                            campaignId: campaignId,
+                            input: ManualAddressCreateInput(coordinate: target.coordinate,
+                                formatted: suggestion.displayAddress, houseNumber: suggestion.houseNumber,
+                                streetName: suggestion.resolvedStreetName, locality: suggestion.locality,
+                                region: suggestion.region, postalCode: suggestion.postalCode, country: suggestion.country,
+                                buildingId: buildingID, addressProvenance: "manual", userConfirmed: true,
+                                parcelId: parcelID, campaignParcelId: parcelID, hasParcelLink: true),
+                            addressId: suggestion.id, syncBehavior: .enqueueAndReturnLocal, scheduleImmediateSync: false)
+                        if let feature = upsertAddressFeatureLocally(response.address, coordinate: target.coordinate,
+                            buildingId: buildingID, source: "manual", parcelMetadata: (parcelID, parcelID, true), publish: false) {
+                            additions.append(feature)
+                        }
+                        usedAddressIDs.insert(response.address.id)
+                        savedAddressID = response.address.id
+                    }
+                    savedLinks[buildingID.lowercased(), default: []].append(savedAddressID)
+                    accepted.append(suggestion)
+                    farmTownhomeAcceptedCandidates.append(suggestion)
+                    farmTownhomeSavedTargets.insert(target.id)
+                    farmTownhomePendingTargets.removeValue(forKey: target.id)
+                    farmLiveSuggestions.remove(target.id)
+                    changed = true
+                } catch {
+                    PerfTrace.event("farm_live", "townhouse_background_save_failed")
+                    // Leave failed suggestions available for a later explicit retry.
+                }
+                await Task.yield()
+            }
+        }
     }
 
     @MainActor
@@ -13691,31 +14520,130 @@ struct CampaignMapView: View {
         _ candidate: BuildingAddressCandidate, toParcel parcelId: String,
         context: BuildingAddressPickerContext
     ) async throws {
+        let trace = PerfTrace.begin("address_picker", "parcel_link_and_place")
+        defer { trace.end(status: "finished") }
         guard let coordinate = context.seedCoordinate else { return }
         let existing = candidate.isReverseGeocode ? await matchingCampaignAddress(for: candidate) : nil
         if !candidate.isReverseGeocode || existing != nil {
             let addressId = existing?.address.addressId ?? candidate.id
-            let original = existing?.address ?? addressTapResult(addressId: addressId, building: nil)
+            let edits = mapEditStore.storedState(for: campaignId)
+            // Nearest-picker candidates already identify the saved row. Resolve
+            // that one record without constructing a corrected farm snapshot.
+            let source = existing?.feature
+                ?? featuresService.compactFieldIndex(for: campaignId)?.addressFeature(id: addressId.uuidString)
+                ?? (featuresService.isScopedToCampaign(campaignId) ? featuresService.addresses?.features : nil)?.first {
+                    ($0.properties.id ?? $0.id)?.lowercased() == addressId.uuidString.lowercased()
+                }
+            let effectiveFeature = source.flatMap {
+                CampaignMapEdits.snapshot(buildings: [], addresses: [$0], parcels: [], state: edits).addresses.first
+            }
+            let original = existing?.address ?? effectiveFeature.flatMap { addressTapResult(from: $0) }
+                ?? MapLayerManager.AddressTapResult(addressId: addressId, formatted: candidate.displayAddress,
+                    gersId: nil, buildingGersId: context.parcelBuildingId, houseNumber: candidate.houseNumber,
+                    streetName: candidate.resolvedStreetName, source: candidate.source)
             let change = CampaignMapEditPlanner.addressParcelLink(
                 addressId: addressId.uuidString, parcelId: parcelId,
                 coordinate: coordinate,
                 buildingId: context.parcelBuildingId,
-                state: mapEditStore.storedState(for: campaignId),
+                state: edits,
                 sourceRevision: currentDiamondManifest?.geometryEtag
             )
-            try mapEditStore.commit(campaignId, title: "Link address to parcel", changes: [change])
+            let oldRenderKey = stableGeometryCacheKey
+            let oldLiveRevision = farmLiveSourceRevision
+            // Prepare only the matched record. The full-farm renderer is unnecessary
+            // when moving an unlinked street pin onto this known property.
+            let placement = context.liveTarget.map {
+                FarmLiveMatchIndex.Placement(addressID: addressId, target: $0, coordinate: coordinate)
+            }
+            var renderParcels: [ParcelFeature] = []
+            if let target = context.liveTarget,
+               let record = featuresService.compactFieldIndex(for: campaignId)?.parcel(parcelId.lowercased()) {
+                renderParcels = [ParcelFeature(id: record.featureId, geometry: target.geometry, properties: record.properties)]
+            }
+            let renderIndex = effectiveFeature.map { FarmLiveMatchIndex(addresses: [$0], buildings: [], parcels: renderParcels) }
+            let placedFeatures = placement.flatMap { placement in
+                effectiveFeature.flatMap { feature in renderIndex?.renderFeatures(for: [placement], confirmedAddresses: [feature]) }
+            } ?? []
+            let previousRoofs = Set([effectiveFeature?.properties.buildingGersId, effectiveFeature?.properties.linkedBuildingId]
+                .compactMap { $0?.lowercased() })
+            let cachedBuildings: [BuildingFeature]? = oldRenderKey.flatMap { demoDerivedDataCache.geometry.cachedValue(for: "buildings", key: $0) }
+            let cachedAddresses: [AddressFeature]? = oldRenderKey.flatMap { demoDerivedDataCache.geometry.cachedValue(for: "addresses", key: $0) }
+            let cachedParcels: [ParcelFeature]? = oldRenderKey.flatMap { demoDerivedDataCache.geometry.cachedValue(for: "parcels", key: $0) }
+            let preparedSnapshot: CampaignMapEditSnapshot?
+            if placement != nil, let cachedBuildings, let cachedAddresses, let cachedParcels {
+                preparedSnapshot = await Task.detached(priority: .userInitiated) {
+                    let ids = Set(cachedAddresses.compactMap { ($0.properties.id ?? $0.id)?.lowercased() })
+                    let addresses = cachedAddresses + placedFeatures.filter { !ids.contains(($0.properties.id ?? $0.id ?? "").lowercased()) }
+                    return CampaignMapEdits.snapshot(buildings: cachedBuildings, addresses: addresses, parcels: cachedParcels,
+                        state: CampaignMapEditState().applying([change]))
+                }.value
+            } else { preparedSnapshot = nil }
+            let preparationIsCurrent = oldRenderKey != nil && oldRenderKey == stableGeometryCacheKey
+            let persistTrace = PerfTrace.begin("farm_live", "existing_address_persist")
+            do {
+                try mapEditStore.commit(campaignId, title: "Link address to parcel", changes: [change])
+                persistTrace.end(status: "saved")
+            } catch {
+                persistTrace.end(status: "failed")
+                throw error
+            }
+            if let placement, let renderIndex, !placedFeatures.isEmpty {
+                let previousLinks = buildingAddressMap
+                if preparationIsCurrent, let oldRenderKey, let newKey = stableGeometryCacheKey, let preparedSnapshot {
+                    demoDerivedDataCache.geometry.advance(from: oldRenderKey, to: newKey, replacements: [
+                        "buildings": preparedSnapshot.buildings, "addresses": preparedSnapshot.addresses,
+                        "parcels": preparedSnapshot.parcels,
+                        "visibleAddressIds": Set(preparedSnapshot.addresses.compactMap { ($0.properties.id ?? $0.id)?.lowercased() })
+                    ])
+                }
+                buildingAddressMap = buildingAddressMap.mapValues { $0.filter { $0 != addressId } }
+                if let roof = context.parcelBuildingId {
+                    buildingAddressMap[roof.lowercased(), default: []].append(addressId)
+                }
+                farmLiveAppliedGeometryGeneration = mapEditStore.geometryGeneration
+                if preparationIsCurrent,
+                   renderAutomaticFarmMatches(placedFeatures, placements: [placement], index: renderIndex,
+                                              oldKey: oldRenderKey, previousLinks: previousLinks, previousBuildingIDs: previousRoofs) {
+                    farmLiveRenderedGeometryGeneration = mapEditStore.geometryGeneration
+                    PerfTrace.event("address_picker", "incremental_existing_placement")
+                }
+                if farmLiveGeometryKey == oldLiveRevision, let index = farmLiveMatchIndex {
+                    farmLiveMatchIndex = index.applying([placement])
+                    farmLiveGeometryKey = farmLiveSourceRevision
+                    farmLiveTargets.removeAll { $0.id == placement.target.id }
+                    farmLiveAllTargets.removeAll { $0.id == placement.target.id }
+                }
+            }
             buildingAddressPickerContext = nil
-            if let address = original {
-                let updated = MapLayerManager.AddressTapResult(
-                    addressId: address.addressId, formatted: address.formatted, gersId: address.gersId,
-                    buildingGersId: context.parcelBuildingId ?? address.buildingGersId,
-                    houseNumber: address.houseNumber, streetName: address.streetName, source: address.source,
-                    parcelId: parcelId, campaignParcelId: parcelId, hasParcelLink: true
-                )
+            let address = original
+            let updated = MapLayerManager.AddressTapResult(
+                addressId: address.addressId, formatted: address.formatted, gersId: address.gersId,
+                buildingGersId: context.parcelBuildingId,
+                houseNumber: address.houseNumber, streetName: address.streetName, source: address.source,
+                parcelId: parcelId, campaignParcelId: parcelId, hasParcelLink: true
+            )
+            if context.liveTarget != nil {
+                // The preview already highlights the target; avoid rebuilding selection.
+                selectedBuilding = nil
+                selectedBuildingTapCoordinate = nil
+                selectedAddress = updated
+                selectedAddressIdForCard = updated.addressId
+                selectedAddressHasBuildingGeometry = context.parcelBuildingId != nil
+                farmLiveSelection = nil
+                locationCardReloadToken += 1
+                showLocationCard = true
+                PerfTrace.event("farm_live", "existing_address_card_ready")
+            } else {
                 presentAddressSelection(updated)
             }
         } else {
-            let metadata = parcelMetadata(containing: coordinate)
+            if context.liveTarget != nil && hasVisibleUnlinkedFarmAddress(candidate) {
+                throw existingFarmNumberError
+            }
+            // Live suggestions already carry the parcel identity; avoid a territory-wide
+            // geometry lookup on the tap-to-save path.
+            let metadata: (parcelId: String?, campaignParcelId: String?, hasParcelLink: Bool)? =
+                context.liveTarget != nil ? (parcelId, parcelId, true) : parcelMetadata(containing: coordinate)
             let response = try await BuildingLinkService.shared.createManualAddress(
                 campaignId: campaignId,
                 input: ManualAddressCreateInput(
@@ -13723,17 +14651,42 @@ struct CampaignMapView: View {
                     houseNumber: candidate.houseNumber, streetName: candidate.resolvedStreetName,
                     locality: candidate.locality, region: candidate.region, postalCode: candidate.postalCode,
                     country: candidate.country, buildingId: context.parcelBuildingId,
-                    addressProvenance: context.parcelBuildingId == nil ? "field_manual_pin" : "mapbox_reverse_geocode",
+                    addressProvenance: "manual",
                     userConfirmed: true, parcelId: metadata?.parcelId ?? parcelId,
                     campaignParcelId: metadata?.campaignParcelId, hasParcelLink: true
-                ), syncBehavior: .enqueueAndReturnLocal
+                ), addressId: candidate.id, syncBehavior: .enqueueAndReturnLocal
             )
             buildingAddressPickerContext = nil
+            // The durable local row is ready. Open its real card before rebuilding geometry.
+            reverseGeocodedAddressIds.insert(response.address.id)
+            let readyAddress = MapLayerManager.AddressTapResult(
+                addressId: response.address.id, formatted: candidate.displayAddress, gersId: response.address.gersId,
+                buildingGersId: context.parcelBuildingId, houseNumber: candidate.houseNumber,
+                streetName: candidate.resolvedStreetName, source: "manual",
+                parcelId: metadata?.parcelId ?? parcelId, campaignParcelId: metadata?.campaignParcelId ?? parcelId,
+                hasParcelLink: true)
+            selectedAddress = readyAddress
+            selectedAddressIdForCard = response.address.id
+            selectedAddressHasBuildingGeometry = context.parcelBuildingId != nil
+            farmLiveSelection = nil
+            showLocationCard = true
+            PerfTrace.event("farm_live", "durable_card_ready")
+            // Let SwiftUI present the durable card before Mapbox source updates.
+            // Yield alone can resume in the same frame on a busy active session.
+            try? await Task.sleep(for: .milliseconds(32))
+            if let target = context.liveTarget,
+               renderSavedLiveAddress(response.address, target: target,
+                   parcelMetadata: (metadata?.parcelId ?? parcelId, metadata?.campaignParcelId ?? parcelId, true)) {
+                UINotificationFeedbackGenerator().notificationOccurred(.success)
+                return
+            }
+            // Allow the card to paint before the legacy geometry refresh touches the main actor.
+            try? await Task.sleep(for: .milliseconds(16))
             if let buildingId = context.parcelBuildingId {
                 presentSavedManualAddress(response.address, linkedBuildingId: buildingId, coordinate: coordinate)
             } else {
                 _ = presentSavedStandaloneManualAddress(
-                    response.address, coordinate: coordinate, renderAsManualPin: true,
+                    response.address, coordinate: coordinate, renderAsManualPin: false,
                     parcelMetadata: (metadata?.parcelId ?? parcelId, metadata?.campaignParcelId, true)
                 )
             }
@@ -13757,6 +14710,7 @@ struct CampaignMapView: View {
         let saveTrace = PerfTrace.begin("address_picker", "persist_link")
 
         let baseGeometryKey = stableGeometryCacheKey
+        let baseMatchKey = addressMatchSourceKey
         let baseManager = layerManager
         let compactSignature = featuresService.compactFieldIndex(for: campaignId)?.campaign.assetSignature
         let basePlan = cachedTileRenderPlan
@@ -13785,6 +14739,9 @@ struct CampaignMapView: View {
             createdManualAddress = false
             resolvedLinkedCoordinate = placementCoordinate
         } else if candidate.isReverseGeocode {
+            if context.liveTarget != nil && hasVisibleUnlinkedFarmAddress(candidate) {
+                throw existingFarmNumberError
+            }
             let parcel = parcelMetadata(containing: placementCoordinate)
             let response = try await BuildingLinkService.shared.createManualAddress(
                 campaignId: campaignId,
@@ -13804,6 +14761,7 @@ struct CampaignMapView: View {
                     campaignParcelId: parcel?.campaignParcelId,
                     hasParcelLink: parcel?.hasParcelLink
                 ),
+                addressId: candidate.id,
                 syncBehavior: .enqueueAndReturnLocal
             )
             linkedAddressId = response.address.id
@@ -13864,6 +14822,18 @@ struct CampaignMapView: View {
         }
 
         saveTrace.end(status: "saved")
+        // Let SwiftUI display the saved address before rebuilding map overlays.
+        // The address and its sync intent are already durable at this point.
+        buildingAddressPickerContext = nil
+        selectedAddress = linkedAddress
+        selectedAddressIdForCard = linkedAddressId
+        selectedAddressHasBuildingGeometry = selectedBuilding != nil
+        farmLiveSelection = nil
+        PerfTrace.event("farm_live", "durable_card_ready")
+        locationCardReloadToken += 1
+        withAnimation { showLocationCard = true }
+        try? await Task.sleep(for: .milliseconds(100))
+
         let placementTrace = PerfTrace.begin("address_picker", "apply_placement")
         defer { placementTrace.end(status: "finished") }
         var identifiers = context.buildingIdentifiers
@@ -13886,10 +14856,9 @@ struct CampaignMapView: View {
         if let plan = incrementalPlan, let placedFeature, let manager = layerManager,
            applyIncrementalNewAddress(placedFeature, plan: plan, buildings: incrementalBuildings,
                                       identifiers: identifiers, manager: manager, context: context) {
-            if let oldKey = baseGeometryKey, let newKey = stableGeometryCacheKey {
+            if let oldKey = baseMatchKey, let newKey = addressMatchSourceKey {
                 Task { await addressMatchIndex.upsert(placedFeature, from: oldKey, to: newKey) }
             }
-            buildingAddressPickerContext = nil
             reverseGeocodedAddressIds.insert(linkedAddressId)
             UINotificationFeedbackGenerator().notificationOccurred(.success)
             PerfTrace.event("address_picker", "local_placement_ready", fields: ["newAddress": true, "incremental": true])
@@ -13901,21 +14870,95 @@ struct CampaignMapView: View {
         }
         // Existing addresses are rendered from the durable correction. Mutating
         // the imported source here would make undo restore the moved position.
-        buildingAddressPickerContext = nil
         if candidate.isReverseGeocode {
             reverseGeocodedAddressIds.insert(linkedAddressId)
         }
         // moveAddressFeature schedules one source/status refresh; do not rebuild
         // townhouse geometry synchronously a second time before showing the card.
         UINotificationFeedbackGenerator().notificationOccurred(.success)
-        presentLinkedAddressInLocationCard(
-            linkedAddress,
-            addressId: linkedAddressId,
-            context: context
-        )
+        if showLocationCard && selectedAddressIdForCard == linkedAddressId {
+            presentLinkedAddressInLocationCard(
+                linkedAddress,
+                addressId: linkedAddressId,
+                context: context
+            )
+        }
         // The committed address is already in the local render collection. A
         // campaign reload here re-decodes the entire territory after each pin.
         PerfTrace.event("address_picker", "local_placement_ready", fields: ["newAddress": createdManualAddress])
+    }
+
+    /// A live suggestion already identifies its parcel and roof. Do not rebuild the farm to place it.
+    private func renderSavedLiveAddress(_ address: CampaignAddressResponse, target: FarmLiveAddressTarget,
+        parcelMetadata: (parcelId: String?, campaignParcelId: String?, hasParcelLink: Bool)) -> Bool {
+        guard let manager = layerManager, let index = featuresService.compactFieldIndex(for: campaignId),
+              let oldKey = stableGeometryCacheKey, var plan = cachedTileRenderPlan,
+              cachedTileRenderPlanKey == oldKey + "|" + index.campaign.assetSignature,
+              mapDataUpdateTask == nil, !mapDataUpdatePending else { return false }
+        let oldMatchKey = addressMatchSourceKey
+        let trace = PerfTrace.begin("farm_live", "targeted_address_render")
+        defer { trace.end() }
+        let roof = target.buildingId.flatMap { try? index.exactBuildingFeature(id: $0) }
+        // Read the current cached geometry before publishing the new address
+        // invalidates the territory-wide geometry cache.
+        let roofAliases = Set(roof?.properties.buildingIdentifierCandidates.map { $0.lowercased() } ?? [])
+        var rowAddresses = visibleAddressFeatures.filter {
+            [$0.properties.buildingGersId, $0.properties.linkedBuildingId].compactMap { $0?.lowercased() }.contains { roofAliases.contains($0) }
+        }
+        var parcelAliases = Set(rowAddresses.flatMap { [$0.properties.parcelId, $0.properties.campaignParcelId].compactMap { $0?.lowercased() } })
+        for id in [parcelMetadata.parcelId, parcelMetadata.campaignParcelId].compactMap({ $0?.lowercased() }) {
+            parcelAliases.insert(id)
+        }
+        let rowParcels = visibleParcelFeatures.filter {
+            [$0.id, $0.properties.id, $0.properties.parcelId, $0.properties.externalId].compactMap { $0?.lowercased() }.contains { parcelAliases.contains($0) }
+        }
+        guard let feature = upsertAddressFeatureLocally(address, coordinate: target.coordinate,
+            buildingId: target.buildingId, source: "manual", parcelMetadata: parcelMetadata) else { return false }
+        let parcelIDs = [parcelMetadata.parcelId, parcelMetadata.campaignParcelId].compactMap { $0 } +
+            rowParcels.filter { parcel in
+                let aliases = [parcel.id, parcel.properties.id, parcel.properties.parcelId, parcel.properties.externalId]
+                    .compactMap { $0?.lowercased() }
+                return [parcelMetadata.parcelId, parcelMetadata.campaignParcelId]
+                    .compactMap { $0?.lowercased() }.contains { aliases.contains($0) }
+            }.flatMap { [$0.id, $0.properties.id, $0.properties.parcelId, $0.properties.externalId].compactMap { $0 } }
+        manager.linkManualPinToParcel(addressId: address.id, parcelIds: parcelIDs)
+        plan.upsertAddressOverlay(feature)
+        if let buildingID = target.buildingId {
+            var ids = buildingAddressMap[buildingID.lowercased()] ?? []
+            if !ids.contains(address.id) { ids.append(address.id) }
+            buildingAddressMap[buildingID.lowercased()] = ids
+        }
+        var labelBuildings = plan.buildingEdits
+        if let roof, !labelBuildings.contains(where: { $0.id == roof.id }) { labelBuildings.append(roof) }
+        guard let data = addressDataForLayerCache(features: plan.addressEdits) else { return false }
+        manager.updateAddressNumberLabels(addresses: plan.addressEdits, buildings: labelBuildings,
+            orderedAddressIdsByBuilding: buildingAddressMap)
+        manager.updateAddresses(data, addresses: plan.addressEdits, buildings: labelBuildings,
+            orderedAddressIdsByBuilding: buildingAddressMap)
+        if let roof {
+            rowAddresses.removeAll { ($0.properties.id ?? $0.id)?.lowercased() == address.id.uuidString.lowercased() }
+            rowAddresses.append(feature)
+            let rowIDs = rowAddresses.compactMap { UUID(uuidString: $0.properties.id ?? $0.id ?? "") }
+            if let buildingID = target.buildingId {
+                manager.updateBuildingState(gersId: buildingID,
+                    status: computeBuildingLayerStatus(gersId: buildingID.lowercased(), addressIds: rowIDs),
+                    scansTotal: effectiveScansTotal(for: buildingID.lowercased()),
+                    visitOwner: effectiveBuildingVisitOwnerState(gersId: buildingID.lowercased(), addressIds: rowIDs),
+                    isLinked: true)
+            }
+            manager.updateTownhomeRow(buildings: [roof], addresses: rowAddresses, parcels: rowParcels,
+                links: buildingAddressMap, statuses: addressStatuses, rows: addressStatusRows,
+                currentUserId: AuthManager.shared.user?.id,
+                covered: Set((workspaceCoverage?.homes ?? []).filter(\.isLocked).map(\.address_id)))
+        }
+        guard let newKey = stableGeometryCacheKey else { return false }
+        cachedTileRenderPlan = plan
+        cachedTileRenderPlanKey = newKey + "|" + index.campaign.assetSignature
+        locallyRenderedAddressRevision = featuresService.addressesRevision
+        if let oldMatchKey, let newMatchKey = addressMatchSourceKey {
+            Task { await addressMatchIndex.upsert(feature, from: oldMatchKey, to: newMatchKey) }
+        }
+        return true
     }
 
     private func applyIncrementalNewAddress(
@@ -13942,13 +14985,13 @@ struct CampaignMapView: View {
         cachedTileRenderPlan = nextPlan
         cachedTileRenderPlanKey = key + "|" + signature
         locallyRenderedAddressRevision = featuresService.addressesRevision
-        selectedAddress = address
-        selectedAddressIdForCard = addressId
-        selectedAddressHasBuildingGeometry = true
-        applyLinkedHighlight(addressIds: [addressId], buildingIdentifiers: identifiers,
-                             exactFeature: nil, parcelFeatureIds: parcelIds, haptic: false)
-        locationCardReloadToken += 1
-        withAnimation { showLocationCard = true }
+        if showLocationCard && selectedAddressIdForCard == addressId {
+            selectedAddress = address
+            selectedAddressHasBuildingGeometry = true
+            applyLinkedHighlight(addressIds: [addressId], buildingIdentifiers: identifiers,
+                                 exactFeature: nil, parcelFeatureIds: parcelIds, haptic: false)
+            locationCardReloadToken += 1
+        }
         trace.end(status: "applied", fields: ["overlayAddresses": nextPlan.addressEdits.count])
         return true
     }
@@ -13966,17 +15009,32 @@ struct CampaignMapView: View {
 
     private func matchingCampaignAddress(
         for reverseCandidate: BuildingAddressCandidate
-    ) async -> (address: MapLayerManager.AddressTapResult, coordinate: CLLocationCoordinate2D)? {
-        let loadedAddresses = featuresService.addresses(for: campaignId)?.features ?? []
-        let addresses = loadedAddresses.isEmpty ? visibleAddressFeatures : loadedAddresses
+    ) async -> (address: MapLayerManager.AddressTapResult, coordinate: CLLocationCoordinate2D, feature: AddressFeature)? {
         // Route/demo sources don't expose a stable cache scope; never reuse one.
-        let key = stableGeometryCacheKey ?? UUID().uuidString
+        let key = addressMatchSourceKey ?? UUID().uuidString
         let trace = PerfTrace.begin("address_picker", "existing_address_match")
-        let match = await addressMatchIndex.match(reverseCandidate, key: key, features: addresses)
+        let edits = mapEditStore.storedState(for: campaignId)
+        let hiddenItems = Set(edits.features.compactMap { $0.value.hidden == true ? $0.key : nil })
+        let cached = await addressMatchIndex.preparedMatch(reverseCandidate, key: key, excludingItems: hiddenItems)
+        let match: AddressFeature?
+        if cached.isPrepared {
+            match = cached.feature
+        } else {
+            let loadedAddresses = addressMatchSourceKey != nil
+                ? featuresService.addresses?.features ?? []
+                : featuresService.addresses(for: campaignId)?.features ?? []
+            let addresses = loadedAddresses.isEmpty ? visibleAddressFeatures : loadedAddresses
+            match = await addressMatchIndex.match(reverseCandidate, key: key, features: addresses, excludingItems: hiddenItems)
+        }
         trace.end(status: match == nil ? "new_address" : "matched")
-        guard let match, let coordinate = CampaignTargetResolver.coordinate(for: match.geometry),
-              let address = addressTapResult(from: match) else { return nil }
-        return (address, coordinate)
+        guard let match else { return nil }
+        // The identity index survives placement edits. Apply current corrections to
+        // this one row so undo, hiding and earlier links never return stale metadata.
+        let effective = CampaignMapEdits.snapshot(buildings: [], addresses: [match], parcels: [],
+            state: edits).addresses.first
+        guard let effective, let coordinate = CampaignTargetResolver.coordinate(for: effective.geometry),
+              let address = addressTapResult(from: effective) else { return nil }
+        return (address, coordinate, effective)
     }
 
     private func presentLinkedAddressInLocationCard(
@@ -14201,15 +15259,17 @@ struct CampaignMapView: View {
         scheduleLoadedStatusesRefresh(forceRefresh: true)
     }
 
+    @discardableResult
     private func upsertAddressFeatureLocally(
         _ address: CampaignAddressResponse,
         coordinate: CLLocationCoordinate2D,
         buildingId: String?,
         source: String?,
         parcelMetadata: (parcelId: String?, campaignParcelId: String?, hasParcelLink: Bool)? = nil,
-        renderAsManualPin: Bool = false
-    ) {
-        guard let geometry = pointGeometry(for: coordinate) else { return }
+        renderAsManualPin: Bool = false,
+        publish: Bool = true
+    ) -> AddressFeature? {
+        guard let geometry = pointGeometry(for: coordinate) else { return nil }
 
         let addressId = address.id.uuidString.lowercased()
         let metadata = renderAsManualPin ? parcelMetadata : (parcelMetadata ?? self.parcelMetadata(containing: coordinate))
@@ -14242,6 +15302,7 @@ struct CampaignMapView: View {
             properties: properties
         )
 
+        guard publish else { return feature }
         var collection = featuresService.addresses ?? AddressFeatureCollection(type: "FeatureCollection", features: [])
         if let index = collection.features.firstIndex(where: {
             (($0.properties.id ?? $0.id ?? "").lowercased()) == addressId
@@ -14250,6 +15311,16 @@ struct CampaignMapView: View {
         } else {
             collection.features.append(feature)
         }
+        featuresService.addresses = collection
+        return feature
+    }
+
+    private func publishTownhouseFeatures(_ additions: [AddressFeature]) {
+        guard !additions.isEmpty else { return }
+        var collection = featuresService.addresses ?? AddressFeatureCollection(type: "FeatureCollection", features: [])
+        let ids = Set(additions.compactMap { $0.properties.id?.lowercased() })
+        collection.features.removeAll { ids.contains(($0.properties.id ?? $0.id ?? "").lowercased()) }
+        collection.features.append(contentsOf: additions)
         featuresService.addresses = collection
     }
 
@@ -14419,7 +15490,6 @@ struct CampaignMapView: View {
             buildingId: linkedBuildingId,
             source: address.gersId == nil ? "manual" : nil
         )
-        moveAddressFeature(addressId: address.id, to: coordinate)
         refreshTownhomeStatusOverlay()
         scheduleLoadedStatusesRefresh(forceRefresh: true)
         UINotificationFeedbackGenerator().notificationOccurred(.success)
@@ -14472,12 +15542,7 @@ struct CampaignMapView: View {
         }
         // The inserted feature already has this coordinate. Reassigning the
         // entire campaign collection for a new pin caused another map rebuild.
-        if !renderAsManualPin {
-            moveAddressFeature(addressId: address.id, to: coordinate)
-        }
-        if renderAsManualPin {
-            refreshAddressModelLayersOnly(reason: "manual_pin_drop")
-        }
+        refreshAddressModelLayersOnly(reason: renderAsManualPin ? "manual_pin_drop" : "address_confirmed")
         // A 2D draft already played the shared pattern when its menu appeared.
         // Its background save must not add another buzz, even after dismissal.
         if !renderAsManualPin || quickStartStandardTapTasks[address.id] == nil {
@@ -14849,6 +15914,16 @@ struct CampaignMapView: View {
     }
 
     private func setSelectedAddressForCard(_ addressId: UUID?) {
+        if let scope = selectedParcelAddressIds {
+            guard addressId.map({ scope.contains($0) }) ?? true else { return }
+            selectedAddressIdForCard = addressId
+            if let addressId {
+                selectedAddress = visibleAddressTapResult(addressId: addressId)
+                    ?? addressTapResult(addressId: addressId, building: selectedBuilding)
+            }
+            highlightParcelSelection(addressId: addressId, haptic: false)
+            return
+        }
         selectedAddressIdForCard = addressId
 
         guard let addressId else {
@@ -15970,7 +17045,7 @@ struct CampaignMapView: View {
 
     private func uncachedSessionTargets(for mode: SessionMode) -> [ResolvedCampaignTarget] {
         if usesStandardPinsRenderer {
-            let addressTargets = CampaignTargetResolver.addressTargets(from: visibleAddressFeatures)
+            let addressTargets = resolvedAddressSessionTargets()
             if !addressTargets.isEmpty {
                 return addressTargets
             }
@@ -16011,7 +17086,7 @@ struct CampaignMapView: View {
             seen.insert(k)
             merged.append(t)
         }
-        for t in CampaignTargetResolver.addressTargets(from: visibleAddressFeatures) {
+        for t in resolvedAddressSessionTargets() {
             let k = t.id.lowercased()
             guard !seen.contains(k) else { continue }
             seen.insert(k)
@@ -16554,6 +17629,7 @@ struct CampaignMapboxMapViewRepresentable: UIViewRepresentable {
     var sessionLocation: CLLocation?
     var sessionHeadingState: MapHeadingPresentationState = .unavailable
     var showSessionPuck: Bool = false
+    var useWolfMarker: Bool = true
     var isMovePanEnabled: Bool = false
     var allowsTripleTap: Bool = false
     let onMapReady: (MapView) -> Void
@@ -16693,7 +17769,7 @@ struct CampaignMapboxMapViewRepresentable: UIViewRepresentable {
         context.coordinator.updateSessionPuck(
             location: sessionLocation,
             headingState: sessionHeadingState,
-            show: showSessionPuck
+            show: showSessionPuck, useWolf: useWolfMarker
         )
         let scale = mapView.window?.screen.scale ?? UIScreen.main.scale
         if scale.isFinite, scale > 0, mapView.contentScaleFactor != scale {
@@ -16778,12 +17854,12 @@ struct CampaignMapboxMapViewRepresentable: UIViewRepresentable {
             self.isMovePanEnabled = isMovePanEnabled
         }
 
-        func updateSessionPuck(location: CLLocation?, headingState: MapHeadingPresentationState, show: Bool) {
+        func updateSessionPuck(location: CLLocation?, headingState: MapHeadingPresentationState, show: Bool, useWolf: Bool) {
             guard let mapView else { return }
             if wolfLocationMarker == nil {
                 wolfLocationMarker = CampaignWolfLocationMarker(mapView: mapView, sourceID: CampaignSessionMapLayerIds.puckSource)
             }
-            wolfLocationMarker?.update(location: location, heading: headingState.heading, show: show)
+            wolfLocationMarker?.update(location: location, heading: headingState.heading, show: show, useWolf: useWolf)
         }
 
         func stopWolfLocationMarker() {
@@ -16897,7 +17973,7 @@ struct MapLegendView: View {
 
             LegendSwatch(color: Color(UIColor(hex: "#f87171")!), label: "Attempted")
 
-            LegendSwatch(color: .black, label: "Do not knock")
+            LegendSwatch(color: Color(MapStatusColor.doNotKnock), label: "Do not knock")
 
             LegendItem(
                 color: Color(UIColor(hex: "#475569")!),
@@ -17459,6 +18535,7 @@ struct LocationCardView: View {
     let buildingIdentifiers: [String]
     /// Linked campaign address IDs already present on the selected building feature.
     let linkedAddressIds: [UUID]
+    let selectionAddressIds: [UUID]?
     /// When multiple addresses exist, which one to show as primary; nil = show list or first
     var preferredAddressId: UUID?
     var buildingSource: String?
@@ -17469,6 +18546,11 @@ struct LocationCardView: View {
     var hasBuildingGeometry = true
     var showsReverseGeocodeCheckmark = false
     var isPreparingLocation = false
+    var suggestionConfirmation: (() -> Void)?
+    var suggestionCanConfirm = false
+    var suggestionIsSaving = false
+    var suggestionError: String?
+    var chooseSuggestionAddress: (() -> Void)?
     /// Per-address statuses for pill coloring in the multi-address list
     var addressStatuses: [UUID: AddressStatus] = [:]
     var addressStatusRows: [UUID: AddressStatusRow] = [:]
@@ -17572,7 +18654,7 @@ struct LocationCardView: View {
     private let locationCardDraftStoragePrefix = "wolfgrid.location_card_draft"
     private let legacyLocationCardDraftStoragePrefix = "flyr.location_card_draft"
 
-    init(gersId: String, campaignId: UUID, sessionId: UUID? = nil, farmExecutionContext: FarmExecutionContext? = nil, addressId: UUID? = nil, addressText: String? = nil, buildingIdentifiers: [String] = [], linkedAddressIds: [UUID] = [], preferredAddressId: UUID? = nil, buildingSource: String? = nil, addressSource: String? = nil, parcelId: String? = nil, campaignParcelId: String? = nil, hasParcelLink: Bool? = nil, hasBuildingGeometry: Bool = true, showsReverseGeocodeCheckmark: Bool = false, isPreparingLocation: Bool = false, addressStatuses: [UUID: AddressStatus] = [:], addressStatusRows: [UUID: AddressStatusRow] = [:], workspaceCoverage: WorkspaceCoverageSnapshot? = nil, campaignMembersByUserId: [UUID: SharedCanvassingMember] = [:], manualPinOwnerUserId: UUID? = nil, sessionTargetIdForAddress: ((UUID) -> String?)? = nil, actionRowStyle: LocationCardActionRowStyle = .campaignTools, farmAddressHistoryPreview: LocationCardAddressHistoryPreview? = nil, showsFarmDeleteAll: Bool = false, allowsManualLinkActions: Bool = true, quickStartContactBookMode: Bool = false, initialActionIntent: LocationCardInitialActionIntent? = nil, onSelectAddress: ((UUID?) -> Void)? = nil, onAddressesResolved: (([UUID]) -> Void)? = nil, onClose: @escaping () -> Void, onStatusUpdated: ((UUID, AddressStatus) -> Void)? = nil, onHomeStateUpdated: ((AddressStatusRow) -> Void)? = nil, onInitialActionIntentApplied: ((UUID) -> Void)? = nil, onToolsAction: ((LocationCardToolsAction) -> Void)? = nil) {
+    init(gersId: String, campaignId: UUID, sessionId: UUID? = nil, farmExecutionContext: FarmExecutionContext? = nil, addressId: UUID? = nil, addressText: String? = nil, buildingIdentifiers: [String] = [], linkedAddressIds: [UUID] = [], selectionAddressIds: [UUID]? = nil, preferredAddressId: UUID? = nil, buildingSource: String? = nil, addressSource: String? = nil, parcelId: String? = nil, campaignParcelId: String? = nil, hasParcelLink: Bool? = nil, hasBuildingGeometry: Bool = true, showsReverseGeocodeCheckmark: Bool = false, isPreparingLocation: Bool = false, addressStatuses: [UUID: AddressStatus] = [:], addressStatusRows: [UUID: AddressStatusRow] = [:], workspaceCoverage: WorkspaceCoverageSnapshot? = nil, campaignMembersByUserId: [UUID: SharedCanvassingMember] = [:], manualPinOwnerUserId: UUID? = nil, sessionTargetIdForAddress: ((UUID) -> String?)? = nil, actionRowStyle: LocationCardActionRowStyle = .campaignTools, farmAddressHistoryPreview: LocationCardAddressHistoryPreview? = nil, showsFarmDeleteAll: Bool = false, allowsManualLinkActions: Bool = true, quickStartContactBookMode: Bool = false, initialActionIntent: LocationCardInitialActionIntent? = nil, onSelectAddress: ((UUID?) -> Void)? = nil, onAddressesResolved: (([UUID]) -> Void)? = nil, onClose: @escaping () -> Void, onStatusUpdated: ((UUID, AddressStatus) -> Void)? = nil, onHomeStateUpdated: ((AddressStatusRow) -> Void)? = nil, onInitialActionIntentApplied: ((UUID) -> Void)? = nil, onToolsAction: ((LocationCardToolsAction) -> Void)? = nil, suggestionConfirmation: (() -> Void)? = nil, suggestionCanConfirm: Bool = false, suggestionIsSaving: Bool = false, suggestionError: String? = nil, chooseSuggestionAddress: (() -> Void)? = nil) {
         self.gersId = gersId
         self.campaignId = campaignId
         self.sessionId = sessionId
@@ -17581,6 +18663,7 @@ struct LocationCardView: View {
         self.addressText = addressText
         self.buildingIdentifiers = buildingIdentifiers
         self.linkedAddressIds = linkedAddressIds
+        self.selectionAddressIds = selectionAddressIds
         self.preferredAddressId = preferredAddressId
         self.buildingSource = buildingSource
         self.addressSource = addressSource
@@ -17590,6 +18673,11 @@ struct LocationCardView: View {
         self.hasBuildingGeometry = hasBuildingGeometry
         self.showsReverseGeocodeCheckmark = showsReverseGeocodeCheckmark
         self.isPreparingLocation = isPreparingLocation
+        self.suggestionConfirmation = suggestionConfirmation
+        self.suggestionCanConfirm = suggestionCanConfirm
+        self.suggestionIsSaving = suggestionIsSaving
+        self.suggestionError = suggestionError
+        self.chooseSuggestionAddress = chooseSuggestionAddress
         self.addressStatuses = addressStatuses
         self.addressStatusRows = addressStatusRows
         self.workspaceCoverage = workspaceCoverage
@@ -17609,7 +18697,8 @@ struct LocationCardView: View {
         self.onHomeStateUpdated = onHomeStateUpdated
         self.onInitialActionIntentApplied = onInitialActionIntentApplied
         self.onToolsAction = onToolsAction
-        _dataService = StateObject(wrappedValue: BuildingDataService(supabase: SupabaseManager.shared.client))
+        _dataService = StateObject(wrappedValue: BuildingDataService(supabase: SupabaseManager.shared.client,
+            selectionAddressIds: selectionAddressIds.map { Set($0) }))
     }
 
     private var isLightMode: Bool { colorScheme == .light }
@@ -17654,7 +18743,10 @@ struct LocationCardView: View {
     }
 
     private var shouldShowAddBuildingShapeAction: Bool {
-        !isManualPinCard && !hasBuildingGeometry && (editableAddress != nil || addressId != nil)
+        !isPreparingLocation && suggestionConfirmation == nil && !showsReverseGeocodeCheckmark &&
+            !dataService.buildingData.isLoading && !isManualPinCard && !hasBuildingGeometry &&
+            gersId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && buildingIdentifiers.isEmpty &&
+            (editableAddress != nil || addressId != nil)
     }
 
     private var isTownhomeRow: Bool {
@@ -17811,7 +18903,8 @@ struct LocationCardView: View {
             preferredAddressId?.uuidString ?? "no-preferred",
             addressText ?? "",
             buildingIdentifiers.joined(separator: ","),
-            linkedAddressIds.map { $0.uuidString.lowercased() }.sorted().joined(separator: ",")
+            linkedAddressIds.map { $0.uuidString.lowercased() }.sorted().joined(separator: ","),
+            selectionAddressIds.map { "parcel:" + $0.map(\.uuidString).sorted().joined(separator: ",") } ?? "building"
         ].joined(separator: "|")
     }
 
@@ -18028,7 +19121,9 @@ struct LocationCardView: View {
 
     @ViewBuilder
     private var cardContentViews: some View {
-        if dataService.buildingData.isLoading {
+        if isPreparingLocation, suggestionCanConfirm, let addressText {
+            universalCardContent(displayAddress: addressText, address: nil)
+        } else if dataService.buildingData.isLoading {
             if let fallbackAddress = fallbackResolvedAddress {
                 optimisticallyLinkedContent(address: fallbackAddress)
             } else {
@@ -18407,7 +19502,7 @@ struct LocationCardView: View {
                     deleteHouse(address)
                 }
             } message: {
-                Text("This will mark the house as do not knock and show it in grey on the map.")
+                Text("This will mark the selected home as do not knock. Its address, parcel, and building will be black in dark mode and white in light mode.")
             }
             .alert("Remove building?", isPresented: $showDeleteBuildingConfirmation) {
                 Button("Cancel", role: .cancel) {}
@@ -18601,6 +19696,7 @@ struct LocationCardView: View {
         .fixedSize(horizontal: false, vertical: true)
         .shadow(color: .black.opacity(isLightMode ? 0.18 : 0.4), radius: 20)
         .onAppear {
+            guard suggestionConfirmation == nil else { return }
             applyAutosavedDraftIfNeeded()
             applyInitialActionIntentIfNeeded()
         }
@@ -18612,6 +19708,7 @@ struct LocationCardView: View {
             applyInitialActionIntentIfNeeded(force: true)
         }
         .onChange(of: locationCardDraftSnapshot) { _, _ in
+            guard suggestionConfirmation == nil else { return }
             persistAutosavedDraft()
         }
         .onDisappear {
@@ -18626,7 +19723,18 @@ struct LocationCardView: View {
     private var standardLocationCardView: some View {
         VStack(alignment: .leading, spacing: 0) {
             cardHeader
-            cardContentBody
+            if suggestionConfirmation != nil, suggestionError != nil || !suggestionCanConfirm {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(suggestionError ?? (suggestionIsSaving ? "Saving address…" : "Finding address…"))
+                        .font(.subheadline).foregroundStyle(suggestionError == nil ? .secondary : Color.red)
+                    Button("Choose another address") { chooseSuggestionAddress?() }
+                        .disabled(suggestionIsSaving)
+                }
+                .padding(.horizontal, 16).padding(.bottom, 16)
+            } else {
+                cardContentBody
+                    .disabled(isPreparingLocation)
+            }
         }
         .background(cardBackground)
         .cornerRadius(16)
@@ -18764,6 +19872,12 @@ struct LocationCardView: View {
                 }
 
                 addressEditHomesList
+
+                if editableAddress != nil {
+                    addressEditActionButton("Do Not Knock", icon: "hand.raised.fill", tint: cardText) {
+                        showDoNotKnockConfirmation = true
+                    }
+                }
 
                 HStack(spacing: 8) {
                     addressEditActionButton("Manual", icon: "square.and.pencil", tint: addressEditDestructiveColor) {
@@ -19055,6 +20169,7 @@ struct LocationCardView: View {
                 }
 
                 TextField("", text: $customHeaderLabel)
+                    .disabled(suggestionConfirmation != nil)
                     .font(.system(size: 17, weight: .bold))
                     .foregroundColor(cardText)
                     .textInputAutocapitalization(.words)
@@ -19073,6 +20188,14 @@ struct LocationCardView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             Spacer(minLength: 8)
+            if let confirm = suggestionConfirmation, suggestionError != nil {
+                Button(action: confirm) {
+                    if suggestionIsSaving { ProgressView() }
+                    else { Image(systemName: "checkmark.circle.fill").font(.system(size: 28)).foregroundStyle(.green) }
+                }
+                .disabled(!suggestionCanConfirm || suggestionIsSaving)
+                .accessibilityLabel("Confirm address")
+            }
             Button {
                 focusedInputField = nil
                 dismissKeyboard()
@@ -19371,7 +20494,21 @@ struct LocationCardView: View {
                 await saveContactDetailsIfNeeded(for: address)
                 if let error = contactSaveError { throw BusinessCardAPI.failure(error) }
                 guard let id = businessCardContactID else { throw BusinessCardAPI.failure("Enter and save contact details first") }
+                await OfflineSyncCoordinator.shared.syncPendingChanges()
                 return id
+            }, directText: true, onTextSent: {
+                Task { @MainActor in
+                    guard let address = editableAddress else { return }
+                    isReturningToMap = true
+                    defer { isReturningToMap = false }
+                    do {
+                        try await logVisitStatus(address, status: .hotLead)
+                        clearAutosavedDraftForCurrentContext()
+                        showLeadScreen = false
+                    } catch {
+                        contactSaveError = error.localizedDescription
+                    }
+                }
             })
             LocationCardExtractedChipsBlock(chips: extractedPreviewChipModels)
             followUpSchedulingRow
@@ -20963,7 +22100,7 @@ struct LocationCardView: View {
             email: trimmedEmail.isEmpty ? baseContact.email : trimmedEmail,
             address: address.displayFull,
             campaignId: contactCampaignId,
-            farmId: baseContact.farmId,
+            farmId: farmExecutionContext?.farmId ?? baseContact.farmId,
             gersId: gersId,
             addressId: address.id,
             leadKind: baseContact.leadKind ?? "field",
@@ -21087,7 +22224,7 @@ struct LocationCardView: View {
                     email: trimmedSecondEmail.isEmpty ? secondaryExistingContact?.email : trimmedSecondEmail,
                     address: address.displayFull,
                     campaignId: contactCampaignId,
-                    farmId: secondaryExistingContact?.farmId,
+                    farmId: farmExecutionContext?.farmId ?? secondaryExistingContact?.farmId,
                     gersId: gersId,
                     addressId: address.id,
                     leadKind: secondaryExistingContact?.leadKind ?? "field",
@@ -21420,6 +22557,7 @@ private struct MapQualityReportView: View {
 private struct BuildingAddressPickerSheet: View {
     let campaignId: String
     let context: BuildingAddressPickerContext
+    var liveSuggestions: FarmLiveAddressSuggestions? = nil
     let onLink: (BuildingAddressCandidate) async throws -> Void
     let onCreateNew: () -> Void
     var onDeleteBuilding: (() -> Void)? = nil
@@ -21783,7 +22921,9 @@ private struct BuildingAddressPickerSheet: View {
         if reverseGeocodeResolvedCandidateIds.contains(candidate.id) {
             return "Reverse geocode matched saved address"
         }
-        return candidate.isReverseGeocode ? "Reverse geocode estimate" : candidate.reason
+        return candidate.isReverseGeocode
+            ? (liveSuggestions != nil ? "Tap to confirm and save" : "Reverse geocode estimate")
+            : candidate.reason
     }
 
     private func distanceText(_ candidate: BuildingAddressCandidate) -> String {
@@ -21805,7 +22945,13 @@ private struct BuildingAddressPickerSheet: View {
         }
         do {
             searchMessage = nil
-            let response = try await BuildingLinkService.shared.fetchAddressCandidates(
+            let response: BuildingAddressCandidateResponse
+            if liveSuggestions != nil, let seed = context.seedCoordinate {
+                response = try await BuildingLinkService.shared.localAddressCandidates(
+                    campaignId: campaignId, buildingId: context.id, seedCoordinate: seed,
+                    radiusMeters: radiusMeters, limit: limit)
+            } else {
+                response = try await BuildingLinkService.shared.fetchAddressCandidates(
                 campaignId: campaignId,
                 buildingId: context.id,
                 buildingIdentifiers: context.buildingIdentifiers,
@@ -21815,7 +22961,9 @@ private struct BuildingAddressPickerSheet: View {
                 forceReverseGeocode: forceReverseGeocode,
                 includeLinkedCandidates: true
             )
-            let rawCandidates = response.candidates + existingReverseGeocodeCandidates()
+            }
+            let reverse = existingReverseGeocodeCandidates()
+            let rawCandidates = response.candidates + reverse + (liveSuggestions == nil ? [] : reverse.flatMap { savedMatchesForLiveSuggestion($0) })
             reverseGeocodeResolvedCandidateIds = exactExistingCandidateIdsMatchingReverseGeocode(in: rawCandidates)
             let nextCandidates = prioritizedCandidates(rawCandidates)
             candidates = nextCandidates
@@ -21873,6 +23021,17 @@ private struct BuildingAddressPickerSheet: View {
         defer { isReverseGeocoding = false }
 
         do {
+            if let liveSuggestions, let target = context.liveTarget {
+                let estimate = await liveSuggestions.resolve(target)
+                guard !Task.isCancelled else { return }
+                reverseGeocodeCandidates = estimate.map { [$0] } ?? []
+                let saved = estimate.map { savedMatchesForLiveSuggestion($0) } ?? []
+                let combined = candidates + saved + reverseGeocodeCandidates
+                reverseGeocodeResolvedCandidateIds = exactExistingCandidateIdsMatchingReverseGeocode(in: combined)
+                candidates = prioritizedCandidates(combined)
+                if estimate == nil { searchMessage = "No confident suggestion. Choose a saved address or add one manually." }
+                return
+            }
             let response = try await BuildingLinkService.shared.fetchAddressCandidates(
                 campaignId: campaignId,
                 buildingId: context.id,
@@ -21899,6 +23058,25 @@ private struct BuildingAddressPickerSheet: View {
             if candidates.isEmpty || userInitiated {
                 searchMessage = error.localizedDescription
             }
+        }
+    }
+
+    private func savedMatchesForLiveSuggestion(_ suggestion: BuildingAddressCandidate) -> [BuildingAddressCandidate] {
+        let features = MapFeaturesService.shared.addresses(for: campaignId)?.features ?? []
+        return features.compactMap { feature -> BuildingAddressCandidate? in
+            let p = feature.properties
+            guard UnlinkedHomeAddressResolver.campaignAddressMatches(reverseCandidate: suggestion,
+                houseNumber: p.houseNumber, streetName: p.streetName, postalCode: p.postalCode, formatted: p.formatted),
+                let id = UUID(uuidString: p.id ?? feature.id ?? ""),
+                let coordinate = CampaignTargetResolver.coordinate(for: feature.geometry) else { return nil }
+            if let locality = p.locality, let other = suggestion.locality,
+               locality.caseInsensitiveCompare(other) != .orderedSame { return nil }
+            return BuildingAddressCandidate(id: id, formatted: p.formatted, houseNumber: p.houseNumber,
+                streetName: p.streetName, locality: p.locality, postalCode: p.postalCode,
+                source: p.source, coordinate: .init(longitude: coordinate.longitude, latitude: coordinate.latitude),
+                distanceMeters: CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude).distance(from:
+                    CLLocation(latitude: suggestion.coordinate.latitude, longitude: suggestion.coordinate.longitude)),
+                score: 0.99, reason: "Matches saved address", requiresConfirmation: true)
         }
     }
 
@@ -22004,6 +23182,7 @@ private struct BuildingAddressPickerSheet: View {
             }
         }
 
+        guard matches.count == 1 else { return nil }
         return matches.sorted { lhs, rhs in
             if lhs.score != rhs.score { return lhs.score > rhs.score }
             if lhs.distanceMeters != rhs.distanceMeters { return lhs.distanceMeters < rhs.distanceMeters }
@@ -22193,6 +23372,20 @@ private struct ManualAddressCreationSheet: View {
                 )
                 let isUsingOriginalDraftText =
                     trimmedFormatted == (draft.prefilledAddressText ?? "")
+                if draft.isLiveFarmPlacement {
+                    let saved = MapFeaturesService.shared.addresses(for: campaignId)?.features ?? []
+                    let duplicate = saved.contains { feature in
+                        UnlinkedHomeAddressResolver.addressesMatch(
+                            reverseHouseNumber: parsedStreet.houseNumber, reverseStreetName: parsedStreet.streetName,
+                            reversePostalCode: draft.postalCode, reverseFormatted: trimmedFormatted,
+                            candidateHouseNumber: feature.properties.houseNumber, candidateStreetName: feature.properties.streetName,
+                            candidatePostalCode: feature.properties.postalCode, candidateFormatted: feature.properties.formatted)
+                    }
+                    if duplicate {
+                        throw NSError(domain: "FarmAddress", code: 409, userInfo: [NSLocalizedDescriptionKey:
+                            "This address is already on your map. Cancel and choose the saved address instead."])
+                    }
+                }
                 let response = try await BuildingLinkService.shared.createManualAddress(
                     campaignId: campaignId,
                     input: ManualAddressCreateInput(
@@ -22210,7 +23403,8 @@ private struct ManualAddressCreationSheet: View {
                         parcelId: draft.parcelId,
                         campaignParcelId: draft.campaignParcelId,
                         hasParcelLink: draft.hasParcelLink
-                    )
+                    ),
+                    addressId: draft.id
                 )
 
                 let name = contactFullName.trimmingCharacters(in: .whitespacesAndNewlines)

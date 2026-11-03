@@ -8,6 +8,8 @@ struct FarmListView: View {
     @State private var farmFilter: FarmFilter = .active
     @State private var recentlyCreatedFarmID: UUID?
     @State private var searchText = ""
+    @State private var pendingDeleteFarm: Farm?
+    @State private var showDeleteConfirmation = false
     var externalFilter: Binding<FarmFilter>? = nil
     var onCreateFarmTapped: (() -> Void)?
 
@@ -79,7 +81,11 @@ struct FarmListView: View {
                             viewModel: viewModel,
                             filter: effectiveFilter,
                             searchText: searchText,
-                            recentlyCreatedFarmID: recentlyCreatedFarmID
+                            recentlyCreatedFarmID: recentlyCreatedFarmID,
+                            onDeleteRequested: { farm in
+                                pendingDeleteFarm = farm
+                                showDeleteConfirmation = true
+                            }
                         )
                         FarmListEmptyFilteredSection(
                             viewModel: viewModel,
@@ -116,10 +122,26 @@ struct FarmListView: View {
                 FarmDetailView(farmId: farm.id)
             }
             .task(id: "\(authManager.user?.id.uuidString ?? "signed-out"):\(workspace.workspaceId?.uuidString ?? "no-workspace")") {
-                viewModel.farms = []
                 if let userId = authManager.user?.id {
                     await viewModel.loadFarms(userId: userId)
                 }
+            }
+            .onAppear {
+                // Navigation can leave this list alive while its map is edited.
+                if !viewModel.farms.isEmpty, let userId = authManager.user?.id {
+                    Task { await viewModel.refresh(userId: userId) }
+                }
+            }
+            .alert("Delete farm?", isPresented: $showDeleteConfirmation, presenting: pendingDeleteFarm) { farm in
+                Button("Delete", role: .destructive) {
+                    pendingDeleteFarm = nil
+                    if let userId = authManager.user?.id {
+                        Task { await viewModel.deleteFarm(farm, userId: userId) }
+                    }
+                }
+                Button("Cancel", role: .cancel) { pendingDeleteFarm = nil }
+            } message: { farm in
+                Text("This will permanently delete \(farm.name).")
             }
             .refreshable {
                 if let userId = authManager.user?.id {
@@ -148,6 +170,7 @@ struct FarmListSection: View {
     let filter: FarmFilter
     var searchText: String = ""
     let recentlyCreatedFarmID: UUID?
+    let onDeleteRequested: (Farm) -> Void
 
     private var filteredFarms: [Farm] {
         switch filter {
@@ -197,13 +220,12 @@ struct FarmListSection: View {
                     .listRowSeparator(.hidden)
                     .listRowBackground(Color.clear)
                     .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                        Button(role: .destructive) {
-                            if let userId = AuthManager.shared.user?.id {
-                                Task { await viewModel.deleteFarm(farm, userId: userId) }
-                            }
+                        Button {
+                            onDeleteRequested(farm)
                         } label: {
                             Label("Delete", systemImage: "trash")
                         }
+                        .tint(.red)
                         Button {
                             // Edit: tap row to open detail
                         } label: {
@@ -229,9 +251,7 @@ struct FarmListSection: View {
                         }
                         Divider()
                         Button(role: .destructive) {
-                            if let userId = AuthManager.shared.user?.id {
-                                Task { await viewModel.deleteFarm(farm, userId: userId) }
-                            }
+                            onDeleteRequested(farm)
                         } label: {
                             Label("Delete", systemImage: "trash")
                         }

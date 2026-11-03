@@ -18,6 +18,7 @@ struct BottomActionBar: View {
     var hideParcels: Binding<Bool>? = nil
     var use2DMap: Binding<Bool>? = nil
     var menuVariant: MenuVariant = .campaign
+    @AppStorage("session_wolf_marker_enabled") private var wolfMarkerEnabled = true
     @Environment(\.colorScheme) private var colorScheme
     @StateObject private var beaconService = SessionSafetyBeaconService.shared
     @StateObject private var sharedLiveCanvassingService = SharedLiveCanvassingService.shared
@@ -174,12 +175,32 @@ struct BottomActionBar: View {
                         }
 
                         toggleRow(
+                            title: "GPS",
+                            subtitle: "Use location for your marker, route and nearby homes. Turning this off pauses route tracking, proximity hits and live location updates.",
+                            systemImage: "location.fill",
+                            tint: defaultIconTint,
+                            isOn: Binding(get: { sessionManager.gpsEnabled }, set: { sessionManager.setGPSEnabled($0) })
+                        )
+                        Divider().overlay(dividerColor)
+
+                        toggleRow(
+                            title: "Wolf Marker",
+                            subtitle: "Show the wolf on the map. Turn off to use a regular location marker.",
+                            systemImage: "pawprint.fill",
+                            tint: defaultIconTint,
+                            isOn: $wolfMarkerEnabled
+                        )
+                        Divider().overlay(dividerColor)
+
+                        toggleRow(
                             title: "GPS Proximity",
                             subtitle: gpsProximitySubtitle,
                             systemImage: "location.circle.fill",
                             tint: defaultIconTint,
                             isOn: gpsProximityBinding
                         )
+                        .disabled(!sessionManager.gpsEnabled)
+                        .opacity(sessionManager.gpsEnabled ? 1 : 0.5)
 
                         Divider()
                             .overlay(dividerColor)
@@ -211,7 +232,7 @@ struct BottomActionBar: View {
                         }
                     }
 
-                    gpsRow
+                    if sessionManager.gpsEnabled { gpsRow }
                 }
                 .background(expandedBackground)
                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))

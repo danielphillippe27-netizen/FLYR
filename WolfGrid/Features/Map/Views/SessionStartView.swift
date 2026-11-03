@@ -125,6 +125,7 @@ struct SessionStartView: View {
                 sessionActionButtons
                 Button {
                     HapticManager.light()
+                    PerfTrace.event("farm_list", "navigation_tap")
                     showFarms = true
                 } label: {
                     Label("Farms", systemImage: "leaf")

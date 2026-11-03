@@ -39,17 +39,25 @@ struct StaleActiveSessionResolutionView: View {
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 8)
 
+                if let message = sessionManager.restoredSessionDownloadMessage {
+                    Text(message)
+                        .font(.flyrSubheadline)
+                        .foregroundStyle(Color.muted)
+                        .multilineTextAlignment(.center)
+                }
+
                 VStack(spacing: 12) {
                     Button {
                         Task { await sessionManager.resumeStaleRestoredSession() }
                     } label: {
-                        Text("Resume session")
+                        Text(sessionManager.isPreparingRestoredSession ? "Preparing download..." : "Resume session")
                             .font(.system(size: 17, weight: .semibold))
                             .frame(maxWidth: .infinity)
                             .frame(height: 54)
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(Color.flyrPrimary)
+                    .disabled(sessionManager.isPreparingRestoredSession)
 
                     Button {
                         Task { await sessionManager.stopBuildingSession() }

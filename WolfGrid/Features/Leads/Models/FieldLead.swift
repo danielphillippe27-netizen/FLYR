@@ -49,6 +49,7 @@ struct FieldLead: Codable, Identifiable, Equatable, Hashable {
     var notes: String?
     var qrCode: String?
     var campaignId: UUID?
+    var farmId: UUID?
     var sessionId: UUID?
     var externalCrmId: String?
     var lastSyncedAt: Date?
@@ -68,6 +69,7 @@ struct FieldLead: Codable, Identifiable, Equatable, Hashable {
         case notes
         case qrCode = "qr_code"
         case campaignId = "campaign_id"
+        case farmId = "farm_id"
         case sessionId = "session_id"
         case externalCrmId = "external_crm_id"
         case lastSyncedAt = "last_synced_at"
@@ -88,6 +90,7 @@ struct FieldLead: Codable, Identifiable, Equatable, Hashable {
         notes: String? = nil,
         qrCode: String? = nil,
         campaignId: UUID? = nil,
+        farmId: UUID? = nil,
         sessionId: UUID? = nil,
         externalCrmId: String? = nil,
         lastSyncedAt: Date? = nil,
@@ -106,6 +109,7 @@ struct FieldLead: Codable, Identifiable, Equatable, Hashable {
         self.notes = notes
         self.qrCode = qrCode
         self.campaignId = campaignId
+        self.farmId = farmId
         self.sessionId = sessionId
         self.externalCrmId = externalCrmId
         self.lastSyncedAt = lastSyncedAt

@@ -190,6 +190,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
     enum SessionStartError: LocalizedError {
         case startAlreadyInFlight(campaignId: UUID)
         case campaignNotProvisioned(campaignId: UUID, reason: String)
+        case offlineDownloadRequired
         case phaseFailure(phase: SessionStartPhase, underlying: Error)
 
         var errorDescription: String? {
@@ -198,6 +199,8 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
                 return "A session start request is already in progress."
             case let .campaignNotProvisioned(_, reason):
                 return reason
+            case .offlineDownloadRequired:
+                return "This campaign must be downloaded to your phone before starting a session. Connect to the internet and try again."
             case let .phaseFailure(phase, underlying):
                 return "\(phase.rawValue) failed: \(underlying.localizedDescription)"
             }
@@ -222,6 +225,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
     @Published var goalType: GoalType = .knocks
     @Published var sessionMode: SessionMode = .doorKnocking
     @Published var goalAmount: Int = 0
+    @Published var gpsEnabled = UserDefaults.standard.object(forKey: "session_gps_enabled") as? Bool ?? true
     @Published var currentLocation: CLLocation?
     @Published var currentHeading: CLLocationDirection = 0
     @Published private(set) var headingState: MapHeadingState = .unavailable
@@ -248,6 +252,8 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
     @Published var sessionRestoredThisLaunch = false
     /// Active session was restored and is older than `staleActiveSessionThreshold`; GPS/timer were not started until the user chooses Resume or End & Save.
     @Published var staleActiveSessionNeedsResolution = false
+    @Published var restoredSessionDownloadMessage: String?
+    @Published var isPreparingRestoredSession = false
     /// Wall-clock age after which a restored open session prompts for resume vs end (6 hours).
     static let staleActiveSessionThreshold: TimeInterval = 6 * 3600
     @Published var sessionId: UUID?
@@ -495,6 +501,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
     }
 
     private func requestAuthorizationAndStartLocation(for mode: SessionMode) {
+        guard gpsEnabled else { return }
         let status = locationManager.authorizationStatus
         authorizationStatus = status
         if status == .notDetermined {
@@ -513,6 +520,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
     }
 
     private func startLocationUpdatesIfAuthorized() {
+        guard gpsEnabled else { return }
         let status = locationManager.authorizationStatus
         guard status == .authorizedWhenInUse || status == .authorizedAlways else { return }
         locationManager.startUpdatingLocation()
@@ -528,6 +536,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
     }
 
     func requestForegroundLocationAuthorization() {
+        guard gpsEnabled else { return }
         let status = locationManager.authorizationStatus
         authorizationStatus = status
         if status == .notDetermined {
@@ -549,6 +558,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
     }
 
     private func requestBackgroundLocationAuthorization(afterPromptDismissalDelay shouldDelay: Bool) {
+        guard gpsEnabled else { return }
         let status = locationManager.authorizationStatus
         authorizationStatus = status
         showBackgroundLocationUpgradePrompt = false
@@ -1156,7 +1166,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         isActive = true
         staleActiveSessionNeedsResolution = false
         restoredServerPausedAfterStalePrompt = snapshot.status == "paused"
-        autoCompleteEnabled = snapshot.payload?.autoCompleteEnabled ?? false
+        autoCompleteEnabled = gpsEnabled && (snapshot.payload?.autoCompleteEnabled ?? false)
         flyersDelivered = max(snapshot.flyersDelivered, snapshot.completedCount)
         conversationsHad = snapshot.conversations
         leadsCreated = snapshot.leadsCreated
@@ -1205,6 +1215,25 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
             print("⏱️ [SessionManager] Ending inactive restored \(source) session \(sid)")
             return
         }
+
+        if let campaignId, !isDemoSession {
+            // Keep the resolution screen in front while the restored session is
+            // being verified so field controls cannot be used in the meantime.
+            staleActiveSessionNeedsResolution = true
+            isPreparingRestoredSession = true
+            let ready = await CampaignDownloadService.shared.ensureAvailableOffline(campaignId: campaignId.uuidString)
+            isPreparingRestoredSession = false
+            guard sessionId == sid, isActive else { return }
+            if !ready {
+                restoredSessionDownloadMessage = "Download this campaign to your phone before resuming. Connect to the internet and try again. Your session is still saved."
+                staleActiveSessionNeedsResolution = true
+                restoredServerPausedAfterStalePrompt = wasPaused
+                isPaused = true
+                activeSegmentStartTime = nil
+                return
+            }
+        }
+        restoredSessionDownloadMessage = nil
 
         if isStaleOpenSession {
             staleActiveSessionNeedsResolution = true
@@ -1764,6 +1793,10 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         // Claim the start before any suspension so another caller cannot pass the guard.
         startInFlightCampaignId = campaignId
         defer { startInFlightCampaignId = nil }
+        guard await CampaignDownloadService.shared.ensureAvailableOffline(campaignId: campaignId.uuidString) else {
+            trace.end(status: "offline_download_required")
+            throw SessionStartError.offlineDownloadRequired
+        }
         if !skipProvisionGate,
            let blockReason = await CampaignsAPI.shared.sessionStartBlockReason(campaignId: campaignId) {
             trace.end(status: "campaign_blocked", fields: [
@@ -1840,7 +1873,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         self.targetBuildings = targetBuildings
         resetVisitState()
         serverCompletedCount = nil
-        self.autoCompleteEnabled = autoCompleteEnabled
+        self.autoCompleteEnabled = gpsEnabled && autoCompleteEnabled
         self.sessionNotes = notes
         self.sessionMode = mode
         sessionEndError = nil
@@ -2653,7 +2686,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
             showLongSessionPrompt = false
             hasShownLongSessionPrompt = false
             hasAutoEndedLongSession = false
-            autoCompleteEnabled = session.auto_complete_enabled ?? false
+            autoCompleteEnabled = gpsEnabled && (session.auto_complete_enabled ?? false)
             flyersDelivered = session.flyers_delivered ?? 0
             conversationsHad = session.conversations ?? 0
             leadsCreated = session.leadsCreated
@@ -2689,7 +2722,18 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
 
     /// User chose to continue a long-running restored session after the stale prompt.
     func resumeStaleRestoredSession() async {
-        guard staleActiveSessionNeedsResolution, sessionId != nil else { return }
+        guard staleActiveSessionNeedsResolution, let restoringSessionId = sessionId, !isPreparingRestoredSession else { return }
+        if let campaignId, !isDemoSession {
+            isPreparingRestoredSession = true
+            let ready = await CampaignDownloadService.shared.ensureAvailableOffline(campaignId: campaignId.uuidString)
+            isPreparingRestoredSession = false
+            guard sessionId == restoringSessionId, isActive else { return }
+            guard ready else {
+                restoredSessionDownloadMessage = "Download this campaign to your phone before resuming. Connect to the internet and try again. Your session is still saved."
+                return
+            }
+        }
+        restoredSessionDownloadMessage = nil
         staleActiveSessionNeedsResolution = false
         isPaused = restoredServerPausedAfterStalePrompt
         activeSegmentStartTime = isPaused ? nil : Date()
@@ -2937,6 +2981,11 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
     /// Resume building session
     func resume() async {
         guard isActive, sessionId != nil, isPaused else { return }
+        if let campaignId, !isDemoSession,
+           !(await CampaignDownloadService.shared.ensureAvailableOffline(campaignId: campaignId.uuidString)) {
+            sessionEndError = "Download this campaign to your phone before resuming. Connect to the internet and try again."
+            return
+        }
         isPaused = false
         pauseStartTime = nil
         activeSegmentStartTime = Date()
@@ -2971,7 +3020,25 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         await syncLiveActivity(forceStart: false)
     }
 
+    func setGPSEnabled(_ enabled: Bool) {
+        guard gpsEnabled != enabled else { return }
+        gpsEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "session_gps_enabled")
+        if enabled {
+            if isActive && !isPaused { requestAuthorizationAndStartLocation(for: sessionMode) }
+        } else {
+            locationManager.stopUpdatingLocation()
+            headingManager.stop(reset: true)
+            currentLocation = nil
+            lastLocation = nil
+            locationError = nil
+            showBackgroundLocationUpgradePrompt = false
+            Task { await setGPSProximityEnabled(false) }
+        }
+    }
+
     func setGPSProximityEnabled(_ enabled: Bool) async {
+        guard !enabled || gpsEnabled else { return }
         guard autoCompleteEnabled != enabled else { return }
         autoCompleteEnabled = enabled
         resetAutoCompleteDwell()
@@ -3523,7 +3590,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
     // MARK: - CLLocationManagerDelegate
 
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
-        guard let location = locations.last else { return }
+        guard gpsEnabled, let location = locations.last else { return }
 
         guard sessionId != nil else {
             Task { @MainActor in
@@ -3736,7 +3803,7 @@ class SessionManager: NSObject, ObservableObject, CLLocationManagerDelegate {
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
         let status = manager.authorizationStatus
         authorizationStatus = status
-        if isActive && (status == .authorizedWhenInUse || status == .authorizedAlways) {
+        if gpsEnabled && isActive && (status == .authorizedWhenInUse || status == .authorizedAlways) {
             locationError = nil
             startLocationUpdatesIfAuthorized()
             presentBackgroundLocationUpgradePromptIfNeeded()

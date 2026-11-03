@@ -307,6 +307,8 @@ struct BusinessCardSendView: View {
     var saveLead: (() async throws -> UUID)? = nil
     var networkingFirstName: String? = nil
     var compact = false
+    var directText = false
+    var onTextSent: (() -> Void)? = nil
     @State private var customIntroduction = ""
     @Environment(\.colorScheme) private var colorScheme
     @State private var share: BusinessCardShare?
@@ -320,8 +322,9 @@ struct BusinessCardSendView: View {
     @State private var resolvedID: UUID?
     @State private var localSentID: UUID?
     @State private var linkStatus: String?
+    @State private var notifyTextSentOnDismiss = false
     private enum Channel: String, Identifiable { case text, email, qr; var id: String { rawValue } }
-    private var canShare: Bool { BusinessCardRecipient.validPhone(phone) || BusinessCardRecipient.validEmail(email) }
+    private var canShare: Bool { BusinessCardRecipient.validPhone(phone) || (!directText && BusinessCardRecipient.validEmail(email)) }
     private var ink: Color { Color(cardHex: colorScheme == .dark ? "#E3D2FF" : "#6026A6") }
     private var status: BusinessCardDeliveryStatus { BusinessCardDeliveryStatus(shares: activity, localSentID: localSentID) }
     private var lastOpen: Date? { status.lastOpen }
@@ -334,7 +337,11 @@ struct BusinessCardSendView: View {
                 if let networkingFirstName {
                     customIntroduction = BusinessCardShare.networkingMessage(firstName: networkingFirstName)
                 }
-                showOptions = true
+                if directText {
+                    Task { await prepare(.text) }
+                } else {
+                    showOptions = true
+                }
             } label: {
                 if compact {
                     Text(busy ? "Preparing…" : "Send Business Card")
@@ -430,7 +437,12 @@ struct BusinessCardSendView: View {
             .presentationDragIndicator(.visible)
             .interactiveDismissDisabled(busy)
         }
-        .sheet(item: $channel) { selected in
+        .sheet(item: $channel, onDismiss: {
+            if notifyTextSentOnDismiss {
+                notifyTextSentOnDismiss = false
+                onTextSent?()
+            }
+        }) { selected in
             if let share {
                 switch selected {
                 case .text:
@@ -487,7 +499,7 @@ struct BusinessCardSendView: View {
             share = networkingFirstName == nil ? value : value.withMessage(customIntroduction)
             if let selected {
                 if selected == .qr { linkStatus = "Business Card QR ready" }
-                pendingChannel = selected
+                if directText { channel = selected } else { pendingChannel = selected }
             } else {
                 UIPasteboard.general.string = value.url
                 linkStatus = "Business Card link copied"
@@ -497,6 +509,7 @@ struct BusinessCardSendView: View {
         } catch { message = error.localizedDescription }
     }
     private func complete(_ value: BusinessCardShare, type: String) {
+        if type == "composer_sent", channel == .text { notifyTextSentOnDismiss = true }
         channel = nil
         if type == "composer_sent" { localSentID = value.id; pendingKey = UUID() }
         if type == "composer_failed" { message = "Your card could not be sent. Please try again." }

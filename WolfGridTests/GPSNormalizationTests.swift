@@ -1315,3 +1315,21 @@ struct StreetCoverageVisitEngineTests {
 
 // Helper class for bundle identification
 private class BundleToken {}
+
+#if DEBUG
+struct DoorAutoRecordPipelineTests {
+    @MainActor @Test func recordsOneVisitAfterStationaryDwell() async throws {
+        func building(_ id: String) throws -> BuildingFeature {
+            let json = """
+            {"type":"Feature","id":"\(id)","properties":{"id":"\(id)","gers_id":"\(id)","height":10,"min_height":0,"is_townhome":false,"units_count":1,"status":"not_visited","scans_today":0,"scans_total":0},"geometry":{"type":"Polygon","coordinates":[[[-79.0001,42.9999],[-78.9999,42.9999],[-78.9999,43.0001],[-79.0001,43.0001],[-79.0001,42.9999]]]}}
+            """
+            return try JSONDecoder().decode(BuildingFeature.self, from: Data(json.utf8))
+        }
+        let scenarios = try await SessionManager.verifyCanonicalAutoRecord(
+            building: building("door-1"), addressId: UUID(),
+            neighbourBuilding: building("door-2"), neighbourAddressId: UUID(),
+            coordinate: CLLocationCoordinate2D(latitude: 43, longitude: -79))
+        #expect(scenarios == 2)
+    }
+}
+#endif

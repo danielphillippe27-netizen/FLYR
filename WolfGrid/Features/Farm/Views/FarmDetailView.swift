@@ -12,8 +12,7 @@ struct FarmDetailView: View {
     @State private var selectedSessionType: FarmTouchType = .doorKnock
     @State private var selectedPlanTouchId: UUID?
     @State private var isLeadsExpanded = false
-    @State private var isAddressesExpanded = false
-    @State private var showAllAddresses = false
+    @State private var isActivityExpanded = false
     @State private var showAllLeads = false
 
     let farmId: UUID
@@ -141,14 +140,15 @@ struct FarmDetailView: View {
         let state = campaignDownloadService.state(for: id)
         let ready = state?.isAvailableOffline == true && campaignDownloadService.readiness(for: id)?.isVerified == true
         let downloading = state?.status == "downloading"
+        let failed = state?.status == "failed"
         return VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Image(systemName: ready ? "checkmark.circle.fill" : "arrow.down.circle")
+                Image(systemName: ready ? "checkmark.circle.fill" : (failed ? "exclamationmark.circle" : "arrow.down.circle"))
                     .foregroundStyle(ready ? Color.success : Color.primary)
-                Text(ready ? "Downloaded" : "Not downloaded")
+                Text(ready ? "Ready offline" : (downloading ? "Downloading" : (failed ? "Download failed" : "Not downloaded")))
                     .font(.subheading)
                 Spacer()
-                Button(ready ? "Update" : "Download") {
+                Button(ready ? "Update" : (failed ? "Retry" : "Download")) {
                     Task {
                         await campaignDownloadService.makeAvailableOffline(campaignId: id)
                         await campaignDownloadService.refreshState(campaignId: id)
@@ -158,8 +158,20 @@ struct FarmDetailView: View {
                 .background(Color.bgTertiary).clipShape(Capsule()).buttonStyle(.plain)
                 .disabled(downloading)
             }
-            Text(ready ? "Homes, parcels, and map data are saved on this device." : "Download the map and homes before working without service.")
+            if downloading, let state {
+                if state.progress <= 0.05 {
+                    ProgressView()
+                    Text("Preparing the map for offline use. This can take a few minutes.")
+                        .font(.caption).foregroundColor(.muted)
+                } else {
+                    ProgressView(value: state.progress)
+                    Text("Downloading and verifying offline data: \(Int(state.progress * 100))%")
+                    .font(.caption).foregroundColor(.muted)
+                }
+            } else {
+                Text(ready ? "Map and homes verified on this device." : (failed ? (state?.errorMessage ?? "Download could not be verified. Try again while connected.") : "Download the map and homes before working without service."))
                 .font(.caption).foregroundColor(.muted)
+            }
         }
         .padding(16).background(Color.bgSecondary).cornerRadius(12)
         .task(id: id) { await campaignDownloadService.refreshState(campaignId: id) }
@@ -179,7 +191,7 @@ struct FarmDetailView: View {
                             .font(.flyrCaption).foregroundColor(.muted)
                     }
                     FarmProgressCard(planned: farm.addressCount ?? 0, completed: viewModel.visitedHomeCount ?? 0, visits: viewModel.homeVisitCount ?? 0, visitsAreMinimum: viewModel.homeVisitCountIsMinimum,
-                                     isLoading: viewModel.isLoading, loadFailed: viewModel.visitedHomeCount == nil || farm.addressCount == nil)
+                                     isLoading: viewModel.isLoading, loadFailed: viewModel.visitedHomeCount == nil || farm.addressCount == nil || (viewModel.visitedHomeCount == 0 && viewModel.sessions.contains { $0.doorsCount > 0 }))
 
                     FarmDetailSectionHeader(title: "Farm Area")
                     FarmAreaCard(
@@ -199,39 +211,47 @@ struct FarmDetailView: View {
                     FarmDetailSectionHeader(title: "Analytics")
                     HStack(spacing: 10) {
                         FarmHeroStatPill(value: farm.addressCount.map(String.init) ?? "—", label: "Homes")
-                        FarmHeroStatPill(value: viewModel.leadsLoadFailed || viewModel.isLoading ? "—" : "\(viewModel.leads.count)", label: "Farm leads")
-                        FarmHeroStatPill(value: viewModel.isLoading ? "—" : viewModel.visitedHomeCount.map(String.init) ?? "—", label: "Homes visited")
+                        FarmHeroStatPill(value: viewModel.leadsLoadFailed || viewModel.activityLoadFailed || viewModel.isLoading ? "—" : "\(viewModel.totalLeadCount)", label: "Farm leads")
+                        FarmHeroStatPill(value: viewModel.isLoading || viewModel.activityLoadFailed ? "—" : "\(viewModel.conversationCount)", label: "Conversations")
                     }
 
-                    FarmExpandableSection(title: "Leads", icon: "tray.full.fill", count: viewModel.leadsLoadFailed || viewModel.isLoading ? nil : viewModel.leads.count, expanded: $isLeadsExpanded) {
+                    FarmExpandableSection(title: "Leads", icon: "tray.full.fill", count: viewModel.leadsLoadFailed || viewModel.activityLoadFailed || viewModel.isLoading ? nil : viewModel.totalLeadCount, expanded: $isLeadsExpanded) {
                         if viewModel.isLoading {
                             ProgressView().frame(maxWidth: .infinity).padding()
-                        } else if viewModel.leadsLoadFailed {
+                        } else if viewModel.leadsLoadFailed || viewModel.activityLoadFailed {
                             Text("Farm leads could not be loaded. Pull down to retry.").foregroundColor(.muted)
-                        } else if viewModel.leads.isEmpty {
+                        } else if viewModel.totalLeadCount == 0 {
                             Text("No farm leads yet").foregroundColor(.muted)
                         } else {
                             ForEach(Array(viewModel.leads.sorted { $0.createdAt > $1.createdAt }.prefix(5))) { lead in
                                 RecentLeadRow(lead: lead)
                             }
-                            if viewModel.leads.count > 5 {
-                                Button("See all \(viewModel.leads.count) leads") { showAllLeads = true }.foregroundColor(.accent)
+                            ForEach(Array(viewModel.fieldLeads.filter { field in !viewModel.leads.contains { $0.id == field.id } }.sorted { $0.createdAt > $1.createdAt }.prefix(5))) { lead in
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(lead.name?.isEmpty == false ? lead.name! : "New lead").foregroundColor(.text)
+                                    Text(lead.createdAt, style: .date).font(.flyrCaption).foregroundColor(.muted)
+                                }.frame(maxWidth: .infinity, alignment: .leading).padding(10)
+                            }
+                            if viewModel.totalLeadCount > 5 {
+                                Button("See all \(viewModel.totalLeadCount) leads") { showAllLeads = true }.foregroundColor(.accent)
                             }
                         }
                     }
-                    FarmExpandableSection(title: "Addresses", icon: "house.fill", count: farm.addressCount, expanded: $isAddressesExpanded) {
-                        if viewModel.isLoadingAddresses && viewModel.addresses.isEmpty {
+                    FarmExpandableSection(title: "Activity", icon: "clock.arrow.circlepath", count: viewModel.activityLoadFailed || viewModel.isLoading ? nil : viewModel.sessions.count, expanded: $isActivityExpanded) {
+                        if viewModel.isLoading {
                             ProgressView().frame(maxWidth: .infinity).padding()
-                        } else if viewModel.addressesLoadFailed && viewModel.addresses.isEmpty {
-                            Button("Could not load addresses. Tap to retry.") { Task { await viewModel.loadAddresses(reset: true) } }.foregroundColor(.accent)
-                        } else if viewModel.addresses.isEmpty {
-                            Text("No addresses available").foregroundColor(.muted)
+                        } else if viewModel.activityLoadFailed {
+                            Text("Activity could not be loaded. Pull down to retry.").foregroundColor(.muted)
+                        } else if viewModel.sessions.isEmpty {
+                            Text("No farm sessions yet").foregroundColor(.muted)
                         } else {
-                            ForEach(Array(viewModel.addresses.prefix(5))) { address in
-                                Text(address.formatted).foregroundColor(.text)
-                            }
-                            if viewModel.addresses.count > 5 || viewModel.addressesHaveMore {
-                                Button("View addresses") { showAllAddresses = true }.foregroundColor(.accent)
+                            ForEach(viewModel.sessions, id: \.id) { session in
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(session.start_time, style: .date).font(.flyrSubheadline.weight(.semibold)).foregroundColor(.text)
+                                    Text("\(session.doorsCount) homes visited · \(session.conversations ?? 0) conversations · \(session.leadsCreated) leads")
+                                        .font(.flyrCaption).foregroundColor(.muted)
+                                }.frame(maxWidth: .infinity, alignment: .leading).padding(10)
+                                    .background(Color.bgTertiary).clipShape(RoundedRectangle(cornerRadius: 12))
                             }
                         }
                     }
@@ -277,28 +297,20 @@ struct FarmDetailView: View {
                 .accessibilityLabel("Farm analytics")
             }
         }
-        .onChange(of: isAddressesExpanded) { _, expanded in
-            if expanded { Task { await viewModel.loadAddresses() } }
-        }
-        .sheet(isPresented: $showAllAddresses) {
-            NavigationStack {
-                List {
-                    ForEach(viewModel.addresses) { address in Text(address.formatted) }
-                    if viewModel.isLoadingAddresses {
-                        ProgressView().frame(maxWidth: .infinity)
-                    } else if viewModel.addressesLoadFailed {
-                        Button("Retry loading addresses") { Task { await viewModel.loadAddresses() } }
-                    } else if viewModel.addressesHaveMore {
-                        Button("Load more addresses") { Task { await viewModel.loadAddresses() } }
-                    }
-                }
-                .navigationTitle("Addresses")
-                .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { showAllAddresses = false } } }
-            }
+        .onChange(of: uiState.selectedTabIndex) { _, index in
+            if index == 1 { Task { await viewModel.loadFarmData() } }
         }
         .sheet(isPresented: $showAllLeads) {
             NavigationStack {
-                List(viewModel.leads.sorted { $0.createdAt > $1.createdAt }) { lead in RecentLeadRow(lead: lead) }
+                List {
+                    ForEach(viewModel.leads.sorted { $0.createdAt > $1.createdAt }) { lead in RecentLeadRow(lead: lead) }
+                    ForEach(viewModel.fieldLeads.filter { field in !viewModel.leads.contains { $0.id == field.id } }.sorted { $0.createdAt > $1.createdAt }) { lead in
+                        VStack(alignment: .leading) {
+                            Text(lead.name?.isEmpty == false ? lead.name! : "New lead")
+                            Text(lead.createdAt, style: .date).font(.flyrCaption).foregroundColor(.muted)
+                        }
+                    }
+                }
                     .navigationTitle("Farm Leads")
                     .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { showAllLeads = false } } }
             }
@@ -329,7 +341,6 @@ struct FarmDetailView: View {
         }
         .refreshable {
             await viewModel.loadFarmData()
-            if isAddressesExpanded { await viewModel.loadAddresses(reset: true) }
         }
         .overlay {
             if isStartingTouch {
@@ -377,7 +388,7 @@ private struct FarmProgressCard: View {
             if isLoading {
                 ProgressView()
             } else if loadFailed {
-                Text("Home visit progress unavailable. Pull down to retry.").font(.flyrCaption).foregroundColor(.muted)
+                Text("Home visit progress unavailable: session visits could not be matched to farm homes.").font(.flyrCaption).foregroundColor(.muted)
             } else {
                 ProgressBar(value: progress)
                 Text("\(completed) of \(planned) homes visited")

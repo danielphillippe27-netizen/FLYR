@@ -23,7 +23,9 @@ enum MapStatusColor {
     static let hotLead = UIColor(hex: "#facc15")!         // Gold (appointment / follow-up)
     static let qrScanned = UIColor(hex: "#8b5cf6")!       // Purple (QR scan)
     static let noOneHome = UIColor(hex: "#f87171")!       // Coral / muted red
-    static let doNotKnock = UIColor(hex: "#000000")!      // Black
+    static var doNotKnock: UIColor {
+        useLightMapBuildingDefault ? .white : .black
+    }
     static let pendingVisited = UIColor(hex: "#f59e0b")!  // Amber
     static let teammateTouched = UIColor(hex: "#166534")! // Dark green
     static let orphan = UIColor(hex: "#9ca3af")!          // Gray
@@ -335,6 +337,13 @@ final class MapLayerManager {
                     }
                     "manual"
                 }
+                // Parcel-linked addresses use the same round marker as live suggestions.
+                Exp(.neq) {
+                    Exp(.coalesce) { Exp(.get) { "has_parcel_link" }; false }
+                    true
+                }
+                Exp(.eq) { Exp(.coalesce) { Exp(.get) { "parcel_id" }; "" }; "" }
+                Exp(.eq) { Exp(.coalesce) { Exp(.get) { "campaign_parcel_id" }; "" }; "" }
                 Exp(.neq) {
                     Exp(.coalesce) {
                         Exp(.get) { "has_building_link" }
@@ -411,7 +420,13 @@ final class MapLayerManager {
         let labelMode = (properties["label_visibility_mode"] as? String)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
+        let hasParcelLink = properties["has_parcel_link"] as? Bool == true ||
+            [properties["parcel_id"], properties["campaign_parcel_id"]].contains { value in
+                guard let id = value as? String else { return false }
+                return !id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            }
         if source == "manual" &&
+            !hasParcelLink &&
             hasBuildingLink != true &&
             !hasBuildingIdentifier &&
             labelMode == "address_mode_only" {
@@ -444,6 +459,9 @@ final class MapLayerManager {
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
         if source == "manual" &&
+            feature.properties.hasParcelLink != true &&
+            feature.properties.parcelId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false &&
+            feature.properties.campaignParcelId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false &&
             feature.properties.hasBuildingLink != true &&
             feature.properties.buildingGersId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false &&
             feature.properties.linkedBuildingId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false &&
@@ -460,6 +478,8 @@ final class MapLayerManager {
 
     private static var manualPinModelColorExpression: Exp {
         Exp(.switchCase) {
+            Exp(.eq) { Self.layerStatusExpression; "do_not_knock" }
+            MapStatusColor.doNotKnock
             Self.isTeammateOwnedExpression
             MapStatusColor.teammateTouched
 
@@ -588,6 +608,8 @@ final class MapLayerManager {
 
     static var buildingFillColorExpression: Exp {
         Exp(.switchCase) {
+            Exp(.eq) { Self.layerStatusExpression; "do_not_knock" }
+            MapStatusColor.doNotKnock
             Self.isTeammateOwnedExpression
             MapStatusColor.teammateTouched
 
@@ -1152,6 +1174,8 @@ final class MapLayerManager {
 
     private static var parcelLinkedAddressColorExpression: Exp {
         Exp(.switchCase) {
+            Exp(.eq) { Self.layerStatusExpression; "do_not_knock" }
+            MapStatusColor.doNotKnock
             Self.isTeammateOwnedExpression
             MapStatusColor.teammateTouched
 
@@ -1398,27 +1422,36 @@ final class MapLayerManager {
 
     func updateParcelAddressLinks(_ links: [String: [String]]) {
         guard parcelIdsByAddressId != links else { return }
-        let departed = Set(parcelIdsByAddressId.flatMap { address, parcels in
-            parcels.filter { !(links[address] ?? []).contains($0) }
-        })
+        let affected = Self.changedParcelLinkIDs(previous: parcelIdsByAddressId, next: links)
         parcelIdsByAddressId = links
         guard let mapView else { return }
-        // Feature state survives source updates. Clear departed contributions before
-        // replaying remaining owners, so moving one unit never clears its neighbours.
         var cleared: [String: Any] = ["status": "not_visited", "scans_total": 0, "qr_scanned": false,
                                     "visit_owner": "", "selected": false]
         if let scope = farmCycleStyleScope { cleared = scope.stamp(cleared) }
-        for id in departed {
-            parcelSelectionCache.remove(id)
+        for id in affected {
+            if !links.values.contains(where: { $0.contains(id) }) { parcelSelectionCache.remove(id) }
+            cleared["selected"] = parcelSelectionCache.contains(id)
             applyParcelFeatureState(featureId: id, state: cleared, mapView: mapView)
             applyParcelFeatureState(featureId: "parcel:" + id, state: cleared, mapView: mapView)
         }
-        for (addressId, state) in addressFeatureStateCache {
-            for parcelId in links[addressId] ?? [] {
+        // Relationship changes do not reset the vector sources. Replay only the
+        // affected parcels, including all remaining owners of a shared parcel.
+        for (addressId, parcels) in links {
+            guard let state = addressFeatureStateCache[addressId] else { continue }
+            for parcelId in parcels where affected.contains(parcelId) {
                 applyParcelFeatureState(featureId: parcelId, state: state, mapView: mapView)
                 applyParcelFeatureState(featureId: "parcel:" + parcelId, state: state, mapView: mapView)
             }
         }
+    }
+
+    static func changedParcelLinkIDs(previous: [String: [String]], next: [String: [String]]) -> Set<String> {
+        var affected = Set<String>()
+        for address in Set(previous.keys).union(next.keys) where Set(previous[address] ?? []) != Set(next[address] ?? []) {
+            affected.formUnion(previous[address] ?? [])
+            affected.formUnion(next[address] ?? [])
+        }
+        return affected
     }
 
     func linkManualPinToParcel(addressId: UUID, parcelIds: [String]) {
@@ -1430,7 +1463,30 @@ final class MapLayerManager {
         updateParcelAddressLinks(links)
     }
 
+    func restorePlacedAddressState(addressId: UUID, defaultStatus: String) {
+        let key = addressId.uuidString.lowercased()
+        if let state = addressFeatureStateCache[key], let mapView {
+            applyAddressFeatureState(featureId: key, state: state, mapView: mapView, logSuccess: false)
+        } else { updateAddressState(addressId: key, status: defaultStatus, scansTotal: 0) }
+    }
+
+    func updatePlacedBuildingLink(identifier: String, addressIDs: [UUID]) {
+        let key = identifier.lowercased()
+        var state = buildingFeatureStateCache[key] ?? [:]
+        state["is_linked"] = !addressIDs.isEmpty
+        if let id = addressIDs.first, let address = addressFeatureStateCache[id.uuidString.lowercased()] {
+            for field in ["status", "scans_total", "qr_scanned", "visit_owner"] { state[field] = address[field] }
+        } else if addressIDs.isEmpty {
+            state["status"] = "not_visited"; state["scans_total"] = 0
+            state["qr_scanned"] = false; state["visit_owner"] = ""
+        }
+        if let scope = farmCycleStyleScope { state = scope.stamp(state) }
+        buildingFeatureStateCache[key] = state
+        if let mapView { applyBuildingFeatureState(featureId: key, state: state, mapView: mapView, logSuccess: false) }
+    }
+
     private var townhomeOverlayFeatureIdsByBuildingIdentifier: [String: Set<String>] = [:]
+    private var selectedTownhomeAddressByBuilding: [String: String] = [:]
     private var townhomeOverlayBaseStateBuildingIdentifiers: Set<String> = []
     
     /// When false, 3D building extrusion layer is not added (campaign map shows flat map + addresses/roads only).
@@ -1892,6 +1948,7 @@ final class MapLayerManager {
         guard let mapView = mapView else { return }
         
         // Add empty GeoJSON source (promoteId so we can use setFeatureState for status colors)
+        addressOverlayFeatureIDs.removeAll()
         var source = GeoJSONSource(id: Self.addressesSourceId)
         source.data = .featureCollection(FeatureCollection(features: []))
         source.promoteId2 = .constant("id")
@@ -1915,6 +1972,8 @@ final class MapLayerManager {
             Exp(.switchCase) {
                 Exp(.eq) { Exp(.coalesce) { Exp(.featureState) { "edit_selected" }; false }; true }
                 UIColor.white
+                Exp(.eq) { Self.layerStatusExpression; "do_not_knock" }
+                MapStatusColor.doNotKnock
                 Self.isTeammateOwnedExpression
                 MapStatusColor.teammateTouched
 
@@ -2249,22 +2308,38 @@ final class MapLayerManager {
         }
     }
 
-    /// Render a soft, screen-aligned shadow independently of the crisp white glyphs.
-    private static func addressNumberShadow(for labels: SymbolLayer) -> SymbolLayer {
-        var shadow = labels
-        shadow.id = labels.id + "-shadow"
-        shadow.textColor = .constant(StyleColor(UIColor.black.withAlphaComponent(0.65)))
-        shadow.textHaloColor = .constant(StyleColor(UIColor.black.withAlphaComponent(0.65)))
-        shadow.textHaloWidth = .constant(0.75)
-        shadow.textHaloBlur = .constant(3.5)
-        shadow.textTranslate = .constant([0, 1.5])
-        shadow.textTranslateAnchor = .constant(.viewport)
-        return shadow
+    /// Ephemeral suggestions share the real address marker geometry and installed label style.
+    static func temporaryAddressPinGeometry(_ data: Data) throws -> Data {
+        try convertAddressPointsToCirclePolygons(data, radiusMeters: 2.0,
+            height: addressMarkerExtrusionHeight, segments: 12)
+    }
+
+    static func installTemporaryAddressLayers(on map: MapboxMap, pinSource: String,
+        labelSource: String, pinID: String, labelID: String) throws {
+        if !map.layerExists(withId: pinID) {
+            var pins = try map.layer(withId: addressesLayerId, type: FillExtrusionLayer.self)
+            pins.id = pinID; pins.source = pinSource; pins.sourceLayer = nil
+            pins.minZoom = FarmLiveAddressSuggestions.minimumZoom
+            try map.addLayer(pins)
+        }
+        if map.layerExists(withId: pinID),
+           let regular = try? map.layer(withId: addressesLayerId, type: FillExtrusionLayer.self) {
+            try map.updateLayer(withId: pinID, type: FillExtrusionLayer.self) { $0.visibility = regular.visibility }
+        }
+        if !map.layerExists(withId: labelID) {
+            var labels = try map.layer(withId: addressNumbersLayerId, type: SymbolLayer.self)
+            labels.id = labelID; labels.source = labelSource; labels.sourceLayer = nil
+            labels.visibility = .constant(.visible)
+            labels.minZoom = FarmLiveAddressSuggestions.minimumZoom
+            labels.filter = addressNumberLabelFilter(isAddressMode: true)
+            try map.addLayer(labels)
+        }
     }
 
     private func setupAddressNumbersLayer() {
         guard let mapView = mapView else { return }
 
+        numberOverlayFeatureIDs.removeAll()
         var source = GeoJSONSource(id: Self.addressNumbersSourceId)
         source.data = .featureCollection(FeatureCollection(features: []))
         source.promoteId2 = .constant("id")
@@ -2289,7 +2364,9 @@ final class MapLayerManager {
             }
         )
         layer.textColor = .constant(StyleColor(.white))
-        layer.textHaloWidth = .constant(0)
+        layer.textHaloColor = .constant(StyleColor(UIColor.black.withAlphaComponent(0.65)))
+        layer.textHaloWidth = .constant(0.75)
+        layer.textHaloBlur = .constant(1.5)
         layer.textAnchor = .constant(.center)
         layer.textJustify = .constant(.center)
         layer.textOffset = .expression(
@@ -2310,9 +2387,7 @@ final class MapLayerManager {
             }
         )
         layer.symbolSpacing = .constant(32)
-        // At door-knocking zoom every linked home needs a visible civic number.
-        // Let Mapbox draw the complete roof-label set instead of dropping whole
-        // rows while resolving collisions with the basemap and neighboring homes.
+        // Cull colliding numbers; zooming in reveals the rest of a dense row.
         layer.symbolAvoidEdges = .constant(false)
         layer.symbolZOrder = .constant(.auto)
         layer.symbolZElevate = .constant(true)
@@ -2320,8 +2395,9 @@ final class MapLayerManager {
         layer.symbolZOffset = .expression(
             Self.addressNumberElevationExpression(isAddressMode: false)
         )
-        layer.textAllowOverlap = .constant(true)
-        layer.textIgnorePlacement = .constant(true)
+        layer.textAllowOverlap = .constant(false)
+        layer.textIgnorePlacement = .constant(false)
+        layer.textPadding = .constant(2)
         layer.textOptional = .constant(false)
         layer.textOcclusionOpacity = .constant(1.0)
         layer.textOpacity = .expression(Self.addressNumbersZoomOpacityExpression)
@@ -2342,10 +2418,6 @@ final class MapLayerManager {
             } else {
                 try mapView.mapboxMap.addLayer(layer)
             }
-            try mapView.mapboxMap.addLayer(
-                Self.addressNumberShadow(for: layer),
-                layerPosition: .below(Self.addressNumbersLayerId)
-            )
             print("✅ [MapLayer] Added address numbers symbol layer (\(Self.addressNumbersLayerId))")
         } catch {
             print("❌ [MapLayer] Error adding address numbers layer: \(error)")
@@ -2797,6 +2869,12 @@ final class MapLayerManager {
         catch { print("❌ [MapLayer] Could not scope canonical tiles: \(error)") }
     }
 
+    func updateCanonicalAddressExclusions(_ ids: Set<String>) {
+        guard let mapView else { return }
+        do { try diamondGeometryProvider.applyCanonicalAddressExclusions(ids, on: mapView) }
+        catch { print("[MapLayer] Could not exclude replaced tile addresses: \(error)") }
+    }
+
     func setDiamondGeometryVisibility(_ isVisible: Bool, addressNumbers: Bool? = nil, parcels: Bool? = nil) {
         desiredDiamondBuildingVisibility = isVisible
         desiredDiamondAddressVisibility = isVisible
@@ -2940,7 +3018,7 @@ final class MapLayerManager {
             let geoJSON = try JSONDecoder().decode(GeoJSONObject.self, from: filteredData)
             mapView.mapboxMap.updateGeoJSONSource(withId: Self.buildingsSourceId, geoJSON: geoJSON)
             lastBuildingsSourceSignature = signature
-            replayCachedBuildingFeatureStates(reason: "geojson_buildings_update")
+            replayCachedBuildingFeatureStates(reason: "geojson_buildings_update", featureIDs: Set(polygonOnly.flatMap { $0.properties.buildingIdentifierCandidates }))
             if polygonOnly.count < collection.features.count {
                 print("✅ [MapLayer] Updated buildings source (\(polygonOnly.count) polygons, filtered \(collection.features.count - polygonOnly.count) non-polygons)")
             } else {
@@ -3015,6 +3093,24 @@ final class MapLayerManager {
         try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
     }
 
+    private static func townhomeGeometrySignature(key: String, links: [String: [UUID]]) -> Int {
+        var hasher = Hasher()
+        hasher.combine(key)
+        for key in links.keys.sorted() {
+            hasher.combine(key)
+            hasher.combine(links[key])
+        }
+        return hasher.finalize()
+    }
+
+    /// A targeted placement on singleton roofs cannot change townhouse slices.
+    /// Advance only an already matching cache; unrelated changes still rebuild.
+    func advanceTownhomeGeometryCache(from oldKey: String, links oldLinks: [String: [UUID]],
+                                     to newKey: String, links newLinks: [String: [UUID]]) {
+        guard cachedTownhomeGeometrySignature == Self.townhomeGeometrySignature(key: oldKey, links: oldLinks) else { return }
+        cachedTownhomeGeometrySignature = Self.townhomeGeometrySignature(key: newKey, links: newLinks)
+    }
+
     func updateTownhomeStatusOverlay(
         buildings: [BuildingFeature],
         addresses: [AddressFeature],
@@ -3030,13 +3126,7 @@ final class MapLayerManager {
 
         var geometrySignature: Int?
         if let geometryCacheKey {
-            var hasher = Hasher()
-            hasher.combine(geometryCacheKey)
-            for key in orderedAddressIdsByBuilding.keys.sorted() {
-                hasher.combine(key)
-                hasher.combine(orderedAddressIdsByBuilding[key])
-            }
-            geometrySignature = hasher.finalize()
+            geometrySignature = Self.townhomeGeometrySignature(key: geometryCacheKey, links: orderedAddressIdsByBuilding)
             if cachedTownhomeGeometrySignature == geometrySignature,
                updateCachedTownhomeStatuses(addressStatuses: addressStatuses, addressStatusRows: addressStatusRows,
                     currentUserId: currentUserId, workspaceCoveredAddressIds: workspaceCoveredAddressIds) {
@@ -3074,6 +3164,37 @@ final class MapLayerManager {
 #endif
         installTownhomeOverlay(data, on: mapView)
         cachedTownhomeGeometrySignature = geometrySignature
+    }
+
+    /// Replace only the edited row's segments, retaining every other building's overlay.
+    func updateTownhomeRow(buildings: [BuildingFeature], addresses: [AddressFeature],
+                           parcels: [ParcelFeature], links: [String: [UUID]],
+                           statuses: [UUID: AddressStatus], rows: [UUID: AddressStatusRow],
+                           currentUserId: UUID?, covered: Set<UUID>) {
+        guard let mapView else { return }
+        let identifiers = Set(buildings.flatMap { Self.normalizedBuildingIdentifiers(for: $0) })
+        guard !identifiers.isEmpty,
+              let replacement = Self.buildTownhomeStatusOverlayGeoJSON(buildings: buildings, addresses: addresses,
+                orderedAddressIdsByBuilding: links, addressStatuses: statuses, addressStatusRows: rows,
+                currentUserId: currentUserId, workspaceCoveredAddressIds: covered, parcels: parcels),
+              let merged = Self.replacingTownhomeRows(in: cachedTownhomeOverlayData ?? Self.encodedEmptyTownhomeOverlay(),
+                with: replacement, identifiers: identifiers) else { return }
+        installTownhomeOverlay(merged, on: mapView)
+        cachedTownhomeGeometrySignature = nil
+    }
+
+    static func replacingTownhomeRows(in existing: Data, with replacement: Data, identifiers: Set<String>) -> Data? {
+        guard var root = (try? JSONSerialization.jsonObject(with: existing)) as? [String: Any],
+              let old = root["features"] as? [[String: Any]],
+              let newRoot = (try? JSONSerialization.jsonObject(with: replacement)) as? [String: Any],
+              let new = newRoot["features"] as? [[String: Any]] else { return nil }
+        let wanted = Set(identifiers.map { $0.lowercased() })
+        root["features"] = old.filter { feature in
+            let properties = feature["properties"] as? [String: Any] ?? [:]
+            let aliases = (properties["building_identifiers"] as? [String] ?? []) + [properties["gers_id"] as? String].compactMap { $0 }
+            return !aliases.contains { wanted.contains($0.lowercased()) }
+        } + new
+        return try? JSONSerialization.data(withJSONObject: root, options: [.sortedKeys])
     }
 
     /// Returns false before geometry is available so the caller can rebuild.
@@ -3356,6 +3477,45 @@ final class MapLayerManager {
             addressIdsByParcelIndex[index, default: []].insert(id)
         }
 
+        // Resolve older pins that predate parcel links from their saved position.
+        // A small spatial index avoids scanning an entire farm for every home.
+        struct ParcelCell: Hashable { let x: Int; let y: Int }
+        let cellSize = 0.001
+        func cell(_ x: Double, _ y: Double) -> ParcelCell {
+            ParcelCell(x: Int(floor(x / cellSize)), y: Int(floor(y / cellSize)))
+        }
+        var parcelsByCell: [ParcelCell: [Int]] = [:]
+        for (index, parcel) in parcels.enumerated() {
+            let points = polygonRings(from: parcel.geometry).flatMap { $0 }.filter { $0.count >= 2 && $0[0].isFinite && $0[1].isFinite }
+            guard let minX = points.map({ $0[0] }).min(), let maxX = points.map({ $0[0] }).max(),
+                  let minY = points.map({ $0[1] }).min(), let maxY = points.map({ $0[1] }).max() else { continue }
+            let low = cell(minX, minY), high = cell(maxX, maxY)
+            // Do not expand unusually large or invalid polygons into an unbounded grid.
+            guard high.x - low.x <= 20, high.y - low.y <= 20 else { continue }
+            for x in low.x...high.x { for y in low.y...high.y {
+                parcelsByCell[ParcelCell(x: x, y: y), default: []].append(index)
+            } }
+        }
+        var inferredAddressesByParcel: [Int: Set<UUID>] = [:]
+        for address in addresses {
+            guard let rawId = address.properties.id ?? address.id, let id = UUID(uuidString: rawId),
+                  (parcelIndicesByAddress[id] ?? []).isEmpty,
+                  let point = address.geometry.asPoint, point.count >= 2,
+                  point[0].isFinite, point[1].isFinite else { continue }
+            let matches = (parcelsByCell[cell(point[0], point[1])] ?? []).filter { index in
+                guard let geometry = parcels[index].geometry.nativeGeometry else { return false }
+                return CanonicalParcelFieldGeometry.contains(point, in: geometry)
+            }
+            guard matches.count == 1, let index = matches.first,
+                  (addressIdsByParcelIndex[index] ?? []).isEmpty else { continue }
+            inferredAddressesByParcel[index, default: []].insert(id)
+        }
+        for (index, ids) in inferredAddressesByParcel where ids.count == 1 {
+            guard let id = ids.first else { continue }
+            parcelIndicesByAddress[id] = [index]
+            addressIdsByParcelIndex[index, default: []].insert(id)
+        }
+
         var featureDictionaries: [[String: Any]] = []
 
         for building in buildings {
@@ -3405,19 +3565,32 @@ final class MapLayerManager {
                         source: p.source, areaSqm: p.areaSqm,
                         addressIds: (addressIdsByParcelIndex[index] ?? []).map(\.uuidString)))
             }
-            let parcelSegments = parcelAlignedTownhomeSegments(
-                buildingPolygons: polygons, addressIds: linkedAddresses.map(\.id), parcels: relevantParcels
+            let allAddressIds = linkedAddresses.map(\.id)
+            let completeSegments = parcelAlignedTownhomeSegments(
+                buildingPolygons: polygons, addressIds: allAddressIds, parcels: relevantParcels
             )
+            // Preserve known parcel boundaries even when another home is unlinked
+            // or the parcel and building datasets have a small coverage gap.
+            let uniquelyLinkedIds = allAddressIds.filter { id in
+                guard let indices = parcelIndicesByAddress[id], indices.count == 1, let parcelIndex = indices.first else { return false }
+                return addressIdsByParcelIndex[parcelIndex] == Set([id])
+            }
+            let parcelSegments = completeSegments ?? (uniquelyLinkedIds.isEmpty ? nil : parcelAlignedTownhomeSegments(
+                buildingPolygons: polygons, addressIds: uniquelyLinkedIds, parcels: relevantParcels,
+                allowPartialSingleParcel: true
+            ))
+            let hasParcelEvidence = !relevantParcels.isEmpty
             for (index, address) in linkedAddresses.enumerated() {
                 let sliceIndex = reverseSliceOrder ? linkedAddresses.count - index - 1 : index
                 let startFraction = Double(sliceIndex) / Double(linkedAddresses.count)
                 let endFraction = Double(sliceIndex + 1) / Double(linkedAddresses.count)
 
-                guard let clippedPolygons = parcelSegments?[address.id] ?? slicedPolygons(
+                let segment = hasParcelEvidence ? parcelSegments?[address.id] : slicedPolygons(
                     polygons: polygons,
                     startFraction: startFraction,
                     endFraction: endFraction
-                ), !clippedPolygons.isEmpty else {
+                )
+                guard let clippedPolygons = segment, !clippedPolygons.isEmpty else {
                     continue
                 }
                 // Extend each status segment to the building's exterior walls.
@@ -3457,7 +3630,7 @@ final class MapLayerManager {
                 featureDictionaries.append(feature)
             }
 
-            let dividerLines = parcelSegments == nil ? townhomeDividerLineStrings(
+            let dividerLines = !hasParcelEvidence ? townhomeDividerLineStrings(
                 polygons: polygons,
                 unitCount: linkedAddresses.count
             ) : []
@@ -3500,6 +3673,50 @@ final class MapLayerManager {
     }
 
     /// Update addresses source: convert Point features to circle-polygon features (fill extrusions) then update source
+    private var addressOverlayFeatureIDs = Set<String>()
+    private var numberOverlayFeatureIDs = Set<String>()
+
+    /// Partial source updates are queued by Mapbox. Only changed homes are
+    /// serialized; existing corrections and feature states stay in their source.
+    func upsertPlacedAddressFeatures(addresses: [AddressFeature], buildings: [BuildingFeature],
+                                     links: [String: [UUID]]) throws {
+        guard let mapView, mapView.mapboxMap.sourceExists(withId: Self.addressesSourceId),
+              mapView.mapboxMap.sourceExists(withId: Self.addressNumbersSourceId) else {
+            throw NSError(domain: "AddressOverlay", code: 1)
+        }
+        let ids = Set(addresses.compactMap { ($0.properties.id ?? $0.id)?.lowercased() })
+        let labels = try JSONDecoder().decode(FeatureCollection.self, from: Self.smartAddressLabelPointCollection(
+            addresses: addresses, buildings: buildings, orderedAddressIdsByBuilding: links))
+        let points = try Self.smartAddressMarkerPointCollection(addresses: addresses, buildings: buildings,
+            orderedAddressIdsByBuilding: links)
+        let circles = try JSONDecoder().decode(FeatureCollection.self, from: Self.convertAddressPointsToCirclePolygons(
+            points, radiusMeters: 2, height: Self.addressMarkerExtrusionHeight, segments: 12))
+        func apply(_ input: [Feature], source: String, known: inout Set<String>) {
+            let features = input.filter { feature in
+                if case .string(let id)? = feature.identifier { return ids.contains(id.lowercased()) }
+                return false
+            }
+            let existing = features.filter { feature in
+                if case .string(let id)? = feature.identifier { return known.contains(id.lowercased()) }
+                return false
+            }
+            let added = features.filter { feature in
+                if case .string(let id)? = feature.identifier { return !known.contains(id.lowercased()) }
+                return false
+            }
+            if !existing.isEmpty { mapView.mapboxMap.updateGeoJSONSourceFeatures(forSourceId: source, features: existing) }
+            if !added.isEmpty { mapView.mapboxMap.addGeoJSONSourceFeatures(forSourceId: source, features: added) }
+            for feature in features { if case .string(let id)? = feature.identifier { known.insert(id.lowercased()) } }
+        }
+        apply(labels.features, source: Self.addressNumbersSourceId, known: &numberOverlayFeatureIDs)
+        apply(circles.features, source: Self.addressesSourceId, known: &addressOverlayFeatureIDs)
+        lastAddressNumbersSourceSignature = nil
+        lastAddressesSourceSignature = nil
+        cachedAddressPointSignature = nil
+        cachedAddressPolygonData = nil
+        replayCachedAddressFeatureStates(reason: "partial_address_placement", featureIDs: ids)
+    }
+
     func updateAddressNumberLabels(
         addresses: [AddressFeature],
         buildings: [BuildingFeature],
@@ -3513,6 +3730,7 @@ final class MapLayerManager {
                 buildings: buildings,
                 orderedAddressIdsByBuilding: orderedAddressIdsByBuilding
             )
+
             #if DEBUG
             let generatedLabelCount = (try? JSONSerialization.jsonObject(with: labelPointData) as? [String: Any])
                 .flatMap { $0["features"] as? [[String: Any]] }?.count ?? 0
@@ -3524,6 +3742,10 @@ final class MapLayerManager {
             let labelSignature = Self.sourceSignature(for: labelPointData)
             guard lastAddressNumbersSourceSignature != labelSignature else { return }
             let labelGeoJSON = try JSONDecoder().decode(GeoJSONObject.self, from: labelPointData)
+            let collection = try JSONDecoder().decode(FeatureCollection.self, from: labelPointData)
+            numberOverlayFeatureIDs = Set(collection.features.compactMap { feature in
+                if case .string(let id)? = feature.identifier { return id.lowercased() }; return nil
+            })
             mapView.mapboxMap.updateGeoJSONSource(withId: Self.addressNumbersSourceId, geoJSON: labelGeoJSON)
             lastAddressNumbersSourceSignature = labelSignature
         } catch {
@@ -3590,6 +3812,7 @@ final class MapLayerManager {
                 print("⚠️ [MapLayer] No circle polygons produced; check Point geometry in address GeoJSON")
             }
             let geoJSON = try JSONDecoder().decode(GeoJSONObject.self, from: polygonData)
+            addressOverlayFeatureIDs = Set(renderedFeatures.compactMap { ($0["id"] as? String)?.lowercased() })
             mapView.mapboxMap.updateGeoJSONSource(withId: Self.addressesSourceId, geoJSON: geoJSON)
             if manualPinPointCount > 0 {
                 ensureManualPinLayers()
@@ -3601,7 +3824,7 @@ final class MapLayerManager {
             }
             applyAddressExtrusionVisibilityIfNeeded()
             lastAddressesSourceSignature = polygonSignature
-            replayCachedAddressFeatureStates(reason: "geojson_addresses_update")
+            replayCachedAddressFeatureStates(reason: "geojson_addresses_update", featureIDs: Set(renderedFeatures.compactMap { ($0["id"] as? String)?.lowercased() }))
             let renderedFeatureCount = renderedFeatures.count
             if renderedFeatureCount > 0 {
                 print("✅ [MapLayer] Updated addresses source (\(Self.addressesSourceId)) features=\(renderedFeatureCount) polygons=\(polygonCount) manualPins=\(manualPinPointCount) (layer minZoom=\(Self.addressMarkersLayerMinZoom))")
@@ -3624,9 +3847,15 @@ final class MapLayerManager {
             }
         }
 
-        if mapView.mapboxMap.layerExists(withId: Self.selectedAddressesLayerId) {
-            try? mapView.mapboxMap.updateLayer(withId: Self.selectedAddressesLayerId, type: FillExtrusionLayer.self) {
+        for id in [Self.selectedAddressesLayerId, "farm-live-address-pins"] where mapView.mapboxMap.layerExists(withId: id) {
+            try? mapView.mapboxMap.updateLayer(withId: id, type: FillExtrusionLayer.self) {
                 $0.visibility = .constant(visibility)
+            }
+        }
+
+        for id in ["farm-live-address-numbers", "farm-live-address-numbers-shadow"] where mapView.mapboxMap.layerExists(withId: id) {
+            try? mapView.mapboxMap.updateLayer(withId: id, type: SymbolLayer.self) {
+                $0.symbolZOffset = .expression(Self.addressNumberElevationExpression(isAddressMode: addressExtrusionsVisible))
             }
         }
 
@@ -4339,8 +4568,11 @@ final class MapLayerManager {
             }
 
             let explicitlyLinkedBuilding = addressUUID.flatMap { buildingByAddressId[$0] }
+            // Newly saved overlay addresses can have a building ID before the
+            // reverse address index is rebuilt. The identifier lookup above
+            // still rejects a conflicting explicit address list.
             let linkedBuilding = requireCurrentBuildingLink
-                ? explicitlyLinkedBuilding
+                ? explicitlyLinkedBuilding ?? linkedBuildingByIdentifier
                 : explicitlyLinkedBuilding ?? linkedBuildingByIdentifier ?? containingBuilding
             let rawBackendLabelMode = feature.properties.labelVisibilityMode?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -4358,7 +4590,9 @@ final class MapLayerManager {
                 ?? (linkedBuilding != nil ? "all_modes" : (requireHouseNumberLabel ? "address_mode_only" : "hidden"))
             let backendAllowsLabel = isManualPin || effectiveLabelMode == "all_modes" || effectiveLabelMode == "address_mode_only"
             guard !requireHouseNumberLabel || backendAllowsLabel else { return nil }
-            guard !requireCurrentBuildingLink || linkedBuilding != nil || isManualPin else { return nil }
+            let isPlacedParcelAddress = feature.properties.hasParcelLink == true && feature.properties.pinPlacement == "address"
+            let isVisibleStandaloneAddress = feature.properties.pinPlacement == "address" && effectiveLabelMode == "all_modes"
+            guard !requireCurrentBuildingLink || linkedBuilding != nil || isManualPin || isPlacedParcelAddress || isVisibleStandaloneAddress else { return nil }
 
             let resolvedCoordinate: CLLocationCoordinate2D
             var labelPriority: Double
@@ -5348,18 +5582,20 @@ final class MapLayerManager {
         replayParcelSelections()
     }
 
-    private func replayCachedBuildingFeatureStates(reason: String) {
+    private func replayCachedBuildingFeatureStates(reason: String, featureIDs: Set<String>? = nil) {
         guard let mapView, !buildingFeatureStateCache.isEmpty else { return }
-        for (featureId, state) in buildingFeatureStateCache {
+        for featureId in featureIDs ?? Set(buildingFeatureStateCache.keys) {
+            guard let state = buildingFeatureStateCache[featureId] else { continue }
             applyBuildingFeatureState(featureId: featureId, state: state, mapView: mapView, logSuccess: false)
         }
         replayTownhomeOverlaySelectionStates(reason: reason)
         print("🧪 [MAP_DEBUG] feature_state_replay kind=buildings reason=\(reason) count=\(buildingFeatureStateCache.count)")
     }
 
-    private func replayCachedAddressFeatureStates(reason: String) {
+    private func replayCachedAddressFeatureStates(reason: String, featureIDs: Set<String>? = nil) {
         guard let mapView, !addressFeatureStateCache.isEmpty else { return }
-        for (featureId, state) in addressFeatureStateCache {
+        for featureId in featureIDs ?? Set(addressFeatureStateCache.keys) {
+            guard let state = addressFeatureStateCache[featureId] else { continue }
             applyAddressFeatureState(featureId: featureId, state: state, mapView: mapView, logSuccess: false)
         }
         print("🧪 [MAP_DEBUG] feature_state_replay kind=addresses reason=\(reason) count=\(addressFeatureStateCache.count)")
@@ -5386,7 +5622,11 @@ final class MapLayerManager {
         let selectedBuildingIds = buildingFeatureStateCache.compactMap { featureId, state -> String? in
             (state["selected"] as? Bool) == true ? featureId : nil
         }
-        let selectedOverlayFeatureIds = overlayFeatureIds(forBuildingIdentifiers: selectedBuildingIds)
+        let selectedOverlayFeatureIds = selectedBuildingIds.flatMap { buildingID -> [String] in
+            let ids = overlayFeatureIds(forBuildingIdentifiers: [buildingID])
+            guard let addressID = selectedTownhomeAddressByBuilding[buildingID] else { return ids }
+            return ids.filter { $0.lowercased() == addressID }
+        }
         guard !selectedOverlayFeatureIds.isEmpty else { return }
         applyTownhomeOverlaySelection(featureIds: selectedOverlayFeatureIds, isSelected: true, mapView: mapView)
         print("🧪 [MAP_DEBUG] feature_state_replay kind=townhomes reason=\(reason) count=\(selectedOverlayFeatureIds.count)")
@@ -5453,7 +5693,7 @@ final class MapLayerManager {
         updateBuildingSelection(identifiers: [gersId], isSelected: isSelected)
     }
 
-    func updateBuildingSelection(identifiers: [String], isSelected: Bool) {
+    func updateBuildingSelection(identifiers: [String], isSelected: Bool, addressId: UUID? = nil) {
         guard let mapView = mapView else { return }
         var seen = Set<String>()
         let featureIds = identifiers
@@ -5462,6 +5702,11 @@ final class MapLayerManager {
         guard !featureIds.isEmpty else { return }
 
         for featureId in featureIds {
+            if isSelected, let addressId {
+                selectedTownhomeAddressByBuilding[featureId] = addressId.uuidString.lowercased()
+            } else {
+                selectedTownhomeAddressByBuilding.removeValue(forKey: featureId)
+            }
             var state = buildingFeatureStateCache[featureId] ?? [:]
             state["selected"] = isSelected
             if isSelected {
@@ -5472,7 +5717,10 @@ final class MapLayerManager {
             applyBuildingFeatureState(featureId: featureId, state: state, mapView: mapView, logSuccess: false)
         }
 
-        let overlayFeatureIds = overlayFeatureIds(forBuildingIdentifiers: featureIds)
+        var overlayFeatureIds = overlayFeatureIds(forBuildingIdentifiers: featureIds)
+        if isSelected, let addressId {
+            overlayFeatureIds = overlayFeatureIds.filter { $0.lowercased() == addressId.uuidString.lowercased() }
+        }
         applyTownhomeOverlaySelection(featureIds: overlayFeatureIds, isSelected: isSelected, mapView: mapView)
     }
 
@@ -6611,13 +6859,16 @@ final class MapLayerManager {
                     pieces.append(clipped)
                 }
             }
-            guard let merged = mergePieces(pieces), !merged.isEmpty else { return nil }
+            guard let merged = mergePieces(pieces), !merged.isEmpty else {
+                if allowPartialSingleParcel { continue }
+                return nil
+            }
             result[id] = merged
         }
         if !allowPartialSingleParcel {
             guard totalArea >= footprintArea * 0.98, totalArea <= footprintArea * 1.001 else { return nil }
         }
-        return result
+        return result.isEmpty ? nil : result
     }
 
     /// Return a point inside the roof portion on this parcel only when the
@@ -8252,9 +8503,6 @@ final class MapLayerManager {
     ) -> [String] {
         let propertyKeys = [
             "id",
-            "address_id",
-            "campaign_address_id",
-            "campaignAddressId",
             "parcel_id",
             "campaign_parcel_id",
             "external_id",

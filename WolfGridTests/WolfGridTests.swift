@@ -11,6 +11,16 @@ import Testing
 
 struct WolfGridTests {
 
+    @Test func campaignProgressRequiresReliableHomeAndVisitData() {
+        let progress = CampaignDetailPresentation.verifiedProgress
+        #expect(progress(nil, [:], true, true, false) == nil)
+        #expect(progress(10, [:], false, true, false) == nil)
+        #expect(progress(10, [:], true, true, true) == nil)
+        #expect(progress(10, ["a": .doNotKnock], true, true, false) == 0)
+        #expect(progress(0, [:], true, true, false) == 0)
+        #expect(progress(10, ["a": .talked, "b": .noAnswer, "c": .untouched], true, true, true) == 0.2)
+    }
+
     @Test func canonicalMapBundleDecodesStructuredOrphanRecords() throws {
         let json = """
         {

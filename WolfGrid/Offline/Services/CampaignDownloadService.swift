@@ -958,7 +958,10 @@ final class CampaignDownloadService: ObservableObject {
         let requiredAddresses = expected?.addresses ?? max(assetCounts.addresses, 0)
         let requiredBuildings = expected?.buildings ?? max(assetCounts.buildings, 0)
         let requiredLinks = expected?.buildingLinks ?? (requiredAddresses > 0 ? assetCounts.buildingLinks : 0)
-        let requiredMetadata = expected?.metadata ?? requiredAddresses
+        // The local address cache can also contain retained or unsynced records
+        // outside the current server bundle. They do not have server metadata
+        // and must not invalidate a successfully downloaded package.
+        let requiredMetadata = expected?.metadata ?? mapMetadata?.canonicalAddressCount ?? requiredAddresses
         let requiredStatuses = expected?.statuses ?? assetCounts.statuses
         let requiredRoads = expected?.roads ?? assetCounts.roads
         let requiredContacts = expected?.contacts ?? contactCounts.contacts
@@ -1210,8 +1213,11 @@ final class OfflinePreloadCoordinator: ObservableObject {
         let retainedIds = requiredDownloadKey.map {
             UserDefaults.standard.stringArray(forKey: $0 + ".retained") ?? []
         } ?? []
-        let protectedIds = Set(preloadCandidates.map(\.campaignId))
+        var protectedIds = Set(preloadCandidates.map(\.campaignId))
             .union(retainedIds.compactMap { UUID(uuidString: $0) })
+        if SessionManager.shared.isActive, let activeCampaignId = SessionManager.shared.campaignId {
+            protectedIds.insert(activeCampaignId)
+        }
         await enforceStorageCap(protectedCampaignIds: protectedIds)
         lastPreloadAt = Date()
         trace.end(status: "done", fields: [

@@ -40,6 +40,7 @@ enum PerfTrace {
     }
 
     #if DEBUG
+    private static let timingLogQueue = DispatchQueue(label: "wolfgrid.field-timings")
     private static func log(
         flow: String,
         phase: String,
@@ -59,6 +60,26 @@ enum PerfTrace {
             .sorted { $0.key < $1.key }
             .map { "\(sanitize($0.key))=\(sanitize(String(describing: $0.value)))" })
         print("⏱️ [PERF] \(parts.joined(separator: " "))")
+        if ["farm_live", "farm_list", "address_picker", "home_tap_card"].contains(flow) {
+            // Persist timings, never addresses, provider payloads, coordinates or credentials.
+            let diagnosticKeys: Set<String> = ["count", "targets", "accepted", "pending", "shortlist", "visible", "matches", "zoom", "identityGroups", "ambiguousTargets", "ambiguousAddresses", "postalRejected", "geometryRejected", "max_ms"]
+            let diagnostics = fields.keys.sorted().compactMap { key -> String? in
+                guard flow == "farm_live", diagnosticKeys.contains(key), let number = fields[key] as? NSNumber else { return nil }
+                return "\(key)=\(number)"
+            }.joined(separator: " ")
+            let line = "\(Date().timeIntervalSince1970) flow=\(sanitize(flow)) phase=\(sanitize(phase)) status=\(sanitize(status)) durationMs=\(durationMs ?? -1) \(diagnostics)\n"
+            timingLogQueue.async {
+                guard let directory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first else { return }
+                let url = directory.appendingPathComponent("wolfgrid-field-timings.log")
+                if let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size]) as? NSNumber,
+                   size.intValue > 1_000_000 { try? FileManager.default.removeItem(at: url) }
+                if !FileManager.default.fileExists(atPath: url.path) { FileManager.default.createFile(atPath: url.path, contents: nil) }
+                guard let handle = try? FileHandle(forWritingTo: url) else { return }
+                defer { try? handle.close() }
+                try? handle.seekToEnd()
+                try? handle.write(contentsOf: Data(line.utf8))
+            }
+        }
     }
 
     private static func sanitize(_ value: String) -> String {

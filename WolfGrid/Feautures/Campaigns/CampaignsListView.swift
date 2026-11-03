@@ -544,8 +544,11 @@ struct CampaignsListView: View {
         isBulkActionInProgress = true
 
         do {
-            try await CampaignsAPI.shared.deleteCampaigns(campaignIDs: Array(idsToDelete))
-            storeV2.remove(ids: idsToDelete)
+            for campaignID in idsToDelete {
+                try await CampaignsAPI.shared.deleteCampaign(campaignId: campaignID)
+                storeV2.remove(id: campaignID)
+                selectedCampaignIDs.remove(campaignID)
+            }
             isBulkActionInProgress = false
             exitBulkSelection()
         } catch {
@@ -756,11 +759,12 @@ struct V2CampaignsListSection: View {
                     .listRowBackground(Color.clear)
                     .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                         if !isSelectionMode {
-                            Button(role: .destructive) {
+                            Button {
                                 onDeleteRequested?(campaign)
                             } label: {
                                 Label("Delete", systemImage: "trash")
                             }
+                            .tint(.red)
                             Button {
                                 archiveCampaign(campaign)
                             } label: {

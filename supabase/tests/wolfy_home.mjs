@@ -15,17 +15,18 @@ CREATE FUNCTION auth.role() RETURNS text LANGUAGE sql AS $$ SELECT current_user:
 GRANT USAGE ON SCHEMA auth TO authenticated, anon;
 CREATE TABLE user_profiles(user_id uuid PRIMARY KEY, weekly_door_goal integer);
 CREATE TABLE workspace_members(workspace_id uuid, user_id uuid);
-CREATE TABLE sessions(id uuid PRIMARY KEY, user_id uuid, workspace_id uuid);
+CREATE TABLE sessions(id uuid PRIMARY KEY, user_id uuid, workspace_id uuid, farm_id uuid, start_time timestamptz, doors_hit integer);
 CREATE TABLE session_events(id uuid PRIMARY KEY, session_id uuid, building_id text, address_id uuid,
  event_type text, created_at timestamptz, metadata jsonb, outcome text);
 CREATE TABLE contacts(id uuid PRIMARY KEY, user_id uuid, workspace_id uuid, lead_kind text, created_at timestamptz);
 CREATE TABLE contact_activities(id uuid PRIMARY KEY, contact_id uuid, type text, created_at timestamptz);
 INSERT INTO user_profiles VALUES ('${user}',100),('${other}',200);
 INSERT INTO workspace_members VALUES ('${workspace}','${user}');
-INSERT INTO sessions VALUES ('00000000-0000-0000-0000-000000000004','${user}','${workspace}');
+INSERT INTO sessions(id,user_id,workspace_id) VALUES ('00000000-0000-0000-0000-000000000004','${user}','${workspace}');
 GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA public TO authenticated;
 `);
 await db.exec(await readFile(new URL('../migrations/20260915150000_wolfy_home.sql', import.meta.url), 'utf8'));
+await db.exec(await readFile(new URL('../migrations/20261102213000_wolfy_farm_session_metrics.sql', import.meta.url), 'utf8'));
 await db.exec(`SET ROLE authenticated; SET request.jwt.claim.sub = '${user}';`);
 async function mustFail(sql) {
   await assert.rejects(db.query(sql));
@@ -55,6 +56,8 @@ INSERT INTO session_events VALUES
 SET ROLE authenticated;`);
 const metricsSQL = `SELECT wolfy_home_metrics('${workspace}','2026-09-15T04:00:00Z','2026-09-14T04:00:00Z','2026-09-15T12:00:00Z') AS metrics`;
 assert.deepEqual((await db.query(metricsSQL)).rows[0].metrics, {doors:2,weekly_doors:3,conversations:1,leads:1,appointments:1});
+await db.exec(`RESET ROLE; INSERT INTO sessions VALUES ('00000000-0000-0000-0000-000000000005','${user}','${workspace}','${workspace}','2026-09-15T07:00:00Z',50); SET ROLE authenticated;`);
+assert.equal((await db.query(metricsSQL)).rows[0].metrics.weekly_doors, 53);
 await db.exec(`SET request.jwt.claim.sub = '${other}';`);
 await mustFail(metricsSQL);
 await db.exec(`SET ROLE anon;`);

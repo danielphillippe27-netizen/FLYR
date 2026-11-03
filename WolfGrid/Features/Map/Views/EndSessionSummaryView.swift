@@ -16,6 +16,7 @@ struct EndSessionSummaryView: View {
     @Environment(\.displayScale) private var displayScale
     @State private var shareImages: [UIImage] = []
     @State private var showShareSheet = false
+    @State private var initialSharePage = 0
     @State private var showShareHelp = false
     @State private var toastMessage: String?
     @State private var summaryCardPage = 0
@@ -166,7 +167,8 @@ struct EndSessionSummaryView: View {
                                 homesMapTheme: homesMapTheme,
                                 campaignMapSnapshot: campaignMapSnapshot ?? SessionManager.lastEndedSummaryMapSnapshot
                             )
-                            guard !items.isEmpty else {
+                            let index = summaryCardPage + max(0, items.count - summaryPageCount)
+                            guard items.indices.contains(index) else {
                                 showToast("Could not export")
                                 return
                             }
@@ -174,7 +176,7 @@ struct EndSessionSummaryView: View {
                                 showToast(ShareCardGenerator.shareSheetUnavailableUserMessage)
                                 return
                             }
-                            ShareCardGenerator.shareImages(items, from: vc)
+                            ShareCardGenerator.shareImages([items[index]], from: vc)
                         }
                     }
                     ShareActionButton(icon: "camera", label: "Instagram") {
@@ -206,7 +208,7 @@ struct EndSessionSummaryView: View {
         .navigationBarHidden(true)
         .sheet(isPresented: $showShareSheet) {
             if !shareImages.isEmpty {
-                ShareActivitySheet(images: shareImages, onDismiss: { showShareSheet = false })
+                ShareActivitySheet(images: shareImages, initialPage: initialSharePage, onDismiss: { showShareSheet = false })
             }
         }
         .sheet(isPresented: $showShareHelp) {
@@ -244,6 +246,11 @@ struct EndSessionSummaryView: View {
             homesMapTheme: homesMapTheme,
             campaignMapSnapshot: campaignMapSnapshot ?? SessionManager.lastEndedSummaryMapSnapshot
         )
+        guard !shareImages.isEmpty else {
+            showToast("Could not prepare share card")
+            return
+        }
+        initialSharePage = min(summaryCardPage + max(0, shareImages.count - summaryPageCount), shareImages.count - 1)
         showShareSheet = true
     }
 
@@ -283,6 +290,7 @@ struct EndSessionSummaryView: View {
 
 private struct ShareActivitySheet: View {
     let images: [UIImage]
+    var initialPage: Int = 0
     var onDismiss: () -> Void
     var onCreateReplay: (() -> Void)? = nil
     var replayIsRecorded = false
@@ -403,13 +411,13 @@ private struct ShareActivitySheet: View {
                         }
                     })
                     ShareActionButton(icon: "square.and.arrow.up", label: "Export", action: {
-                        guard !images.isEmpty else { return }
+                        guard let image = currentImage else { return }
                         guard let vc = ShareCardGenerator.rootViewController() else {
                             saveToast = ShareCardGenerator.shareSheetUnavailableUserMessage
                             clearToastAfterDelay()
                             return
                         }
-                        ShareCardGenerator.shareImages(images, from: vc)
+                        ShareCardGenerator.shareImages([image], from: vc)
                     })
                     ShareActionButton(icon: "camera", label: "Instagram", action: {
                         shareCurrentImageToInstagram()
@@ -453,6 +461,7 @@ private struct ShareActivitySheet: View {
             Text(replayResult ?? "")
         }
         .onAppear {
+            selectedPage = images.indices.contains(initialPage) ? initialPage : 0
             if let result = DemoVideoRecorder.lastResult {
                 DemoVideoRecorder.lastResult = nil
                 replayResult = result

@@ -2,6 +2,7 @@ import SwiftUI
 /// Leads tab root: Field Leads inbox with search, sync status in header, and compact list.
 /// No FUB promotional banner; sync status (Synced ✓ / Sync ✗ / Syncing...) in header row.
 struct ContactsHubView: View {
+    @AppStorage("farmsEnabled") private var farmsEnabled = false
     @StateObject private var leadsViewModel = LeadsViewModel()
     @StateObject private var campaignStore = CampaignV2Store.shared
     @StateObject private var onboardingDemo = OnboardingDemoViewModel.shared
@@ -17,6 +18,7 @@ struct ContactsHubView: View {
     @State private var showBulkDeleteConfirmation = false
     @State private var pendingDeleteLead: FieldLead?
     @State private var isLoadingCampaignFilters = false
+    @State private var farms: [Farm] = []
 
     private var hasConnectedCRM: Bool {
         integrations.contains { $0.isConnected }
@@ -59,6 +61,8 @@ struct ContactsHubView: View {
                     searchBarSection
                     if leadsViewModel.selectedFilter == .campaigns {
                         campaignFilterSection
+                    } else if leadsViewModel.selectedFilter == .farms {
+                        farmFilterSection
                     }
                     contentSection
                 }
@@ -118,12 +122,14 @@ struct ContactsHubView: View {
                 await leadsViewModel.loadLeads()
                 await loadIntegrations()
                 await loadCampaignFilters()
+                await loadFarmFilters()
                 await onboardingDemo.load()
             }
             .refreshable {
                 await leadsViewModel.loadLeads()
                 await loadIntegrations()
                 await loadCampaignFilters(force: true)
+                await loadFarmFilters()
                 await onboardingDemo.load()
                 HapticManager.rigid()
             }
@@ -267,7 +273,7 @@ struct ContactsHubView: View {
     private var filterSection: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                ForEach(LeadInboxFilter.allCases) { filter in
+                ForEach(LeadInboxFilter.allCases.filter { farmsEnabled || $0 != .farms }) { filter in
                     LeadFilterPill(
                         title: filter.title,
                         isSelected: leadsViewModel.selectedFilter == filter
@@ -314,6 +320,26 @@ struct ContactsHubView: View {
                 .padding(.horizontal, 16)
             }
         }
+    }
+
+    private var farmFilterSection: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(farms) { farm in
+                    LeadFilterPill(title: farm.name, count: leadsViewModel.leads.filter { $0.farmId == farm.id }.count,
+                                   isSelected: leadsViewModel.selectedFarmId == farm.id) {
+                        if isBulkSelecting { exitBulkSelection() }
+                        leadsViewModel.selectFarm(farm.id)
+                        HapticManager.light()
+                    }
+                }
+            }.padding(.horizontal, 16)
+        }
+    }
+
+    private func loadFarmFilters() async {
+        guard farmsEnabled, let user = auth.user?.id else { return }
+        farms = (try? await FarmService.shared.fetchFarms(userID: user)) ?? []
     }
 
     @ViewBuilder
@@ -395,6 +421,8 @@ struct ContactsHubView: View {
             return "No field leads yet"
         case .campaigns:
             return leadsViewModel.selectedCampaignId == nil ? "No campaign leads yet" : "No leads in this campaign"
+        case .farms:
+            return "No farm leads yet"
         }
     }
 
@@ -408,6 +436,8 @@ struct ContactsHubView: View {
             return "Start a session and tap doors to capture leads automatically"
         case .campaigns:
             return "Leads connected to campaigns will appear here."
+        case .farms:
+            return "Leads connected to farms will appear here."
         }
     }
 

@@ -31,7 +31,7 @@ actor FarmService {
     
     // MARK: - Fetch Farms
     
-    func fetchFarms(userID: UUID) async throws -> [Farm] {
+    func fetchFarms(userID: UUID, refreshCounts: Bool = true) async throws -> [Farm] {
         let workspaceId = await MainActor.run { WorkspaceContext.shared.workspaceId }
         if !NetworkMonitor.shared.isOnline {
             return await offlineRepository.getCachedFarms(userId: userID, workspaceId: workspaceId)
@@ -66,7 +66,12 @@ actor FarmService {
         
         let decoder = await MainActor.run { JSONDecoder.supabaseDates }
         let dbRows: [FarmDBRow] = try decoder.decode([FarmDBRow].self, from: responseData)
-        let farms = dbRows.map { $0.toFarm() }
+        var farms = dbRows.map { $0.toFarm() }
+        if refreshCounts {
+            for index in farms.indices {
+                farms[index] = await farmWithCurrentHomeCount(farms[index])
+            }
+        }
         await offlineRepository.upsertFarms(farms, userId: userID, workspaceId: workspaceId)
         await SessionStartCacheRepository.shared.upsertFarms(farms, userId: userID, workspaceId: workspaceId)
         return farms
@@ -86,9 +91,37 @@ actor FarmService {
         
         let decoder = await MainActor.run { JSONDecoder.supabaseDates }
         let dbRow: FarmDBRow = try decoder.decode(FarmDBRow.self, from: response.data)
-        let farm = dbRow.toFarm()
+        let farm = await farmWithCurrentHomeCount(dbRow.toFarm())
         await offlineRepository.upsertFarm(farm)
         return farm
+    }
+
+    // Map edits change the linked campaign's address records; the stored farm
+    // address_count is a provisioning snapshot and is not updated by those edits.
+    func farmWithCurrentHomeCount(_ farm: Farm) async -> Farm {
+        guard let campaignId = await fetchLinkedCampaignId(farmId: farm.id) else { return farm }
+        do {
+            let count = try await campaignHomeCount(campaignId: campaignId)
+            var updated = farm
+            updated.addressCount = count
+            return updated
+        } catch {
+            print("⚠️ [FarmService] Could not refresh home count: \(error)")
+            return farm
+        }
+    }
+
+    func campaignHomeCount(campaignId: UUID) async throws -> Int {
+        let response = try await client.from("campaign_addresses")
+            .select("id", head: true, count: .exact)
+            .eq("campaign_id", value: campaignId.uuidString)
+            .is("deleted_at", value: nil)
+            .execute()
+        guard let count = response.count else {
+            throw NSError(domain: "CampaignHomeCount", code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Home count unavailable"])
+        }
+        return count
     }
 
     struct VisitProgressRow: Decodable {
@@ -128,7 +161,7 @@ actor FarmService {
                 .range(from: offset, to: offset + pageSize - 1)
                 .execute().data
             let rows = try decoder.decode([VisitProgressRow].self, from: data)
-            for row in rows where row.status != "none" && row.status != "do_not_knock" && row.occurredAt <= Date() && ["doorknock", "flyer", "pop_by"].contains(row.session?.mode ?? "doorknock") {
+            for row in rows where row.status != "none" && row.status != "do_not_knock" && row.occurredAt <= Date() && ["doorknock", "door_knock", "door_knocking", "flyer", "pop_by"].contains(row.session?.mode ?? "doorknock") {
                 visited.insert(row.farmAddressId)
                 visitCount += 1
             }
@@ -451,6 +484,21 @@ actor FarmService {
 
         let decoder = await MainActor.run { JSONDecoder.supabaseDates }
         let dbRow = try decoder.decode(FarmDBRow.self, from: data)
+        // Importing zero homes is valid: the backend still prepares parcel/building
+        // geometry for the live field workflow. A preparation failure must never
+        // throw through createFarm's fallback and accidentally create a second farm.
+        var preparation = URLRequest(url: URL(string: "\(Self.farmBaseURL)/api/farms/\(dbRow.id.uuidString)/import-homes")!)
+        preparation.httpMethod = "POST"
+        preparation.timeoutInterval = 120
+        preparation.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        preparation.setValue(request.value(forHTTPHeaderField: "Authorization"), forHTTPHeaderField: "Authorization")
+        preparation.httpBody = Data("{}".utf8)
+        do {
+            let (_, response) = try await URLSession.shared.data(for: preparation)
+            if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+                print("[FarmService] Farm created; map preparation returned HTTP \(http.statusCode)")
+            }
+        } catch { print("[FarmService] Farm created; map preparation needs retry") }
         return dbRow.toFarm()
     }
     
@@ -536,12 +584,21 @@ actor FarmService {
     }
     
     // MARK: - Delete Farm
+
+    private struct DeletedFarmRow: Decodable { let id: UUID }
     
     func deleteFarm(id: UUID) async throws {
-        try await client
+        let deleted: [DeletedFarmRow] = try await client
             .from("farms")
             .delete()
             .eq("id", value: id)
+            .select("id")
             .execute()
+            .value
+        guard !deleted.isEmpty else {
+            throw NSError(domain: "FarmService", code: 1, userInfo: [NSLocalizedDescriptionKey: "The farm could not be deleted. It may have already been removed or you may not have permission."])
+        }
+        await offlineRepository.removeCachedFarm(id: id)
+        await SessionStartCacheRepository.shared.removeCachedFarm(id: id)
     }
 }

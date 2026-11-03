@@ -100,39 +100,23 @@ struct SessionShareCardView: View {
 
                 Spacer().frame(height: metricSpacing)
 
-                // Preserve the card proportions without drawing the session path artwork.
-                Color.clear
-                    .frame(height: routeBoxSize)
-                .padding(.top, forExport ? 8 : 4)
-                .padding(.bottom, forExport ? 2 : 4)
-
-                // Small fixed gap so WolfGrid sits right under the route (no big flexible gap)
                 if forExport {
-                    Spacer().frame(height: 16)
+                    Spacer(minLength: routeBoxSize)
                 } else {
+                    // Preserve the preview card's proportions without drawing route artwork.
+                    Color.clear
+                        .frame(height: routeBoxSize)
+                        .padding(.top, 4)
+                        .padding(.bottom, 4)
                     Spacer().frame(height: 12)
                 }
 
-                // WolfGrid logo at bottom - use text for export since SVG may not render
-                if forExport {
-                    Text("WolfGrid")
-                        .font(.system(size: 88, weight: .black))
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 48)
-                        .padding(.bottom, 32)
-                } else {
-                    Image("WolfGridText")
-                        .resizable()
-                        .aspectRatio(contentMode: .fit)
-                        .frame(height: logoHeight)
-                        .padding(.horizontal, 24)
-                        .padding(.bottom, 16)
-                }
-
-                // Bottom flexible spacer for export so the whole block is vertically centered
-                if forExport {
-                    Spacer(minLength: topSpacer)
-                }
+                Image("WolfGridLogoWide")
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(height: logoHeight)
+                    .padding(.horizontal, forExport ? 48 : 24)
+                    .padding(.bottom, forExport ? 64 : 16)
             }
             .frame(maxWidth: .infinity)
             .frame(maxHeight: forExport ? .infinity : nil)
