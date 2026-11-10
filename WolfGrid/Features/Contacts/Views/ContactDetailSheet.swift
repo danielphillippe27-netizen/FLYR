@@ -22,6 +22,7 @@ struct ContactDetailSheet: View {
             VStack(alignment: .leading, spacing: 24) {
                 // Header: Avatar + Name + Tags
                 headerSection
+                FieldAppointmentBookingButton(contactID: contact.id, contactName: contact.fullName)
                 
                 Divider()
                     .background(Color.border)

@@ -7,6 +7,8 @@ struct FieldSaleRecord: Decodable, Identifiable {
     let currency: String
     let status: String
     let sold_on: String
+    let sale_source: String?
+    let duplicate_review: Bool?
     let rep_name_snapshot: String
     let campaign_name_snapshot: String?
     let product: String
@@ -179,6 +181,7 @@ private struct FieldSaleUpdateForm: View {
     @State private var amount = ""
     @State private var date = Date()
     @State private var reason = ""
+    @State private var receipt: UUID?
     @State private var busy = false
     @State private var error: String?
     @State private var requestID = UUID()
@@ -195,10 +198,20 @@ private struct FieldSaleUpdateForm: View {
         return values
     }
     private var payment: Bool { ["collect", "refund_payment", "chargeback_payment"].contains(action) }
-    private var requiresReason: Bool { ["cancel", "reject"].contains(action) }
+    private var reversal: Bool { payment && action != "collect" && sale.sale_source.map { $0 != "legacy" } == true }
+    private var requiresReason: Bool { ["cancel", "reject"].contains(action) || (action == "verify" && sale.duplicate_review == true) }
     var body: some View {
         Form {
             Picker("Action", selection: $action) { ForEach(actions, id: \.0) { entry in Text(entry.1).tag(entry.0) } }
+            if reversal {
+                Picker("Original receipt", selection: $receipt) {
+                    Text("Choose receipt").tag(UUID?.none)
+                    ForEach(sale.payments.filter { $0.kind == "collection" }) { payment in
+                        Text(FieldSalesService.money(payment.amount_minor, currency: sale.currency)
+                             + " · " + String(payment.occurred_at.prefix(10))).tag(Optional(payment.id))
+                    }
+                }
+            }
             if payment { TextField("Amount (\(sale.currency))", text: $amount).keyboardType(.decimalPad) }
             if payment || action == "complete" {
                 DatePicker(payment ? "Payment time" : "Completion date", selection: $date, in: ...Date(), displayedComponents: payment ? [.date, .hourAndMinute] : [.date])
@@ -207,7 +220,7 @@ private struct FieldSaleUpdateForm: View {
             TextField(requiresReason ? "Reason" : "Note (optional)", text: $reason, axis: .vertical).lineLimit(2...4)
             if let error { Text(error).foregroundStyle(.red) }
             Button(busy ? "Saving…" : (actions.first { $0.0 == action }?.1 ?? "Save")) { Task { await save() } }
-                .disabled(busy || action.isEmpty || (payment && amount.isEmpty) || (requiresReason && reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
+                .disabled(busy || action.isEmpty || (reversal && receipt == nil) || (payment && amount.isEmpty) || (requiresReason && reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
         }
         .navigationTitle("Update sale")
         .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() }.disabled(busy) } }
@@ -217,6 +230,7 @@ private struct FieldSaleUpdateForm: View {
         busy = true; error = nil
         do {
             var payload = ["id": sale.id.uuidString, "version": String(sale.version), "reason": reason]
+            if reversal { payload["reverses_payment_id"] = receipt?.uuidString }
             if payment {
                 payload["amount_minor"] = try FieldSalesService.minorUnits(amount, currency: sale.currency)
                 payload["occurred_at"] = ISO8601DateFormatter().string(from: date); payload["note"] = reason

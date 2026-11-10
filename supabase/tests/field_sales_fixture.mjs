@@ -1,7 +1,6 @@
 import { readFile } from 'node:fs/promises';
-export async function createSalesFixture() {
-const { PGlite } = await import(process.env.PGLITE_MODULE ?? '@electric-sql/pglite');
-const db = new PGlite();
+export async function createSalesFixture(database) {
+const db = database ?? new (await import(process.env.PGLITE_MODULE ?? '@electric-sql/pglite')).PGlite();
 const id = n => `00000000-0000-0000-0000-${String(n).padStart(12,'0')}`;
 await db.exec(`CREATE ROLE anon; CREATE ROLE authenticated; CREATE SCHEMA auth;
 CREATE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql AS $$ SELECT nullif(current_setting('request.jwt.claim.sub',true),'')::uuid $$;

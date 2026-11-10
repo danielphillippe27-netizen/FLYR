@@ -24,6 +24,7 @@ struct CalendarTabView: View {
     @State private var dayLayouts: [String: [CalendarTimedEventLayout]] = [:]
     @State private var selectedEditableItem: ActivityFeedItem?
     @State private var selectedCalendarEditableItem: CalendarEditableItem?
+    @State private var selectedFieldAppointment: CalendarItem?
     @State private var selectedSessionDetail: CalendarSessionDetailItem?
     @State private var showItemOpenError = false
     @State private var appleCalendarAccessState: AppleCalendarAccessState = .notDetermined
@@ -50,6 +51,9 @@ struct CalendarTabView: View {
                         }.padding(.horizontal, 20)
                     }
                     header
+                    FieldAppointmentBookingButton(initialDate: max(draftStartDate, Date()), onSaved: {
+                        Task { await reloadItems() }
+                    })
                     searchStrip
                     content
                         .padding(.bottom, 12)
@@ -58,6 +62,16 @@ struct CalendarTabView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             }
             .ignoresSafeArea(.container, edges: .top)
+        }
+        .sheet(item: $selectedFieldAppointment) { appointment in
+            if let user = AuthManager.shared.user?.id, let workspace = WorkspaceContext.shared.workspaceId {
+                NavigationStack {
+                    FieldAppointmentDetailView(user: user, workspace: workspace, id: appointment.sourceId, canWrite: true)
+                }
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .fieldAppointmentsChanged)) { _ in
+            Task { await reloadItems() }
         }
         .toolbar(.hidden, for: .navigationBar)
         .onAppear {
@@ -671,6 +685,10 @@ struct CalendarTabView: View {
     }
 
     private func openCalendarItem(_ item: CalendarItem) {
+        if item.id.hasPrefix("field_appointment:") {
+            selectedFieldAppointment = item
+            return
+        }
         switch item.kind {
         case .session:
             openSessionItem(item)

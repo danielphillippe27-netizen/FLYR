@@ -18743,6 +18743,7 @@ struct LocationCardView: View {
     @State private var managerOverrideStatus: AddressStatus = .noAnswer
     @State private var isSavingManagerOverride = false
     @State private var showFollowUpDetails = false
+    @State private var canonicalAppointmentBooking = false
     @State private var showAppointmentDetails = false
     @State private var showFollowUpSheet = false
     @State private var showAppointmentSheet = false
@@ -19830,6 +19831,13 @@ struct LocationCardView: View {
             applyAutosavedDraftIfNeeded()
             applyInitialActionIntentIfNeeded()
         }
+        .task(id: WorkspaceContext.shared.workspaceId) {
+            canonicalAppointmentBooking = false
+            guard let user = AuthManager.shared.user?.id,
+                  let workspace = WorkspaceContext.shared.workspaceId else { return }
+            let gate = await FieldAppointments.gate(user: user, workspace: workspace)
+            if !Task.isCancelled { canonicalAppointmentBooking = gate?.enabled == true }
+        }
         .onChange(of: editableAddress?.id) { _, _ in
             applyAutosavedDraftIfNeeded(force: true)
             applyInitialActionIntentIfNeeded(force: true)
@@ -20642,7 +20650,13 @@ struct LocationCardView: View {
             })
             LocationCardExtractedChipsBlock(chips: extractedPreviewChipModels)
             followUpSchedulingRow
-            appointmentSchedulingRow
+            if let address = editableAddress {
+                let contact = dataService.buildingData.primaryResident
+                FieldAppointmentBookingButton(contactID: contact?.id, contactName: contact?.fullName,
+                    campaignID: campaignId, addressID: address.id)
+                if let contact { FieldRoofingSaleButton(contactID: contact.id) }
+            }
+            if !canonicalAppointmentBooking { appointmentSchedulingRow }
         }
     }
 
@@ -22240,7 +22254,7 @@ struct LocationCardView: View {
             notes: trimmedNotes.isEmpty ? baseContact.notes : trimmedNotes,
             reminderDate: reminderDate ?? baseContact.reminderDate,
             followUpAt: showFollowUpDetails ? reminderDate : baseContact.followUpAt,
-            appointmentAt: showAppointmentDetails ? appointmentStartDate : baseContact.appointmentAt,
+            appointmentAt: showAppointmentDetails && !canonicalAppointmentBooking ? appointmentStartDate : baseContact.appointmentAt,
             createdAt: baseContact.createdAt,
             updatedAt: Date()
         )
@@ -22276,7 +22290,7 @@ struct LocationCardView: View {
                 )
             }
 
-            if showAppointmentDetails,
+            if showAppointmentDetails, !canonicalAppointmentBooking,
                let appointmentNote = appointmentSummary(
                 title: trimmedAppointmentTitle,
                 start: appointmentStartDate,
@@ -22308,7 +22322,7 @@ struct LocationCardView: View {
                 )
             }
 
-            if showAppointmentDetails {
+            if showAppointmentDetails && !canonicalAppointmentBooking {
                 let eventTitle = trimmedAppointmentTitle.isEmpty
                     ? FlyrCalendarEventType.appointment.defaultTitle(contactName: savedContact.fullName)
                     : trimmedAppointmentTitle

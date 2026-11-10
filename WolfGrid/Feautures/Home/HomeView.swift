@@ -63,11 +63,7 @@ struct HomeView: View {
                             navigationTitle: "Activity"
                         )
                     case .appointments:
-                        ActivityView(
-                            initialFilter: .appointments,
-                            filters: [.appointments],
-                            navigationTitle: "Appointments"
-                        )
+                        FieldAppointmentsHome()
                     case .followUp:
                         ActivityView(
                             initialFilter: .followUp,

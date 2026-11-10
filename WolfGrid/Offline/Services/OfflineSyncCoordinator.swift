@@ -570,6 +570,13 @@ final class OfflineSyncCoordinator: ObservableObject {
                 await CampaignDownloadService.shared.recordSuccessfulSync(campaignId: campaignId)
             }
 
+        case .bookFieldAppointment:
+            guard let payload = entry.decodedPayload(FieldAppointmentMutation.self) else {
+                throw OutboxProcessingError.invalidPayload(operation: entry.operation, entryId: entry.id)
+            }
+            try await FieldAppointments.command(payload)
+            NotificationCenter.default.post(name: .fieldAppointmentsChanged, object: nil)
+
         case .createContactActivity:
             guard let payload = entry.decodedPayload(ContactActivityOutboxPayload.self),
                   let contactId = UUID(uuidString: payload.contactId),

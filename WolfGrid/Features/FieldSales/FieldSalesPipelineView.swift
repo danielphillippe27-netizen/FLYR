@@ -4,6 +4,8 @@ import Supabase
 private struct SalesWorkbenchData: Decodable {
     let enabled: Bool
     var needs_setup: Bool?
+    var pipeline_version: Int?
+    var roofing_can_write: Bool?
     var role: String?
     var currency: String?
     var stages: [Stage]?
@@ -21,7 +23,14 @@ private struct SalesWorkbenchData: Decodable {
     struct Stage: Decodable, Identifiable { let key: String; let label: String; let position: Int; let probability: Int; let kind: String; var id: String { key } }
     struct Opportunity: Decodable, Identifiable {
         let contact_id: UUID; let contact_name: String; let stage_key: String; let expected_value_minor: String?; let expected_close: String?; let notes: String; let version: Int; let loss_reason: String?; let loss_note: String?; let stalled: Bool?
-        var id: UUID { contact_id }
+        let job_label: String?
+        let user_id: UUID?
+        let opportunityID: UUID?
+        var id: UUID { opportunityID ?? contact_id }
+        enum CodingKeys: String, CodingKey {
+            case contact_id, contact_name, stage_key, expected_value_minor, expected_close, notes, version, loss_reason, loss_note, stalled, job_label, user_id
+            case opportunityID = "id"
+        }
     }
     struct FollowUp: Decodable, Identifiable { let id: UUID; let contact_id: UUID; let contact_name: String; let title: String; let kind: String; let due_at: String; let status: String; let version: Int }
     struct Summary: Decodable, Identifiable { let key: String; let label: String; let count: Int; let value_minor: String?; let weighted_minor: String?; let missing_values: Int; var id: String { key } }
@@ -46,6 +55,8 @@ private struct FieldSalesPipelineScreen: View {
     @State private var generation = 0
     @State private var adding = false
     @State private var tasking = false
+    @State private var recording: SalesWorkbenchData.Opportunity?
+    @State private var savedSale: UUID?
     @State private var editing: SalesWorkbenchData.Opportunity?
     @State private var busy = false
     @State private var completed = false
@@ -54,6 +65,7 @@ private struct FieldSalesPipelineScreen: View {
         List {
             if let error { Text(error).foregroundStyle(.red) }
             if let d = data, d.enabled, d.needs_setup != true {
+                if let savedSale { NavigationLink("Open saved sale") { FieldSalesRecordView(sale: savedSale) } }
                 Section { Text("Expected pipeline value is an estimate. Only separately verified sales earn revenue and leaderboard credit.").font(.caption) }
                 Section(d.scope == "self" ? "My pipeline" : "Workspace pipeline") {
                     ForEach((d.summary ?? []).filter { $0.count>0 }) { row in
@@ -69,6 +81,7 @@ private struct FieldSalesPipelineScreen: View {
                 Section { Picker("Inspect opportunities",selection:$pipelineFilter) { Text("All").tag("all"); Text("Unchanged for 72 hours").tag("stalled"); ForEach(d.losses ?? [],id:\.reason) { Text("Lost: " + $0.reason.replacingOccurrences(of:"_",with:" ")).tag("loss:" + $0.reason) } } }
                 Section {
                     Button("Add opportunity · Beta") { editing = nil; adding = true }
+                        .disabled(d.pipeline_version == 3 && d.roofing_can_write != true)
                     Button("Add follow-up · Beta") { tasking = true }
                 }
                 opportunitySections(d)
@@ -99,6 +112,13 @@ private struct FieldSalesPipelineScreen: View {
         .onChange(of: scene) { _, phase in if phase == .active { Task { await reload() } } }
         .onReceive(NotificationCenter.default.publisher(for: .fieldSalesChanged)) { _ in Task { await reload() } }
         .sheet(isPresented: $adding) { if let d = data { NavigationStack { SalesOpportunityEditor(workspace: workspace, data: d, initial: editing) } } }
+        .sheet(item: $recording) { opportunity in
+            NavigationStack {
+                FieldRoofingSaleView(workspace: workspace, context: [
+                    "opportunity_id": opportunity.id.uuidString, "contact_id": opportunity.contact_id.uuidString
+                ]) { id in savedSale = id; recording = nil }
+            }
+        }
         .sheet(isPresented: $tasking) { if let d = data { NavigationStack { SalesTaskEditor(workspace: workspace, data: d) } } }
     }
     private func visibleOpportunities(_ d: SalesWorkbenchData, stage: SalesWorkbenchData.Stage) -> [SalesWorkbenchData.Opportunity] {
@@ -126,7 +146,8 @@ private struct FieldSalesPipelineScreen: View {
 
     private func opportunityRow(_ opportunity: SalesWorkbenchData.Opportunity, stage: SalesWorkbenchData.Stage, currency: String?) -> some View {
         VStack(alignment: .leading, spacing: 5) {
-            Text(opportunity.contact_name).font(.headline)
+            Text(opportunity.job_label ?? opportunity.contact_name).font(.headline)
+            if opportunity.job_label != nil { Text(opportunity.contact_name).font(.caption).foregroundStyle(.secondary) }
             if opportunity.stalled == true { Text("Unchanged for 72 hours").font(.caption) }
             if let reason = opportunity.loss_reason {
                 Text("Lost: " + reason.replacingOccurrences(of: "_", with: " ")).font(.caption)
@@ -134,7 +155,12 @@ private struct FieldSalesPipelineScreen: View {
             Text(opportunity.expected_value_minor == nil ? "Value unavailable" : FieldSalesService.money(opportunity.expected_value_minor, currency: currency))
             if let close = opportunity.expected_close { Text("Expected close: \(close)").font(.caption) }
             Button("Edit") { editing = opportunity; adding = true }
-            if stage.kind != "lost" { Text("Create or complete an appointment before recording a sale.").font(.caption).foregroundStyle(.secondary) }
+                .disabled(data?.pipeline_version == 3 && data?.roofing_can_write != true)
+            if data?.pipeline_version == 3 && stage.kind == "open" && data?.roofing_can_write == true {
+                Button("Record sale") { recording = opportunity }.buttonStyle(.borderless)
+            } else if stage.kind != "lost" && data?.pipeline_version != 3 {
+                Text("Create or complete an appointment before recording a sale.").font(.caption).foregroundStyle(.secondary)
+            }
         }
     }
     private func reload() async {
@@ -166,12 +192,27 @@ private struct SalesOpportunityEditor: View {
     @State private var amount = ""
     @State private var close = ""
     @State private var notes = ""
+    @State private var job = ""
+    @State private var owner: UUID?
+    @State private var representatives: [FieldAppointmentOptions.Choice] = []
+    @State private var newID = UUID()
+    @State private var previous: [String: String] = [:]
+    private var roofing: Bool { data.pipeline_version == 3 }
     @State private var lossReason = ""
     @State private var lossNote = ""
     @State private var error: String?
     @State private var busy = false
     var body: some View {
         Form {
+            if roofing {
+                TextField("Job or service", text: $job)
+                if representatives.count > 1 {
+                    Picker("Assigned representative", selection: $owner) {
+                        Text("Me").tag(UUID?.none)
+                        ForEach(representatives) { rep in Text(rep.name).tag(Optional(rep.id)) }
+                    }
+                }
+            }
             Picker("Lead", selection: $contact) { ForEach(data.leads ?? []) { Text($0.name).tag($0.id.uuidString) } }.disabled(initial != nil)
             Picker("Stage", selection: $stage) { ForEach((data.stages ?? []).filter { $0.kind != "won" || $0.key == initial?.stage_key }) { Text($0.label).tag($0.key) } }
             if data.money_visible != false { TextField("Expected value (\(data.currency ?? ""), optional)", text: $amount).keyboardType(.decimalPad) }
@@ -179,9 +220,14 @@ private struct SalesOpportunityEditor: View {
             TextField("Expected close YYYY-MM-DD (optional)", text: $close)
             TextField("Notes", text: $notes, axis: .vertical)
             if let error { Text(error).foregroundStyle(.red) }
-            Button("Save opportunity") { Task { await save() } }.disabled(busy || contact.isEmpty)
+            Button("Save opportunity") { Task { await save() } }.disabled(busy || contact.isEmpty || (roofing && job.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
         }.navigationTitle("Opportunity · Beta").toolbar { Button("Close") { dismiss() } }
-        .onAppear { contact = initial?.contact_id.uuidString ?? data.leads?.first?.id.uuidString ?? ""; stage = initial?.stage_key ?? data.stages?.first?.key ?? "new"; amount = FieldSalesService.editableMoney(initial?.expected_value_minor, currency: data.currency); close = initial?.expected_close ?? ""; notes = initial?.notes ?? ""; lossReason = initial?.loss_reason ?? ""; lossNote = initial?.loss_note ?? "" }
+        .task {
+            if roofing && data.scope == "workspace" {
+                representatives = (try? await FieldAppointments.options(workspace).representatives) ?? []
+            }
+        }
+        .onAppear { job = initial?.job_label ?? ""; owner = initial?.user_id; contact = initial?.contact_id.uuidString ?? data.leads?.first?.id.uuidString ?? ""; stage = initial?.stage_key ?? data.stages?.first?.key ?? "new"; amount = FieldSalesService.editableMoney(initial?.expected_value_minor, currency: data.currency); close = initial?.expected_close ?? ""; notes = initial?.notes ?? ""; lossReason = initial?.loss_reason ?? ""; lossNote = initial?.loss_note ?? "" }
     }
     private func save() async {
         busy = true; defer { busy = false }
@@ -189,7 +235,17 @@ private struct SalesOpportunityEditor: View {
             let value = amount.isEmpty ? "" : (Decimal(string: amount) == 0 ? "0" : try FieldSalesService.minorUnits(amount, currency: data.currency ?? "CAD"))
             var p = ["contact_id": contact, "stage_key": stage, "expected_value_minor": value, "expected_close": close, "notes": notes,"loss_reason":lossReason,"loss_note":lossNote]
             if let initial { p["version"] = String(initial.version) }
-            try await pipelineCommand(workspace, "opportunity", p); dismiss()
+            if roofing {
+                p["id"] = (initial?.id ?? newID).uuidString
+                p["job_label"] = job
+                p["owner_id"] = owner?.uuidString
+                p["expected_value_minor"] = data.money_visible == false ? nil : value
+                p["request_id"] = previous.filter { $0.key != "request_id" } == p
+                    ? previous["request_id"] : UUID().uuidString
+                previous = p
+            }
+            try await pipelineCommand(workspace, roofing ? "deal" : "opportunity", p)
+            dismiss()
         } catch { self.error = error.localizedDescription }
     }
 }

@@ -85,7 +85,7 @@ private struct CommissionHomeContent: View {
             Circle().trim(from: 0, to: progress).stroke(Color.green, style: StrokeStyle(lineWidth: 10, lineCap: .round)).rotationEffect(.degrees(-90))
             VStack(spacing: 9) {
                 Text(amount(d.weekly_commission_minor, d, missing: d.weekly_missing)).font(.system(size: 35, weight: .semibold)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.55)
-                Text("GROSS COMMISSION").font(.system(size: 10, weight: .medium)).tracking(0.6).foregroundStyle(.secondary)
+                Text("ESTIMATED COMMISSION").font(.system(size: 10, weight: .medium)).tracking(0.6).foregroundStyle(.secondary)
                 if let target = d.weekly_target_minor { Text("of \(FieldSalesService.money(target, currency: d.currency))").font(.caption).foregroundStyle(.secondary) }
                 else { Text("THIS WEEK").font(.caption2).foregroundStyle(.secondary) }
             }.padding(20)
@@ -95,7 +95,7 @@ private struct CommissionHomeContent: View {
         VStack(alignment: .leading, spacing: 28) {
             VStack(alignment: .leading, spacing: 6) {
                 Text(amount(d.daily_commission_minor, d, missing: d.daily_missing)).font(.title2.weight(.semibold)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.6)
-                Text("DAILY EARNED").font(.system(size: 10, weight: .medium)).tracking(0.6).foregroundStyle(.secondary)
+                Text("ESTIMATED TODAY").font(.system(size: 10, weight: .medium)).tracking(0.6).foregroundStyle(.secondary)
                 Text("Estimated commission").font(.caption2).foregroundStyle(.secondary)
             }.accessibilityElement(children: .combine)
             VStack(alignment: .leading, spacing: 6) {

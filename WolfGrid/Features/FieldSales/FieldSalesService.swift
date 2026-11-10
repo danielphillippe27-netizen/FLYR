@@ -11,6 +11,7 @@ struct FieldSalesSnapshot: Decodable {
     var timezone: String?
     var team_revenue_visible: Bool?
     var pro_sales_version: Int?
+    var roofing_earnings_enabled: Bool?
     var capabilities: [String: Bool]?
     var verification_required: Bool?
     var today: String?
@@ -88,7 +89,7 @@ enum FieldSalesService {
     }
     static func command(_ workspace: UUID, _ action: String, _ data: [String: String]) async throws {
         struct Params: Encodable { let p_workspace: UUID; let p_action: String; let p_data: [String: String] }
-        _ = try await SupabaseManager.shared.client.rpc("field_sales_command", params: Params(p_workspace: workspace, p_action: action, p_data: data)).execute()
+        _ = try await SupabaseManager.shared.client.rpc("field_sales_command", params: Params(p_workspace: workspace, p_action: action, p_data: data.merging(["client_contract_version": "2"]) { _, new in new })).execute()
         await MainActor.run { NotificationCenter.default.post(name: .fieldSalesChanged, object: nil) }
     }
     static func money(_ value: String?, currency: String?) -> String {
