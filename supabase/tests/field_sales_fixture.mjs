@@ -1,18 +1,17 @@
 import { readFile } from 'node:fs/promises';
-export async function createSalesFixture() {
-const { PGlite } = await import(process.env.PGLITE_MODULE ?? '@electric-sql/pglite');
-const db = new PGlite();
+export async function createSalesFixture(database) {
+const db = database ?? new (await import(process.env.PGLITE_MODULE ?? '@electric-sql/pglite')).PGlite();
 const id = n => `00000000-0000-0000-0000-${String(n).padStart(12,'0')}`;
 await db.exec(`CREATE ROLE anon; CREATE ROLE authenticated; CREATE SCHEMA auth;
 CREATE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql AS $$ SELECT nullif(current_setting('request.jwt.claim.sub',true),'')::uuid $$;
 GRANT USAGE ON SCHEMA auth TO authenticated,anon;
 CREATE TABLE auth.users(id uuid PRIMARY KEY,raw_user_meta_data jsonb DEFAULT '{}');
-CREATE TABLE workspaces(id uuid PRIMARY KEY,timezone text);
+CREATE TABLE workspaces(id uuid PRIMARY KEY,timezone text,industry text);
 CREATE TABLE workspace_members(workspace_id uuid,user_id uuid,role text);
 CREATE TABLE campaigns(id uuid PRIMARY KEY,workspace_id uuid,name text,territory_id uuid);
-CREATE TABLE contacts(id uuid PRIMARY KEY,workspace_id uuid,user_id uuid,full_name text,campaign_id uuid,lead_kind text DEFAULT 'field',created_at timestamptz DEFAULT now());
+CREATE TABLE contacts(id uuid PRIMARY KEY,workspace_id uuid,user_id uuid,full_name text,campaign_id uuid,lead_kind text DEFAULT 'field',session_id uuid,created_at timestamptz DEFAULT now());
 CREATE TABLE contact_activities(id uuid PRIMARY KEY,contact_id uuid,type text,timestamp timestamptz,created_at timestamptz DEFAULT now(),status text);
-CREATE TABLE sessions(id uuid PRIMARY KEY,workspace_id uuid,user_id uuid,campaign_id uuid);
+CREATE TABLE sessions(id uuid PRIMARY KEY,workspace_id uuid,user_id uuid,campaign_id uuid,start_time timestamptz,end_time timestamptz);
 CREATE TABLE session_events(id uuid PRIMARY KEY,session_id uuid,building_id text,address_id uuid,created_at timestamptz,event_type text,metadata jsonb,outcome text);
 INSERT INTO auth.users(id,raw_user_meta_data) VALUES('${id(1)}','{"full_name":"Owner"}'),('${id(2)}','{"full_name":"Rep"}'),('${id(3)}','{"full_name":"Admin"}'),('${id(4)}','{}');
 INSERT INTO workspaces(id) VALUES('${id(10)}'),('${id(11)}');

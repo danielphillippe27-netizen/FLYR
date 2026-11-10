@@ -11,6 +11,7 @@ enum OutboxOperation: String, Codable, Sendable {
     case endSession = "end_session"
     case createSessionEvent = "create_session_event"
     case upsertContact = "upsert_contact"
+    case bookFieldAppointment = "book_field_appointment"
     case createContactActivity = "create_contact_activity"
     case deleteContact = "delete_contact"
     case deleteBuilding = "delete_building"
@@ -520,6 +521,24 @@ final class OutboxRepository {
     private let dbQueue = OfflineDatabase.shared.dbQueue
 
     private init() {}
+
+    func appointmentSyncState(entryID: String) async -> String? {
+        try? await dbQueue.read { db in
+            try OutboxEntry.fetchOne(db, key: entryID)?.status
+        }
+    }
+
+    func unresolvedFieldAppointments(user: UUID, workspace: UUID) async -> [OutboxEntry] {
+        let rows = (try? await dbQueue.read { db in
+            try OutboxEntry.fetchAll(db, sql: """
+                SELECT * FROM sync_outbox WHERE operation = ? AND status != 'synced' ORDER BY created_at DESC
+                """, arguments: [OutboxOperation.bookFieldAppointment.rawValue])
+        }) ?? []
+        return rows.filter { entry in
+            guard let mutation = entry.decodedPayload(FieldAppointmentMutation.self) else { return false }
+            return mutation.user == user && mutation.workspace == workspace
+        }
+    }
 
     func hasUnfinishedEndSession(id: UUID) async -> Bool {
         (try? await dbQueue.read { db in

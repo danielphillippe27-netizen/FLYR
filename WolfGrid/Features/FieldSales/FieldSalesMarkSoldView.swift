@@ -10,7 +10,7 @@ private struct SaleEntrySnapshot: Decodable {
     struct Selected: Decodable { let id: UUID; let name: String; let address: String?; let rep_id: UUID; let appointment_id: UUID; let appointment_at: String; let appointment_note: String? }
     struct Duplicate: Decodable, Identifiable { let id: UUID; let product: String; let sold_on: String; let status: String }
 }
-struct FieldSalesMarkSoldView: View {
+struct LegacyFieldSalesMarkSoldView: View {
     let workspace: UUID; let initial: [String:String]; let saved: (UUID) -> Void
     @State private var context: [String:String]
     @State private var data: SaleEntrySnapshot?

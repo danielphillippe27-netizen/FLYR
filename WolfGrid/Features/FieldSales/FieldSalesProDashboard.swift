@@ -20,6 +20,9 @@ struct FieldSalesProDashboard: View {
                         FieldSalesCommissionHomeView(showsHeader: true)
                             .padding(18)
                             .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 20))
+                        if data.roofing_earnings_enabled == true {
+                            NavigationLink("My Earnings") { FieldEarningsView(workspace: workspace) }
+                        }
                         FieldSalesProHomeView()
                         HStack(spacing: 12) {
                             NavigationLink("Pipeline & follow-ups") { FieldSalesPipelineRootView() }
@@ -35,7 +38,7 @@ struct FieldSalesProDashboard: View {
             }
         }.navigationTitle("Sales")
         .toolbar {
-            ToolbarItem(placement: .primaryAction) { Button("Convert appointment") { entryContext = [:]; recording = true } }
+            ToolbarItem(placement: .primaryAction) { Button("Record sale") { entryContext = [:]; recording = true } }
             ToolbarItem(placement: .secondaryAction) {
                 Menu("Sales actions") {
                     NavigationLink("Pipeline & follow-ups") { FieldSalesPipelineRootView() }

@@ -49,6 +49,7 @@ actor FlyrCalendarService {
         }
         let workspaceId = await MainActor.run(body: { WorkspaceContext.shared.workspaceId })
 
+        async let fieldAppointments = fetchFieldAppointmentItems(workspaceId: workspaceId, start: start, end: end)
         async let standaloneEvents = fetchStandaloneEvents(userId: userId, workspaceId: workspaceId, start: start, end: end)
         async let contacts = fetchContacts(userId: userId, workspaceId: workspaceId)
         async let sessions = fetchSessionItems(userId: userId, workspaceId: workspaceId, start: start, end: end)
@@ -61,11 +62,34 @@ actor FlyrCalendarService {
         let contactItems = await makeContactItems(from: resolvedContacts, start: start, end: end)
         let standaloneItems = expandStandaloneEvents(resolvedEvents, start: start, end: end)
         let fallbackItems = contactItems.filter { !isLegacyContactItem($0, duplicatedBy: resolvedEvents) }
-        return (standaloneItems + fallbackItems + sessionItems + externalItems)
+        let appointmentItems = await fieldAppointments
+        return (standaloneItems + fallbackItems + sessionItems + externalItems + appointmentItems)
             .sorted { lhs, rhs in
                 if lhs.startAt == rhs.startAt { return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending }
                 return lhs.startAt < rhs.startAt
             }
+    }
+
+    private func fetchFieldAppointmentItems(workspaceId: UUID?, start: Date, end: Date) async -> [CalendarItem] {
+        guard let workspaceId, NetworkMonitor.shared.isOnline else { return [] }
+        var result: [CalendarItem] = []
+        var cursor: FieldAppointment?
+        while !Task.isCancelled,
+              let page = try? await FieldAppointments.list(workspaceId, start: start, end: end, after: cursor) {
+            result.append(contentsOf: page.appointments.compactMap { appointment in
+                guard appointment.status != "cancelled", let start = appointment.scheduledDate,
+                      let end = FieldAppointments.date(appointment.end_at) else { return nil }
+                return CalendarItem(id: "field_appointment:\(appointment.id)", sourceId: appointment.id,
+                    kind: .meeting, eventType: "appointment",
+                    title: "\(appointment.appointment_type): \(appointment.contact_name)",
+                    startAt: start, endAt: end, isAllDay: false, notes: appointment.notes,
+                    location: appointment.property_label, colorKey: "red", contactName: appointment.contact_name,
+                    contactId: appointment.contact_id, campaignId: appointment.campaign_id, address: appointment.property_label)
+            })
+            guard page.appointments.count == 100 else { break }
+            cursor = page.appointments.last
+        }
+        return result
     }
 
     func createEvent(_ event: FlyrCalendarEvent) async throws -> FlyrCalendarEvent {

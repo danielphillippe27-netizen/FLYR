@@ -62,11 +62,11 @@ await cmd('verify',{id:replacement.id,version:2});
 await cmd('settings',{currency:'CAD',timezone:'America/Toronto',team_revenue_visible:true});
 await actor(2); assert.equal((await dash(true)).ranking.find(x=>x.rep_id===id(2)).revenue_minor,'6200001');
 await db.exec(`RESET ROLE;
-INSERT INTO contacts(id,workspace_id,user_id,full_name,created_at) VALUES('${id(40)}','${id(10)}','${id(2)}','Cohort lead',date_trunc('month',now()));
+INSERT INTO contacts(id,workspace_id,user_id,full_name,created_at) VALUES('${id(40)}','${id(10)}','${id(2)}','Cohort lead',(date_trunc('month',now() AT TIME ZONE 'America/Toronto') AT TIME ZONE 'America/Toronto'));
 INSERT INTO contact_activities(id,contact_id,type,timestamp,status) VALUES
-('${id(41)}','${id(40)}','meeting',date_trunc('month',now()),'scheduled'),
+('${id(41)}','${id(40)}','meeting',(date_trunc('month',now() AT TIME ZONE 'America/Toronto') AT TIME ZONE 'America/Toronto'),'scheduled'),
 ('${id(42)}','${id(40)}','meeting',now()+interval '1 day','scheduled'),
-('${id(43)}','${id(40)}','meeting',date_trunc('month',now()),'cancelled');
+('${id(43)}','${id(40)}','meeting',(date_trunc('month',now() AT TIME ZONE 'America/Toronto') AT TIME ZONE 'America/Toronto'),'cancelled');
 INSERT INTO sessions VALUES('${id(50)}','${id(10)}','${id(2)}',null);
 INSERT INTO session_events(id,session_id,building_id,created_at,event_type,metadata) VALUES
 ('${id(51)}','${id(50)}','doorA',now()-interval '2 minutes','conversation','{"address_status":"talked"}'),

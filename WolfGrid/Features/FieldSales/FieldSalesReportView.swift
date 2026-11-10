@@ -35,6 +35,7 @@ private struct FieldSalesReport: Decodable {
     }
     struct Metrics: Decodable {
         let available: Bool; let doors: Int?; let conversations: Int?; let leads: Int?; let appointments: Int?
+        let appointments_set: Int?; let appointments_closed: Int?
         let appointments_completed: Int?; let opportunities: Int?; let close_rate: String?
     }
     struct Sale: Decodable, Identifiable {
@@ -104,7 +105,9 @@ private struct FieldSalesReportContent: View {
                     if let s = d.summary {
                         Section("Sales performance") {
                             moneyRow("Net sold", value: s.sold_value_minor, key: "sold_value_minor", report: d)
-                            drillLink("Sales",s.sales,"sales")
+                            drillLink("Verified sales",s.sales,"sales")
+                            LabeledContent("Appointments set", value: d.metrics?.appointments_set.map(String.init) ?? "—")
+                            LabeledContent("Appointments closed", value: d.metrics?.appointments_closed.map(String.init) ?? "—")
                             moneyRow("Average ticket", value: s.average_ticket_minor, key: "average_ticket_minor", report: d)
                             LabeledContent("Close rate", value: d.metrics?.close_rate.map { "\($0)%" } ?? "Unavailable")
                             if let pipeline = d.current_pipeline, pipeline.available {

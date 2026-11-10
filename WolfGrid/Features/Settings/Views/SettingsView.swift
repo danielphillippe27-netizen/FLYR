@@ -72,6 +72,7 @@ struct SettingsView: View {
                     streakSettingsSection
                     
                     WorkspaceCoverageSettingsSection()
+                    FieldSalesWorkspaceSettings()
 
                     Section {
                         Toggle(isOn: $farmsEnabled) {

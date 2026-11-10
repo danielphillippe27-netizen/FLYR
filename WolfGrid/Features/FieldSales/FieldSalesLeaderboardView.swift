@@ -66,6 +66,12 @@ private struct FieldSalesLeaderboardContent: View {
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text(row.rep_name).fontWeight(.medium)
                                     Text("\(row.metrics["sales"] ?? "—") sales").font(.caption).foregroundStyle(.secondary)
+                                    if let set = row.metrics["appointments_set"], let closed = row.metrics["appointments_closed"] {
+                                        Text("\(set) appointments set · \(closed) closed").font(.caption).foregroundStyle(.secondary)
+                                    }
+                                    if let value = row.metrics["sold_value_minor"], d.metric != "sold_value" {
+                                        Text("Credited contract value \(FieldSalesService.money(value, currency: d.currency))").font(.caption).foregroundStyle(.secondary)
+                                    }
                                     if let trend = row.metrics["sales_change_percent"] { Text("Sales trend: \(trend)%").font(.caption).foregroundStyle(.secondary) }
                                 }
                                 Spacer()

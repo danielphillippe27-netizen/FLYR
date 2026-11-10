@@ -60,6 +60,8 @@ struct LeadDetailView: View {
             VStack(alignment: .leading, spacing: 24) {
                 appleStyleHeaderSection
                 contactRowsSection
+                FieldAppointmentBookingButton(contactID: lead.id, contactName: lead.name ?? "Contact")
+                FieldRoofingSaleButton(contactID: lead.id)
                 BusinessCardSendView(contactID: lead.id, phone: editablePhone, email: editableEmail, saveLead: {
                     var updated = lead
                     updated.name = editableName; updated.phone = editablePhone; updated.email = editableEmail; updated.notes = editableNotes

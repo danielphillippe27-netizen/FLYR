@@ -32,21 +32,47 @@ struct FieldSalesEntryLink: View {
     var appointmentID: UUID? = nil
     var campaignID: UUID? = nil
     var propertyKey: String? = nil
+    var body: some View {
+        FieldSalesVisibility {
+            if leaderboard || appointmentID != nil {
+                NavigationLink(leaderboard ? "Sales Leaderboard" : "Convert to sale") {
+                    FieldSalesRootView(leadID: leadID, leaderboardOnly: leaderboard, appointmentID: appointmentID,
+                                       propertyKey: propertyKey, campaignID: campaignID)
+                }
+            }
+        }
+    }
+}
+
+struct FieldSalesVisibility<Content: View>: View {
+    @ViewBuilder var content: () -> Content
     @ObservedObject private var auth = AuthManager.shared
     @ObservedObject private var workspace = WorkspaceContext.shared
-    @State private var enabledScope: String?
-    private var scope: String { "\(auth.user?.id.uuidString ?? ""):\(workspace.workspaceId?.uuidString ?? "")" }
+
+    var body: some View {
+        if let user = auth.user?.id, let id = workspace.workspaceId {
+            FieldSalesVisibleContent(workspace: id, content: content).id("\(user):\(id)")
+        }
+    }
+}
+
+private struct FieldSalesVisibleContent<Content: View>: View {
+    let workspace: UUID
+    @ViewBuilder var content: () -> Content
+    @State private var enabled = false
+    @State private var revision = 0
+    @Environment(\.scenePhase) private var scene
+
     var body: some View {
         Group {
-            if enabledScope == scope, leaderboard || appointmentID != nil {
-                NavigationLink(leaderboard ? "Sales & Revenue leaderboard · Beta" : "Convert to sale") { FieldSalesRootView(leadID: leadID, leaderboardOnly: leaderboard, appointmentID: appointmentID, propertyKey: propertyKey, campaignID: campaignID) }
-            }
-        }.task(id: scope) {
-            enabledScope = nil
-            let key = scope
-            guard let space = workspace.workspaceId, auth.user != nil else { return }
-            if let data = try? await FieldSalesService.bootstrap(space), data.enabled, !Task.isCancelled, key == scope { enabledScope = key }
+            if enabled { content() }
         }
+        .task(id: revision) {
+            let snapshot = try? await FieldSalesService.bootstrap(workspace)
+            if !Task.isCancelled { enabled = snapshot?.enabled == true }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .fieldSalesChanged)) { _ in revision += 1 }
+        .onChange(of: scene) { _, phase in if phase == .active { revision += 1 } }
     }
 }
 
