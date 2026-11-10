@@ -105,11 +105,14 @@ private struct WolfyHomeContent: View {
                     }
                     VStack(spacing: 14) {
                         weeklyHeader
-                        if salesHome {
+                        if showingSalesHome {
                             FieldSalesCommissionHomeView(refreshToken: model.summary.sales?.as_of, showsHeader: false)
                         } else {
                             weeklyHero
                             funnel
+                        }
+                        if salesEnabled {
+                            FieldSalesProHomeView(refreshToken: model.summary.sales?.as_of)
                         }
                     }
                     if isFounderDemo { demoActivity }
@@ -163,17 +166,22 @@ private struct WolfyHomeContent: View {
             HomeAccountControls()
         }
     }
+    private var salesEnabled: Bool { model.summary.sales?.enabled == true }
+    private var showingSalesHome: Bool { salesEnabled && salesHome }
+
     private var weeklyHeader: some View {
         HStack {
             Text("THIS WEEK").font(.caption.weight(.semibold)).tracking(2).foregroundStyle(.secondary)
             Spacer()
             if model.isLoading { ProgressView().controlSize(.small) }
             Menu {
-                Picker("Primary home page", selection: $salesHome) {
-                    Text("Doors").tag(false)
-                    Text("Sales").tag(true)
+                if salesEnabled {
+                    Picker("Primary home page", selection: $salesHome) {
+                        Text("Doors").tag(false)
+                        Text("Sales").tag(true)
+                    }
                 }
-                if salesHome {
+                if showingSalesHome {
                     NavigationLink("Edit sales goals") { FieldSalesGoalsView() }
                 } else {
                     Button("Edit door goals") { editingGoals = true }
@@ -183,7 +191,7 @@ private struct WolfyHomeContent: View {
                 Image(systemName: "ellipsis").frame(width: 44, height: 44)
             }
             .accessibilityLabel("Home settings")
-            .accessibilityValue(salesHome ? "Sales" : "Doors")
+            .accessibilityValue(showingSalesHome ? "Sales" : "Doors")
         }
     }
     private var weeklyHero: some View {

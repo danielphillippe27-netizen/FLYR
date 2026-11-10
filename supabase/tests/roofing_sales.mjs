@@ -17,6 +17,8 @@ const { db, id } = await createSalesFixture(client ? {
 const workspace = id(10);
 const migrations = new URL('../migrations/', import.meta.url);
 const migration = async name => db.exec(await readFile(new URL(name, migrations), 'utf8'));
+await migration('20260915233000_field_sales_beta_rollout.sql');
+await migration('20260918195000_sales_workspace_gate.sql');
 await db.exec(`
   CREATE ROLE service_role;
   CREATE FUNCTION can_view_campaign(campaign uuid, actor uuid) RETURNS boolean LANGUAGE sql AS $$
@@ -29,12 +31,15 @@ await db.exec(`
   CREATE TABLE campaign_addresses (id uuid PRIMARY KEY, campaign_id uuid, formatted text);
   INSERT INTO campaign_addresses VALUES ('${id(41)}','${id(20)}','7 Test Street, Unit 2');
   UPDATE contacts SET address_id='${id(41)}',address='7 Test Street, Unit 2' WHERE id='${id(30)}';
+  INSERT INTO workspaces(id,timezone,industry) VALUES ('${id(12)}','America/Toronto','Roofing contractor');
+  INSERT INTO workspace_members VALUES ('${id(12)}','${id(1)}','owner'),('${id(12)}','${id(2)}','member'),('${id(12)}','${id(3)}','admin');
   INSERT INTO field_sales_settings(workspace_id,enabled,currency,timezone)
-  VALUES ('${workspace}',true,'CAD','America/Toronto'),('${id(11)}',true,'CAD','America/Toronto');
+  VALUES ('${workspace}',true,'CAD','America/Toronto'),('${id(11)}',true,'CAD','America/Toronto')
+  ON CONFLICT(workspace_id) DO UPDATE SET enabled=excluded.enabled,currency=excluded.currency,timezone=excluded.timezone;
 `);
 for (const file of (await readdir(migrations)).filter(file =>
   /^202609161\d+_pro_sales_.*\.sql$/.test(file) || /^2026091712\d+_appointment_.*\.sql$/.test(file) ||
-  /^2026111012[01234]000_roofing_.*\.sql$/.test(file)).sort()) await migration(file);
+  /^(2026111012[01234]000_roofing_.*|20261110125000_workspace_sales_visibility)\.sql$/.test(file)).sort()) await migration(file);
 
 async function actor(n) {
   await db.exec(`RESET ROLE; SET ROLE authenticated; SET request.jwt.claim.sub='${id(n)}';`);
@@ -49,6 +54,35 @@ const sale = (action, data) => rpc('field_sales_command', workspace, action, { .
 const earnings = (action, data) => rpc('field_earnings_command', workspace, action, data);
 const earningsList = (filter = {}) => rpc('field_earnings_list', workspace, filter);
 const { rows: [{ today }] } = await db.query("SELECT (now() AT TIME ZONE 'America/Toronto')::date::text AS today");
+
+await actor(1);
+const settings = (w, enabled) => rpc('field_sales_workspace_command', w, enabled ?? null);
+assert.deepEqual(await settings(id(12)), { enabled: true, can_manage: true, roofing_default: true, needs_setup: true });
+assert.equal((await settings(id(12), false)).enabled, false);
+await actor(2);
+assert.equal((await settings(id(12))).can_manage, false);
+await assert.rejects(() => settings(id(12), true), /administrator required/);
+await assert.rejects(() => settings(id(11)), /Workspace access/);
+await db.exec(`RESET ROLE;
+ UPDATE workspaces SET industry='Solar' WHERE id='${id(12)}';
+ UPDATE workspaces SET industry='Roofing' WHERE id='${id(12)}';
+ INSERT INTO workspaces(id,timezone,industry) VALUES
+ ('${id(13)}','America/Toronto','Waterproofing'), ('${id(14)}','America/Toronto','Roofing');
+ INSERT INTO workspace_members VALUES ('${id(13)}','${id(1)}','owner'),('${id(14)}','${id(1)}','owner');`);
+await actor(3);
+assert.equal((await settings(id(12))).enabled, false);
+assert.equal((await settings(id(12), true)).enabled, true);
+await actor(1);
+assert.equal((await settings(id(13))).enabled, false);
+assert.equal((await settings(id(14))).enabled, true);
+await db.exec(`RESET ROLE;
+ UPDATE workspaces SET industry='Roofing' WHERE id='${id(13)}';
+ INSERT INTO sessions(id,workspace_id,user_id,campaign_id,start_time,end_time)
+ VALUES ('${id(42)}','${workspace}','${id(2)}','${id(20)}',now()-interval '20 seconds',NULL),
+ ('${id(43)}','${id(11)}','${id(4)}',NULL,now(),NULL);
+ UPDATE contacts SET session_id='${id(42)}',created_at=now()-interval '10 seconds' WHERE id='${id(30)}';`);
+await actor(1);
+assert.equal((await settings(id(13))).enabled, true);
 
 await actor(4);
 await rpc('field_sales_pipeline_command', id(11), 'opportunity', { contact_id: id(33), stage_key: 'new' });
@@ -136,6 +170,38 @@ await sale('attribution', { id: verified.id, version: verified.version, request_
   credits: [{ user_id: id(2), role: 'setter', basis_points: 2500 }, { user_id: id(3), role: 'closer', basis_points: 7500 }] });
 const report = await rpc('field_sales_report', workspace, { scope: 'team', period: 'year' });
 assert.equal(report.summary.sold_value_minor, '2250000');
+assert.equal(report.metrics.appointments_set, 1);
+assert.equal(report.metrics.appointments_closed, 1);
+const home = await rpc('field_sales_home', workspace);
+assert.equal(home.activity.appointments_set, 1);
+assert.equal(home.activity.appointments_closed, 1);
+const rankings = await rpc('field_sales_leaderboard', workspace, { period: 'year' }, 'sales');
+assert.equal(rankings.rows.find(row => row.rep_id === id(2)).metrics.appointments_set, '1');
+assert.equal(rankings.rows.find(row => row.rep_id === id(2)).metrics.appointments_closed, '0');
+assert.equal(rankings.rows.find(row => row.rep_id === id(3)).metrics.appointments_closed, '1');
+const sessionSales = (session = id(42)) => rpc('field_sales_session_summary', workspace, session);
+assert.deepEqual(await sessionSales(), { enabled: true, currency: 'CAD', verified_sales: 1,
+  appointments_set: 1, appointments_closed: 1, value_minor: '2000000', value_scope: 'session' });
+await assert.rejects(() => sessionSales(id(43)), /Session is unavailable/);
+await actor(2);
+const repSession = await sessionSales();
+assert.equal(repSession.verified_sales, 1);
+assert.equal(repSession.value_minor, '500000');
+assert.equal(repSession.value_scope, 'self');
+const repReport = await rpc('field_sales_report', workspace, { scope: 'self', period: 'year' });
+assert.equal(repReport.metrics.appointments_set, 1);
+assert.equal(repReport.metrics.appointments_closed, 0);
+await db.exec(`RESET ROLE; UPDATE field_sales_settings SET rep_revenue_visible=false WHERE workspace_id='${workspace}';`);
+await actor(2);
+assert.equal((await sessionSales()).value_minor, undefined);
+await actor(1);
+assert.equal((await settings(workspace, false)).enabled, false);
+assert.deepEqual(await sessionSales(), { enabled: false });
+assert.deepEqual(await rpc('field_sales_home', workspace), { enabled: false });
+assert.deepEqual(await rpc('field_sales_report', workspace, { scope: 'team' }), { enabled: false });
+assert.deepEqual(await rpc('field_sales_leaderboard', workspace, {}, 'sales'), { enabled: false });
+assert.equal((await settings(workspace, true)).enabled, true);
+assert.equal((await sessionSales()).value_minor, '2000000');
 const receiptTime = new Date().toISOString();
 await sale('collect', { id: contract.id, request_id: id(82), amount_minor: '800000', occurred_at: receiptTime });
 const receipt = (await rpc('field_sales_record', workspace, contract.id)).payments[0];
@@ -178,6 +244,9 @@ await sale('chargeback_payment', { id: contract.id, request_id: id(89), reverses
 ledger = (await earningsList({ team: true })).entries;
 assert.equal(ledger.filter(entry => entry.kind === 'reversal').reduce((total, entry) => total + BigInt(entry.amount_minor), 0n), -40000n);
 await sale('cancel', { id: contract.id, request_id: id(182), reason: 'Customer cancelled roof' });
+assert.equal((await sessionSales()).appointments_closed, 0);
+assert.equal((await sessionSales()).verified_sales, 0);
+assert.equal((await sessionSales()).appointments_set, 1);
 const updated = await rpc('field_sales_workbench', workspace);
 assert.equal(updated.opportunities.find(op => op.id === roof.id).stage_key, 'cancelled');
 assert.equal(updated.opportunities.find(op => op.id === gutter.id).stage_key, 'won');
@@ -186,4 +255,5 @@ await actor(4);
 await assert.rejects(() => earningsList(), /Workspace access/);
 await assert.rejects(() => rpc('field_sales_record', workspace, contract.id), /Workspace access/);
 await db.close();
+console.log('PASS workspace Sales: roofing defaults, durable override, admin authorization, session attribution, rep visibility and reporting');
 console.log('PASS roofing sales: legacy opportunity, distinct jobs, held-only conversion, reassignment, split credit, duplicate review, sibling-safe cancellation, commission accrual, settlement and reversal');

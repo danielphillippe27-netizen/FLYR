@@ -631,6 +631,8 @@ struct ActivitySessionDetailView: View {
 
                 ActivitySessionBreadcrumbMap(coordinates: coordinates)
 
+                if let id = session.id { FieldSessionSales(sessionID: id) }
+
                 LazyVGrid(columns: bodyColumns, spacing: 10) {
                     ActivitySessionMetricCard(
                         title: "Doors",

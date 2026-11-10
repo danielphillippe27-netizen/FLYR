@@ -169,8 +169,10 @@ struct HomeView: View {
                             HomeGridTile(title: "Appointments", icon: .system("calendar.badge.clock")) {
                                 selectedRoute = .appointments
                             }
-                            HomeGridTile(title: "Sales", icon: .system("dollarsign.circle.fill")) {
-                                selectedRoute = .sales
+                            FieldSalesVisibility {
+                                HomeGridTile(title: "Sales", icon: .system("dollarsign.circle.fill")) {
+                                    selectedRoute = .sales
+                                }
                             }
                             HomeGridTile(title: "Leaderboard", icon: .system("trophy.fill")) {
                                 selectedRoute = .leaderboard

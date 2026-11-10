@@ -26,6 +26,10 @@ struct StatsPageView: View {
                 .padding(.bottom, 4)
                 .onChange(of: selectedTab) { _, _ in HapticManager.light() }
 
+            if selectedTab == .leaderboard {
+                FieldSalesEntryLink(leaderboard: true).padding(.horizontal, 16)
+            }
+
             // Content with smooth transition
             Group {
                 switch selectedTab {
@@ -127,6 +131,11 @@ struct YouViewContent: View {
                     } else {
                         ScrollView {
                             VStack(spacing: 0) {
+                                FieldSalesVisibility {
+                                    FieldSalesProHomeView(compact: true)
+                                        .padding(.horizontal, 16)
+                                        .padding(.top, 16)
+                                }
                                 if let errorMessage = vm.errorMessage {
                                     Text(errorMessage)
                                         .font(.footnote)
@@ -285,7 +294,10 @@ struct YouStatsView: View {
 // MARK: - Leaderboard Tab View (tab 4 only; no toggle)
 struct LeaderboardTabView: View {
     var body: some View {
-        LeaderboardView()
+        VStack(spacing: 0) {
+            FieldSalesEntryLink(leaderboard: true).padding(.horizontal, 16)
+            LeaderboardView()
+        }
             .navigationTitle("Leaderboard")
             .navigationBarTitleDisplayMode(.inline)
     }
