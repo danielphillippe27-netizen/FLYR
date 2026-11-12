@@ -52,17 +52,17 @@ import OSLog
     @Published var description = "Wolfy is resting"
     let stage = Entity()
     private(set) var character: Entity?
-    private var baseTask: Task<Entity,Error>?
+    private var baseTask: (stage: Int, task: Task<Entity,Error>)?
     private var equipment: [String: Entity] = [:]
     private var playback: [AnimationPlaybackController] = []
+    private var playingGrowthReaction = false
     private var machine = WolfyCharacterStateMachine()
     private var animationTask: Task<Void,Never>?
-    private var idleTask: Task<Void,Never>?
     private var equipmentIDs: [String:String] = [:]
     private var growthStage = 1
     private var growthRevision = UUID()
     private var idle: WolfySemanticState = .neutral
-    private var reduced = false
+    private var motionPaused = true
     private var revision = UUID()
     private var platform: ModelEntity?
     private let camera = PerspectiveCamera()
@@ -71,6 +71,30 @@ import OSLog
     private var appearanceKey = "wolfy.appearance.default"
     private var appearanceScope: (user:UUID, workspace:UUID)?
     private var baseMaterials: [any RealityKit.Material] = []
+    private static let coatTextures: [WolfyColor: TextureResource] = Dictionary(uniqueKeysWithValues:
+        WolfyColor.allCases.compactMap { color in
+            guard let palette = color.coatPalette,
+                  let texture = coatTexture(dark:palette.dark,light:palette.light) else { return nil }
+            return (color, texture)
+        })
+
+    private static func coatTexture(dark: [CGFloat], light: [CGFloat]) -> TextureResource? {
+        let width = 256
+        guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
+              let linearSpace = CGColorSpace(name: CGColorSpace.linearSRGB),
+              let darkColor = CGColor(colorSpace: linearSpace, components: dark),
+              let lightColor = CGColor(colorSpace: linearSpace, components: light),
+              let context = CGContext(data:nil,width:width,height:2,bitsPerComponent:8,bytesPerRow:0,
+                                      space:colorSpace,bitmapInfo:CGImageAlphaInfo.noneSkipLast.rawValue),
+              let gradient = CGGradient(colorsSpace: linearSpace, colors: [darkColor, lightColor] as CFArray,
+                                        locations: nil) else { return nil }
+        context.drawLinearGradient(gradient, start: CGPoint(x: 0.5, y: 0), end: CGPoint(x: CGFloat(width) - 0.5, y: 0),
+                                   options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
+        guard let image = context.makeImage() else { return nil }
+        let options = TextureResource.CreateOptions(semantic:.color)
+        if #available(iOS 18.0, *) { return try? TextureResource(image:image,options:options) }
+        return try? TextureResource.generate(from:image,options:options)
+    }
     private var log = Logger(subsystem:"WolfGrid",category:"WolfyCharacter")
     init(compactFraming: Bool = false) {
         self.compactFraming = compactFraming
@@ -88,15 +112,17 @@ import OSLog
     }
     func load() async {
         guard character == nil else { ready=true;return }
+        let requestedStage = growthStage
         do {
             let task: Task<Entity,Error>
-            if let existing=baseTask { task=existing }
+            if let existing=baseTask, existing.stage == requestedStage { task=existing.task }
             else {
-                task=Task { try await WolfyAssetLoader.shared.load(self.stageAsset(self.growthStage)) }
-                baseTask=task
+                task=Task { try await WolfyAssetLoader.shared.load(self.stageAsset(requestedStage)) }
+                baseTask=(requestedStage,task)
             }
             let model=try await task.value
             guard !Task.isCancelled, character == nil else { return }
+            guard requestedStage == growthStage else { await load(); return }
             baseTask=nil
             character=model
             hideEmbeddedAccessories(in:model)
@@ -106,27 +132,23 @@ import OSLog
             applyAppearance()
             updateCompactFraming()
             await animate(idle)
-        } catch { baseTask=nil;failed=true;log.error("Base asset unavailable") }
-    }
-    func setMood(_ mood: WolfySemanticState, reduceMotion: Bool) {
-        idle=mood;reduced=reduceMotion
-        if reduceMotion { stopPlayback() }
-        guard machine.request(mood,duration:0) else { return }
-        animationTask?.cancel()
-        animationTask=Task { await animate(mood) }
-        idleTask?.cancel()
-        idleTask=Task { [weak self] in
-            while !Task.isCancelled {
-                do { try await Task.sleep(for:.seconds(Int.random(in:12...20))) } catch { return }
-                guard let self else { return }
-                if self.idle == .neutral && Date() >= self.machine.expires {
-                    await self.playClip(["idle_neutral","look_around","idle_happy"].randomElement()!)
-                }
-            }
+        } catch {
+            guard !Task.isCancelled, character == nil else { return }
+            guard requestedStage == growthStage else { await load(); return }
+            baseTask=nil;failed=true;log.error("Base asset unavailable")
         }
     }
+    func setMood(_ mood: WolfySemanticState, motionPaused: Bool) {
+        idle=mood
+        if motionPaused { pause(); return }
+        let resuming = self.motionPaused
+        self.motionPaused=false
+        guard machine.request(mood,duration:0) || resuming else { return }
+        animationTask?.cancel()
+        animationTask=Task { await animate(mood) }
+    }
     func trigger(_ state: WolfySemanticState, eventID: String? = nil) {
-        guard machine.request(state,eventID:eventID) else { return }
+        guard !motionPaused, machine.request(state,eventID:eventID) else { return }
         animationTask?.cancel()
         animationTask=Task {
             await animate(state)
@@ -141,13 +163,24 @@ import OSLog
         await playClip(state.rawValue)
     }
     private func playClip(_ name: String) async {
-        guard let character else { return }
-        if reduced || ProcessInfo.processInfo.isLowPowerModeEnabled { stopPlayback();return }
+        guard !motionPaused, let character else { return }
         if growthStage > 0 {
-            guard let animation=firstAnimation(character) else { return }
-            let current=character.playAnimation(animation.repeat(),transitionDuration:0.25,startsPaused:false)
-            let previous=playback;playback=[current]
-            Task { try? await Task.sleep(for:.milliseconds(300));previous.forEach{$0.stop()} }
+            let reactions: Set<String> = ["celebrate_lead", "celebrate_appointment", "celebrate_sale", "goal_completed", "rank_up", "level_up", "play", "wave", "equip_item"]
+            let isReaction = reactions.contains(name)
+            guard isReaction || playingGrowthReaction || playback.isEmpty else { return }
+            let ticket = UUID(); revision = ticket
+            var source = character
+            if isReaction {
+                let file = stageAsset(growthStage).replacingOccurrences(of: ".usdz", with: "_celebrate.usdz")
+                do { source = try await WolfyAssetLoader.shared.load(file) }
+                catch { return }
+            }
+            guard !Task.isCancelled, !motionPaused, ticket == revision,
+                  self.character === character,
+                  let animation = source.availableAnimations.first(where: { $0.name == "global scene animation" }) ?? firstAnimation(source) else { return }
+            stopPlayback()
+            playingGrowthReaction = isReaction
+            playback = [character.playAnimation(isReaction ? animation : animation.repeat(), transitionDuration:0.3)]
             return
         }
         guard let clip=WolfyAssetLoader.shared.manifest?.animations.first(where:{$0.name==name}) else { return }
@@ -170,6 +203,7 @@ import OSLog
         return nil
     }
     func restore(_ snapshot: WolfySnapshot?, equipment desired: [String:String], catalog: [WolfyCatalogItem]? = nil) async {
+        guard desired != equipmentIDs else { return }
         for category in Array(equipmentIDs.keys) where desired[category] != equipmentIDs[category] {
             if let id=equipmentIDs[category],let character { setEmbeddedAccessory(id,enabled:false,in:character) }
             equipment.removeValue(forKey:category);equipmentIDs.removeValue(forKey:category)
@@ -192,6 +226,7 @@ import OSLog
     }
     func setGrowthStage(_ stage:Int) {
         let next = min(5,max(1,stage))
+        guard next != growthStage else { return }
         growthStage=next
         let colors:[UIColor] = [.darkGray,.systemTeal,.systemBlue,.systemPurple,.systemYellow]
         platform?.model?.materials=[SimpleMaterial(color:colors[next-1],isMetallic:next>=4)]
@@ -231,7 +266,7 @@ import OSLog
               max(extent.x, extent.y) > 0 else { return }
         // Home uses a square viewport. Fit the visible wolf and platform with a small margin.
         let distance = max(extent.x, extent.y) * 0.55 / tan(Float.pi / 10) + extent.z * 0.5
-        camera.look(at: bounds.center, from: bounds.center + SIMD3<Float>(0, 0, distance), relativeTo: stage)
+        camera.look(at: bounds.center, from: bounds.center + SIMD3<Float>(distance * 0.33, distance * 0.09, distance), relativeTo: stage)
     }
     private func stageAsset(_ stage:Int) -> String {
         let key=["pup","young","street","alpha","legend"][min(4,max(0,stage-1))]
@@ -266,7 +301,14 @@ import OSLog
             }
             let color:UIColor?
             if matches(0.8,0.8,0.8) || matches(0.79,0.85,0.84) || matches(0.2,0.255,0.3) {
-                color=appearance.fur == .classic ? UIColor(red:r,green:g,blue:b,alpha:1) : appearance.fur.uiColor
+                if matches(0.8,0.8,0.8), let texture = Self.coatTextures[appearance.fur] {
+                    pbr.baseColor = .init(tint:.white,texture:.init(texture))
+                    return pbr
+                }
+                // Separate ears, brows and light details match the coat endpoints.
+                if let swatch = appearance.fur.coatSwatch {
+                    color = matches(0.79,0.85,0.84) ? swatch[1] : swatch[0]
+                } else { color = appearance.fur.uiColor }
             } else if matches(1,0.56,0.07) {
                 color=appearance.eyes == .amber ? UIColor(red:r,green:g,blue:b,alpha:1) : appearance.eyes.uiColor
             } else if matches(0.065,0.078,0.095) {
@@ -299,8 +341,8 @@ import OSLog
     func rotate(_ radians: Float) {
         character?.orientation=simd_quatf(angle:radians,axis:[0,1,0])
     }
-    private func stopPlayback() { playback.forEach{$0.stop()};playback.removeAll() }
-    func pause() { idleTask?.cancel();animationTask?.cancel();revision=UUID();stopPlayback() }
+    private func stopPlayback() { playback.forEach{$0.stop()};playback.removeAll();playingGrowthReaction=false }
+    func pause() { motionPaused=true;animationTask?.cancel();revision=UUID();stopPlayback() }
 }
 
 struct WolfyCharacterView: View {
@@ -309,7 +351,12 @@ struct WolfyCharacterView: View {
     @Environment(\.scenePhase) private var phase
     var mood: WolfySemanticState = .neutral
     var forceReducedMotion = false
+    var suspended = false
     @State private var rotation: Float = 0
+    @State private var lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
+    private var motionPaused: Bool {
+        suspended || reduceMotion || forceReducedMotion || lowPower || phase != .active
+    }
     var body: some View {
         ZStack {
             if !controller.failed {
@@ -325,11 +372,12 @@ struct WolfyCharacterView: View {
         }
         .accessibilityElement(children:.ignore).accessibilityLabel(controller.description)
         .gesture(DragGesture().onChanged { value in controller.rotate(rotation + Float(value.translation.width)/120) }.onEnded { value in rotation += Float(value.translation.width)/120 })
-        .onAppear { controller.setMood(mood,reduceMotion:reduceMotion || forceReducedMotion) }
-        .onChange(of:mood) { _,value in controller.setMood(value,reduceMotion:reduceMotion || forceReducedMotion) }
-        .onChange(of:forceReducedMotion) { _,value in controller.setMood(mood,reduceMotion:reduceMotion || value) }
-        .onChange(of:reduceMotion) { _,value in controller.setMood(mood,reduceMotion:value) }
-        .onChange(of:phase) { _,value in if value != .active { controller.pause() } else { controller.setMood(mood,reduceMotion:reduceMotion || forceReducedMotion) } }
+        .onAppear { controller.setMood(mood,motionPaused:motionPaused) }
+        .onChange(of:mood) { _,value in controller.setMood(value,motionPaused:motionPaused) }
+        .onChange(of:motionPaused) { _,value in controller.setMood(mood,motionPaused:value) }
+        .onReceive(NotificationCenter.default.publisher(for:.NSProcessInfoPowerStateDidChange)) { _ in
+            lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
+        }
         .onReceive(NotificationCenter.default.publisher(for:UIApplication.didReceiveMemoryWarningNotification)) { _ in WolfyAssetLoader.shared.reset() }
         .onDisappear { controller.pause() }
     }

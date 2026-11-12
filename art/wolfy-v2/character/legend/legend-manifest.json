@@ -1,7 +1,7 @@
 {
   "version": 2,
   "prototype": true,
-  "revision": "wolfy-character-4",
+  "revision": "wolfy-character-5",
   "skinning": "two-bone",
   "stage": "Veteran Alpha",
   "vertices": 14039,
@@ -13,6 +13,8 @@
     "head",
     "ear_l",
     "ear_r",
+    "eye_l",
+    "eye_r",
     "tail",
     "front_l",
     "front_l_lower",
@@ -31,8 +33,8 @@
   "clips": {
     "idle": {
       "file": "legend-idle.bin",
-      "duration": 24,
-      "frames": 576
+      "duration": 12,
+      "frames": 288
     },
     "walk": {
       "file": "legend-walk.bin",
@@ -87,52 +89,52 @@
   },
   "files": {
     "legend-celebrate.bin": {
-      "bytes": 58368,
-      "sha256": "22817439ea4a553d8bad6de63273abc8ec4e0605cb89fd6a6fb48870e93d07d0"
+      "bytes": 64512,
+      "sha256": "aa6a9ddcc1ea198c3180abff36b472f69eb9cb226b3bf62930734607ca8ebdce"
     },
     "legend-get_up.bin": {
-      "bytes": 58368,
-      "sha256": "22afe10b516177cdc368469c4511d502d348b89d9cc837c40fa61cc855772c08"
+      "bytes": 64512,
+      "sha256": "ee5dac9737825a622691c2f98f114246ce2c288744d10c3855be3de5c67c3957"
     },
     "legend-idle.bin": {
-      "bytes": 700416,
-      "sha256": "1bdf43248dede17a493494b955ebb4cd57a7c8300b9b0c62af55b597bafae169"
+      "bytes": 387072,
+      "sha256": "a6bc6957c086683431e38eba523f70ce86bd46098d143c965f56a5ecf29ffa76"
     },
     "legend-scratch.bin": {
-      "bytes": 58368,
-      "sha256": "7f0d0156cf9d65d432da7f76d76fbed2b906c189890f10fc6b45c064e2719ce3"
+      "bytes": 64512,
+      "sha256": "26d3442d1b8b860b3061bfffc22b1adf4665786b3430502f9b744f7e85859dea"
     },
     "legend-look_around.bin": {
-      "bytes": 58368,
-      "sha256": "97ffed5564f327b5a2080633307de2e34e64ddcd52f981043029626227b830b5"
+      "bytes": 64512,
+      "sha256": "6b617da5a99962b55c2bfd88e18613903edefb7599627cd756a11d3bd5efab06"
     },
     "legend-trot.bin": {
-      "bytes": 58368,
-      "sha256": "b2f440ba3b28fc9b0885b47f9427b5307f824ebf09ee125a8a11daf1643cf25d"
+      "bytes": 64512,
+      "sha256": "fcb1a1c87873ae65da3cf7c30158d03c34d4c684fe43a1ea435a8b425642a780"
     },
     "legend-mesh.bin": {
       "bytes": 1234376,
-      "sha256": "c4acbd0b4dde5849969f005152d3c2351643239e3b7ecfbe3f7fb93f241cd78d"
+      "sha256": "39368e69b892ee222a9be0dac455e0e22d6b68758914abecc1da0bda70e36ea7"
     },
     "legend-sit.bin": {
-      "bytes": 58368,
-      "sha256": "7285775e6fdc0d1d7701aef3ec681f7cb29c4ba2f4518e4761360d94a50c1efd"
+      "bytes": 64512,
+      "sha256": "611c71fba56fd7a7db51d6f5395a0464306ed468b374591882e8edc73ad29390"
     },
     "legend-run.bin": {
-      "bytes": 58368,
-      "sha256": "b2f440ba3b28fc9b0885b47f9427b5307f824ebf09ee125a8a11daf1643cf25d"
+      "bytes": 64512,
+      "sha256": "fcb1a1c87873ae65da3cf7c30158d03c34d4c684fe43a1ea435a8b425642a780"
     },
     "legend-sniff.bin": {
-      "bytes": 58368,
-      "sha256": "795cbd9315b9286bdbbfc79c540bae379bb664e85713d9b66f23edf61f4fd1a7"
+      "bytes": 64512,
+      "sha256": "83da59ad310b0c19433318cba7604f6a0e62ad85bb4405d2a8b0000b129e2336"
     },
     "legend-walk.bin": {
-      "bytes": 58368,
-      "sha256": "b2f440ba3b28fc9b0885b47f9427b5307f824ebf09ee125a8a11daf1643cf25d"
+      "bytes": 64512,
+      "sha256": "fcb1a1c87873ae65da3cf7c30158d03c34d4c684fe43a1ea435a8b425642a780"
     },
     "legend-lie_down.bin": {
-      "bytes": 58368,
-      "sha256": "c9c4ba85a5c6ef8e72518f4a49f415b13c40503796e99e2ead8d645391091c75"
+      "bytes": 64512,
+      "sha256": "dc68369aa3918cefd6cf28e7666cd9c5cf433f8acee279c290151720e3fd0ae8"
     }
   }
 }

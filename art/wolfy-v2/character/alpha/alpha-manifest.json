@@ -1,7 +1,7 @@
 {
   "version": 2,
   "prototype": true,
-  "revision": "wolfy-character-4",
+  "revision": "wolfy-character-5",
   "skinning": "two-bone",
   "stage": "Alpha",
   "vertices": 14039,
@@ -13,6 +13,8 @@
     "head",
     "ear_l",
     "ear_r",
+    "eye_l",
+    "eye_r",
     "tail",
     "front_l",
     "front_l_lower",
@@ -31,8 +33,8 @@
   "clips": {
     "idle": {
       "file": "alpha-idle.bin",
-      "duration": 24,
-      "frames": 576
+      "duration": 12,
+      "frames": 288
     },
     "walk": {
       "file": "alpha-walk.bin",
@@ -87,52 +89,52 @@
   },
   "files": {
     "alpha-get_up.bin": {
-      "bytes": 58368,
-      "sha256": "715d3ff22c07aa45c921265f0baf5fdbc6705e919a28dce86d8cf31c425b4b73"
+      "bytes": 64512,
+      "sha256": "874b2d856cd5cf9ad88ed1507a4b8495e99b8ccc9df19173b0e5d0b5be9a39c3"
     },
     "alpha-idle.bin": {
-      "bytes": 700416,
-      "sha256": "dd0081b0e688c2fdcd3afec598ce585c48a8790e9028fb596ef1ece589090bd7"
+      "bytes": 387072,
+      "sha256": "820b858f533b046dc71d60c9533b56b778d85565850af8491e2c68ec88ee63cc"
     },
     "alpha-celebrate.bin": {
-      "bytes": 58368,
-      "sha256": "31fcb478af5f733a46411515762121c2a7c9bc762e7830450ab2c4b19d41799c"
+      "bytes": 64512,
+      "sha256": "2b21900a064de9f6a4dd85d778545562bd5d29fcec66761f8e33ca8f43c6e90c"
     },
     "alpha-lie_down.bin": {
-      "bytes": 58368,
-      "sha256": "666a25ac4f4d0846cf911e1213412b3d44f373d60f67b205d12280bfd7cde048"
+      "bytes": 64512,
+      "sha256": "ce75c10e58ae3773466374e99a1a8fd4725e2d36f1c1265fe79d2f9cda30edb6"
     },
     "alpha-trot.bin": {
-      "bytes": 58368,
-      "sha256": "21d7ffc6af6ea5762a36804a1768130fcf0fcfc9b4babc9e72b351879ed70c65"
+      "bytes": 64512,
+      "sha256": "80f6ff68af35e922ba59835d74315515e554bbc4513d5e3acdd26b479fb2a636"
     },
     "alpha-mesh.bin": {
       "bytes": 1234376,
-      "sha256": "47d94c7068a6ef44b42d22836256aef400cc328dc3d13942333ee501518075da"
+      "sha256": "119a5934203efb9f11aeb4ee741638f011eaa6f78b65fc6e6ef1ec5813ce7afb"
     },
     "alpha-scratch.bin": {
-      "bytes": 58368,
-      "sha256": "c7b45a8a49b96f3910a3d9b377ff40bcf12eab211178cd1ae636a59e1873cbe5"
+      "bytes": 64512,
+      "sha256": "cb52648a45b27e72a4b383abc6a9a112cc82c656d6bbac97ebb75f3708df19e9"
     },
     "alpha-look_around.bin": {
-      "bytes": 58368,
-      "sha256": "cf4ce5a5fea5cbac77f5a412a27ac086d1df883da8c71a42f6652ff5c60091f7"
+      "bytes": 64512,
+      "sha256": "4562180cbf0f26867fa746cf35525a6041d0bd3a2dff509155a2da4dc631ed22"
     },
     "alpha-sniff.bin": {
-      "bytes": 58368,
-      "sha256": "079d3ef14658f7bca25f7a978c6814872097080b1e8e3851ce2a823ccaf3c09a"
+      "bytes": 64512,
+      "sha256": "583187bcc41be23a856b967e472a0c2d5504d9f2a1135300b885101e3288407d"
     },
     "alpha-run.bin": {
-      "bytes": 58368,
-      "sha256": "21d7ffc6af6ea5762a36804a1768130fcf0fcfc9b4babc9e72b351879ed70c65"
+      "bytes": 64512,
+      "sha256": "80f6ff68af35e922ba59835d74315515e554bbc4513d5e3acdd26b479fb2a636"
     },
     "alpha-walk.bin": {
-      "bytes": 58368,
-      "sha256": "21d7ffc6af6ea5762a36804a1768130fcf0fcfc9b4babc9e72b351879ed70c65"
+      "bytes": 64512,
+      "sha256": "80f6ff68af35e922ba59835d74315515e554bbc4513d5e3acdd26b479fb2a636"
     },
     "alpha-sit.bin": {
-      "bytes": 58368,
-      "sha256": "c995d516b59432b3865a21faa403ea5b0efc41117b2b8efb18caf66c5892ca0c"
+      "bytes": 64512,
+      "sha256": "6fe759e0d0ab5e4f1b58c53d0b80570c1e6bb83013d0e6882cd819dea63b3474"
     }
   }
 }

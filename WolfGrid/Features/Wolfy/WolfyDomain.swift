@@ -2,13 +2,40 @@ import Foundation
 import UIKit
 
 enum WolfyColor: String, Codable, CaseIterable, Identifiable {
-    case classic, silver, charcoal, brown, arctic, auburn
+    case classic, originalGrey, silver, charcoal, brown, arctic, auburn
     case amber, blue, green, violet, black, darkBrown, rose
     var id:String { rawValue }
-    var title:String { self == .darkBrown ? "Dark Brown" : rawValue.capitalized }
+    var title:String {
+        switch self {
+        case .originalGrey: "OG Grey"
+        case .darkBrown: "Dark Brown"
+        default: rawValue.capitalized
+        }
+    }
+    /// Linear RGB endpoints; the stage UVs blend these over the authored coat markings.
+    var coatPalette: (dark: [CGFloat], light: [CGFloat])? {
+        switch self {
+        case .classic: ([0.20, 0.255, 0.30, 1], [0.79, 0.85, 0.84, 1])
+        case .originalGrey: ([0.073, 0.073, 0.073, 1], [0.571, 0.571, 0.571, 1])
+        case .silver: ([0.20, 0.27, 0.35, 1], [0.80, 0.86, 0.92, 1])
+        case .charcoal: ([0.035, 0.048, 0.070, 1], [0.40, 0.47, 0.56, 1])
+        case .brown: ([0.20, 0.085, 0.035, 1], [0.78, 0.60, 0.40, 1])
+        case .arctic: ([0.075, 0.28, 0.43, 1], [0.79, 0.93, 0.98, 1])
+        case .auburn: ([0.32, 0.065, 0.020, 1], [0.92, 0.58, 0.32, 1])
+        default: nil
+        }
+    }
+    var coatSwatch: [UIColor]? {
+        guard let palette = coatPalette,
+              let space = CGColorSpace(name: CGColorSpace.linearSRGB),
+              let dark = CGColor(colorSpace:space,components:palette.dark),
+              let light = CGColor(colorSpace:space,components:palette.light) else { return nil }
+        return [UIColor(cgColor:dark), UIColor(cgColor:light)]
+    }
     var uiColor:UIColor {
         switch self {
         case .classic: UIColor(red:0.96,green:0.97,blue:0.98,alpha:1)
+        case .originalGrey: UIColor(white:0.30,alpha:1)
         case .silver: UIColor(red:0.62,green:0.69,blue:0.77,alpha:1)
         case .charcoal: UIColor(red:0.33,green:0.36,blue:0.41,alpha:1)
         case .brown: UIColor(red:0.57,green:0.39,blue:0.27,alpha:1)

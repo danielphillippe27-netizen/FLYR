@@ -6,6 +6,7 @@ import sys
 import math
 import struct
 from pathlib import Path
+from mathutils import Vector
 
 ROOT = Path(__file__).resolve().parents[3]
 CHARACTERS = ROOT / "art/wolfy-v2/character"
@@ -93,6 +94,36 @@ def export_map_accessories(stage):
         "version":1, "mesh":output.name, "bytes":len(data),
         "sha256":hashlib.sha256(data).hexdigest(), "items":entries,
     }, indent=2) + "\n")
+
+def follow_bone(obj, rig, bone):
+    # Keep wearables independently toggleable in RealityKit, but bake the
+    # joint's motion into the wearable's own transform on export.
+    constraint = obj.constraints.new("CHILD_OF")
+    constraint.target = rig
+    constraint.subtarget = bone
+    constraint.inverse_matrix = (rig.matrix_world @ rig.data.bones[bone].matrix_local).inverted()
+
+def animate_footwear(obj, rig):
+    """Bind each shoe to its own paw while keeping one wardrobe toggle."""
+    name = obj.name
+    bpy.ops.object.select_all(action="DESELECT")
+    obj.select_set(True)
+    bpy.context.view_layer.objects.active = obj
+    bpy.ops.object.mode_set(mode="EDIT")
+    bpy.ops.mesh.select_all(action="SELECT")
+    bpy.ops.mesh.separate(type="LOOSE")
+    bpy.ops.object.mode_set(mode="OBJECT")
+    pieces = list(bpy.context.selected_objects)
+    obj.name = name.removeprefix("wolfy_item_") + "_shoe"
+    group = bpy.data.objects.new(name, None)
+    bpy.context.collection.objects.link(group)
+    for piece in pieces:
+        center = piece.matrix_world @ (sum((Vector(corner) for corner in piece.bound_box), Vector()) / 8)
+        side = "l" if center.x < 0 else "r"
+        end = "front" if center.y < -.045 * STAGE_FACTORS[1] else "rear"
+        piece.name = f"{end}_{side}_shoe"
+        piece.parent = group
+        follow_bone(piece, rig, f"{end}_{side}_paw")
 
 def add_wearable(rig, name, bone, build):
     before = set(bpy.context.scene.objects)
@@ -254,6 +285,14 @@ for stage in (stage for stage in STAGES if "--stage=" not in " ".join(sys.argv) 
     reference = bpy.data.objects.get("Wolfy continuous skin")
     if reference is None:
         raise RuntimeError(f"Missing character mesh in {source}")
+    # Encode the authored dark-to-light coat pattern as a palette lookup.
+    # RealityKit can swap a base-color texture using these UVs at runtime.
+    coat = reference.data.color_attributes["WolfyColor"]
+    uv = reference.data.uv_layers.new(name="st")
+    for loop in reference.data.loops:
+        red = coat.data[loop.vertex_index].color[0]
+        shade = max(0, min(1, (red - .20) / .59))
+        uv.data[loop.index].uv = ((.5 + 255 * shade) / 256, .5)
     nose = bpy.data.objects.get("Rounded nose")
     if nose is not None and nose.type == 'MESH' and nose.data.materials:
         nose_material = nose.data.materials[0].copy()
@@ -348,33 +387,35 @@ for stage in (stage for stage in STAGES if "--stage=" not in " ".join(sys.argv) 
         heart = box("Heart point",(0,-.383,.39),(.061,.025,.061),"pink")
         heart.rotation_euler[1] = math.pi/4
     add_wearable(rig,"pink_chain","neck",pink_chain)
-    export_map_accessories(stage)
+    if "--home-only" not in sys.argv:
+        export_map_accessories(stage)
     if "--map-only" in sys.argv:
         print(f"Exported map wardrobe: {stage}")
         continue
     if stage == "pup" and "--skip-thumbnails" not in sys.argv:
         render_accessory_thumbnails()
-    bpy.context.scene.frame_start = 0
-    bpy.context.scene.frame_end = 48
-    bpy.ops.wm.usd_export(
-        filepath=str(target),
-        selected_objects_only=False,
-        export_animation=True,
-        export_meshes=True,
-        export_materials=True,
-        export_armatures=True,
-        only_deform_bones=True,
-        export_lights=False,
-        export_cameras=False,
-        convert_orientation=True,
-        generate_preview_surface=True,
-    )
-    data = target.read_bytes()
-    manifest["growthStages"][stage] = target_name
-    manifest["files"][target_name] = {
-        "bytes": len(data),
-        "sha256": hashlib.sha256(data).hexdigest(),
-    }
-    print(f"Exported {stage}: {len(data):,} bytes")
+    for name, bone in MAP_BONE.items():
+        obj = bpy.data.objects[f"wolfy_item_{name}"]
+        if name.removeprefix("pink_") in ("white_sneakers", "work_boots"):
+            animate_footwear(obj, rig)
+        else:
+            follow_bone(obj, rig, bone)
+    for clip in ("idle", "celebrate"):
+        action = bpy.data.actions[clip]
+        rig.animation_data.action = action
+        bpy.context.scene.frame_start, bpy.context.scene.frame_end = map(int, action.frame_range)
+        bpy.context.scene.frame_set(bpy.context.scene.frame_start)
+        target_name = f"wolfy_stage_{stage}.usdz" if clip == "idle" else f"wolfy_stage_{stage}_celebrate.usdz"
+        target = RESOURCES / target_name
+        bpy.ops.wm.usd_export(
+            filepath=str(target), selected_objects_only=False, export_animation=True,
+            export_meshes=True, export_materials=True, export_armatures=True,
+            only_deform_bones=True, export_lights=False, export_cameras=False,
+            convert_orientation=True, generate_preview_surface=True,
+        )
+        data = target.read_bytes()
+        if clip == "idle": manifest["growthStages"][stage] = target_name
+        manifest["files"][target_name] = {"bytes":len(data), "sha256":hashlib.sha256(data).hexdigest()}
+        print(f"Exported {stage} {clip}: {len(data):,} bytes", flush=True)
 
 MANIFEST.write_text(json.dumps(manifest, indent=2) + "\n")

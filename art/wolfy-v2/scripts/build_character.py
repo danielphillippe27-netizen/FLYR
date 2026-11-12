@@ -7,10 +7,13 @@ from pathlib import Path
 from mathutils import Vector, Matrix
 ROOT=Path(__file__).resolve().parents[3]
 STAGES={'pup':('Wolf Pup',1,1,1,1,1), 'young':('Young Wolf',1.02,1.10,1.22,1.02,1.08), 'street':('Street Wolf',1.10,1.25,1.52,1.04,1.16), 'alpha':('Alpha',1.38,1.50,1.60,1.12,1.24), 'legend':('Veteran Alpha',1.5,1.68,1.68,1.17,1.38)}
+PERSONALITY={'pup':(1.10,1.0,.38), 'young':(1.04,.92,.30), 'street':(.96,.80,.22), 'alpha':(.88,.65,.13), 'legend':(.84,.58,.09)}
 requested=sys.argv[sys.argv.index('--')+1:] if '--' in sys.argv else list(STAGES)
 for stage in requested:
+ eye_width,eye_height,wag=PERSONALITY[stage]
  title,W,L,LEGS,H,T=STAGES[stage]; out=ROOT/'art/wolfy-v2/character'/stage;out.mkdir(parents=True,exist_ok=True)
  bpy.ops.object.select_all(action='SELECT');bpy.ops.object.delete(use_global=False)
+ for old_action in list(bpy.data.actions):bpy.data.actions.remove(old_action)
  scene=bpy.context.scene
  def mapped(p):
   x,y,z=p
@@ -23,6 +26,10 @@ for stage in requested:
  core=[]; details=[]
  def ellipsoid(name,loc,size,color='fur',joint=None):
   bpy.ops.mesh.primitive_uv_sphere_add(segments=24,ring_count=16,location=mapped(loc));o=bpy.context.object;o.name=name
+
+  if name in ('Eye socket','Eye white','Amber iris','Pupil','Eye highlight','Small glint'):
+   size=(size[0]*eye_width,size[1],size[2]*eye_height)
+   if name != 'Eye socket':joint='eye_l' if loc[0]<0 else 'eye_r'
   o.scale=(size[0]*W,size[1]*L,size[2]*(LEGS if loc[2]<.4 else H));bpy.ops.object.transform_apply(location=False,rotation=False,scale=True)
   o.data.materials.append(mats[color]);o['joint']=joint or 'body'
   for p in o.data.polygons:p.use_smooth=True
@@ -31,7 +38,7 @@ for stage in requested:
  ellipsoid('Chest',(0,-.14,.47),(.25 if stage not in ('alpha','legend') else .295,.235,.25))
  ellipsoid('Neck',(0,-.23,.60),(.235,.21,.25))
  ellipsoid('Oversized head',(0,-.375,.73),(.31,.285,.29))
- muzzle_extension={'alpha':.07,'legend':.11}.get(stage,0)
+ muzzle_extension={'pup':-.085,'young':-.04,'alpha':.07,'legend':.11}.get(stage,0)
  # Project beyond the forehead so the wolf silhouette reads from the map camera.
  ellipsoid('Long tapered muzzle',(0,-.715-muzzle_extension/2,.66),(.155,.215+muzzle_extension/2,.12))
  for s in [-1,1]:
@@ -64,8 +71,8 @@ for stage in requested:
   ellipsoid('Pupil',(x,-.672,.783),(.043,.012,.064),'pupil','head')
   ellipsoid('Eye highlight',(x-.024,-.683,.818),(.024,.008,.029),'white','head')
   ellipsoid('Small glint',(x+.023,-.683,.76),(.009,.005,.012),'white','head')
-  if stage in ('alpha','legend'):
-   o=ellipsoid('Confident brow',(x,-.646,.875),(.12,.042,.03),'fur','head');o.rotation_euler.y=-s*.15
+  if stage in ('street','alpha','legend'):
+   o=ellipsoid('Confident brow',(x,-.663,.86 if stage=='street' else .843),(.125,.045,.035),'fur','head');o.rotation_euler.y=-s*(.16 if stage=='street' else .28)
   # Rounded triangular ears built from elliptical cross-sections, not cones.
   def ear(name,inner=False):
    verts=[];faces=[];rings=[(0,1),(.25,.96),(.55,.70),(.8,.40),(.95,.18),(1,.06)]
@@ -97,6 +104,7 @@ for stage in requested:
   for end,y in [('front',-.17),('rear',.235)]:
    n=end+'_'+side;bone(n,(s*.18,y,.40),(s*.18,y,.23),'body');bone(n+'_lower',(s*.18,y,.23),(s*.18,y-.035,.085),n);bone(n+'_paw',(s*.18,y-.035,.085),(s*.18,y-.12,.085),n+'_lower')
   bone('ear_'+side,(s*.195,-.345,.90),(s*.23,-.345,1.14),'head')
+ for side,s in [('l',-1),('r',1)]:bone('eye_'+side,(s*.148,-.63,.784),(s*.148,-.63,.884),'head')
  bpy.ops.object.mode_set(mode='OBJECT');names=[b.name for b in rig_data.bones];jointIDs={n:i for i,n in enumerate(names)}
  vertices=[];indices=[];positions=[];joints=[];weights=[]
  def skin(pos):
@@ -134,28 +142,33 @@ for stage in requested:
  # Vertex color material allows the source renders to show the exact GPU palette.
  colorAttr=body.data.color_attributes.new(name='WolfyColor',type='FLOAT_COLOR',domain='POINT')
  for i in range(len(body.data.vertices)):colorAttr.data[i].color=vertices[i*16+8:i*16+12]
- m=bpy.data.materials.new('Wolfy skin');m.use_nodes=True;node=m.node_tree.nodes.new('ShaderNodeVertexColor');node.layer_name='WolfyColor';m.node_tree.links.new(node.outputs['Color'],m.node_tree.nodes['Principled BSDF'].inputs['Base Color']);body.data.materials.clear();body.data.materials.append(m)
+ m=bpy.data.materials.new('Wolfy skin');m.use_nodes=True;m.node_tree.nodes['Principled BSDF'].inputs['Roughness'].default_value=.86;node=m.node_tree.nodes.new('ShaderNodeVertexColor');node.layer_name='WolfyColor';m.node_tree.links.new(node.outputs['Color'],m.node_tree.nodes['Principled BSDF'].inputs['Base Color']);body.data.materials.clear();body.data.materials.append(m)
  pArray=np.array(positions);jArray=np.array(joints);wArray=np.array(weights)[:,None]
  clips={}
  for clip in ['idle','walk','trot','run','sit','look_around','celebrate','sniff','scratch','lie_down','get_up']:
-  duration=24 if clip=='idle' else 2;frames=duration*24
+  duration=12 if clip=='idle' else 2;frames=duration*24
   action=bpy.data.actions.new(clip);action.use_fake_user=True;rig.animation_data_create();rig.animation_data.action=action
   for f in range(frames+1):
    t=f/24;phase=t*math.pi*2;progress=f/frames
    for p in rig.pose.bones:p.rotation_mode='XYZ';p.rotation_euler=(0,0,0);p.location=(0,0,0);p.scale=(1,1,1)
    def env(start,end):
-    return max(0,min(1,(t-start)/.7,(end-t)/.7))
-   sniff=env(1,4) if clip=='idle' else 1 if clip=='sniff' else 0
-   look=env(4,8) if clip=='idle' else 1 if clip=='look_around' else 0
-   scratch=env(8,11) if clip=='idle' else math.sin(progress*math.pi)**2 if clip=='scratch' else 0
-   sit=env(11,16) if clip=='idle' else math.sin(progress*math.pi)**2 if clip=='sit' else 0
-   lie=env(16,23) if clip=='idle' else (math.sin(progress*math.pi/2)**2 if clip=='lie_down' else math.cos(progress*math.pi/2)**2 if clip=='get_up' else 0)
-   bodyZ=.009*math.sin(phase/2)-(.12*sit+.27*lie)*LEGS
-   rig.pose.bones['head'].rotation_euler.x=.30*sniff+.025*math.sin(phase/2)
-   rig.pose.bones['head'].rotation_euler.z=.42*look*math.sin(t*1.8)+.15*scratch
-   rig.pose.bones['tail'].rotation_euler.z=.25*math.sin(t*2.2)
+    v=max(0,min(1,(t-start)/.9,(end-t)/.9));return v*v*(3-2*v)
+   sniff=(.6 if stage in ('pup','young') else .25)*env(2,4) if clip=='idle' else 1 if clip=='sniff' else 0
+   look=env(5,9) if clip=='idle' else 1 if clip=='look_around' else 0
+   scratch=0 if clip=='idle' else math.sin(progress*math.pi)**2 if clip=='scratch' else 0
+   sit=0 if clip=='idle' else math.sin(progress*math.pi)**2 if clip=='sit' else 0
+   lie=0 if clip=='idle' else (math.sin(progress*math.pi/2)**2 if clip=='lie_down' else math.cos(progress*math.pi/2)**2 if clip=='get_up' else 0)
+   cycle=math.tau*progress
+   breath=math.sin(cycle*3) if clip=='idle' else math.sin(phase/2)
+   bodyZ=.006*breath-(.12*sit+.27*lie)*LEGS
+   rig.pose.bones['head'].rotation_euler.x=.30*sniff+.018*breath
+   rig.pose.bones['head'].rotation_euler.z=(.30 if stage in ('pup','young') else .18)*look*math.sin(cycle)+.15*scratch
+   rig.pose.bones['tail'].rotation_euler.z=wag*math.sin(cycle*6)*( .75+.25*math.cos(cycle))
+   rig.pose.bones['neck'].rotation_euler.y=(.055 if stage in ('pup','young') else .018)*math.sin(cycle)
+   blink=max(env(1.1,1.5),env(6.3,6.7),env(9.6,10.0))*4.5
+   for side in ['l','r']:rig.pose.bones['eye_'+side].scale.y=max(.06,1-min(.94,blink))
    for side in ['l','r']:
-    rig.pose.bones['ear_'+side].rotation_euler.x=.085*math.sin(t*3+(0 if side=='l' else .8))
+    rig.pose.bones['ear_'+side].rotation_euler.x=(.10 if stage in ('pup','young') else .045)*math.sin(cycle*4)*(1 if side=='l' else -.7)
     rig.pose.bones['rear_'+side].rotation_euler.x=-.8*sit-.9*lie
     rig.pose.bones['rear_'+side+'_lower'].rotation_euler.x=1.1*sit+1.3*lie
     rig.pose.bones['front_'+side].rotation_euler.x=-.65*lie
@@ -200,7 +213,7 @@ for stage in requested:
  for p in rig.pose.bones:p.rotation_euler=(0,0,0);p.location=(0,0,0)
  scene.frame_set(0);bpy.context.view_layer.update()
  mesh=out/f'{stage}-mesh.bin';mesh.write_bytes(struct.pack('<%sf'%len(vertices),*vertices)+struct.pack('<%sI'%len(indices),*indices))
- manifest={'version':2,'prototype':True,'revision':'wolfy-character-4' if stage in ('alpha','legend') else 'wolfy-character-3','skinning':'two-bone','stage':title,'vertices':len(vertices)//16,'indices':len(indices),'bones':names,'mesh':mesh.name,'clips':clips}
+ manifest={'version':2,'prototype':True,'revision':'wolfy-character-5','skinning':'two-bone','stage':title,'vertices':len(vertices)//16,'indices':len(indices),'bones':names,'mesh':mesh.name,'clips':clips}
  manifest['files']={p.name:{'bytes':p.stat().st_size,'sha256':hashlib.sha256(p.read_bytes()).hexdigest()} for p in out.glob('*.bin')}
  (out/f'{stage}-manifest.json').write_text(json.dumps(manifest,indent=2))
  scene.render.engine='CYCLES';scene.cycles.samples=24;scene.render.resolution_x=900;scene.render.resolution_y=900;scene.render.resolution_percentage=100;scene.world.color=(.2,.2,.2)

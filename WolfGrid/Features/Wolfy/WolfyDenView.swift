@@ -8,7 +8,6 @@ struct WolfyHomeCompanion: View {
     @State private var showingDen = false
     @StateObject private var economy: WolfyEconomyStore
     @StateObject private var character = WolfyCharacterController(compactFraming: true)
-    @State private var reactingToHome = false
     init(user: UUID, workspace: UUID, summary: WolfyHomeSummary, active: Bool) {
         self.user=user;self.workspace=workspace;self.summary=summary;self.active=active
         _economy=StateObject(wrappedValue:WolfyEconomyStore(user:user,workspace:workspace))
@@ -25,11 +24,8 @@ struct WolfyHomeCompanion: View {
                 .font(.subheadline.weight(.semibold))
                 .buttonStyle(.bordered)
                 .frame(maxWidth:.infinity,alignment:.trailing)
-            WolfyCharacterView(controller:character,mood:mood.state)
+            WolfyCharacterView(controller:character,mood:mood.state,suspended:showingDen)
                 .frame(width:220,height:220)
-                .scaleEffect(reactingToHome ? 1.07 : 1)
-                .rotationEffect(.degrees(reactingToHome ? -3 : 0))
-                .animation(.spring(response:0.28,dampingFraction:0.42),value:reactingToHome)
                 .contentShape(Rectangle())
                 .onTapGesture { showingDen = true }
                 .accessibilityLabel("3-D Wolfy. Tap to customize.")
@@ -74,10 +70,6 @@ struct WolfyHomeCompanion: View {
             default: reaction = .wave
             }
             character.trigger(reaction)
-            withAnimation { reactingToHome = true }
-            DispatchQueue.main.asyncAfter(deadline:.now()+0.55) {
-                withAnimation { reactingToHome = false }
-            }
         }
     }
 }
@@ -113,6 +105,9 @@ struct WolfyDenView: View {
                     } else { Text("All five stages reached").font(.caption).foregroundStyle(.secondary) }
                     if let message { Text(message).font(.caption).foregroundStyle(.secondary).lineLimit(2) }
                 }
+                if selectedCategory == nil && !showColors {
+                    growthUnlocks
+                }
                 Spacer(minLength:0)
             }.padding(.horizontal,12).padding(.top,18)
             .navigationTitle(selectedCategory?.title ?? (showColors ? "Wolf Colors" : "Customize Wolf")).navigationBarTitleDisplayMode(.inline)
@@ -127,10 +122,39 @@ struct WolfyDenView: View {
             }
         }
     }
+    private var growthUnlocks: some View {
+        ScrollView {
+            VStack(alignment:.leading, spacing:12) {
+                Text("YOUR WOLF’S EVOLUTION")
+                    .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                ForEach(Array(WolfyProgression.growthStages.enumerated()), id: \.offset) { index, name in
+                    let threshold = WolfyProgression.growthDoorThresholds[index]
+                    let unlocked = lifetimeDoors.map { $0 >= threshold } ?? (index == 0)
+                    HStack(spacing:12) {
+                        Image("WolfyStage\(index + 1)")
+                            .resizable().scaledToFit().frame(width:56,height:56)
+                        VStack(alignment:.leading,spacing:3) {
+                            Text("\(index + 1). \(name)").font(.subheadline.weight(.semibold))
+                            Text(threshold == 0 ? "Your first companion" : "\(threshold.formatted()) lifetime doors")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer(minLength:4)
+                        Image(systemName: index + 1 == stage ? "circle.inset.filled" : unlocked ? "checkmark.circle.fill" : "lock.fill")
+                            .foregroundStyle(unlocked ? Color.green : Color.secondary)
+                    }
+                    .padding(10)
+                    .background(index + 1 == stage ? Color.primary.opacity(0.08) : Color.secondary.opacity(0.04), in:RoundedRectangle(cornerRadius:14))
+                    .accessibilityElement(children:.ignore)
+                    .accessibilityLabel("Level \(index + 1), \(name), \(threshold.formatted()) lifetime doors, \(index + 1 == stage ? "current level" : unlocked ? "unlocked" : "locked")")
+                }
+            }.padding(.vertical,12)
+        }
+        .accessibilityIdentifier("wolfy.growthUnlocks")
+    }
     private var colorControls: some View {
         ScrollView {
             VStack(alignment:.leading,spacing:20) {
-                colorSection(title:"Fur",selected:character.appearance.fur,choices:[.classic,.silver,.charcoal,.brown,.arctic,.auburn]) { color in
+                colorSection(title:"Fur",selected:character.appearance.fur,choices:[.classic,.originalGrey,.silver,.charcoal,.brown,.arctic,.auburn]) { color in
                     var value=character.appearance;value.fur=color;setAppearance(value)
                 }
                 colorSection(title:"Eyes",selected:character.appearance.eyes,choices:[.amber,.blue,.green,.violet]) { color in
@@ -150,15 +174,19 @@ struct WolfyDenView: View {
     private func colorSection(title:String,selected:WolfyColor,choices:[WolfyColor],onSelect:@escaping (WolfyColor)->Void) -> some View {
         VStack(alignment:.leading,spacing:10) {
             Text(title).font(.headline)
-            HStack(spacing:15) {
+            LazyVGrid(columns:[GridItem(.adaptive(minimum:46),spacing:8)],alignment:.leading,spacing:12) {
                 ForEach(choices) { color in
                     Button { onSelect(color) } label: {
                         VStack(spacing:5) {
-                            Circle().fill(Color(uiColor:color.uiColor)).frame(width:34,height:34)
+                            Circle().fill(color.coatSwatch != nil
+                                ? AnyShapeStyle(.linearGradient(colors:(color.coatSwatch ?? []).map { Color(uiColor:$0) },startPoint:.topLeading,endPoint:.bottomTrailing))
+                                : AnyShapeStyle(Color(uiColor:color.uiColor)))
+                                .frame(width:34,height:34)
                                 .overlay(Circle().stroke(selected==color ? Color.primary : Color.secondary.opacity(0.25),lineWidth:selected==color ? 3 : 1))
                             Text(color.title).font(.caption2).foregroundStyle(.secondary)
                         }
                     }.buttonStyle(.plain).accessibilityLabel("\(title): \(color.title)")
+                        .accessibilityAddTraits(selected == color ? .isSelected : [])
                 }
             }
         }

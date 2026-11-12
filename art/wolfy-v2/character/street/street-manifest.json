@@ -1,11 +1,11 @@
 {
   "version": 2,
   "prototype": true,
-  "revision": "wolfy-character-3",
+  "revision": "wolfy-character-5",
   "skinning": "two-bone",
   "stage": "Street Wolf",
-  "vertices": 13314,
-  "indices": 79644,
+  "vertices": 14038,
+  "indices": 83964,
   "bones": [
     "root",
     "body",
@@ -13,6 +13,8 @@
     "head",
     "ear_l",
     "ear_r",
+    "eye_l",
+    "eye_r",
     "tail",
     "front_l",
     "front_l_lower",
@@ -31,8 +33,8 @@
   "clips": {
     "idle": {
       "file": "street-idle.bin",
-      "duration": 24,
-      "frames": 576
+      "duration": 12,
+      "frames": 288
     },
     "walk": {
       "file": "street-walk.bin",
@@ -87,52 +89,52 @@
   },
   "files": {
     "street-sniff.bin": {
-      "bytes": 58368,
-      "sha256": "55f94d5e60f3469d080166ed20dd9f9660fdcc4e66a80c48e8a6737752e5b777"
+      "bytes": 64512,
+      "sha256": "f9edc710a10627ea3180914c882c27bc97a7260945fffc356c47086a12b0d8f8"
     },
     "street-celebrate.bin": {
-      "bytes": 58368,
-      "sha256": "b8ece1e6411bd18c903a808ab1f0fa9ef9b3dbea06f904809d2efbdbee39e8ee"
+      "bytes": 64512,
+      "sha256": "e05f0f4c960ac9eabd91644fd439b3bf77c88c2fee15dddec1de2f324fb42248"
     },
     "street-scratch.bin": {
-      "bytes": 58368,
-      "sha256": "20390660d850e9fa88639a6d0530652587d05f1a7c6e2fde97668b8487d40afe"
+      "bytes": 64512,
+      "sha256": "eab0fa8c48143c3b1317fc3d378f0b570a111964ef6fee79a463b7eb52d75f20"
     },
     "street-idle.bin": {
-      "bytes": 700416,
-      "sha256": "eabdc1a174ed726c9d627c2839d2946ca54a80d323d39843794010b7bc2fb132"
+      "bytes": 387072,
+      "sha256": "0b426bbeb98cf15d413142ff3154bcba8a3311f7a1b1b062c02cd080e6cfd437"
     },
     "street-get_up.bin": {
-      "bytes": 58368,
-      "sha256": "68be13ef566be20d9a6c46a33078ba20a23c911294fe9a87ba16f72ec75305a9"
+      "bytes": 64512,
+      "sha256": "e6f17dc875b9b4c9ba8b97ec7d67f2439eb2cef3b7fe6c967a7f00bd8f3c6309"
     },
     "street-run.bin": {
-      "bytes": 58368,
-      "sha256": "f805ffb9406067a06f2d90e343a9bd420d1385f482a766241d645fe529f7b7e2"
+      "bytes": 64512,
+      "sha256": "a0a6872e115ce3f65fcbee2ddcadcba4ac81b67a17d7c3f73bf08d672e94b9cd"
     },
     "street-sit.bin": {
-      "bytes": 58368,
-      "sha256": "e576a0bec3d2b2abdaaf64f592eb0439de88646b1e6595d4601550e08d040d6f"
+      "bytes": 64512,
+      "sha256": "1c24264831549d6dbf1780ea5e990e98385ac24392a8582889da18eddaf6efee"
     },
     "street-walk.bin": {
-      "bytes": 58368,
-      "sha256": "f805ffb9406067a06f2d90e343a9bd420d1385f482a766241d645fe529f7b7e2"
+      "bytes": 64512,
+      "sha256": "a0a6872e115ce3f65fcbee2ddcadcba4ac81b67a17d7c3f73bf08d672e94b9cd"
     },
     "street-lie_down.bin": {
-      "bytes": 58368,
-      "sha256": "ec1a064192e48916124450f47faa452afaae7bec040853aa1b06c4ea61e8f794"
+      "bytes": 64512,
+      "sha256": "233039ac254d62cf4e91484f9b90e5f970f7b66a2ca836a49069ee4b9eaeb5d0"
     },
     "street-trot.bin": {
-      "bytes": 58368,
-      "sha256": "f805ffb9406067a06f2d90e343a9bd420d1385f482a766241d645fe529f7b7e2"
+      "bytes": 64512,
+      "sha256": "a0a6872e115ce3f65fcbee2ddcadcba4ac81b67a17d7c3f73bf08d672e94b9cd"
     },
     "street-mesh.bin": {
-      "bytes": 1170672,
-      "sha256": "f592cbaa6c27dd85ada9da5703b0b13ff68c7fdb8e88d64ed2039005dd0ab416"
+      "bytes": 1234288,
+      "sha256": "f91b1e835fc8fc93cce2bb5903f42b75ff9a1981f89b55f88fa8977741e1f905"
     },
     "street-look_around.bin": {
-      "bytes": 58368,
-      "sha256": "b738a7d79d5d90701ec8dc2d3406d5ef81c3eacfb0f9f226255edec572314a92"
+      "bytes": 64512,
+      "sha256": "0cf039b78b6fc875188be58d8cc0265abbe66bcec23765cbe139422c29555523"
     }
   }
 }

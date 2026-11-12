@@ -1505,24 +1505,44 @@
       "bytes": 24969
     },
     "wolfy_stage_pup.usdz": {
-      "bytes": 2098604,
-      "sha256": "31b2bd0d1ea269d24897cd3193042e3af40d769df14932221ec7bfcca77f6970"
+      "bytes": 2485472,
+      "sha256": "8f683129eb2298d5a5760bad2fb463920fa57ef6bd1fd130b632ee15be19b27a"
     },
     "wolfy_stage_young.usdz": {
-      "bytes": 2081348,
-      "sha256": "619535f330c8a65bb9a05fa83da10a3b511251e8ee4f68953c2da063e3c6cdfb"
+      "bytes": 2625422,
+      "sha256": "2cdb301dbbb67e465e4a7c56b1c29b4d77e65c76454049f1b8e7f87e39c96e70"
     },
     "wolfy_stage_street.usdz": {
-      "bytes": 2206839,
-      "sha256": "5e7158e7ce1502628ecfffafc1482bb03de8f298173ce8413141a0a2c214d774"
+      "bytes": 2624525,
+      "sha256": "3e9aadefbbf73e76677276de7594ddc9e3064f886a77a26686e6940119111ebc"
     },
     "wolfy_stage_alpha.usdz": {
-      "bytes": 2358108,
-      "sha256": "a71f9875125354da7172683fd6996f00fab7d9f0e30e49e874fe49b76050e4cf"
+      "bytes": 2792129,
+      "sha256": "1cc35e5eab0b8023c312b42e203ca7140fb30fa4b2b926c181e4d1453fa2f8cb"
     },
     "wolfy_stage_legend.usdz": {
-      "bytes": 2255039,
-      "sha256": "88252da3719be5738988637572875f30f02ad6575a932d81ba0f5b2ec289c3f5"
+      "bytes": 2732063,
+      "sha256": "b28d674ff512db892631a11fb09a5a4e4338a000f58f04298b04a0160bcec5cb"
+    },
+    "wolfy_stage_pup_celebrate.usdz": {
+      "bytes": 2228603,
+      "sha256": "7342f01cdb5ffd5d918bc2418f95f12b6610402b54e724e3d95d415248bce788"
+    },
+    "wolfy_stage_young_celebrate.usdz": {
+      "bytes": 2369022,
+      "sha256": "e42a970137b926dac5aafd491de8778c0f5381f9be9d83c62e3ae4347c8067ee"
+    },
+    "wolfy_stage_street_celebrate.usdz": {
+      "bytes": 2367764,
+      "sha256": "53b0fbd66fdaf0f8f68ca39199771566f1af11d491d073e8e065ab6188311cd2"
+    },
+    "wolfy_stage_alpha_celebrate.usdz": {
+      "bytes": 2535778,
+      "sha256": "d62fd03c54fb3022530a43318ba82f677a9e97cfb9a56e22bf3fa0e4a6a9c283"
+    },
+    "wolfy_stage_legend_celebrate.usdz": {
+      "bytes": 2475546,
+      "sha256": "2eb3bf6a5386384fd5393641f151f2a5c0ba26d98e0b0ceb17a0d26fffa67e55"
     }
   },
   "growthStages": {

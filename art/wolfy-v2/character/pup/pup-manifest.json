@@ -1,7 +1,7 @@
 {
   "version": 2,
   "prototype": true,
-  "revision": "wolfy-character-3",
+  "revision": "wolfy-character-5",
   "skinning": "two-bone",
   "stage": "Wolf Pup",
   "vertices": 13314,
@@ -13,6 +13,8 @@
     "head",
     "ear_l",
     "ear_r",
+    "eye_l",
+    "eye_r",
     "tail",
     "front_l",
     "front_l_lower",
@@ -31,8 +33,8 @@
   "clips": {
     "idle": {
       "file": "pup-idle.bin",
-      "duration": 24,
-      "frames": 576
+      "duration": 12,
+      "frames": 288
     },
     "walk": {
       "file": "pup-walk.bin",
@@ -87,52 +89,52 @@
   },
   "files": {
     "pup-idle.bin": {
-      "bytes": 700416,
-      "sha256": "3194e478b6a22fdf07fc1e0b5cd5e4952bdaa96a1e561274ff2d1bfe08d7295e"
+      "bytes": 387072,
+      "sha256": "a646b1af36dd11293b73357d2205501ce8adadb650d1393f605bccf886779846"
     },
     "pup-look_around.bin": {
-      "bytes": 58368,
-      "sha256": "5e0606dd090cfaf82adab2084c357c240457d6e635cfd19cd7599505933fefaf"
+      "bytes": 64512,
+      "sha256": "6268b7e03983365f534a5233b3477987017021118b05581c9f7cd4326acd7ffc"
     },
     "pup-sniff.bin": {
-      "bytes": 58368,
-      "sha256": "fe6000c97513d770e669ccf5f39ed27d1c106ed137044f1449546ebed2443958"
+      "bytes": 64512,
+      "sha256": "c65a13292cd7f0f3cc26f0d13844d44839f5c4259c9168bd26c552c35bfcfec7"
     },
     "pup-trot.bin": {
-      "bytes": 58368,
-      "sha256": "3c5c8213cd351c8f64e8a91bb92586b1ee03ee780aee169949c2126fdd62ce30"
+      "bytes": 64512,
+      "sha256": "a1ea6fe10f7eabbfd6ee05848526ee5f67a377d0bb76b108cb2a1e3e58ceadef"
     },
     "pup-sit.bin": {
-      "bytes": 58368,
-      "sha256": "18963c4547784518149405ddb1c03d100e00813bd18c2d78680fea207d8f0c48"
+      "bytes": 64512,
+      "sha256": "9247d884146017468e1b04809eb99f4be7bf42328697f53aa43f89c294afda07"
     },
     "pup-mesh.bin": {
       "bytes": 1170672,
-      "sha256": "5fda2c0adddc0959fad216a7fc4050812019e311be0eca5fd72a108b94b1387b"
+      "sha256": "ee3e2ed71e1e6d8b256681c918e30955026cc6675243f7ce36a14ab9d02831cb"
     },
     "pup-run.bin": {
-      "bytes": 58368,
-      "sha256": "3c5c8213cd351c8f64e8a91bb92586b1ee03ee780aee169949c2126fdd62ce30"
+      "bytes": 64512,
+      "sha256": "a1ea6fe10f7eabbfd6ee05848526ee5f67a377d0bb76b108cb2a1e3e58ceadef"
     },
     "pup-scratch.bin": {
-      "bytes": 58368,
-      "sha256": "f449d9ab5e477cfc5ea386134d46a748a63b65aeeba1ff0650ba15086c5a7c41"
+      "bytes": 64512,
+      "sha256": "a67ff823df9085ecd42ecd80deca2c26a2c5f00abfe4406d7044df1d16388d49"
     },
     "pup-celebrate.bin": {
-      "bytes": 58368,
-      "sha256": "cfd215a3139c571bf2bcea039326cd28b59ddca8e7779532a3074485de45ccec"
+      "bytes": 64512,
+      "sha256": "7bf1571ae29285da693b59adaf8ab6f05dc5a372d8957b4d7659cae3bd180eaf"
     },
     "pup-get_up.bin": {
-      "bytes": 58368,
-      "sha256": "a53aa3f73317b9daf4835b75c8ec127a3a4e8676fbb7024b24b58dd25feaa09f"
+      "bytes": 64512,
+      "sha256": "1f7685c6c0f3ac825e2cfca7ffca92de7efc976076b1bd40ad1e13cef05e4fc4"
     },
     "pup-walk.bin": {
-      "bytes": 58368,
-      "sha256": "3c5c8213cd351c8f64e8a91bb92586b1ee03ee780aee169949c2126fdd62ce30"
+      "bytes": 64512,
+      "sha256": "a1ea6fe10f7eabbfd6ee05848526ee5f67a377d0bb76b108cb2a1e3e58ceadef"
     },
     "pup-lie_down.bin": {
-      "bytes": 58368,
-      "sha256": "4cc06daa6e258bf468188504cc4f446a29b619c3db3d53a4d45d70963da0903d"
+      "bytes": 64512,
+      "sha256": "f0320010670746ab9ad294205f4a3e0af471283bdb14d1f5449e03c1f3155709"
     }
   }
 }

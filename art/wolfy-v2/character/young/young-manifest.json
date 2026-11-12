@@ -1,7 +1,7 @@
 {
   "version": 2,
   "prototype": true,
-  "revision": "wolfy-character-3",
+  "revision": "wolfy-character-5",
   "skinning": "two-bone",
   "stage": "Young Wolf",
   "vertices": 13314,
@@ -13,6 +13,8 @@
     "head",
     "ear_l",
     "ear_r",
+    "eye_l",
+    "eye_r",
     "tail",
     "front_l",
     "front_l_lower",
@@ -31,8 +33,8 @@
   "clips": {
     "idle": {
       "file": "young-idle.bin",
-      "duration": 24,
-      "frames": 576
+      "duration": 12,
+      "frames": 288
     },
     "walk": {
       "file": "young-walk.bin",
@@ -87,52 +89,52 @@
   },
   "files": {
     "young-idle.bin": {
-      "bytes": 700416,
-      "sha256": "1cef58fde17be5875a6cb14085e2d5f0964f6ef74983ab82175bc505ea96ec1d"
+      "bytes": 387072,
+      "sha256": "d5ebb528b316c6a0ba94e91f1923e2685b864f7e60ff39cd5ee3f033b264764f"
     },
     "young-look_around.bin": {
-      "bytes": 58368,
-      "sha256": "b41f5136c50a4b2dbce06c306b6064cea67ed2f10c596a5660f19ab8a3a23372"
+      "bytes": 64512,
+      "sha256": "27b2400408c3d98fb6d4a9fa11ee398adcdf96ef7d75d1bda32fb12e9fd56f78"
     },
     "young-celebrate.bin": {
-      "bytes": 58368,
-      "sha256": "037a47a0481ac3aa5479ac36ace85fd3049e3894f163d272c3c70f03bcbfd744"
+      "bytes": 64512,
+      "sha256": "399ac83dd8b97c609eb8272b04769426d205e333a505797c93ff5cf756a0bd29"
     },
     "young-lie_down.bin": {
-      "bytes": 58368,
-      "sha256": "8911a39112e1abe0965d35c292140cd754d0b2b0354952ed318eb3b96d220759"
+      "bytes": 64512,
+      "sha256": "3c170cca829c19cafc59ba525ec2416c6b0cd11bd46e9814f187bda003de48fe"
     },
     "young-sniff.bin": {
-      "bytes": 58368,
-      "sha256": "c2f8a3835838c8a71528ef4527d3e494a3e5691a6dee01d187e55d70e9431ccf"
+      "bytes": 64512,
+      "sha256": "89535c6c7aa2d6fcb2838b5447feaa874f3adba202c08b862f0a9498196c4f4f"
     },
     "young-scratch.bin": {
-      "bytes": 58368,
-      "sha256": "4e6eddede5db3b052bff2687401102f9efad8271456d54887540d16d068ecddf"
+      "bytes": 64512,
+      "sha256": "5ac36b0482043b97ef70bfcdc8ba2a76e187f97ce64d9f4f7f29ba8b6dd866d3"
     },
     "young-trot.bin": {
-      "bytes": 58368,
-      "sha256": "996830c4fcaf14b7374a43916db8f066cd97ab5c14c248cf5435d632ebc52ca4"
+      "bytes": 64512,
+      "sha256": "fb6662e21c4d5fae6c7a6a2580391add8962f2d04cc147e0361d7f4c0be4a3d8"
     },
     "young-mesh.bin": {
       "bytes": 1170672,
-      "sha256": "d4fb00695075656f4359e7ad079a3947f15df07e6330b5c257d1fb5736eb2eb9"
+      "sha256": "b1145d9a42fada917747b02ff39f2ecb1d09eb101bb75359ec7fefd3227d17fd"
     },
     "young-sit.bin": {
-      "bytes": 58368,
-      "sha256": "a1ccfa096781dbf78e86fa2a2a561ac43957ef137f5ad6eab206e292cf6e3024"
+      "bytes": 64512,
+      "sha256": "32c803350afd9620531d49d6df8c3adf25541774110b61754e3ab96f3344100a"
     },
     "young-run.bin": {
-      "bytes": 58368,
-      "sha256": "996830c4fcaf14b7374a43916db8f066cd97ab5c14c248cf5435d632ebc52ca4"
+      "bytes": 64512,
+      "sha256": "fb6662e21c4d5fae6c7a6a2580391add8962f2d04cc147e0361d7f4c0be4a3d8"
     },
     "young-walk.bin": {
-      "bytes": 58368,
-      "sha256": "996830c4fcaf14b7374a43916db8f066cd97ab5c14c248cf5435d632ebc52ca4"
+      "bytes": 64512,
+      "sha256": "fb6662e21c4d5fae6c7a6a2580391add8962f2d04cc147e0361d7f4c0be4a3d8"
     },
     "young-get_up.bin": {
-      "bytes": 58368,
-      "sha256": "57eb08353e418e8039695ad60e36423546175d399cf6c624ef48c3322b382fb6"
+      "bytes": 64512,
+      "sha256": "345bb1841a174ee98db76f4e481116f356e9bd000238539fd2a68a41c9de0726"
     }
   }
 }
